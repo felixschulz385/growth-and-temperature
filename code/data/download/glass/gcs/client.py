@@ -1,11 +1,11 @@
 from google.cloud import storage
 from google.oauth2 import service_account
-from config import SERVICE_ACCOUNT_FILE, GCP_PROJECT_ID
+from config import GCP_PROJECT_ID
 
 class GCSClient:
     def __init__(self, bucket_name):
-        credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
-        self.client = storage.Client(credentials=credentials, project=GCP_PROJECT_ID)
+        # credentials = service_account.Credentials.from_service_account_file(SERVICE_ACCOUNT_FILE)
+        self.client = storage.Client(project=GCP_PROJECT_ID) #credentials=credentials, 
         self.bucket = self.client.bucket(bucket_name)
 
     def list_existing_files(self, prefix=""):

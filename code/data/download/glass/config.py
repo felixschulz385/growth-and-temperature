@@ -1,7 +1,7 @@
 import os
 
-# Service account key path (absolute or relative)
-SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "Q:/HEALECON/Felix/Research/Heat Islands/misc/ee-growthandheat-e6c4eefc2bf3.json")
+# # Service account key path (absolute or relative)
+# SERVICE_ACCOUNT_FILE = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
 
 # Google Cloud project ID
 GCP_PROJECT_ID = os.getenv("GCP_PROJECT_ID", "ee-growthandheat")
