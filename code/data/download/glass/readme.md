@@ -1,6 +1,8 @@
-# 🌍 GLASS File Downloader and GCS Uploader
+# 🌍 File Downloader and GCS Uploader
 
-This project downloads geospatial files from the [GLASS archive](https://glass.hku.hk/) and uploads them to a specified Google Cloud Storage (GCS) bucket. The containerized app is designed to run once (e.g. via a Kubernetes Job), checking what files already exist in GCS, downloading missing files, and uploading them.
+This project downloads data files from one or more **pluggable sources** (e.g. [GLASS archive](https://glass.hku.hk/)) and uploads them to a specified Google Cloud Storage (GCS) bucket.
+
+The containerized app is designed to run once (e.g. via a Kubernetes Job), checking which files already exist in GCS, downloading missing files, and uploading them. It supports multiple data sources using a unified interface (`BaseDataSource`), making it easy to extend.
 
 ---
 
@@ -8,16 +10,33 @@ This project downloads geospatial files from the [GLASS archive](https://glass.h
 
 ```text
 .
-├── download/           # Logic for file discovery and download
+├── download/           # Logic for file discovery and data source classes
+│   ├── base.py         # Abstract base class for data sources
+│   ├── glass.py        # GLASS-specific implementation
+│   └── ...
 ├── gcs/                # GCS upload logic
-├── workflow.py         # Orchestrates download/upload
-├── config.py           # Configuration using env vars or defaults
+├── tests/              # Unit tests
+├── workflow.py         # Generalized download/upload workflow
+├── config.py           # Configuration using environment variables
 ├── main.py             # Entry point
 ├── Dockerfile          # Container definition
 ├── requirements.txt    # Python dependencies
 ├── glass-job.yaml      # Kubernetes Job definition
 └── README.md
 ```
+
+---
+
+## ⚙️ Configuration via Environment Variables
+
+These values can be set via your Kubernetes job (see below), `.env`, or your deployment system:
+
+| Variable         | Description                                             | Example Value                                                   |
+|------------------|---------------------------------------------------------|------------------------------------------------------------------|
+| `GCP_PROJECT_ID` | Your Google Cloud project ID                            | `ee-growthandheat`                                              |
+| `GCS_BUCKET_NAME`| Name of the GCS bucket                                  | `growthandheat`                                                 |
+| `DATA_SOURCE_NAME`| Identifier for which data source to use                | `glass`                                                         |
+| `BASE_URL`       | URL to crawl/download files from                        | `https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/`             |
 
 ---
 
@@ -39,8 +58,8 @@ gcloud services enable containerregistry.googleapis.com
 ### 3. **Build and Push**
 
 ```bash
-docker build -t gcr.io/your-project-id/glass-uploader:latest .
-docker push gcr.io/your-project-id/glass-uploader:latest
+docker build -t gcr.io/your-project-id/uploader:latest .
+docker push gcr.io/your-project-id/uploader:latest
 ```
 
 ---
@@ -50,14 +69,14 @@ docker push gcr.io/your-project-id/glass-uploader:latest
 ### 🧱 Step 1: Create GKE Cluster (if not already done)
 
 ```bash
-gcloud container clusters create-auto glass-cluster \
+gcloud container clusters create-auto uploader-cluster \
   --region=us-central1
 ```
 
 ### 🔐 Step 2: Enable Workload Identity on Cluster
 
 ```bash
-gcloud container clusters update glass-cluster \
+gcloud container clusters update uploader-cluster \
   --region=us-central1 \
   --workload-pool=your-project-id.svc.id.goog
 ```
@@ -65,40 +84,41 @@ gcloud container clusters update glass-cluster \
 ### 👤 Step 3: Create Google Service Account (GSA)
 
 ```bash
-gcloud iam service-accounts create glass-uploader-sa \
-  --display-name="Glass Uploader"
+gcloud iam service-accounts create uploader-sa \
+  --display-name="Data Uploader"
 ```
 
 Grant it access to write to GCS:
 
 ```bash
 gcloud projects add-iam-policy-binding your-project-id \
-  --member="serviceAccount:glass-uploader-sa@your-project-id.iam.gserviceaccount.com" \
+  --member="serviceAccount:updater-sa@your-project-id.iam.gserviceaccount.com" \
   --role="roles/storage.objectAdmin"
 ```
 
 ### 🤝 Step 4: Create Kubernetes Service Account (KSA) and Bind It
 
 ```bash
-kubectl create serviceaccount k8s-glass-uploader
+kubectl create serviceaccount k8s-uploader
 
-gcloud iam service-accounts add-iam-policy-binding glass-uploader-sa@your-project-id.iam.gserviceaccount.com \
+gcloud iam service-accounts add-iam-policy-binding uploader-sa@your-project-id.iam.gserviceaccount.com \
   --role roles/iam.workloadIdentityUser \
-  --member "serviceAccount:your-project-id.svc.id.goog[default/k8s-glass-uploader]"
+  --member "serviceAccount:your-project-id.svc.id.goog[default/k8s-uploader]"
 
 kubectl annotate serviceaccount \
-  k8s-glass-uploader \
-  iam.gke.io/gcp-service-account=glass-uploader-sa@your-project-id.iam.gserviceaccount.com
+  k8s-uploader \
+  iam.gke.io/gcp-service-account=uploader-sa@your-project-id.iam.gserviceaccount.com
 ```
 
 ---
 
 ### 📄 Step 5: Deploy the Kubernetes Job
 
-Edit `glass-job.yaml` and replace:
+Update `glass-job.yaml`:
 
-- `your-project-id`
-- `your-bucket-name`
+- Replace `your-project-id`
+- Replace `your-bucket-name`
+- Add or override `env` variables as needed (e.g. `BASE_URL`, `DATA_SOURCE_NAME`)
 
 Then apply:
 
@@ -114,31 +134,47 @@ kubectl logs -l job-name=glass-uploader-job
 
 ---
 
-## ✅ Clean Up (Optional)
+## 🧪 Adding New Data Sources
 
-```bash
-kubectl delete job glass-uploader-job
-kubectl delete serviceaccount k8s-glass-uploader
-gcloud iam service-accounts delete glass-uploader-sa@your-project-id.iam.gserviceaccount.com
+To support a new data source:
+
+1. Create a new file in `download/` (e.g., `chirps.py`)
+2. Inherit from `BaseDataSource`
+3. Implement:
+   - `list_remote_files()`
+   - `download(...)`
+   - `local_path(...)`
+   - `gcs_upload_path(...)`
+4. Register it in `config.py`:
+
+```python
+from download.chirps import CHIRPSDataSource
+
+DATA_SOURCES = {
+    "glass": GLASSDataSource,
+    "chirps": CHIRPSDataSource,
+}
 ```
+
+5. Set `DATA_SOURCE_NAME=chirps` in your Kubernetes Job.
 
 ---
 
 ## 📦 Example GCS Upload Path
 
-Files from:
+A file from:
 
 ```
 https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/2021/file1.hdf
 ```
 
-Are uploaded to:
+Will be uploaded to:
 
 ```
-gs://your-bucket-name/GCS_PATH_PREFIX/LST/MODIS/Daily/1KM/file1.hdf
+gs://your-bucket-name/GCS_PATH_PREFIX/MODIS/Daily/1KM/file1.hdf
 ```
 
-Prefix and data type are automatically extracted.
+The prefix (`GCS_PATH_PREFIX`) and remote path are parsed automatically based on the base URL and file structure.
 
 ---
 
