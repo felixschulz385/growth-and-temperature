@@ -17,12 +17,10 @@ DATA_SOURCES = {
     "eog": EOGDataSource,
 }
 
-FILE_EXTENSIONS = os.getenv("FILE_EXTENSIONS", ".tif").split(",")
+FILE_EXTENSIONS = os.getenv("FILE_EXTENSIONS", ".v4b.global.stable_lights.avg_vis.tif").split(",")
 # ".v4b.global.stable_lights.avg_vis.tif"
 
-
-
 # Base URL to crawl for files
-BASE_URL = os.getenv("BASE_URL", "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/") 
+BASE_URL = os.getenv("BASE_URL", "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/") 
 #"https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
 #"https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"

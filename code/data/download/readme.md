@@ -91,9 +91,7 @@ gcloud iam service-accounts create uploader-sa \
 Grant it access to write to GCS:
 
 ```bash
-gcloud projects add-iam-policy-binding your-project-id \
-  --member="serviceAccount:updater-sa@your-project-id.iam.gserviceaccount.com" \
-  --role="roles/storage.objectAdmin"
+gcloud storage buckets add-iam-policy-binding gs://your-bucket-name --member="serviceAccount:uploader-sa@your-project-id.iam.gserviceaccount.com" --role="roles/storage.objectAdmin"
 ```
 
 ### 🤝 Step 4: Create Kubernetes Service Account (KSA) and Bind It
@@ -113,6 +111,14 @@ kubectl annotate serviceaccount \
 ---
 
 ### 📄 Step 5: Deploy the Kubernetes Job
+
+Optionally, provide eog credentials with
+
+```bash
+kubectl create secret generic eog-login \
+  --from-literal=EOG_USERNAME='your_username' \
+  --from-literal=EOG_PASSWORD='your_password'
+```
 
 Update `glass-job.yaml`:
 

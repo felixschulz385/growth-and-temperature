@@ -15,6 +15,11 @@ def run(data_source: BaseDataSource, bucket_name: str):
 
         # Get the list of files to download
         files = data_source.list_remote_files()
+        
+        # Perform login once and reuse the session if required
+        session = None
+        if hasattr(data_source, "get_authenticated_session"):
+            session = data_source.get_authenticated_session()
 
         for relative_path, file_url in files:
             # Resolve the destination blob path
@@ -28,7 +33,7 @@ def run(data_source: BaseDataSource, bucket_name: str):
             try:
                 # Download the file and upload it to GCS
                 local_path = os.path.join(tmp_dir, relative_path)
-                data_source.download(file_url, local_path)
+                data_source.download(file_url, local_path, session=session)
                 gcs.upload_file(local_path, destination_blob)
                 os.remove(local_path)
             except Exception as e:

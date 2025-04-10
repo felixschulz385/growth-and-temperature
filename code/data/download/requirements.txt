@@ -1,4 +1,5 @@
 google-cloud-storage
+selenium
 beautifulsoup4
 requests
 python-dotenv

@@ -40,7 +40,7 @@ class GLASSDataSource(BaseDataSource):
         # Assuming a local directory structure that mirrors the remote one
         return os.path.join("data", relative_path)
     
-    def download(self, file_url: str, output_path: str) -> None:
+    def download(self, file_url: str, output_path: str, session: requests.Session = None) -> None:
         r = requests.get(file_url, stream=True)
         r.raise_for_status()
 

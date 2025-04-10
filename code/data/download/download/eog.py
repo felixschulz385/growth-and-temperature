@@ -44,9 +44,59 @@ class EOGDataSource(BaseDataSource):
     def local_path(self, relative_path: str) -> str:
         # Assuming a local directory structure that mirrors the remote one
         return os.path.join("data", relative_path)
-    
-    def download(self, file_url: str, output_path: str) -> None:
-        r = requests.get(file_url, stream=True)
+                
+    def get_authenticated_session(self) -> requests.Session:
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        import time
+
+        # Use Selenium to log in and get cookies
+        username = os.environ.get("EOG_USERNAME")
+        password = os.environ.get("EOG_PASSWORD")
+
+        if not username or not password:
+            raise ValueError("EOG_USERNAME and EOG_PASSWORD must be set in environment variables.")
+
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+
+        # This disables downloads
+        prefs = {
+            "download.prompt_for_download": False,
+            "download.default_directory": "/dev/null",  # not writable in most cases
+            "download_restrictions": 3  # 0 = allow all, 3 = block all
+        }
+        chrome_options.add_experimental_option("prefs", prefs)
+        driver = webdriver.Chrome(options=chrome_options)
+        
+        login_prompting_url = "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/F10_1992/F101992.v4b.global.avg_vis.tif"
+        driver.get(login_prompting_url)
+
+        # Fill login form (adjust selectors as needed)
+        driver.find_element("id", "username").send_keys(username)
+        driver.find_element("id", "password").send_keys(password)
+        driver.find_element("name", "login").click()
+
+        # Wait for login & redirect
+        time.sleep(5)
+
+        # Download using cookies from the session
+        cookies = driver.get_cookies()
+        driver.quit()
+
+        session = requests.Session()
+        for c in cookies:
+            session.cookies.set(c['name'], c['value'])
+
+        return session
+
+    def download(self, file_url: str, output_path: str, session: requests.Session = None) -> None:
+        if session is None:
+            raise ValueError("Authenticated session must be provided for download.")
+
+        r = session.get(file_url, stream=True)
         r.raise_for_status()
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

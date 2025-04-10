@@ -5,6 +5,7 @@ metadata:
 spec:
   template:
     spec:
+      serviceAccountName: k8s-glass-uploader
       containers:
         - name: glass-uploader
           image: gcr.io/your-project-id/glass-uploader:latest
