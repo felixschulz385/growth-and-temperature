@@ -1,13 +1,20 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: glass-lst-modis-daily-1KM-job
+  name: glass-lst-modis-daily-1km-job
+  labels:
+    job-type: gcs-upload
+    data-source: glass
 spec:
+  ttlSecondsAfterFinished: 3600  # auto-cleanup after 1 hour
+  backoffLimit: 3                # retry on failure (3 times)
   template:
     spec:
+      serviceAccountName: k8s-glass-uploader
+      restartPolicy: Never
       containers:
-        - name: glass-uploader
-          image: gcr.io/your-project-id/glass-uploader:latest
+        - name: gcs-uploader
+          image: gcr.io/ee-growthandheat/gcs-uploader:latest
           env:
             - name: GCP_PROJECT_ID
               value: "ee-growthandheat"
@@ -17,4 +24,12 @@ spec:
               value: "glass"
             - name: BASE_URL
               value: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
-      restartPolicy: Never
+            - name: FILE_EXTENSIONS
+              value: ".hdf"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 1024Mi

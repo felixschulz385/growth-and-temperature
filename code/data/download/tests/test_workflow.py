@@ -18,7 +18,7 @@ class MockDataSource(BaseDataSource):
     def local_path(self, remote_file):
         return f"/tmp/{remote_file}"  # simulate a resolved local path
 
-    def download(self, file_url, output_path):
+    def download(self, file_url, output_path, session=None):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         with open(output_path, "w") as f:
             f.write("data")

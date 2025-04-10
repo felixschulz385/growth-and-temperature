@@ -1,16 +1,16 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: glass-lst-avhrr-005d-job
+  name: eog-viirs-products-dvnl-job
   labels:
     job-type: gcs-upload
-    data-source: glass
+    data-source: eog
 spec:
   ttlSecondsAfterFinished: 3600  # auto-cleanup after 1 hour
   backoffLimit: 3                # retry on failure (3 times)
   template:
     spec:
-      serviceAccountName: k8s-glass-uploader
+      serviceAccountName: k8s-uploader
       restartPolicy: Never
       containers:
         - name: gcs-uploader
@@ -21,11 +21,21 @@ spec:
             - name: GCS_BUCKET_NAME
               value: "growthandheat"
             - name: DATA_SOURCE_NAME
-              value: "glass"
+              value: "eog"
             - name: BASE_URL
-              value: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
+              value: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
             - name: FILE_EXTENSIONS
-              value: ".hdf"
+              value: ".tif"
+            - name: EOG_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: eog-login
+                  key: EOG_USERNAME
+            - name: EOG_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: eog-login
+                  key: EOG_PASSWORD
           resources:
             requests:
               cpu: 100m
