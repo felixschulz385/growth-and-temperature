@@ -3,6 +3,7 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import os
+import time
 
 from .base import BaseDataSource
 
@@ -13,28 +14,32 @@ class GLASSDataSource(BaseDataSource):
         self.file_extensions = file_extensions or [".hdf"]
 
     def list_remote_files(self) -> list[tuple[str, str]]:
-        file_urls = []
+        def crawl(url: str, relative_path: str = "") -> list[tuple[str, str]]:
+            # Introduce a delay to avoid overwhelming the server
+            time.sleep(1)
+            # Make a request to the URL
+            files = []
+            res = requests.get(url)
+            soup = BeautifulSoup(res.text, "html.parser")
 
-        res = requests.get(self.base_url)
-        soup = BeautifulSoup(res.text, "html.parser")
+            for link in soup.find_all("a"):
+                href = link.get("href")
+                if not href or href in ("../", "./"):
+                    continue
 
-        for link in soup.find_all("a"):
-            href = link.get("href")
-            if not href or not href.endswith("/"):
-                continue
-            year_url = urljoin(self.base_url, href)
+                full_url = urljoin(url, href)
+                new_relative_path = relative_path + href
 
-            year_page = requests.get(year_url)
-            year_soup = BeautifulSoup(year_page.text, "html.parser")
+                if href.endswith("/"):
+                    # Recurse into the subdirectory
+                    files += crawl(full_url, new_relative_path)
+                else:
+                    if any(href.endswith(ext) for ext in self.file_extensions):
+                        files.append((new_relative_path, full_url))
 
-            for file_link in year_soup.find_all("a"):
-                file_href = file_link.get("href")
-                if any(file_href.endswith(ext) for ext in self.file_extensions):
-                    file_url = urljoin(year_url, file_href)
-                    file_name = file_url.replace(self.base_url, "")  # relative path
-                    file_urls.append((file_name, file_url))
+            return files
 
-        return file_urls
+        return crawl(self.base_url)
 
     def local_path(self, relative_path: str) -> str:
         # Assuming a local directory structure that mirrors the remote one
