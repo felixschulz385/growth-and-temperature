@@ -1,3 +1,4 @@
+# workflow.py
 from gcs.client import GCSClient
 from download.base import BaseDataSource
 import tempfile
@@ -12,16 +13,13 @@ def run(data_source: BaseDataSource, bucket_name: str):
     # Create a temporary directory for downloads
     with tempfile.TemporaryDirectory() as tmp_dir:
         print(f"*** Using temp dir: {tmp_dir} ***")
-
-        # Get the list of files to download
-        files = data_source.list_remote_files()
         
         # Perform login once and reuse the session if required
         session = None
         if hasattr(data_source, "get_authenticated_session"):
             session = data_source.get_authenticated_session()
 
-        for relative_path, file_url in files:
+        for relative_path, file_url in data_source.list_remote_files():
             # Resolve the destination blob path
             destination_blob = data_source.gcs_upload_path(data_source.base_url, relative_path)
 

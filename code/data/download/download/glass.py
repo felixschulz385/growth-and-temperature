@@ -13,12 +13,9 @@ class GLASSDataSource(BaseDataSource):
         self.base_url = base_url
         self.file_extensions = file_extensions or [".hdf"]
 
-    def list_remote_files(self) -> list[tuple[str, str]]:
-        def crawl(url: str, relative_path: str = "") -> list[tuple[str, str]]:
-            # Introduce a delay to avoid overwhelming the server
-            time.sleep(1)
-            # Make a request to the URL
-            files = []
+    def list_remote_files(self):
+        def crawl(url: str, relative_path: str = ""):
+            time.sleep(.5)
             res = requests.get(url)
             soup = BeautifulSoup(res.text, "html.parser")
 
@@ -31,13 +28,10 @@ class GLASSDataSource(BaseDataSource):
                 new_relative_path = relative_path + href
 
                 if href.endswith("/"):
-                    # Recurse into the subdirectory
-                    files += crawl(full_url, new_relative_path)
+                    yield from crawl(full_url, new_relative_path)
                 else:
                     if any(href.endswith(ext) for ext in self.file_extensions):
-                        files.append((new_relative_path, full_url))
-
-            return files
+                        yield (new_relative_path, full_url)
 
         return crawl(self.base_url)
 

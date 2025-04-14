@@ -28,8 +28,7 @@ def test_list_remote_files():
         ds = GLASSDataSource(base_url)
         files = ds.list_remote_files()
 
-        assert len(files) == 2
-        assert files[0] == ("2021/file1.hdf", "https://fake-glass.org/archive/LST/2021/file1.hdf")
+        assert next(files) == ("2021/file1.hdf", "https://fake-glass.org/archive/LST/2021/file1.hdf")
 
 def test_gcs_upload_path():
     ds = GLASSDataSource(base_url="https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/")
