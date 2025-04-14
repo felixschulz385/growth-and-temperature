@@ -1,6 +1,7 @@
 import os
 from download.glass import GLASSDataSource
 from download.eog import EOGDataSource
+from download.harvard import HarvardDataSource
 
 # Allow local debugging by loading .env
 if not os.getenv("KUBERNETES_SERVICE_HOST"):  # Only load .env if not in a K8s environment
@@ -23,6 +24,7 @@ DATA_SOURCE_NAME = os.getenv("DATA_SOURCE_NAME")
 DATA_SOURCES = {
     "glass": GLASSDataSource,
     "eog": EOGDataSource,
+    "harvard": HarvardDataSource, 
 }
 
 FILE_EXTENSIONS = os.getenv("FILE_EXTENSIONS").split(",")
