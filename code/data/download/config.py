@@ -1,3 +1,4 @@
+# config.py
 import os
 from download.glass import GLASSDataSource
 from download.eog import EOGDataSource
@@ -30,4 +31,8 @@ DATA_SOURCES = {
 FILE_EXTENSIONS = os.getenv("FILE_EXTENSIONS").split(",")
 
 # Base URL to crawl for files
-BASE_URL = os.getenv("BASE_URL") 
+BASE_URL = os.getenv("BASE_URL")
+
+# Concurrency settings
+MAX_CONCURRENT_DOWNLOADS = int(os.getenv("MAX_CONCURRENT_DOWNLOADS", "5"))
+MAX_QUEUE_SIZE = int(os.getenv("MAX_QUEUE_SIZE", "100"))
