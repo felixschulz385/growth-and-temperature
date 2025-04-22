@@ -11,7 +11,7 @@ spec:
   template:
     spec:
       serviceAccountName: k8s-glass-uploader
-      restartPolicy: Never
+      restartPolicy: OnFailure
       containers:
         - name: gcs-uploader
           image: gcr.io/ee-growthandheat/gcs-uploader:latest
@@ -26,6 +26,10 @@ spec:
               value: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
             - name: FILE_EXTENSIONS
               value: ".hdf"
+            - name: MAX_CONCURRENT_DOWNLOADS
+              value: "8"
+            - name: MAX_QUEUE_SIZE
+              value: "32"
           resources:
             requests:
               cpu: 100m

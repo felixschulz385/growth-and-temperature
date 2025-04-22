@@ -42,6 +42,6 @@ def test_workflow_upload(monkeypatch):
     # Monkeypatch the GCSClient instantiation in workflow
     monkeypatch.setattr("workflow.GCSClient", lambda bucket: gcs_client)
 
-    run(MockDataSource(), "my-bucket")
+    run(MockDataSource(), "my-bucket", 1, 10)
     assert len(gcs_client.uploaded) == 1
     assert gcs_client.uploaded[0][1] == "folder/fake.hdf"
