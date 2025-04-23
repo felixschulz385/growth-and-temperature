@@ -1,0 +1,16 @@
+tasks:
+  - preprocessor: glass
+    input_path: ""  # For GCS
+    output_path: "./output"
+    intermediate_path: "./intermediate"
+    stage: "stage1"
+    data_source: "AVHRR"
+    years: [2000, 2001]
+    grid_cells: ["h08v05"]
+    dask_threads: 2  # Adjust based on your CPU
+    dask_memory_limit: "4GB"  # Adjust based on your RAM
+    chunk_size: 
+      time: 1
+      x: 500
+      y: 500
+    override: false

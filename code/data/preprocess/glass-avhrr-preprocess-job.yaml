@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glass-avhrr-preprocessor
+  labels:
+    app: data-preprocess
+    dataset: glass-avhrr
+spec:
+  ttlSecondsAfterFinished: 86400  # Auto-delete 24 hours after completion
+  backoffLimit: 3  # Number of retries
+  template:
+    spec:
+      # Use a dedicated service account with GCS access
+      serviceAccountName: preprocess-sa
+      restartPolicy: Never
+      containers:
+      - name: preprocess
+        image: gcr.io/ee-growthandheat/glass-preprocessor:latest
+        args: ["--config", "/config/avhrr-config.json"]
+        resources:
+          requests:
+            cpu: "2"
+            memory: "8Gi"
+          limits:
+            cpu: "4"
+            memory: "16Gi"
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+        - name: gcs-key
+          mountPath: /secrets
+          readOnly: true
+        - name: temp-storage
+          mountPath: /tmp
+      volumes:
+      - name: config-volume
+        configMap:
+          name: glass-avhrr-config
+      - name: gcs-key
+        secret:
+          secretName: glass-gcs-key
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: "20Gi"  # Temporary storage for large files

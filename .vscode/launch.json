@@ -1,0 +1,22 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Debug Glass AVHRR (2000 only)",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/code/data/preprocess/main.py",
+      "args": ["${workspaceFolder}/code/data/preprocess/avhrr_2000_config.yaml"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true,
+      "exceptionBreakpointFilters": [
+        {"filter": "raised", "label": "Raised Exceptions", "default": true},
+        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+      }
+    }
+  ]
+}

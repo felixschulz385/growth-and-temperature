@@ -3,5 +3,15 @@
         "."
     ],
     "python.testing.unittestEnabled": false,
-    "python.testing.pytestEnabled": true
+    "python.testing.pytestEnabled": true,
+    "github.copilot.enable": {
+        "*": true,
+        "quarto": false,
+        "plaintext": false,
+        "markdown": false,
+        "scminput": false,
+        "yaml": false,
+        "python": true,
+        "rmd": true
+    }
 }
