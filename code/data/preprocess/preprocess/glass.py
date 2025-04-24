@@ -316,11 +316,12 @@ class GlassPreprocessor(AbstractPreprocessor):
     def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: Path) -> None:
         """
         Process a group of files for a specific year (and grid cell for MODIS).
+        All local processing uses temporary directories, with only compressed results uploaded to cloud.
         """
         
-        # Create temporary directory for downloads
+        # Create temporary directory for downloads and processing
         with tempfile.TemporaryDirectory() as temp_dir:
-            files_df = files_df.sort_values(by = 'day')  # Ensure files are in chronological order
+            files_df = files_df.sort_values(by='day')  # Ensure files are in chronological order
             
             # First pass: get metadata and coordinates without loading all data
             # This helps Dask set up the arrays more efficiently
@@ -401,35 +402,38 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.info("Calculating statistics with Dask (this may take a while)")
             annual_stats, monthly_stats = self._calculate_statistics(combined_data)
             
-            # Create separate output paths for annual and monthly data
-            annual_output_path = output_path.parent / f"{output_path.stem}_annual.zarr"
-            monthly_output_path = output_path.parent / f"{output_path.stem}_monthly.zarr"
+            # Create temporary output paths within the temp directory
+            annual_output_path = Path(temp_dir) / f"{output_path.stem}_annual.zarr"
+            monthly_output_path = Path(temp_dir) / f"{output_path.stem}_monthly.zarr"
             
-            # Save directly to Zarr format (Dask-compatible)
-            # Using compute=False to create a lazy task for Dask to optimize
-            logger.info(f"Saving annual statistics to {annual_output_path}")
+            # Save to temporary Zarr files with compression
+            compressor = zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
+            encoding = {var: {'compressor': compressor} for var in annual_stats.data_vars}
+            
+            logger.info(f"Saving annual statistics to temporary location with compression")
             annual_stats_task = annual_stats.to_zarr(
                 str(annual_output_path), 
                 mode="w", 
                 consolidated=True,
-                compute=False
+                compute=False,
+                encoding=encoding
             )
             
-            logger.info(f"Saving monthly statistics to {monthly_output_path}")
+            logger.info(f"Saving monthly statistics to temporary location with compression")
             monthly_stats_task = monthly_stats.to_zarr(
                 str(monthly_output_path), 
                 mode="w", 
                 consolidated=True,
-                compute=False
+                compute=False,
+                encoding=encoding
             )
             
             # Execute both saving operations in parallel
             logger.info("Executing Dask tasks for saving statistics")
             dask.compute(annual_stats_task, monthly_stats_task)
             
-            # Upload to cloud storage if specified
-            if self.path_prefix:
-                self._upload_to_cloud(annual_output_path, monthly_output_path, year)
+            # Upload to cloud storage - this is the only persistent storage
+            self._upload_to_cloud(annual_output_path, monthly_output_path, year)
 
     def _calculate_statistics(self, data: xr.Dataset) -> Tuple[xr.Dataset, xr.Dataset]:
         """
@@ -464,7 +468,7 @@ class GlassPreprocessor(AbstractPreprocessor):
     
     def _upload_to_cloud(self, annual_path: Path, monthly_path: Path, year: int) -> None:
         """
-        Upload processed data to cloud storage sequentially.
+        Upload compressed processed data to cloud storage.
         
         Args:
             annual_path: Local path to annual statistics
@@ -475,9 +479,13 @@ class GlassPreprocessor(AbstractPreprocessor):
             # Determine the cloud storage paths
             data_type = self.data_source.lower()
             
-            # Example: glass/LST/MODIS/intermediate/annual/2000/h08v05.zarr
-            annual_cloud_path = f"{self.path_prefix}intermediate/{annual_path.stem}.zarr"
-            monthly_cloud_path = f"{self.path_prefix}intermediate/{monthly_path.stem}.zarr"
+            grid_cell = ""
+            if self.data_source == "MODIS" and annual_path.stem.split('_')[-2:-1]:
+                grid_cell = f"_{annual_path.stem.split('_')[-2]}"
+            
+            # Create cloud paths with appropriate naming
+            annual_cloud_path = f"{self.path_prefix}intermediate/{data_type}_{year}{grid_cell}_annual.zarr"
+            monthly_cloud_path = f"{self.path_prefix}intermediate/{data_type}_{year}{grid_cell}_monthly.zarr"
             
             logger.info(f"Uploading annual statistics to cloud: {annual_cloud_path}")
             # Upload annual statistics (directory)
@@ -495,7 +503,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                     destination = f"{monthly_cloud_path}/{relative_path}"
                     self.gcs_client.upload_file(file_path, destination)
             
-            logger.info("Uploads completed")
+            logger.info("Uploads completed successfully")
                     
         except Exception as e:
             logger.error(f"Error uploading to cloud: {str(e)}")
@@ -535,52 +543,70 @@ class GlassPreprocessor(AbstractPreprocessor):
         """
         Finalize Stage 1 processing.
         
-        Creates a manifest of processed files and validates the output.
+        Creates a manifest of processed files in the cloud.
         """
         logger.info("Finalizing Stage 1 processing")
         
-        # Create a manifest of all processed files
-        manifest_path = self.intermediate_path / f"{self.data_source.lower()}_manifest.csv"
+        # Determine the cloud manifest path
+        cloud_manifest_path = f"{self.path_prefix}intermediate/{self.data_source.lower()}_manifest.csv"
         
         processed_files = []
-        intermediate_dir = self.intermediate_path / f"{self.data_source.lower()}"
         
-        if not intermediate_dir.exists():
-            logger.warning(f"No processed files found at {intermediate_dir}")
-            return
+        # Query the cloud storage for processed files instead of local directory
+        annual_prefix = f"{self.path_prefix}intermediate/{self.data_source.lower()}"
+        try:
+            # List all annual stats files in the cloud
+            cloud_files = self.gcs_client.list_existing_files(prefix=annual_prefix)
             
-        # Walk through the intermediate directory to find all .zarr files
-        for year_dir in intermediate_dir.glob("*"):
-            if year_dir.is_dir():
-                year = year_dir.name
-                
-                # For MODIS, each year has grid cell files
-                if self.data_source == "MODIS":
-                    for grid_file in year_dir.glob("*.zarr"):
-                        grid_cell = grid_file.stem
-                        processed_files.append({
-                            "data_source": self.data_source,
-                            "year": year,
-                            "grid_cell": grid_cell,
-                            "path": str(grid_file.relative_to(self.intermediate_path))
-                        })
-                # For AVHRR, each year has a single file
-                else:
-                    zarr_file = year_dir.with_suffix(".zarr")
-                    if zarr_file.exists():
-                        processed_files.append({
-                            "data_source": self.data_source,
-                            "year": year,
-                            "grid_cell": "global",
-                            "path": str(zarr_file.relative_to(self.intermediate_path))
-                        })
-        
-        # Save manifest
-        if processed_files:
-            pd.DataFrame(processed_files).to_csv(manifest_path, index=False)
-            logger.info(f"Created manifest with {len(processed_files)} processed files at {manifest_path}")
-        else:
-            logger.warning("No processed files found to include in manifest")
+            # Process the list of files
+            for file_path in cloud_files:
+                if "_annual.zarr/.zmetadata" in file_path:
+                    # Extract year and possibly grid cell from path
+                    path_parts = file_path.split('/')
+                    filename = path_parts[-2].split('_annual.zarr')[0]  # Remove the suffix
+                    
+                    if self.data_source == "MODIS":
+                        # For MODIS: path contains year and grid cell (e.g., modis_2000_h08v05_annual.zarr)
+                        parts = filename.split('_')
+                        if len(parts) >= 3:
+                            year = parts[1]
+                            grid_cell = parts[2]
+                            processed_files.append({
+                                "data_source": self.data_source,
+                                "year": year,
+                                "grid_cell": grid_cell,
+                                "path": file_path.replace("/.zmetadata", "")
+                            })
+                    else:
+                        # For AVHRR: path contains year (e.g., avhrr_2000_annual.zarr)
+                        parts = filename.split('_')
+                        if len(parts) >= 2:
+                            year = parts[1]
+                            processed_files.append({
+                                "data_source": self.data_source,
+                                "year": year,
+                                "grid_cell": "global",
+                                "path": file_path.replace("/.zmetadata", "")
+                            })
+            
+            # Save manifest to a temporary file and upload to cloud
+            if processed_files:
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp_file:
+                    manifest_df = pd.DataFrame(processed_files)
+                    manifest_df.to_csv(temp_file.name, index=False)
+                    
+                    # Upload the manifest to cloud
+                    self.gcs_client.upload_file(temp_file.name, cloud_manifest_path)
+                    
+                    logger.info(f"Created and uploaded manifest with {len(processed_files)} processed files to {cloud_manifest_path}")
+                    
+                    # Clean up the temporary file
+                    os.unlink(temp_file.name)
+            else:
+                logger.warning("No processed files found in cloud storage to include in manifest")
+                    
+        except Exception as e:
+            logger.error(f"Error creating cloud manifest: {str(e)}")
 
     def validate_input(self) -> bool:
         """
