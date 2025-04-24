@@ -321,10 +321,9 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         # Create temporary directory for downloads and processing
         with tempfile.TemporaryDirectory() as temp_dir:
-            files_df = files_df.sort_values(by='day')  # Ensure files are in chronological order
+            files_df = files_df.sort_values(by = 'day')  # Ensure files are in chronological order
             
             # First pass: get metadata and coordinates without loading all data
-            # This helps Dask set up the arrays more efficiently
             sample_data = None
             for _, file_info in files_df.iloc[:1].iterrows():
                 try:
@@ -344,93 +343,73 @@ class GlassPreprocessor(AbstractPreprocessor):
                 except Exception as e:
                     logger.warning(f"Error getting sample data from {file_info['path']}: {str(e)}")
             
+            # Check if we successfully got sample data
             if sample_data is None:
                 logger.warning(f"No valid sample data found for {year}")
                 return
             
-            # Initialize empty dask array with proper dimensions
-            shape = (len(files_df), *sample_data.sizes.values())
+            # Process each file and store in a list for later concatenation
+            array_list = []
+            for _, file_info in files_df.iterrows():
+                file_path = file_info['path']
+                local_path = os.path.join(temp_dir, os.path.basename(file_path))
+                
+                # Download file if not already present
+                if not os.path.exists(local_path):
+                    self.gcs_client.download_file(file_path, local_path)
+                    
+                # Open the data with chunking for Dask processing
+                t_data = rxr.open_rasterio(
+                    local_path,
+                    variable=self.VARIABLE_NAME,
+                    decode_coords="all",
+                    chunks={k:self.chunk_size[k] for k in ('band','y','x') if k in self.chunk_size},
+                )
+                
+                array_list.append(t_data[self.VARIABLE_NAME])
             
-            # Create a template array with proper coordinates
-            coords = {
+            # Concatenate all arrays along time dimension
+            combined_data = xr.concat(array_list, dim='day')
+            
+            # Rename day dimension to time
+            combined_data = combined_data.rename({"day": "time"})
+            
+            # Convert day-of-year to proper datetime coordinates
+            combined_data = combined_data.assign_coords({
                 'time': pd.to_datetime([f"{year}{day:03d}" for day in files_df['day'].values], format="%Y%j"),
-                'y': sample_data.y.values,
-                'x': sample_data.x.values
-            }
+            })
             
-            # Use template array dimensions and dtypes for the empty array
-            template = xr.DataArray(
-                da.zeros(shape, dtype=sample_data.dtypes[self.VARIABLE_NAME], chunks=self.chunk_size),
-                dims=['time', 'band', 'x', 'y'],
-                coords=coords
-            )
+            # Convert to dataset with proper variable name
+            combined_data = combined_data.to_dataset(name=self.VARIABLE_NAME)
             
-            # Fill the template array with actual data
-            logger.info(f"Processing {len(files_df)} files with Dask")
-            for i, (_, file_info) in enumerate(files_df.iterrows()):
-                try:
-                    file_path = file_info['path']
-                    local_path = os.path.join(temp_dir, os.path.basename(file_path))
-                    
-                    # Download from GCS using the client (or use cached file from first pass)
-                    if not os.path.exists(local_path):
-                        self.gcs_client.download_file(file_path, local_path)
-                    
-                    # Open with rioxarray and update template
-                    data = rxr.open_rasterio(
-                        local_path, 
-                        variable=self.VARIABLE_NAME, 
-                        decode_coords="all",
-                    )
-                    
-                    # Update the template at the specific time index
-                    # We use dask's optimized methods to avoid loading everything into memory
-                    template[i, :, :] = data[self.VARIABLE_NAME]  # First band
-                    
-                    # Log progress periodically
-                    if (i + 1) % 20 == 0 or i == len(files_df) - 1:
-                        logger.debug(f"Processed {i + 1}/{len(files_df)} files")
-                        
-                except Exception as e:
-                    logger.warning(f"Error processing file {file_info['path']}: {str(e)}")
-                    # Continue with NaN values for this time step
-            
-            # Convert the template to a Dataset with LST variable
-            combined_data = xr.Dataset({'LST': template})
-            
-            # Calculate statistics using Dask
-            logger.info("Calculating statistics with Dask (this may take a while)")
+            # Calculate annual and monthly statistics using Dask
+            logger.info("Calculating statistics with Dask")
             annual_stats, monthly_stats = self._calculate_statistics(combined_data)
             
-            # Create temporary output paths within the temp directory
-            annual_output_path = Path(temp_dir) / f"{output_path.stem}_annual.zarr"
-            monthly_output_path = Path(temp_dir) / f"{output_path.stem}_monthly.zarr"
-            
-            # Save to temporary Zarr files with compression
+            # Set up compression for Zarr output
             compressor = zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
             encoding = {var: {'compressor': compressor} for var in annual_stats.data_vars}
             
+            # Create temporary paths for zarr storage
+            annual_output_path = Path(temp_dir) / f"{output_path.stem}_annual.zarr"
+            monthly_output_path = Path(temp_dir) / f"{output_path.stem}_monthly.zarr"
+            
+            # Save in smaller chunks to avoid large graphs
             logger.info(f"Saving annual statistics to temporary location with compression")
-            annual_stats_task = annual_stats.to_zarr(
-                str(annual_output_path), 
-                mode="w", 
+            annual_stats.to_zarr(
+                str(annual_output_path),
+                mode="w",
                 consolidated=True,
-                compute=False,
                 encoding=encoding
             )
             
             logger.info(f"Saving monthly statistics to temporary location with compression")
-            monthly_stats_task = monthly_stats.to_zarr(
-                str(monthly_output_path), 
-                mode="w", 
+            monthly_stats.to_zarr(
+                str(monthly_output_path),
+                mode="w",
                 consolidated=True,
-                compute=False,
                 encoding=encoding
             )
-            
-            # Execute both saving operations in parallel
-            logger.info("Executing Dask tasks for saving statistics")
-            dask.compute(annual_stats_task, monthly_stats_task)
             
             # Upload to cloud storage - this is the only persistent storage
             self._upload_to_cloud(annual_output_path, monthly_output_path, year)

@@ -1,5 +1,5 @@
 import logging
-from typing import Set, Optional, Union
+from typing import Set, Optional, Union, List
 from pathlib import Path
 import os
 
@@ -17,7 +17,7 @@ class GCSClient:
     """
     
     def __init__(self, bucket_name: str, project_id: Optional[str] = None, 
-                 credentials_path: Optional[str] = None):
+                 credentials_path: Optional[str] = None, use_index: bool = True):
         """
         Initialize a Google Cloud Storage client.
         
@@ -25,6 +25,7 @@ class GCSClient:
             bucket_name: Name of the GCS bucket to interact with
             project_id: Google Cloud project ID (optional)
             credentials_path: Path to service account credentials JSON file (optional)
+            use_index: Whether to use the blob index for improved listing performance
         """
         try:
             if credentials_path:
@@ -38,12 +39,40 @@ class GCSClient:
                 logger.debug("Using application default credentials")
                 
             self.bucket = self.client.bucket(bucket_name)
+            self.bucket_name = bucket_name
             logger.info(f"Connected to bucket {bucket_name}" + 
                         (f" in project {project_id}" if project_id else ""))
+            
+            # Initialize blob index options
+            self.use_index = use_index
+            self._indices = {}  # Store indices by prefix
                 
         except Exception as e:
             logger.error(f"Failed to initialize GCS client: {str(e)}")
             raise
+
+    def _get_or_create_index(self, prefix: str = ""):
+        """Get or create a blob index for the given prefix."""
+        if not self.use_index:
+            return None
+            
+        # Use an appropriate prefix key to avoid creating too many indices
+        prefix_key = prefix#prefix.split('/')[0] if prefix else ""
+        
+        if prefix_key not in self._indices:
+            try:
+                from gcs.blob_index import BlobIndex
+                # Pass the client directly to avoid circular references
+                self._indices[prefix_key] = BlobIndex(
+                    self.bucket_name, 
+                    prefix=prefix_key,
+                    client=self.client
+                )
+            except Exception as e:
+                logger.error(f"Failed to create blob index: {str(e)}")
+                return None
+        
+        return self._indices[prefix_key]
 
     def list_existing_files(self, prefix: str = "") -> Set[str]:
         """
@@ -56,10 +85,18 @@ class GCSClient:
             Set of file paths in the bucket matching the prefix
         """
         try:
+            # Try to use the index if enabled
+            index = self._get_or_create_index(prefix)
+            if index:
+                logger.debug(f"Using blob index for listing with prefix '{prefix}'")
+                return set(index.get_files_by_prefix(prefix))
+            
+            # Fall back to direct API calls if index is disabled
+            logger.debug(f"Using direct API for listing with prefix '{prefix}'")
             return {blob.name for blob in self.bucket.list_blobs(prefix=prefix)}
         except Exception as e:
             logger.error(f"Failed to list files with prefix '{prefix}': {str(e)}")
-            raise
+            return set()  # Return empty set instead of raising exception
     
     def download_file(self, source_blob_name: str, destination_file_name: str) -> bool:
         """
@@ -106,26 +143,37 @@ class GCSClient:
             blob = self.bucket.blob(destination_blob_name)
             blob.upload_from_filename(str(local_path))
             logger.info(f"Uploaded {local_path} to {destination_blob_name}")
+            
+            # Update the index if enabled
+            if self.use_index:
+                # Find relevant indices to update
+                for prefix_key, index in self._indices.items():
+                    if destination_blob_name.startswith(prefix_key):
+                        try:
+                            index.add_to_index(destination_blob_name)
+                        except Exception as e:
+                            logger.warning(f"Failed to update index for {destination_blob_name}: {str(e)}")
+                        
             return True
         except Exception as e:
             logger.error(f"Failed to upload {local_path}: {str(e)}")
             return False
             
-    def file_exists(self, blob_name: str) -> bool:
+    def file_exists(self, path: str) -> bool:
         """
         Check if a file exists in the bucket.
         
         Args:
-            blob_name: Path of the file in the bucket
+            path: Path to check
             
         Returns:
             True if the file exists, False otherwise
         """
         try:
-            blob = self.bucket.blob(blob_name)
+            blob = self.bucket.blob(path)
             return blob.exists()
         except Exception as e:
-            logger.error(f"Failed to check if {blob_name} exists: {str(e)}")
+            logger.error(f"Error checking if file {path} exists: {str(e)}")
             return False
 
     def list_blobs_with_limit(self, prefix: str = "", limit: int = 1):
@@ -140,26 +188,21 @@ class GCSClient:
             Blob objects, up to the specified limit
         """
         try:
-            # This uses the max_results parameter to limit the API call
+            # Try to use the index if enabled
+            index = self._get_or_create_index(prefix)
+            if index:
+                logger.debug(f"Using blob index for limited listing with prefix '{prefix}'")
+                files = index.get_files_by_prefix(prefix, max_results=limit)
+                
+                # Convert file names to blob objects
+                for file_name in files[:limit]:
+                    yield self.bucket.blob(file_name)
+                return
+            
+            # Fall back to direct API calls if index is disabled
+            logger.debug(f"Using direct API for limited listing with prefix '{prefix}'")
             blobs = self.bucket.list_blobs(prefix=prefix, max_results=limit)
             yield from blobs
         except Exception as e:
             logger.error(f"Failed to list blobs with prefix '{prefix}': {str(e)}")
-            raise
-
-    def check_if_exists(self, blob_name: str) -> bool:
-        """
-        Check if a blob exists in the bucket.
-        
-        Args:
-            blob_name: The name/path of the blob to check
-            
-        Returns:
-            bool: True if the blob exists, False otherwise
-        """
-        try:
-            blob = self.bucket.blob(blob_name)
-            return blob.exists()
-        except Exception as e:
-            logger.warning(f"Error checking if blob {blob_name} exists: {str(e)}")
-            return False
+            # Just yield nothing instead of raising an exception
