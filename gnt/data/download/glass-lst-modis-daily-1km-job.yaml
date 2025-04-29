@@ -27,13 +27,13 @@ spec:
             - name: FILE_EXTENSIONS
               value: ".hdf"
             - name: MAX_CONCURRENT_DOWNLOADS
-              value: "8"
+              value: "2"
             - name: MAX_QUEUE_SIZE
-              value: "32"
+              value: "8"
           resources:
             requests:
-              cpu: 100m
-              memory: 256Mi
+              cpu: 50m
+              memory: 512Mi
             limits:
               cpu: 500m
               memory: 1024Mi

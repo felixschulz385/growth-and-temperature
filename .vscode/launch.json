@@ -5,8 +5,8 @@
       "name": "Debug Glass AVHRR (2000 only)",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/code/data/preprocess/main.py",
-      "args": ["${workspaceFolder}/code/data/preprocess/avhrr_2000_config.yaml"],
+      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
+      "args": ["${workspaceFolder}/gnt/data/preprocess/avhrr-2000-config.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -16,6 +16,31 @@
       ],
       "env": {
         "PYTHONPATH": "${workspaceFolder}",
+      }
+    },
+    {
+      "name": "Debug GLASS MODIS Daily LST Download",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "cwd": "${workspaceFolder}",
+      "args": [],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true,
+      "exceptionBreakpointFilters": [
+        {"filter": "raised", "label": "Raised Exceptions", "default": true},
+        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "GCP_PROJECT_ID": "ee-growthandheat",
+        "GCS_BUCKET_NAME": "growthandheat",
+        "DATA_SOURCE_NAME": "glass",
+        "BASE_URL": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/",
+        "FILE_EXTENSIONS": ".hdf",
+        "MAX_CONCURRENT_DOWNLOADS": "2",
+        "MAX_QUEUE_SIZE": "8"
       }
     }
   ]

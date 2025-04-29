@@ -3,7 +3,7 @@ import requests
 
 class BaseDataSource(ABC):
     @abstractmethod
-    def list_remote_files(self) -> list[str]:
+    def list_remote_files(self, entrypoint: dict) -> list[str]:
         ...
 
     @abstractmethod
@@ -21,3 +21,7 @@ class BaseDataSource(ABC):
     def get_authenticated_session(self) -> requests.Session:
         """Optional: return an authenticated session if needed."""
         return None
+
+    @abstractmethod
+    def filename_to_entrypoint(self, relative_path: str) -> dict:
+        ...
