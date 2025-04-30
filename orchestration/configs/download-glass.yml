@@ -1,0 +1,64 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: glass-lst-modis-daily-1km-job
+  labels:
+    app: data-processing
+    dataset: glass
+    mode: download
+spec:
+  ttlSecondsAfterFinished: 3600  # auto-cleanup after 1 hour
+  backoffLimit: 3                # retry on failure (3 times)
+  template:
+    spec:
+      serviceAccountName: k8s-data-processor
+      restartPolicy: OnFailure
+      containers:
+      - name: data-processor
+        image: gcr.io/ee-growthandheat/data-processor:latest
+        args: ["/config/workflow-config.json"]
+        resources:
+          requests:
+            cpu: "200m"
+            memory: "1024Mi"
+          limits:
+            cpu: "500m"
+            memory: "2048Mi"
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PROCESSING_MODE
+          value: "download"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+        - name: temp-storage
+          mountPath: /tmp
+      volumes:
+      - name: config-volume
+        configMap:
+          name: glass-lst-modis-download-config
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: "2Gi"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: glass-lst-modis-download-config
+data:
+  workflow-config.json: |
+    {
+      "processing_mode": "download",
+      "dataset": "glass",
+      "parameters": {
+        "gcs_bucket": "growthandheat",
+        "project_id": "ee-growthandheat",
+        "base_url": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/",
+        "file_extensions": ".hdf",
+        "max_concurrent_downloads": 2,
+        "max_queue_size": 8,
+        "output_path": "glass/lst/modis/daily/1km/raw"
+      }
+    }

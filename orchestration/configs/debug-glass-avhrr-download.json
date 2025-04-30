@@ -1,0 +1,12 @@
+{
+  "processing_mode": "download",
+  "dataset": "glass",
+  "parameters": {
+    "gcs_bucket": "growthandheat",
+    "base_url": "https://glass.hku.hk/archive/LST/AVHRR/0.05D/",
+    "file_extensions": ".hdf",
+    "max_concurrent_downloads": 2,
+    "max_queue_size": 8,
+    "debug": true
+  }
+}

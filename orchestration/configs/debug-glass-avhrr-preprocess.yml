@@ -1,0 +1,14 @@
+tasks:
+  - preprocessor: glass
+    stage: "stage1"
+    data_source: "AVHRR"
+    years: [2000]
+    base_url: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
+    file_extensions: [".hdf"]
+    dask_threads: 2
+    dask_memory_limit: "4GB"
+    chunk_size: 
+      time: 1
+      x: 500
+      y: 500
+    override: true

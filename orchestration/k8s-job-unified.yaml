@@ -1,0 +1,46 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: data-processing-job
+  labels:
+    app: data-processing
+    dataset: ${DATASET_NAME}
+    mode: ${PROCESSING_MODE}
+spec:
+  ttlSecondsAfterFinished: 86400  # Auto-delete 24 hours after completion
+  backoffLimit: 3  # Number of retries
+  template:
+    spec:
+      serviceAccountName: k8s-data-processor  # Use a unified service account with required permissions
+      restartPolicy: OnFailure
+      containers:
+      - name: data-processor
+        image: gcr.io/ee-growthandheat/data-processor:latest
+        args: ["/config/${CONFIG_FILE}"]  # Points to the mounted config file
+        resources:
+          requests:
+            cpu: "${CPU_REQUEST}"
+            memory: "${MEMORY_REQUEST}"
+            ephemeral-storage: "5Gi"
+          limits:
+            cpu: "${CPU_LIMIT}"
+            memory: "${MEMORY_LIMIT}"
+            ephemeral-storage: "20Gi"
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PROCESSING_MODE
+          value: "${PROCESSING_MODE}"  # 'download' or 'preprocess'
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+        - name: temp-storage
+          mountPath: /tmp
+      volumes:
+      - name: config-volume
+        configMap:
+          name: ${CONFIG_MAP_NAME}
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: "20Gi"
