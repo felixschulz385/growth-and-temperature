@@ -1,32 +1,54 @@
 # workflow.py
-from gnt.data.common.gcs.client import GCSClient
-from gnt.data.download.download.base import BaseDataSource
-from gnt.data.common.index.download_index import DataDownloadIndex
 import tempfile
 import os
 import queue
 import threading
-from concurrent.futures import ThreadPoolExecutor
 import time
 import logging
-import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from google.cloud import storage
-from datetime import datetime
+
+from gnt.data.common.gcs.client import GCSClient
+from gnt.data.download.sources.base import BaseDataSource
+from gnt.data.common.index.download_index import DataDownloadIndex
 
 # Configure uniform logging
 logging.basicConfig(level=logging.INFO, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-def download_worker(job_queue, data_source, tmp_dir, gcs, session, stop_event, download_index, rate_limiter=None):
+def download_worker(job_queue, data_source, tmp_dir, gcs, stop_event, download_index, rate_limiter=None):
     """Worker function to download files from the queue"""
     worker_id = threading.get_ident()
     logger.info(f"Worker {worker_id} starting")
     
+    # Create a thread-local cache for file statuses to reduce DB access
+    status_cache = {}
+    
+    # Create a private session for this worker
+    session = None
+    if hasattr(data_source, "get_authenticated_session"):
+        try:
+            logger.info(f"Worker {worker_id} creating its own authenticated session")
+            session = data_source.get_authenticated_session()
+        except Exception as e:
+            logger.error(f"Worker {worker_id} failed to create session: {e}")
+            session = None
+    
+    # Keep track of session refresh time
+    last_session_refresh = time.time()
+    session_refresh_interval = 1800  # 30 minutes in seconds
+    
     while not stop_event.is_set() or not job_queue.empty():
         try:
             # Get job with timeout to check stop_event periodically
-            file_info = job_queue.get(timeout=1)
+            try:
+                file_info = job_queue.get(timeout=1)
+            except queue.Empty:
+                # Check if we should exit
+                if stop_event.is_set() and job_queue.empty():
+                    break
+                continue
             
             # Unpack the file info
             file_hash = file_info["file_hash"]
@@ -34,8 +56,21 @@ def download_worker(job_queue, data_source, tmp_dir, gcs, session, stop_event, d
             source_url = file_info["source_url"]
             destination_blob = file_info["destination_blob"]
             
-            # Check if already downloaded
-            status, _ = download_index.get_file_status(file_hash)
+            # Check if already downloaded (using local cache first)
+            if file_hash in status_cache:
+                status = status_cache[file_hash]
+            else:
+                try:
+                    status, _ = download_index.get_file_status(file_hash)
+                    # Cache status to avoid repeated DB access
+                    status_cache[file_hash] = status
+                    # Keep cache size reasonable
+                    if len(status_cache) > 1000:
+                        status_cache.clear()
+                except Exception as db_error:
+                    logger.warning(f"Database error checking file status: {db_error}. Assuming file needs download.")
+                    status = "unknown"
+            
             if status == "success":
                 logger.debug(f"Skipping already downloaded: {relative_path}")
                 job_queue.task_done()
@@ -46,6 +81,18 @@ def download_worker(job_queue, data_source, tmp_dir, gcs, session, stop_event, d
             base_retry_delay = 30  # seconds
             attempt = 0
             success = False
+            session_refreshed = False
+            
+            # Check if the session needs regular refresh (based on time)
+            if hasattr(data_source, "get_authenticated_session") and session is not None:
+                if time.time() - last_session_refresh > session_refresh_interval:
+                    try:
+                        logger.info(f"Worker {worker_id} performing periodic session refresh")
+                        session = data_source.get_authenticated_session()
+                        last_session_refresh = time.time()
+                        session_refreshed = True
+                    except Exception as e:
+                        logger.error(f"Worker {worker_id} error refreshing session: {e}. Continuing with existing session.")
             
             while attempt < max_retries and not success:
                 attempt += 1
@@ -61,11 +108,11 @@ def download_worker(job_queue, data_source, tmp_dir, gcs, session, stop_event, d
                         # Create directory if needed
                         os.makedirs(os.path.dirname(local_path), exist_ok=True)
                         
-                        logger.info(f"Starting download: {relative_path} (attempt {attempt}/{max_retries})")
+                        logger.info(f"Worker {worker_id} starting download: {relative_path} (attempt {attempt}/{max_retries})")
                         data_source.download(source_url, local_path, session=session)
                         gcs.upload_file(local_path, destination_blob)
                         os.remove(local_path)
-                        logger.info(f"Completed: {relative_path}")
+                        logger.info(f"Worker {worker_id} completed: {relative_path}")
                         success = True
                         
                         # Record download success
@@ -81,7 +128,7 @@ def download_worker(job_queue, data_source, tmp_dir, gcs, session, stop_event, d
                 
                 except Exception as e:
                     if attempt >= max_retries:
-                        logger.error(f"Failed to process {source_url} after {max_retries} attempts: {e}")
+                        logger.error(f"Worker {worker_id} failed to process {source_url} after {max_retries} attempts: {e}")
                         # Record download failure
                         download_index.record_download_status(
                             file_hash, source_url, destination_blob, "failed", str(e))
@@ -91,26 +138,56 @@ def download_worker(job_queue, data_source, tmp_dir, gcs, session, stop_event, d
                         jitter = retry_delay * 0.2 * (time.time() % 1)  # 20% random jitter
                         total_delay = retry_delay + jitter
                         
-                        logger.warning(f"Attempt {attempt}/{max_retries} failed for {relative_path}: {e}. Retrying in {total_delay:.1f}s...")
-                        time.sleep(total_delay)
+                        logger.warning(f"Worker {worker_id} attempt {attempt}/{max_retries} failed for {relative_path}: {e}. Retrying in {total_delay:.1f}s...")
                         
-                        # Recreate session on connection errors
-                        if any(err in str(e) for err in ["ConnectionError", "ConnectTimeout", "Connection refused", "reset by peer"]):
-                            if hasattr(data_source, "get_authenticated_session"):
-                                logger.info(f"Refreshing session for {relative_path}...")
+                        # Determine if we need to refresh the session based on error type
+                        auth_errors = ["Authentication", "Authorization", "auth", "Unauthorized", 
+                                      "401", "403", "token", "expired", "login",
+                                      "ConnectionError", "ConnectTimeout", "Connection refused", "reset by peer"]
+                        
+                        need_refresh = any(err.lower() in str(e).lower() for err in auth_errors)
+                        
+                        # Only try to refresh if we have the method and haven't just refreshed
+                        if need_refresh and hasattr(data_source, "get_authenticated_session") and not session_refreshed:
+                            logger.info(f"Worker {worker_id} authentication/connection issue detected. Refreshing session for {relative_path}...")
+                            try:
                                 session = data_source.get_authenticated_session()
+                                last_session_refresh = time.time()
+                                session_refreshed = True
+                                # Reduce the delay when refreshing the session
+                                total_delay = min(total_delay, 5)
+                                logger.info(f"Worker {worker_id} session refreshed successfully, continuing with shortened delay: {total_delay}s")
+                            except Exception as refresh_error:
+                                logger.error(f"Worker {worker_id} failed to refresh session: {refresh_error}")
+                        
+                        # Wait before retrying
+                        time.sleep(total_delay)
             
             # Mark job as done regardless of success
             job_queue.task_done()
-        except queue.Empty:
-            continue
+        except Exception as e:
+            logger.error(f"Unexpected error in worker {worker_id}: {e}", exc_info=True)
+            # Make sure we mark the job as done even in case of error
+            try:
+                job_queue.task_done()
+            except:
+                pass
     
     logger.info(f"Worker {worker_id} finished")
 
 
-def run(data_source: BaseDataSource, bucket_name: str, max_concurrent_downloads: int, max_queue_size: int):
+def run(data_source: BaseDataSource, bucket_name: str, max_concurrent_downloads: int, max_queue_size: int, 
+        auto_index: bool = True, build_index_only: bool = False):
     """
     Main function to run the download workflow with optimized memory usage
+    
+    Args:
+        data_source: The data source to download from
+        bucket_name: GCS bucket name for storing downloaded files
+        max_concurrent_downloads: Maximum number of concurrent downloads
+        max_queue_size: Maximum size of the download queue
+        auto_index: Whether to automatically build/refresh the index at startup
+        build_index_only: If True, only build the index without downloading files
     """
     logger.info(f"Starting download workflow for {getattr(data_source, 'DATA_SOURCE_NAME', 'unknown')} to bucket {bucket_name}")
     
@@ -118,11 +195,23 @@ def run(data_source: BaseDataSource, bucket_name: str, max_concurrent_downloads:
     storage_client = storage.Client()
     gcs = GCSClient(bucket_name)
     
-    #
-    data_source_name = getattr(data_source, "DATA_SOURCE_NAME", "unknown")
-    
-    # Use context manager for proper cleanup of SQLite database
-    with DataDownloadIndex(bucket_name, data_source, data_source_name, client=storage_client) as download_index:
+    # Use context manager for proper cleanup of DataDownloadIndex
+    with DataDownloadIndex(
+        bucket_name=bucket_name, 
+        data_source=data_source, 
+        client=storage_client, 
+        auto_index=auto_index,
+        save_interval_seconds=300
+    ) as download_index:
+        
+        # If we're only building the index, refresh it if not done automatically and exit
+        if build_index_only:
+            if not auto_index:
+                logger.info("Building index only, without downloading files")
+                download_index.refresh_index(data_source)
+            logger.info("Index built successfully, exiting without downloading files")
+            return
+            
         # Create job queue
         job_queue = queue.Queue(maxsize=max_queue_size)
         
@@ -139,13 +228,7 @@ def run(data_source: BaseDataSource, bucket_name: str, max_concurrent_downloads:
             # Create a shared rate limiter semaphore
             rate_limiter = threading.Semaphore(value=actual_workers)
             
-            # Perform login once and reuse the session if required
-            session = None
-            if hasattr(data_source, "get_authenticated_session"):
-                logger.info("Creating authenticated session")
-                session = data_source.get_authenticated_session()
-
-            # Start worker threads first
+            # Start worker threads first - each will create its own session
             logger.info(f"Starting {actual_workers} download workers")
             with ThreadPoolExecutor(max_workers=actual_workers) as executor:
                 workers = []
@@ -156,57 +239,129 @@ def run(data_source: BaseDataSource, bucket_name: str, max_concurrent_downloads:
                         data_source, 
                         tmp_dir, 
                         gcs, 
-                        session, 
                         stop_event, 
                         download_index, 
                         rate_limiter
                     )
                     workers.append(worker)
                 
-                # Process pending downloads using generator pattern
-                total_queued = 0
-                files_being_processed = 0  # Track files currently being processed
+                try:
+                    # Process pending downloads using generator pattern
+                    total_queued = 0
+                    files_being_processed = 0  # Track files currently being processed
+                                    
+                    # Process files using the generator
+                    logger.info("Starting to queue files for download...")
+                    start_time = time.time()
+                    queued_timeout = 60  # seconds to wait before giving up on queue progress
+                    last_queue_time = time.time()
+                    
+                    for file_info in download_index.iter_pending_downloads():
+                        # Check for timeout if we're not making progress
+                        if time.time() - last_queue_time > queued_timeout:
+                            logger.warning(f"No queuing progress for {queued_timeout} seconds, possible deadlock. Breaking.")
+                            break
+                            
+                        try:
+                            # Try to add file to download queue with timeout
+                            job_queue.put(file_info, timeout=5)
+                            total_queued += 1
+                            files_being_processed += 1
+                            last_queue_time = time.time()
+                            
+                            # Log progress periodically
+                            if total_queued % 10 == 0:
+                                logger.info(f"Queued {total_queued} files for download")
+                            
+                            # Control flow to avoid overwhelming the queue
+                            if files_being_processed >= max_queue_size // 2:
+                                logger.debug(f"Queue getting full ({files_being_processed} files), waiting for processing to catch up")
+                                # Wait for some files to finish
+                                timeout_start = time.time()
+                                while files_being_processed >= max_queue_size // 4:
+                                    # Check for timeout
+                                    if time.time() - timeout_start > 60:  # 60 second timeout
+                                        logger.warning("Timeout waiting for queue to drain, continuing anyway")
+                                        break
+                                        
+                                    # Calculate remaining files
+                                    current_stats = download_index.get_stats()
+                                    completed = (
+                                        current_stats.get("successful_downloads", 0) + 
+                                        current_stats.get("failed_downloads", 0)
+                                    )
+                                    files_being_processed = max(0, total_queued - completed)
+                                    logger.debug(f"Files in progress: {files_being_processed}, completed: {completed}/{total_queued}")
+                                    
+                                    # Brief pause
+                                    time.sleep(2)
+                                    
+                        except queue.Full:
+                            logger.warning("Queue is full, waiting before retrying")
+                            time.sleep(5)
+                    
+                    elapsed = time.time() - start_time
+                    logger.info(f"Finished queueing {total_queued} files for download in {elapsed:.1f} seconds")
+                    
+                    if total_queued == 0:
+                        logger.info("No files need to be downloaded, all files are already in GCS or completed")
+                        # Signal workers to stop since there's nothing to do
+                        stop_event.set()
+                        return
+                    
+                    # Wait for all jobs to complete with timeout
+                    queue_empty = False
+                    wait_timeout = 3600  # 1 hour max wait time
+                    logger.info(f"Waiting for download queue to complete (timeout: {wait_timeout}s)")
+                    
+                    # Wait with timeout
+                    wait_start = time.time()
+                    while time.time() - wait_start < wait_timeout:
+                        # Check if queue is empty
+                        if job_queue.empty():
+                            # Give a moment for any in-process task_done calls to complete
+                            time.sleep(0.5)
+                            # Use q.unfinished_tasks to check if all tasks are done
+                            if job_queue.unfinished_tasks == 0:
+                                logger.info("All download tasks completed successfully.")
+                                queue_empty = True
+                                break
                                 
-                # Process files using the generator
-                for file_info in download_index.iter_pending_downloads():
-                    # Add file to download queue
-                    job_queue.put(file_info)
-                    total_queued += 1
-                    files_being_processed += 1
+                        # Not empty yet or tasks still being processed
+                        current_stats = download_index.get_stats()
+                        completed = (
+                            current_stats.get("successful_downloads", 0) + 
+                            current_stats.get("failed_downloads", 0)
+                        )
+                        remaining = max(0, total_queued - completed)
+                        in_queue = job_queue.qsize() if hasattr(job_queue, 'qsize') else "unknown"
+                        
+                        logger.info(f"Still waiting: {remaining}/{total_queued} files remaining, approximately {in_queue} in queue")
+                        
+                        # Check if all workers are still alive
+                        active_workers = sum(1 for w in workers if not w.done())
+                        if active_workers == 0:
+                            logger.warning("All workers have exited. Stopping wait.")
+                            break
+                        
+                        # Sleep before checking again
+                        time.sleep(30)
                     
-                    # Log progress periodically
-                    if total_queued % 100 == 0:
-                        logger.info(f"Queued {total_queued} files for download")
+                    if not queue_empty:
+                        logger.warning(f"Timed out after {wait_timeout}s waiting for downloads to complete")
                     
-                    # Control flow to avoid overwhelming the queue
-                    if files_being_processed >= max_queue_size // 2:
-                        # Wait for some files to finish
-                        while files_being_processed >= max_queue_size // 4:
-                            # Calculate remaining files
-                            files_being_processed = total_queued - (
-                                download_index.get_stats().get("successful_downloads", 0) + 
-                                download_index.get_stats().get("failed_downloads", 0)
-                            )
-                            # Brief pause
-                            time.sleep(0.1)
-                
-                if total_queued == 0:
-                    logger.info("No files need to be downloaded, all files are already in GCS or completed")
-                    # Signal workers to stop since there's nothing to do
+                finally:
+                    # Signal workers to stop regardless of success/failure
+                    logger.info("Signaling workers to stop")
                     stop_event.set()
-                    return
                     
-                logger.info(f"Finished queueing {total_queued} files for download")
-                
-                # Wait for all jobs to complete
-                job_queue.join()
-                
-                # Signal workers to stop
-                stop_event.set()
-                
-                # Wait for all workers to finish
-                for worker in workers:
-                    worker.result()
+                    # Wait for all workers to finish
+                    for i, worker in enumerate(workers):
+                        try:
+                            worker.result(timeout=30)  # Give each worker 30 seconds to stop
+                            logger.info(f"Worker {i+1} finished successfully")
+                        except Exception as e:
+                            logger.warning(f"Worker {i+1} did not exit cleanly: {e}")
                 
                 # Print final statistics
                 stats = download_index.get_stats()

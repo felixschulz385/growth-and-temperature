@@ -15,7 +15,7 @@ class BaseDataSource(ABC):
         ...
 
     @abstractmethod
-    def gcs_upload_path(self, relative_path: str, base_url: str, gcs_prefix: str) -> str:
+    def gcs_upload_path(self, base_url: str, relative_path: str) -> str:
         ...
 
     def get_authenticated_session(self) -> requests.Session:
@@ -25,3 +25,13 @@ class BaseDataSource(ABC):
     @abstractmethod
     def filename_to_entrypoint(self, relative_path: str) -> dict:
         ...
+    
+    def get_all_entrypoints(self):
+        """
+        Returns a list of dictionaries containing entrypoint information
+        by recursively examining the directory structure.
+        
+        Returns:
+            A list of dicts with entrypoint information
+        """
+        raise NotImplementedError("This method should be implemented by subclasses")
