@@ -3,6 +3,7 @@ numpy>=1.22.0
 pandas>=1.5.0
 scipy>=1.9.0
 xarray>=2023.1.0
+pyarrow>=8.0.0  # For Parquet support
 dask>=2023.1.0
 distributed>=2023.1.0  # Dask's distributed scheduler
 
@@ -14,7 +15,6 @@ shapely>=2.0.0
 geopandas>=0.12.0
 
 # HDF and NetCDF support
-h5netcdf>=1.1.0
 h5py>=3.7.0
 netCDF4>=1.6.0
 
@@ -31,6 +31,3 @@ google-auth>=2.15.0
 tqdm>=4.64.0  # Progress bars
 pyyaml>=6.0   # For YAML config files
 python-dotenv>=0.21.0  # For loading .env files
-
-# Logging and monitoring
-logging>=0.5.1

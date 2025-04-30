@@ -15,21 +15,13 @@ class AbstractPreprocessor(abc.ABC):
     different devices, with the intermediate data transferred between them.
     """
     
-    def __init__(self, input_path: Union[str, Path], output_path: Union[str, Path], 
-                 intermediate_path: Optional[Union[str, Path]] = None, **kwargs):
+    def __init__(self, **kwargs):
         """
-        Initialize the preprocessor with input and output paths.
+        Initialize the preprocessor with configuration parameters.
         
         Args:
-            input_path: Path to input data
-            output_path: Path where final processed data will be stored
-            intermediate_path: Path where Stage 1 output will be stored for transfer to Stage 2
-                              (if None, uses a subdirectory of output_path)
-            **kwargs: Additional configuration parameters
+            **kwargs: Configuration parameters
         """
-        self.input_path = Path(input_path)
-        self.output_path = Path(output_path)
-        self.intermediate_path = Path(intermediate_path) if intermediate_path else self.output_path / "intermediate"
         self.config = kwargs
         self.stage = kwargs.get('stage', 'all')  # Options: 'stage1', 'stage2', 'all'
         
@@ -44,12 +36,9 @@ class AbstractPreprocessor(abc.ABC):
         """
         # Validate input before processing
         if not self.validate_input():
-            raise ValueError(f"Invalid input at {self.input_path}")
+            raise ValueError("Invalid input data")
             
-        if self.stage in ('all', 'stage1'):
-            # Ensure intermediate directory exists
-            self.intermediate_path.mkdir(parents=True, exist_ok=True)
-            
+        if self.stage in ('all', 'stage1'):            
             # Stage 1: Summarize geodata into annual means
             self.summarize_annual_means()
             
@@ -57,10 +46,7 @@ class AbstractPreprocessor(abc.ABC):
             if self.stage == 'stage1':
                 self.finalize_stage1()
         
-        if self.stage in ('all', 'stage2'):
-            # Ensure output directory exists
-            self.output_path.mkdir(parents=True, exist_ok=True)
-            
+        if self.stage in ('all', 'stage2'):            
             # Stage 2: Project data onto unified grid
             self.project_to_unified_grid()
             
@@ -77,7 +63,7 @@ class AbstractPreprocessor(abc.ABC):
         - Calculate annual means from the data
         - Preserve the original subfile structure
         - Maintain the original projection
-        - Save results to intermediate_path for later use in Stage 2
+        - Save results for later use in Stage 2
         
         Note: Results are stored on disk rather than returned in memory
         due to the large data size.
@@ -90,9 +76,9 @@ class AbstractPreprocessor(abc.ABC):
         Stage 2: Project data onto a unified grid.
         
         This method should:
-        - Read data from intermediate_path (output of Stage 1)
+        - Read data from output of Stage 1
         - Reproject it to a standardized grid
-        - Save the results to the output_path location
+        - Save the final results
         
         Note: Data is read from disk rather than passed as a parameter
         due to the large data size and potential execution on different devices.
@@ -129,17 +115,10 @@ class AbstractPreprocessor(abc.ABC):
         """
         Validate that the input data exists and is in an expected format.
         
-        For Stage 1, checks the original input path.
-        For Stage 2, checks the intermediate path.
-        
         Returns:
             True if validation passes, False otherwise
         """
-        if self.stage == 'stage1' or self.stage == 'all':
-            return self.input_path.exists()
-        elif self.stage == 'stage2':
-            return self.intermediate_path.exists()
-        return False
+        return True
     
     def get_metadata(self) -> Dict[str, Any]:
         """
@@ -149,9 +128,6 @@ class AbstractPreprocessor(abc.ABC):
             Dictionary containing metadata about the preprocessing
         """
         return {
-            "input_path": str(self.input_path),
-            "intermediate_path": str(self.intermediate_path),
-            "output_path": str(self.output_path),
             "stage": self.stage,
             "config": self.config
         }
@@ -167,7 +143,4 @@ class AbstractPreprocessor(abc.ABC):
         Returns:
             An instance of the preprocessor
         """
-        input_path = config.pop("input_path")
-        output_path = config.pop("output_path")
-        intermediate_path = config.pop("intermediate_path", None)
-        return cls(input_path, output_path, intermediate_path, **config)
+        return cls(**config)

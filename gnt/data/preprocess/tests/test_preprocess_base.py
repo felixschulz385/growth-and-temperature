@@ -5,7 +5,7 @@ import shutil
 import logging
 from unittest.mock import MagicMock, patch
 
-from preprocess.base import AbstractPreprocessor
+from sources.base import AbstractPreprocessor
 
 # Setup logging for tests
 logging.basicConfig(level=logging.INFO)

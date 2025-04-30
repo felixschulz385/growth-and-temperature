@@ -11,7 +11,6 @@ When running in Docker/Kubernetes:
 3. For large data processing, ensure sufficient resources are allocated in pod specs
 """
 
-import importlib
 import logging
 from pathlib import Path
 from typing import Dict, Any, List, Union, Optional
@@ -22,9 +21,10 @@ import os
 import signal
 import sys
 
+from gnt.data.preprocess.sources.factory import create_preprocessor
+
 # Configure logging
 logger = logging.getLogger(__name__)
-
 
 def load_config(config_path: Union[str, Path]) -> Dict[str, Any]:
     """
@@ -71,33 +71,6 @@ def expand_env_vars(config: Dict[str, Any]) -> Dict[str, Any]:
         return config
 
 
-def get_preprocessor_class(preprocessor_name: str):
-    """
-    Dynamically import and return the preprocessor class.
-    
-    Args:
-        preprocessor_name: Name of the preprocessor class to import
-        
-    Returns:
-        The preprocessor class
-    """
-    try:
-        # Assume preprocessors are in the preprocess package
-        module_path = f"preprocess.{preprocessor_name.lower()}"
-        module = importlib.import_module(module_path)
-        
-        # By convention, the class name is expected to be CamelCase
-        class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
-        
-        if not hasattr(module, class_name):
-            raise AttributeError(f"Module {module_path} does not have class {class_name}")
-        
-        return getattr(module, class_name)
-    except (ImportError, AttributeError) as e:
-        logger.error(f"Failed to import preprocessor {preprocessor_name}: {str(e)}")
-        raise
-
-
 def process_task(task_config: Dict[str, Any]) -> None:
     """
     Process a single preprocessing task.
@@ -119,19 +92,14 @@ def process_task(task_config: Dict[str, Any]) -> None:
             logger.warning(f"Could not set memory limit: {str(e)}")
     
     try:
-        # Get preprocessor name and class
+        # Get preprocessor name
         preprocessor_name = task_config.pop("preprocessor")
-        PreprocessorClass = get_preprocessor_class(preprocessor_name)
         
-        # Create preprocessor instance from config
-        preprocessor = PreprocessorClass.from_config(task_config)
+        # Create preprocessor instance using the factory
+        preprocessor = create_preprocessor(preprocessor_name, task_config)
         
         # Log task start
         logger.info(f"Starting {preprocessor_name} with stage '{preprocessor.stage}'")
-        logger.info(f"  Input: {preprocessor.input_path}")
-        if preprocessor.stage in ['stage2', 'all']:
-            logger.info(f"  Intermediate: {preprocessor.intermediate_path}")
-        logger.info(f"  Output: {preprocessor.output_path}")
         
         # Run preprocessing
         start_time = datetime.now()
@@ -173,8 +141,6 @@ def run_workflow(config_path: Union[str, Path]) -> None:
         process_task(task)
     
     logger.info("Workflow completed successfully")
-
-
 
 
 def handle_sigterm(signum, frame):

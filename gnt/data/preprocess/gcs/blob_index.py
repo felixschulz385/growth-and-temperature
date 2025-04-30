@@ -276,3 +276,66 @@ class BlobIndex:
             return len(self.index_df[self.index_df['name'].str.startswith(prefix)])
         else:
             return len(self.index_df)
+            
+    def add_to_index(self, blob_names: List[str]) -> None:
+        """
+        Add new blobs to the existing index without rebuilding it completely.
+        
+        Args:
+            blob_names: List of blob names (paths) to add to the index
+            
+        Returns:
+            None - updates the index in place and saves it
+        """
+        if not blob_names:
+            logger.info("No blobs to add to the index")
+            return
+            
+        # Filter out blobs that should be ignored
+        blob_names = [name for name in blob_names if self.index_folder not in name]
+        
+        # Filter out blobs that are already in the index
+        if self.index_df is not None:
+            existing_names = set(self.index_df['name'])
+            blob_names = [name for name in blob_names if name not in existing_names]
+        
+        if not blob_names:
+            logger.info("All blobs are already in the index")
+            return
+            
+        # Create records for the new blobs
+        records = []
+        for blob_name in blob_names:
+            # Parse filename parts and extract metadata
+            parts = Path(blob_name).parts
+            filename = Path(blob_name).name
+            extension = Path(blob_name).suffix
+            
+            # Basic metadata all files will have
+            record = {
+                'name': blob_name,
+                'filename': filename, 
+                'extension': extension,
+                'depth': len(parts)
+            }
+            
+            # Add folder paths at different levels (up to 5 levels)
+            parts_list = list(parts)
+            for i in range(min(5, len(parts_list) - 1)):
+                record[f'folder_{i}'] = parts_list[i]
+            
+            records.append(record)
+        
+        # Create a DataFrame for the new records
+        new_df = pd.DataFrame(records)
+        
+        # Append to the existing index
+        if self.index_df is None:
+            self.index_df = new_df
+        else:
+            self.index_df = pd.concat([self.index_df, new_df], ignore_index=True)
+        
+        # Save the updated index
+        self._save_index()
+        
+        logger.info(f"Added {len(records)} new blobs to the index")

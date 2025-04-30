@@ -11,37 +11,30 @@ spec:
   template:
     spec:
       # Use a dedicated service account with GCS access
-      serviceAccountName: preprocess-sa
+      serviceAccountName: k8s-preprocessor
       restartPolicy: Never
       containers:
       - name: preprocess
-        image: gcr.io/ee-growthandheat/glass-preprocessor:latest
-        args: ["--config", "/config/avhrr-config.json"]
+        image: gcr.io/ee-growthandheat/preprocessor:latest
+        args: ["/config/avhrr-preprocess-config.json"]
         resources:
           requests:
-            cpu: "2"
-            memory: "8Gi"
-          limits:
-            cpu: "4"
+            cpu: "8"
             memory: "16Gi"
+            ephemeral-storage: "5Gi"  # Request reasonable ephemeral storage
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
         volumeMounts:
         - name: config-volume
           mountPath: /config
-        - name: gcs-key
-          mountPath: /secrets
           readOnly: true
         - name: temp-storage
           mountPath: /tmp
       volumes:
       - name: config-volume
         configMap:
-          name: glass-avhrr-config
-      - name: gcs-key
-        secret:
-          secretName: glass-gcs-key
+          name: avhrr-preprocess-config
       - name: temp-storage
         emptyDir:
           sizeLimit: "20Gi"  # Temporary storage for large files

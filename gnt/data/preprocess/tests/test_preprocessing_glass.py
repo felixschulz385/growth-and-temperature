@@ -9,7 +9,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import MagicMock, patch, Mock
 
-from preprocess.glass import GlassPreprocessor
+from sources.glass import GlassPreprocessor
 from gcs.client import GCSClient
 
 # Sample file lists for testing
@@ -433,13 +433,27 @@ class TestGlassPreprocessor:
 
     @patch("preprocess.glass.rxr.open_rasterio")
     @patch("preprocess.glass.GCSClient")
-    def test_process_file_group(self, mock_gcs_client_class, mock_open_rasterio, 
-                             temp_paths, mock_gcs_client, mock_xarray_data):
-        """Test processing a file group."""
+    def test_process_file_group(self, mock_gcs_client_class, mock_open_rasterio, temp_paths):
+        """Test processing a file group with different file formats and dimensions."""
+        # 1. Set up mocks
+        mock_gcs_client = MagicMock()
         mock_gcs_client_class.return_value = mock_gcs_client
-        mock_open_rasterio.return_value = mock_xarray_data
+        mock_gcs_client.download_file.return_value = True
         
-        # Create a preprocessor
+        # 2. Create mock data with correct dimensions for LST files
+        mock_data = xr.DataArray(
+            np.random.rand(1, 5, 5),  # (band, y, x)
+            dims=["band", "y", "x"],
+            coords={
+                "band": [1],
+                "y": range(5),
+                "x": range(5)
+            }
+        ).to_dataset(name="LST")
+        
+        mock_open_rasterio.return_value = mock_data
+        
+        # 3. Create preprocessor instance
         preprocessor = GlassPreprocessor(
             temp_paths["input_path"],
             temp_paths["output_path"],
@@ -447,32 +461,94 @@ class TestGlassPreprocessor:
             years=[2000]
         )
         
-        # Create a test files_df
+        # 4. Create test files DataFrame with multiple days
         files_df = pd.DataFrame({
             'path': ["path/to/file1.hdf", "path/to/file2.hdf", "path/to/file3.hdf"],
             'year': [2000, 2000, 2000],
             'day': [1, 2, 3]
         })
         
-        # Mock methods to avoid actual processing
-        preprocessor._combine_time_series = MagicMock(return_value=mock_xarray_data)
-        preprocessor._calculate_statistics = MagicMock(return_value=(
-            mock_xarray_data.to_dataset(name="mean"), 
-            mock_xarray_data.to_dataset(name="monthly_mean")
-        ))
+        # 5. Mock internal methods to isolate test
+        # Rather than mocking _combine_time_series, let it run with our test data
+        # but mock the downstream functions
+        
+        # Create time-series mock result
+        time_coords = pd.date_range(start='2000-01-01', periods=3, freq='D')
+        time_series = xr.DataArray(
+            np.random.rand(3, 1, 5, 5),
+            dims=["time", "band", "y", "x"],
+            coords={
+                "time": time_coords,
+                "band": [1],
+                "y": range(5),
+                "x": range(5)
+            }
+        ).to_dataset(name="LST")
+        
+        # Mock statistics results
+        annual_stats = xr.Dataset(
+            data_vars={
+                "mean": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+                "median": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+                "std": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+                "count": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+            },
+            coords={
+                "time": [np.datetime64("2000-12-31")],
+                "band": [1],
+                "y": range(5),
+                "x": range(5)
+            }
+        )
+        
+        monthly_stats = xr.Dataset(
+            data_vars={
+                "mean": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+                "median": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+                "std": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+                "count": (["time", "band", "y", "x"], np.random.rand(1, 1, 5, 5)),
+            },
+            coords={
+                "time": [np.datetime64("2000-01-31")],
+                "band": [1],
+                "y": range(5),
+                "x": range(5)
+            }
+        )
+        
+        preprocessor._combine_time_series = MagicMock(return_value=time_series["LST"])
+        preprocessor._calculate_statistics = MagicMock(return_value=(annual_stats, monthly_stats))
         preprocessor._upload_to_cloud = MagicMock()
         
-        # Process the file group
+        # 6. Test normal case - process the file group
         output_path = temp_paths["intermediate_path"] / "test_output.zarr"
         preprocessor._process_file_group(files_df, 2000, output_path)
         
-        # Check that the download method was called at least once
-        assert mock_gcs_client.download_file.call_count >= 1
+        # 7. Assertions for normal case
+        # Verify file downloads
+        assert mock_gcs_client.download_file.call_count >= 1  # At least sample file
         
-        # Check that our mocked methods were called
+        # Verify data processing pipeline was called correctly
         preprocessor._combine_time_series.assert_called_once()
         preprocessor._calculate_statistics.assert_called_once()
         preprocessor._upload_to_cloud.assert_called_once()
+        
+        # 8. Test edge case - no sample data available
+        mock_open_rasterio.side_effect = Exception("Failed to open file")
+        
+        # Reset mocks for edge case
+        mock_gcs_client.download_file.reset_mock()
+        preprocessor._combine_time_series.reset_mock()
+        preprocessor._calculate_statistics.reset_mock() 
+        preprocessor._upload_to_cloud.reset_mock()
+        
+        # Process with bad data
+        preprocessor._process_file_group(files_df, 2000, output_path)
+        
+        # Verify processing was skipped due to missing sample data
+        assert not preprocessor._combine_time_series.called
+        assert not preprocessor._calculate_statistics.called
+        assert not preprocessor._upload_to_cloud.called
 
     @patch("preprocess.glass.GCSClient")
     def test_upload_to_cloud(self, mock_gcs_client_class, temp_paths, mock_gcs_client):

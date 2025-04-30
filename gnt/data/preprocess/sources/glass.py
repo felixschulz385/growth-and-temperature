@@ -13,8 +13,8 @@ from dask.distributed import Client, LocalCluster
 import dask.array as da
 import zarr
 
-from preprocess.base import AbstractPreprocessor
-from gcs.client import GCSClient
+from sources.base import AbstractPreprocessor
+from gnt.data.common.gcs.client import GCSClient
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +32,11 @@ class GlassPreprocessor(AbstractPreprocessor):
     AVHRR_PATH_PREFIX = "glass/LST/AVHRR/0.05D/"
     VARIABLE_NAME = "LST"
     
-    def __init__(self, input_path: Union[str, Path], output_path: Union[str, Path],
-                 intermediate_path: Optional[Union[str, Path]] = None, **kwargs):
+    def __init__(self, **kwargs):
         """
         Initialize the Glass preprocessor.
         
         Args:
-            input_path: Path or prefix in Google Cloud Storage bucket
-            output_path: Path where processed data will be stored
-            intermediate_path: Path where Stage 1 output will be stored
             **kwargs: Additional configuration parameters including:
                 - data_source: 'MODIS' or 'AVHRR'
                 - years: List of years to process or range (start, end)
@@ -49,8 +45,12 @@ class GlassPreprocessor(AbstractPreprocessor):
                 - dask_threads: Number of threads for Dask (default: number of CPU cores)
                 - dask_memory_limit: Memory limit for Dask workers in GB (default: 75% of system memory)
                 - chunk_size: Size of chunks for Dask arrays (default: {"time": 1, "x": 500, "y": 500})
+                - intermediate_dir: Directory for intermediate results (default: "intermediate")
+                - output_dir: Directory for final output (default: "output")
+                - base_url: Base URL for the data source (used for index lookup)
+                - file_extensions: List of file extensions to look for
         """
-        super().__init__(input_path, output_path, intermediate_path, **kwargs)
+        super().__init__(**kwargs)
         
         # Set data source-specific attributes
         self.data_source = kwargs.get('data_source', 'MODIS').upper()
@@ -78,6 +78,14 @@ class GlassPreprocessor(AbstractPreprocessor):
         # Path prefix based on data source
         self.path_prefix = self.MODIS_PATH_PREFIX if self.data_source == 'MODIS' else self.AVHRR_PATH_PREFIX
         
+        # Set directory paths
+        self.intermediate_dir = kwargs.get('intermediate_dir', 'intermediate')
+        self.output_dir = kwargs.get('output_dir', 'output')
+        
+        # Set base_url and file_extensions (used for index lookup)
+        self.base_url = kwargs.get('base_url', "https://glass-data.bnu.edu.cn/download/")
+        self.file_extensions = kwargs.get('file_extensions', [".hdf"])
+        
         # Initialize GCS client
         self.gcs_client = GCSClient(self.BUCKET_NAME)
         
@@ -90,20 +98,28 @@ class GlassPreprocessor(AbstractPreprocessor):
         self._init_dask_client()
     
     def _init_dask_client(self):
-        """Initialize a Dask client for distributed processing."""
+        """Initialize a Dask client for distributed processing with better memory management."""
         try:
-            # Set up a LocalCluster with desired resources
-            # Using processes=False to avoid issues with multiprocessing and GCS client
-            cluster = LocalCluster(
-                n_workers=1,  # Use a single worker to avoid memory duplication
-                threads_per_worker=self.dask_threads,  # Use multiple threads per worker
-                memory_limit=self.dask_memory_limit,
-                processes=False,  # Use threads instead of processes
-            )
-            self.client = Client(cluster)
+            # Improve memory management with specific configuration
+            dask.config.set({
+                "distributed.worker.memory.target": 0.75,  # Target memory threshold (75%)
+                "distributed.worker.memory.spill": 0.85,   # Spill to disk threshold
+                "distributed.worker.memory.pause": 0.95,   # Pause worker at this threshold
+                "distributed.worker.memory.terminate": 0.98, # Critical threshold
+            })
             
-            # Log Dask dashboard URL for monitoring
+            # Create LocalCluster with more specific worker configuration
+            cluster = LocalCluster(
+                n_workers=max(1, self.dask_threads // 2),  # Use half available CPUs for workers
+                threads_per_worker=2,  # 2 threads per worker for better parallelism
+                memory_limit=self.dask_memory_limit,
+                processes=True,  # Use processes instead of threads for better isolation
+                dashboard_address=':8787',
+            )
+            
+            self.client = Client(cluster)
             logger.info(f"Dask dashboard available at: {self.client.dashboard_link}")
+            
         except Exception as e:
             logger.warning(f"Failed to initialize Dask client: {str(e)}. Using default threading.")
             self.client = None
@@ -160,19 +176,16 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         for i, ((year, h, v), group) in enumerate(grouped):
             grid_cell = f"h{h:02d}v{v:02d}"
-            output_path = self.intermediate_path / f"{self.data_source.lower()}" / f"{year}" / f"{grid_cell}.zarr"
+            output_path = f"{self.data_source.lower()}/{year}/{grid_cell}.zarr"
             
             # Skip if already processed and override is False
-            if output_path.exists() and not self.override:
+            if not self.override and self.gcs_client.check_if_exists(f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_{grid_cell}_annual.zarr/.zmetadata"):
                 logger.info(f"Skipping existing output for {year} {grid_cell} ({i+1}/{total_groups})")
                 continue
                 
             logger.info(f"Processing {year} {grid_cell} ({i+1}/{total_groups})")
             
             try:
-                # Ensure output directory exists
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                
                 # Process this group of files
                 self._process_file_group(group, year, output_path)
                 
@@ -189,8 +202,6 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         # Filter by years
         files_df = files_df[files_df['year'].isin(self.years)]
-        # TODO: remove
-        files_df = files_df.head(10)
         
         # Group by year
         grouped = files_df.groupby('year')
@@ -199,10 +210,10 @@ class GlassPreprocessor(AbstractPreprocessor):
         logger.info(f"Found {total_groups} years to process")
         
         for i, (year, group) in enumerate(grouped):
-            # Define cloud storage paths instead of local paths
-            annual_cloud_path = f"{self.path_prefix}intermediate/{self.data_source.lower()}_{year}_annual.zarr"
-            monthly_cloud_path = f"{self.path_prefix}intermediate/{self.data_source.lower()}_{year}_monthly.zarr"
-            output_path = self.intermediate_path / f"{self.data_source.lower()}" / f"{year}.zarr"
+            # Define cloud storage paths
+            annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_annual.zarr"
+            monthly_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_monthly.zarr"
+            output_path = f"{self.data_source.lower()}/{year}.zarr"
             
             # Skip if already processed in cloud storage and override is False
             if not self.override and (
@@ -215,9 +226,6 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.info(f"Processing year {year} ({i+1}/{total_groups})")
             
             try:
-                # Ensure output directory exists
-                output_path.parent.mkdir(parents=True, exist_ok=True)
-                
                 # Process this group of files
                 self._process_file_group(group, year, output_path)
                 
@@ -225,14 +233,54 @@ class GlassPreprocessor(AbstractPreprocessor):
                 logger.error(f"Error processing year {year}: {str(e)}")
     
     def _list_files_from_gcs(self) -> List[str]:
-        """List all files from the Google Cloud Storage bucket with the specified prefix."""
-        logger.info(f"Listing files with prefix {self.path_prefix} from bucket {self.BUCKET_NAME}")
+        """
+        List all files from the Google Cloud Storage bucket using the download index.
+        Falls back to direct GCS listing if the index is not available or empty.
+        """
+        logger.info(f"Attempting to list GLASS files with prefix {self.path_prefix} from download index")
+        
         try:
-            files = self.gcs_client.list_existing_files(prefix=self.path_prefix)
-            return list(files)
+            from gnt.data.common.index.download_index import DataDownloadIndex
+            from gnt.data.download.sources.factory import create_data_source
+            
+            # Create a data source instance for GLASS with parameters passed from the class
+            data_source_name = "glass"  # Use appropriate source name
+            data_source = create_data_source(
+                dataset_name=data_source_name,
+                base_url=self.base_url,  # Use the base_url parameter passed to the class
+                file_extensions=self.file_extensions,  # Use the file_extensions parameter passed to the class
+            )
+            
+            # Initialize download index without auto-indexing (we just want to query it)
+            index = DataDownloadIndex(
+                bucket_name=self.BUCKET_NAME,
+                data_source=data_source,
+                auto_index=False,  # Don't rebuild the index
+                client=self.gcs_client.client if hasattr(self.gcs_client, 'client') else None
+            )
+            
+            # List files
+            files = index.list_successful_files(prefix=self.path_prefix)
+            
+            logger.info(f"Found {len(files)} indexed files matching prefix {self.path_prefix}")
+            
+            # If no files found in index, fall back to direct listing
+            if not files:
+                logger.warning(f"No files found in index, falling back to direct GCS listing")
+                files = list(self.gcs_client.list_existing_files(prefix=self.path_prefix))
+                
+            return files
+            
+        except ImportError as e:
+            logger.warning(f"Download index not available, falling back to direct GCS listing: {str(e)}")
         except Exception as e:
-            logger.error(f"Error listing files from GCS: {str(e)}")
-            raise
+            logger.error(f"Error listing files from index: {str(e)}")
+            logger.warning("Falling back to direct listing from GCS")
+        
+        # Fall back to direct GCS listing in case of any issues
+        logger.info(f"Listing files directly from GCS with prefix {self.path_prefix}")
+        files = list(self.gcs_client.list_existing_files(prefix=self.path_prefix))
+        return files
     
     def _parse_modis_filenames(self, filenames: List[str]) -> pd.DataFrame:
         """
@@ -313,15 +361,16 @@ class GlassPreprocessor(AbstractPreprocessor):
                 
         return pd.DataFrame(result)
 
-    def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: Path) -> None:
+    def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: str) -> None:
         """
         Process a group of files for a specific year (and grid cell for MODIS).
         All local processing uses temporary directories, with only compressed results uploaded to cloud.
         """
         
         # Create temporary directory for downloads and processing
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir='/tmp') as temp_dir:
             files_df = files_df.sort_values(by = 'day')  # Ensure files are in chronological order
+            # files_df = files_df.iloc[:3]  # TODO: remove; For testing, only process the first three files
             
             # First pass: get metadata and coordinates without loading all data
             sample_data = None
@@ -334,11 +383,13 @@ class GlassPreprocessor(AbstractPreprocessor):
                     self.gcs_client.download_file(file_path, local_path)
                     
                     # Open with rioxarray but only get metadata
-                    sample_data = rxr.open_rasterio(
-                        local_path, 
-                        variable=self.VARIABLE_NAME, 
-                        decode_coords="all",
+                    # Decode coordinates if MODIS
+                    sample_data = (
+                        rxr.open_rasterio(local_path, variable=self.VARIABLE_NAME, decode_coords="all") 
+                        if self.data_source == 'MODIS'
+                        else rxr.open_rasterio(local_path, variable=self.VARIABLE_NAME)
                     )
+                    
                     break
                 except Exception as e:
                     logger.warning(f"Error getting sample data from {file_info['path']}: {str(e)}")
@@ -359,11 +410,10 @@ class GlassPreprocessor(AbstractPreprocessor):
                     self.gcs_client.download_file(file_path, local_path)
                     
                 # Open the data with chunking for Dask processing
-                t_data = rxr.open_rasterio(
-                    local_path,
-                    variable=self.VARIABLE_NAME,
-                    decode_coords="all",
-                    chunks={k:self.chunk_size[k] for k in ('band','y','x') if k in self.chunk_size},
+                t_data = (
+                    rxr.open_rasterio(local_path, variable=self.VARIABLE_NAME, decode_coords="all", chunks={k:self.chunk_size[k] for k in ('band','y','x') if k in self.chunk_size})
+                    if self.data_source == 'MODIS'
+                    else rxr.open_rasterio(local_path, variable=self.VARIABLE_NAME, chunks={k:self.chunk_size[k] for k in ('band','y','x') if k in self.chunk_size})
                 )
                 
                 array_list.append(t_data[self.VARIABLE_NAME])
@@ -384,30 +434,35 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             # Calculate annual and monthly statistics using Dask
             logger.info("Calculating statistics with Dask")
+            # 2025-04-28 02:58:39,743 - preprocess.glass - ERROR - Error processing year 2007: Zarr requires uniform chunk sizes except for final chunk. Variable named 'median' has incompatible dask chunks: ((1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), (1,), (1000, 500, 500, 1000, 600), (1000, 500, 500, 1000, 1000, 500, 500, 1000, 1200)). Consider rechunking using `chunk()`.
             annual_stats, monthly_stats = self._calculate_statistics(combined_data)
             
             # Set up compression for Zarr output
-            compressor = zarr.Blosc(cname='zstd', clevel=3, shuffle=2)
-            encoding = {var: {'compressor': compressor} for var in annual_stats.data_vars}
+            compressor = zarr.codecs.BloscCodec(cname='zstd', clevel=3, shuffle=zarr.codecs.BloscShuffle.shuffle)
+            encoding = {var: {'compressors': compressor} for var in annual_stats.data_vars}
             
             # Create temporary paths for zarr storage
-            annual_output_path = Path(temp_dir) / f"{output_path.stem}_annual.zarr"
-            monthly_output_path = Path(temp_dir) / f"{output_path.stem}_monthly.zarr"
+            output_basename = os.path.basename(output_path.rstrip('.zarr'))
+            annual_output_path = Path(temp_dir) / f"{output_basename}_annual.zarr"
+            monthly_output_path = Path(temp_dir) / f"{output_basename}_monthly.zarr"
             
             # Save in smaller chunks to avoid large graphs
             logger.info(f"Saving annual statistics to temporary location with compression")
             annual_stats.to_zarr(
                 str(annual_output_path),
+                zarr_format=3,
                 mode="w",
-                consolidated=True,
+                consolidated=False,
                 encoding=encoding
             )
+        
             
             logger.info(f"Saving monthly statistics to temporary location with compression")
             monthly_stats.to_zarr(
                 str(monthly_output_path),
+                zarr_format=3,
                 mode="w",
-                consolidated=True,
+                consolidated=False,
                 encoding=encoding
             )
             
@@ -443,6 +498,21 @@ class GlassPreprocessor(AbstractPreprocessor):
             "count": mask.resample(time="1ME").sum()
         })
         
+        # Rechunk using the same chunk sizes defined in the class initialization
+        # For spatial dimensions (x and y), use the values from self.chunk_size
+        # For time dimension, always use 1 to ensure each timestep is in its own chunk
+        chunk_dict = {"time": 1}
+        
+        # Add x and y dimensions from the original chunk_size if they exist
+        if 'x' in self.chunk_size:
+            chunk_dict['x'] = self.chunk_size['x']
+        if 'y' in self.chunk_size:
+            chunk_dict['y'] = self.chunk_size['y']
+        
+        # Apply the chunking to both datasets
+        annual_stats = annual_stats.chunk(chunk_dict)
+        monthly_stats = monthly_stats.chunk(chunk_dict)
+        
         return annual_stats, monthly_stats
     
     def _upload_to_cloud(self, annual_path: Path, monthly_path: Path, year: int) -> None:
@@ -463,8 +533,8 @@ class GlassPreprocessor(AbstractPreprocessor):
                 grid_cell = f"_{annual_path.stem.split('_')[-2]}"
             
             # Create cloud paths with appropriate naming
-            annual_cloud_path = f"{self.path_prefix}intermediate/{data_type}_{year}{grid_cell}_annual.zarr"
-            monthly_cloud_path = f"{self.path_prefix}intermediate/{data_type}_{year}{grid_cell}_monthly.zarr"
+            annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{data_type}_{year}{grid_cell}_annual.zarr"
+            monthly_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{data_type}_{year}{grid_cell}_monthly.zarr"
             
             logger.info(f"Uploading annual statistics to cloud: {annual_cloud_path}")
             # Upload annual statistics (directory)
@@ -527,12 +597,12 @@ class GlassPreprocessor(AbstractPreprocessor):
         logger.info("Finalizing Stage 1 processing")
         
         # Determine the cloud manifest path
-        cloud_manifest_path = f"{self.path_prefix}intermediate/{self.data_source.lower()}_manifest.csv"
+        cloud_manifest_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_manifest.csv"
         
         processed_files = []
         
         # Query the cloud storage for processed files instead of local directory
-        annual_prefix = f"{self.path_prefix}intermediate/{self.data_source.lower()}"
+        annual_prefix = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}"
         try:
             # List all annual stats files in the cloud
             cloud_files = self.gcs_client.list_existing_files(prefix=annual_prefix)
@@ -628,8 +698,4 @@ class GlassPreprocessor(AbstractPreprocessor):
         Returns:
             GlassPreprocessor instance
         """
-        input_path = config.pop("input_path", None)  # For GCS, may be None
-        output_path = config.pop("output_path")
-        intermediate_path = config.pop("intermediate_path", None)
-        
-        return cls(input_path, output_path, intermediate_path, **config)
+        return cls(**config)
