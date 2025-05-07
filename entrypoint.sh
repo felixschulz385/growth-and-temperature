@@ -24,7 +24,7 @@ echo "Starting job in $PROCESSING_MODE mode..."
 if [ "$PROCESSING_MODE" = "download" ]; then
     exec python /app/gnt/data/download/main.py "$CONFIG_FILE"
 elif [ "$PROCESSING_MODE" = "preprocess" ]; then
-    exec python /app/gnt/data/preprocess/main.py "$CONFIG_FILE"
+    exec python /app/gnt/data/preprocess/main.py "$CONFIG_FILE" --debug
 else
     echo "Error: PROCESSING_MODE must be 'download' or 'preprocess'"
     exit 1

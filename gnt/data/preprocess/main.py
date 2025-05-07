@@ -52,6 +52,12 @@ def parse_arguments():
         help="Path to the log file"
     )
     
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode with verbose logging"
+    )
+    
     return parser.parse_args()
 
 
@@ -122,6 +128,11 @@ def main():
         
         # Set up logging
         setup_logging(args.log_level, args.log_file)
+        
+        # Configure debug logging if requested
+        if args.debug:
+            logging.getLogger().setLevel(logging.DEBUG)
+            logger.debug("Debug logging enabled")
         
         logger.info("Starting geodata preprocessing system")
         

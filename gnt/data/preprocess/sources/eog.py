@@ -16,6 +16,7 @@ import re
 
 from sources.base import AbstractPreprocessor
 from gcs.client import GCSClient
+from gnt.data.common.dask.client import init_dask_client, close_client, DaskClientContextManager
 
 logger = logging.getLogger(__name__)
 
@@ -120,7 +121,7 @@ class EOGPreprocessor(AbstractPreprocessor):
         """
         try:
             # Check if source files exist in cloud storage
-            file_pattern = "*.tif" if self.data_source == "DMSP" else "*.tif"
+            #file_pattern = "*.tif" if self.data_source == "DMSP" else "*.tif"
             files = self.gcs_client.list_blobs_with_limit(
                 prefix=self.path_prefix,
                 delimiter="/", 
@@ -213,23 +214,65 @@ class EOGPreprocessor(AbstractPreprocessor):
         
     def _list_files_from_gcs(self) -> List[str]:
         """
-        List all relevant files from Google Cloud Storage.
+        List all files from the Google Cloud Storage bucket using the download index.
+        Falls back to direct GCS listing if the index is not available or empty.
         
         Returns:
             List[str]: List of file paths
         """
-        search_path = self.path_prefix
+        logger.info(f"Attempting to list EOG files with prefix {self.path_prefix} from download index")
         
+        try:
+            from gnt.data.common.index.download_index import DataDownloadIndex
+            from gnt.data.download.sources.factory import create_data_source
+            
+            # Create a data source instance for EOG
+            data_source_name = "eog"  # Use appropriate source name
+            data_source = create_data_source(
+                dataset_name=data_source_name,
+                base_url=getattr(self, 'base_url', None),  # Use class attribute if available
+                file_extensions=[".tif"]  # EOG data uses TIFF files
+            )
+            
+            # Initialize download index without auto-indexing (we just want to query it)
+            index = DataDownloadIndex(
+                bucket_name=self.BUCKET_NAME,
+                data_source=data_source,
+                auto_index=False,  # Don't rebuild the index
+                client=self.gcs_client.client if hasattr(self.gcs_client, 'client') else None
+            )
+            
+            # List files
+            files = index.list_successful_files(prefix=self.path_prefix)
+            
+            logger.info(f"Found {len(files)} indexed files matching prefix {self.path_prefix}")
+            
+            # If no files found in index, fall back to direct listing
+            if not files:
+                logger.warning(f"No files found in index, falling back to direct GCS listing")
+                if self.data_source == "DMSP":
+                    file_pattern = "*.tif"
+                    files = list(self.gcs_client.list_files_with_pattern(self.path_prefix, file_pattern))
+                else:
+                    file_pattern = "*.tif"
+                    files = list(self.gcs_client.list_files_with_pattern(self.path_prefix, file_pattern))
+            
+            return files
+            
+        except ImportError as e:
+            logger.warning(f"Download index not available, falling back to direct GCS listing: {str(e)}")
+        except Exception as e:
+            logger.error(f"Error listing files from index: {str(e)}")
+            logger.warning("Falling back to direct listing from GCS")
+        
+        # Fall back to direct GCS listing in case of any issues
+        logger.info(f"Listing files directly from GCS with prefix {self.path_prefix}")
         if self.data_source == "DMSP":
-            # Search in the DMSP directory structure for .tif files
             file_pattern = "*.tif"
-            logger.info(f"Listing DMSP files from {search_path}")
-            files = self.gcs_client.list_files_with_pattern(search_path, file_pattern)
+            files = list(self.gcs_client.list_files_with_pattern(self.path_prefix, file_pattern))
         else:
-            # Search in the VIIRS directory structure for .tif files
             file_pattern = "*.tif"
-            logger.info(f"Listing VIIRS files from {search_path}")
-            files = self.gcs_client.list_files_with_pattern(search_path, file_pattern)
+            files = list(self.gcs_client.list_files_with_pattern(self.path_prefix, file_pattern))
             
         logger.info(f"Found {len(files)} files matching pattern {file_pattern}")
         return files
@@ -291,75 +334,82 @@ class EOGPreprocessor(AbstractPreprocessor):
         with tempfile.TemporaryDirectory() as temp_dir:
             logger.info(f"Processing {len(files_df)} files for {year} {satellite}")
             
-            # Try to get a sample file to determine metadata
-            sample_data = None
-            for _, file_info in files_df.iterrows():
-                try:
+            # Initialize Dask client using context manager
+            with DaskClientContextManager(
+                threads=self.dask_threads, 
+                memory_limit=self.dask_memory_limit
+            ) as client:
+                logger.info(f"Dask client initialized with dashboard at {client.dashboard_link}")
+                
+                # Try to get a sample file to determine metadata
+                sample_data = None
+                for _, file_info in files_df.iterrows():
+                    try:
+                        file_path = file_info['path']
+                        local_path = os.path.join(temp_dir, os.path.basename(file_path))
+                        
+                        # Download file
+                        self.gcs_client.download_file(file_path, local_path)
+                        
+                        # Open with rioxarray to get metadata
+                        sample_data = rxr.open_rasterio(local_path)
+                        break
+                    except Exception as e:
+                        logger.warning(f"Error getting sample data from {file_info['path']}: {str(e)}")
+                
+                # Check if we successfully got sample data
+                if sample_data is None:
+                    logger.warning(f"No valid sample data found for {year} {satellite}")
+                    return
+                
+                # Process each file and store in a list for later concatenation
+                data_arrays = []
+                for _, file_info in files_df.iterrows():
                     file_path = file_info['path']
                     local_path = os.path.join(temp_dir, os.path.basename(file_path))
                     
-                    # Download file
-                    self.gcs_client.download_file(file_path, local_path)
+                    # Download file if not already present
+                    if not os.path.exists(local_path):
+                        self.gcs_client.download_file(file_path, local_path)
+                        
+                    # Open the data with chunking for Dask processing
+                    data = rxr.open_rasterio(
+                        local_path,
+                        chunks={k:self.chunk_size[k] for k in ('band','y','x') if k in self.chunk_size},
+                    )
                     
-                    # Open with rioxarray to get metadata
-                    sample_data = rxr.open_rasterio(local_path)
-                    break
-                except Exception as e:
-                    logger.warning(f"Error getting sample data from {file_info['path']}: {str(e)}")
-            
-            # Check if we successfully got sample data
-            if sample_data is None:
-                logger.warning(f"No valid sample data found for {year} {satellite}")
-                return
-            
-            # Process each file and store in a list for later concatenation
-            data_arrays = []
-            for _, file_info in files_df.iterrows():
-                file_path = file_info['path']
-                local_path = os.path.join(temp_dir, os.path.basename(file_path))
+                    data_arrays.append(data)
                 
-                # Download file if not already present
-                if not os.path.exists(local_path):
-                    self.gcs_client.download_file(file_path, local_path)
-                    
-                # Open the data with chunking for Dask processing
-                data = rxr.open_rasterio(
-                    local_path,
-                    chunks={k:self.chunk_size[k] for k in ('band','y','x') if k in self.chunk_size},
+                # Combine the time series into a single dataset
+                # This is a placeholder where you would implement the logic for merging 
+                # multiple files per year (if needed)
+                combined_data = self._combine_time_series(data_arrays, files_df, year)
+                
+                # Calculate statistics using Dask for distributed processing
+                annual_stats = self._calculate_statistics(combined_data)
+                
+                # Create output paths for cloud storage
+                output_basename = f"{self.data_source.lower()}_{year}_{satellite}"
+                annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{output_basename}_annual.zarr"
+                
+                # Save the data with compression
+                compressor = zarr.codecs.BloscCodec(cname='zstd', clevel=3, shuffle=zarr.codecs.BloscShuffle.shuffle)
+                encoding = {var: {'compressors': compressor} for var in annual_stats.data_vars}
+                
+                # Create temporary paths for zarr storage
+                annual_output_path = Path(temp_dir) / f"{output_basename}_annual.zarr"
+                
+                # Save in smaller chunks to avoid large graphs
+                logger.info(f"Saving annual statistics to temporary location with compression")
+                annual_stats.to_zarr(
+                    str(annual_output_path),
+                    zarr_format=3,
+                    mode="w",
+                    consolidated=False,
+                    encoding=encoding
                 )
-                
-                data_arrays.append(data)
             
-            # Combine the time series into a single dataset
-            # This is a placeholder where you would implement the logic for merging 
-            # multiple files per year (if needed)
-            combined_data = self._combine_time_series(data_arrays, files_df, year)
-            
-            # Calculate statistics
-            annual_stats = self._calculate_statistics(combined_data)
-            
-            # Create output paths for cloud storage
-            output_basename = f"{self.data_source.lower()}_{year}_{satellite}"
-            annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{output_basename}_annual.zarr"
-            
-            # Save the data with compression
-            compressor = zarr.codecs.BloscCodec(cname='zstd', clevel=3, shuffle=zarr.codecs.BloscShuffle.shuffle)
-            encoding = {var: {'compressors': compressor} for var in annual_stats.data_vars}
-            
-            # Create temporary paths for zarr storage
-            annual_output_path = Path(temp_dir) / f"{output_basename}_annual.zarr"
-            
-            # Save in smaller chunks to avoid large graphs
-            logger.info(f"Saving annual statistics to temporary location with compression")
-            annual_stats.to_zarr(
-                str(annual_output_path),
-                zarr_format=3,
-                mode="w",
-                consolidated=False,
-                encoding=encoding
-            )
-            
-            # Upload to cloud storage
+            # Upload to cloud storage (outside Dask context to ensure client is closed)
             logger.info(f"Uploading annual statistics to cloud: {annual_cloud_path}")
             self._upload_to_cloud(annual_output_path, annual_cloud_path)
             

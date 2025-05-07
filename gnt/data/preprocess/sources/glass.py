@@ -15,6 +15,7 @@ import zarr
 
 from sources.base import AbstractPreprocessor
 from gnt.data.common.gcs.client import GCSClient
+from gnt.data.common.dask.client import DaskClientContextManager
 
 logger = logging.getLogger(__name__)
 
@@ -62,10 +63,10 @@ class GlassPreprocessor(AbstractPreprocessor):
         if years is None:
             # Default to processing all years
             self.years = list(range(2000, 2021)) if self.data_source == 'MODIS' else list(range(1982, 2021))
+        elif isinstance(years, list) and len(years) == 2:
+            self.years = list(range(years[0], years[1] + 1))
         elif isinstance(years, list):
             self.years = years
-        elif isinstance(years, tuple) and len(years) == 2:
-            self.years = list(range(years[0], years[1] + 1))
         else:
             raise ValueError("Years must be a list of years or a tuple (start_year, end_year)")
             
@@ -89,50 +90,24 @@ class GlassPreprocessor(AbstractPreprocessor):
         # Initialize GCS client
         self.gcs_client = GCSClient(self.BUCKET_NAME)
         
-        # Dask configuration
+        # Dask configuration parameters - store them but don't create client yet
         self.dask_threads = kwargs.get('dask_threads', None)  # None means use all available cores
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)  # None means 75% of system memory
         self.chunk_size = kwargs.get('chunk_size', {"band": 1, "x": 500, "y": 500})
-        
-        # Initialize Dask client
-        self._init_dask_client()
+        self.dashboard_port = kwargs.get('dashboard_port', 8787)
+        # We'll create a fresh Dask client per task now
     
-    def _init_dask_client(self):
-        """Initialize a Dask client for distributed processing with better memory management."""
-        try:
-            # Improve memory management with specific configuration
-            dask.config.set({
-                "distributed.worker.memory.target": 0.75,  # Target memory threshold (75%)
-                "distributed.worker.memory.spill": 0.85,   # Spill to disk threshold
-                "distributed.worker.memory.pause": 0.95,   # Pause worker at this threshold
-                "distributed.worker.memory.terminate": 0.98, # Critical threshold
-            })
-            
-            # Create LocalCluster with more specific worker configuration
-            cluster = LocalCluster(
-                n_workers=max(1, self.dask_threads // 2),  # Use half available CPUs for workers
-                threads_per_worker=2,  # 2 threads per worker for better parallelism
-                memory_limit=self.dask_memory_limit,
-                processes=True,  # Use processes instead of threads for better isolation
-                dashboard_address=':8787',
-            )
-            
-            self.client = Client(cluster)
-            logger.info(f"Dask dashboard available at: {self.client.dashboard_link}")
-            
-        except Exception as e:
-            logger.warning(f"Failed to initialize Dask client: {str(e)}. Using default threading.")
-            self.client = None
+    def _get_dask_client_params(self):
+        """
+        Return parameters for creating a Dask client.
+        """
+        return {
+            'threads': self.dask_threads,
+            'memory_limit': self.dask_memory_limit,
+            'dashboard_port': self.dashboard_port,
+            'temp_dir': "/tmp/dask_glass",
+        }
     
-    def __del__(self):
-        """Clean up Dask client when the object is garbage collected."""
-        if hasattr(self, 'client') and self.client:
-            try:
-                self.client.close()
-                logger.debug("Closed Dask client")
-            except:
-                pass
-            
     def summarize_annual_means(self) -> None:
         """
         Summarize GLASS daily data into annual means.
@@ -145,14 +120,18 @@ class GlassPreprocessor(AbstractPreprocessor):
         """
         logger.info(f"Starting summarization of {self.data_source} data for years {min(self.years)}-{max(self.years)}")
         
-        if self.data_source == 'MODIS':
-            self._process_modis_data()
-        else:
-            self._process_avhrr_data()
+        # Create a Dask client specifically for this task
+        with DaskClientContextManager(**self._get_dask_client_params()) as client:
+            logger.info(f"Created Dask client for annual means task: {client.dashboard_link}")
             
+            if self.data_source == 'MODIS':
+                self._process_modis_data(client)
+            else:
+                self._process_avhrr_data(client)
+                
         logger.info(f"Completed summarization of {self.data_source} data")
     
-    def _process_modis_data(self):
+    def _process_modis_data(self, client: Client):
         """Process MODIS data which is organized in grid cells."""
         # List all MODIS files
         all_files = self._list_files_from_gcs()
@@ -187,12 +166,12 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             try:
                 # Process this group of files
-                self._process_file_group(group, year, output_path)
+                self._process_file_group(group, year, output_path, client)
                 
             except Exception as e:
                 logger.error(f"Error processing {year} {grid_cell}: {str(e)}")
                 
-    def _process_avhrr_data(self):
+    def _process_avhrr_data(self, client: Client):
         """Process AVHRR data which has one file per day globally."""
         # List all AVHRR files
         all_files = self._list_files_from_gcs()
@@ -212,7 +191,6 @@ class GlassPreprocessor(AbstractPreprocessor):
         for i, (year, group) in enumerate(grouped):
             # Define cloud storage paths
             annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_annual.zarr"
-            monthly_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_monthly.zarr"
             output_path = f"{self.data_source.lower()}/{year}.zarr"
             
             # Skip if already processed in cloud storage and override is False
@@ -227,7 +205,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             try:
                 # Process this group of files
-                self._process_file_group(group, year, output_path)
+                self._process_file_group(group, year, output_path, client)
                 
             except Exception as e:
                 logger.error(f"Error processing year {year}: {str(e)}")
@@ -361,10 +339,16 @@ class GlassPreprocessor(AbstractPreprocessor):
                 
         return pd.DataFrame(result)
 
-    def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: str) -> None:
+    def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: str, client: Client) -> None:
         """
         Process a group of files for a specific year (and grid cell for MODIS).
         All local processing uses temporary directories, with only compressed results uploaded to cloud.
+        
+        Args:
+            files_df: DataFrame with file information
+            year: Year being processed
+            output_path: Path for output data
+            client: Dask client for distributed processing
         """
         
         # Create temporary directory for downloads and processing
@@ -434,7 +418,6 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             # Calculate annual and monthly statistics using Dask
             logger.info("Calculating statistics with Dask")
-            # 2025-04-28 02:58:39,743 - preprocess.glass - ERROR - Error processing year 2007: Zarr requires uniform chunk sizes except for final chunk. Variable named 'median' has incompatible dask chunks: ((1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1), (1,), (1000, 500, 500, 1000, 600), (1000, 500, 500, 1000, 1000, 500, 500, 1000, 1200)). Consider rechunking using `chunk()`.
             annual_stats, monthly_stats = self._calculate_statistics(combined_data)
             
             # Set up compression for Zarr output
@@ -587,7 +570,6 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.error(f"Error combining time series data: {str(e)}")
             return None
 
-    
     def finalize_stage1(self) -> None:
         """
         Finalize Stage 1 processing.
@@ -596,66 +578,70 @@ class GlassPreprocessor(AbstractPreprocessor):
         """
         logger.info("Finalizing Stage 1 processing")
         
-        # Determine the cloud manifest path
-        cloud_manifest_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_manifest.csv"
-        
-        processed_files = []
-        
-        # Query the cloud storage for processed files instead of local directory
-        annual_prefix = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}"
-        try:
-            # List all annual stats files in the cloud
-            cloud_files = self.gcs_client.list_existing_files(prefix=annual_prefix)
+        # Create a new Dask client just for this task
+        with DaskClientContextManager(**self._get_dask_client_params()) as client:
+            logger.info(f"Created Dask client for finalizing stage 1: {client.dashboard_link}")
             
-            # Process the list of files
-            for file_path in cloud_files:
-                if "_annual.zarr/.zmetadata" in file_path:
-                    # Extract year and possibly grid cell from path
-                    path_parts = file_path.split('/')
-                    filename = path_parts[-2].split('_annual.zarr')[0]  # Remove the suffix
-                    
-                    if self.data_source == "MODIS":
-                        # For MODIS: path contains year and grid cell (e.g., modis_2000_h08v05_annual.zarr)
-                        parts = filename.split('_')
-                        if len(parts) >= 3:
-                            year = parts[1]
-                            grid_cell = parts[2]
-                            processed_files.append({
-                                "data_source": self.data_source,
-                                "year": year,
-                                "grid_cell": grid_cell,
-                                "path": file_path.replace("/.zmetadata", "")
-                            })
-                    else:
-                        # For AVHRR: path contains year (e.g., avhrr_2000_annual.zarr)
-                        parts = filename.split('_')
-                        if len(parts) >= 2:
-                            year = parts[1]
-                            processed_files.append({
-                                "data_source": self.data_source,
-                                "year": year,
-                                "grid_cell": "global",
-                                "path": file_path.replace("/.zmetadata", "")
-                            })
+            # Determine the cloud manifest path
+            cloud_manifest_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_manifest.csv"
             
-            # Save manifest to a temporary file and upload to cloud
-            if processed_files:
-                with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp_file:
-                    manifest_df = pd.DataFrame(processed_files)
-                    manifest_df.to_csv(temp_file.name, index=False)
-                    
-                    # Upload the manifest to cloud
-                    self.gcs_client.upload_file(temp_file.name, cloud_manifest_path)
-                    
-                    logger.info(f"Created and uploaded manifest with {len(processed_files)} processed files to {cloud_manifest_path}")
-                    
-                    # Clean up the temporary file
-                    os.unlink(temp_file.name)
-            else:
-                logger.warning("No processed files found in cloud storage to include in manifest")
-                    
-        except Exception as e:
-            logger.error(f"Error creating cloud manifest: {str(e)}")
+            processed_files = []
+            
+            # Query the cloud storage for processed files instead of local directory
+            annual_prefix = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}"
+            try:
+                # List all annual stats files in the cloud
+                cloud_files = self.gcs_client.list_existing_files(prefix=annual_prefix)
+                
+                # Process the list of files
+                for file_path in cloud_files:
+                    if "_annual.zarr/.zmetadata" in file_path:
+                        # Extract year and possibly grid cell from path
+                        path_parts = file_path.split('/')
+                        filename = path_parts[-2].split('_annual.zarr')[0]  # Remove the suffix
+                        
+                        if self.data_source == "MODIS":
+                            # For MODIS: path contains year and grid cell (e.g., modis_2000_h08v05_annual.zarr)
+                            parts = filename.split('_')
+                            if len(parts) >= 3:
+                                year = parts[1]
+                                grid_cell = parts[2]
+                                processed_files.append({
+                                    "data_source": self.data_source,
+                                    "year": year,
+                                    "grid_cell": grid_cell,
+                                    "path": file_path.replace("/.zmetadata", "")
+                                })
+                        else:
+                            # For AVHRR: path contains year (e.g., avhrr_2000_annual.zarr)
+                            parts = filename.split('_')
+                            if len(parts) >= 2:
+                                year = parts[1]
+                                processed_files.append({
+                                    "data_source": self.data_source,
+                                    "year": year,
+                                    "grid_cell": "global",
+                                    "path": file_path.replace("/.zmetadata", "")
+                                })
+                
+                # Save manifest to a temporary file and upload to cloud
+                if processed_files:
+                    with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp_file:
+                        manifest_df = pd.DataFrame(processed_files)
+                        manifest_df.to_csv(temp_file.name, index=False)
+                        
+                        # Upload the manifest to cloud
+                        self.gcs_client.upload_file(temp_file.name, cloud_manifest_path)
+                        
+                        logger.info(f"Created and uploaded manifest with {len(processed_files)} processed files to {cloud_manifest_path}")
+                        
+                        # Clean up the temporary file
+                        os.unlink(temp_file.name)
+                else:
+                    logger.warning("No processed files found in cloud storage to include in manifest")
+                        
+            except Exception as e:
+                logger.error(f"Error creating cloud manifest: {str(e)}")
 
     def validate_input(self) -> bool:
         """
@@ -685,7 +671,10 @@ class GlassPreprocessor(AbstractPreprocessor):
         This is a placeholder for the Stage 2 implementation, which will be added later.
         It will read data from Stage 1 and reproject it to a standard grid.
         """
-        logger.warning("Stage 2 (project_to_unified_grid) not yet implemented for GLASS data")
+        # Create a new Dask client just for this task
+        with DaskClientContextManager(**self._get_dask_client_params()) as client:
+            logger.info(f"Created Dask client for projection task: {client.dashboard_link}")
+            logger.warning("Stage 2 (project_to_unified_grid) not yet implemented for GLASS data")
     
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "GlassPreprocessor":

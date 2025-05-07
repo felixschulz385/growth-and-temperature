@@ -5,13 +5,27 @@ import os
 import time
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
+import hashlib
+from typing import Generator, Tuple
 
-from gnt.data.download.download.base import BaseDataSource
+from gnt.data.download.sources.base import BaseDataSource
 
 logger = logging.getLogger(__name__)
 
 class EOGDataSource(BaseDataSource):
-    def __init__(self, base_url: str, file_extensions: list[str] = None):
+    """
+    Data source for Earth Observation Group (EOG) nighttime lights data.
+    Handles authentication and downloading from the EOG repository.
+    """
+    def __init__(self, base_url: str, file_extensions: list[str] = None, output_path: str = None):
+        """
+        Initialize EOG data source.
+        
+        Args:
+            base_url: Base URL for the EOG repository
+            file_extensions: List of file extensions to download (default: .tif, .tgz, .tar.gz)
+            output_path: Custom output path in GCS (optional)
+        """
         self.DATA_SOURCE_NAME = "eog"
         self.base_url = base_url
         self.file_extensions = file_extensions or [".tif", ".tgz", ".tar.gz"]
@@ -21,53 +35,107 @@ class EOGDataSource(BaseDataSource):
         parsed = urlparse(base_url)
         parts = parsed.path.strip("/").split("/")
         datatype = "/".join(parts[1:]) if len(parts) > 2 else "unknown"
-        self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
+        
+        # Use custom output path if provided, otherwise construct from URL
+        if output_path:
+            self.data_path = output_path
+        else:
+            self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
+        
+        logger.info(f"Initialized EOG data source with path: {self.data_path}")
 
-    def list_remote_files(self, entrypoint: dict = None) -> list:
+    def list_remote_files(self, entrypoint: dict = None):
         """
-        Lists all files from the EOG data repository.
-        For EOG, we don't use entrypoints but include the parameter for compatibility.
+        Lists all files from the EOG data repository using a generator approach.
+        Uses a simple tree-based crawling approach.
+        
+        Args:
+            entrypoint: Not used for EOG, but included for API compatibility
+            
+        Returns:
+            Generator yielding tuples of (relative_path, file_url)
         """
-        def collect_files_from_url(url: str, relative_prefix: str = "") -> list:
-            collected_files = []
+        logger.info(f"Starting to crawl EOG data source: {self.base_url}")
+        base_url_parsed = urlparse(self.base_url)
+        
+        def extract_path_from_url(url):
+            """Extract the path component relative to base URL"""
+            # Parse the URL
+            parsed = urlparse(url)
+            
+            # If URL is on a different host, return None
+            if parsed.netloc != base_url_parsed.netloc:
+                return None
+                
+            # Get path relative to base URL
+            if not parsed.path.startswith(base_url_parsed.path):
+                return parsed.path.lstrip('/')
+                
+            relative = parsed.path[len(base_url_parsed.path):].lstrip('/')
+            return relative
+        
+        def crawl(url):
+            """Generator function that crawls a URL and yields found files."""
             
             try:
-                logger.debug(f"Fetching directory listing from {url}")
-                page = requests.get(url)
-                page.raise_for_status()
-                soup = BeautifulSoup(page.text, "html.parser")
+                # Add small delay to avoid hammering the server
+                time.sleep(0.5)
+                logger.debug(f"Crawling directory: {url}")
+                
+                res = requests.get(url)
+                res.raise_for_status()
+                soup = BeautifulSoup(res.text, "html.parser")
+                
+                # Sort links for more predictable processing
+                links = [link for link in soup.find_all("td", {"class": "indexcolname"})]
 
-                for link_td in soup.find_all("td", {"class": "indexcolname"}):
-                    href = link_td.a.get("href")
-                    if not href:
-                        continue
-                    # Skip parent directory links
-                    if urlparse(url).path.startswith(href) and href.count("/") == urlparse(url).path.count("/") - 1:
+                for link in links:
+                    href = link.find("a").get("href")
+                    
+                    # Skip invalid, parent directory and self-references
+                    if not href or href in ("../", "./", "/"):
                         continue
                     
                     full_url = urljoin(url, href)
-
-                    if href.endswith("/"):  # It's a directory, recurse into it
-                        logger.debug(f"Found directory: {href}, recursing...")
-                        new_prefix = os.path.join(relative_prefix, href) if relative_prefix else href
-                        collected_files.extend(collect_files_from_url(full_url, new_prefix))
-                    elif not self.file_extensions or any(href.endswith(ext) for ext in self.file_extensions):
-                        # It's a file with matching extension
-                        relative_path = os.path.join(relative_prefix, href) if relative_prefix else href
-                        collected_files.append((relative_path, full_url))
+                    
+                    # Skip links that would create loops
+                    # (if the link equals the current URL or points to a parent directory)
+                    if full_url == url or url.startswith(full_url):
+                        continue
+                    
+                    if href.endswith("/"):  # Directory
+                        # Recurse into directory - simple tree traversal
+                        yield from crawl(full_url)
+                    
+                    # File with matching extension
+                    elif not self.file_extensions or any(href.lower().endswith(ext.lower()) for ext in self.file_extensions):
+                        # Get the relative path by extracting from URL
+                        relative_path = extract_path_from_url(full_url)
+                        if not relative_path:
+                            continue
+                            
                         logger.debug(f"Found file: {relative_path}")
+                        yield (relative_path, full_url)
 
             except Exception as e:
-                logger.error(f"Error fetching directory listing from {url}: {str(e)}")
-            
-            return collected_files
-
-        logger.info(f"Starting to list files from EOG source: {self.base_url}")
-        result = collect_files_from_url(self.base_url)
-        logger.info(f"Found {len(result)} files in EOG source")
-        return result
+                logger.error(f"Error crawling directory {url}: {str(e)}")
+        
+        # Start crawling from base URL and yield all files found
+        yield from crawl(self.base_url)
+        
+        # Log summary after generator is exhausted
+        logger.info(f"Completed crawling EOG data source.")
 
     def local_path(self, relative_path: str) -> str:
+        """
+        Generates local path for a file.
+        
+        Args:
+            relative_path: Relative path of the file
+            
+        Returns:
+            Local path for the file
+        """
         # Assuming a local directory structure that mirrors the remote one
         return os.path.join("data", self.DATA_SOURCE_NAME, relative_path)
                 
@@ -166,21 +234,55 @@ class EOGDataSource(BaseDataSource):
             raise
 
     def gcs_upload_path(self, base_url: str, relative_path: str) -> str:
-        """Generate the GCS path for a file."""
-        filename = os.path.basename(relative_path)
-        return f"{self.data_path}/{filename}"
+        """
+        Generate the GCS path for a file.
+        
+        Args:
+            base_url: Base URL (not used for EOG)
+            relative_path: Relative path of the file
+            
+        Returns:
+            GCS path for the file
+        """
+        # Extract the relative path from the full URL structure
+        # Remove year directory pattern (e.g., F10_1993/, F10_1994/, etc.)
+        base_path = "/".join(relative_path.split("/")[1:])  # Skip the first directory
+        
+        # Combine with data source path to create final GCS path
+        return f"{self.data_path}/{base_path}"
     
     def filename_to_entrypoint(self, relative_path: str) -> dict:
         """
         EOG data doesn't use entrypoints, but we implement this method
         to maintain compatibility with the BaseDataSource API.
+        
+        Args:
+            relative_path: Relative path of the file
+            
+        Returns:
+            None since EOG doesn't use entrypoints
         """
         return None
     
     def get_all_entrypoints(self):
         """
         EOG data doesn't use entrypoints because files are organized by satellite/year.
-        Return an empty list for compatibility.
+        
+        Returns:
+            Empty list for compatibility
         """
         return []
+    
+    def get_file_hash(self, file_url: str) -> str:
+        """
+        Generate a unique hash for a file URL.
+        Used by download index to track file status.
+        
+        Args:
+            file_url: URL of the file
+            
+        Returns:
+            MD5 hash of the file URL
+        """
+        return hashlib.md5(file_url.encode()).hexdigest()
 

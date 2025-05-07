@@ -2,5 +2,8 @@
 /misc
 .DS_Store
 
+*.log
+
 *.pyc
 __init__.py
+debug_eog_credentials.sh

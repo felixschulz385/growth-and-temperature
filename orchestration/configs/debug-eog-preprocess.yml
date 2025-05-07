@@ -2,8 +2,8 @@ tasks:
   - preprocessor: glass
     stage: "stage1"
     data_source: "AVHRR"
-    years: [1981, 2021]
-    base_url: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
+    years: [1992, 2013]
+    base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
     file_extensions: [".hdf"]
     dask_threads: 2
     dask_memory_limit: "4GB"

@@ -56,11 +56,9 @@ def main(config_path=None):
         file_extensions = parameters.get('file_extensions', '.hdf').split(',')
         max_concurrent_downloads = int(parameters.get('max_concurrent_downloads', 2))
         max_queue_size = int(parameters.get('max_queue_size', 8))
-        output_path = parameters.get('output_path', '')
-        download_limit = int(parameters.get('download_limit', 0))
         
         # Get workflow config options
-        auto_index = parse_bool_env('AUTO_INDEX', parameters.get('auto_index', True))
+        auto_index = parse_bool_env('AUTO_INDEX', parameters.get('auto_index', False))
         build_index_only = parse_bool_env('BUILD_INDEX_ONLY', parameters.get('build_index_only', False))
         
         # Create data source using factory

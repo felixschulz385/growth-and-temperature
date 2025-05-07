@@ -20,6 +20,24 @@
       }
     },
     {
+      "name": "Debug EOG Preprocessing",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
+      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yml"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true,
+      "exceptionBreakpointFilters": [
+        {"filter": "raised", "label": "Raised Exceptions", "default": true},
+        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "GCP_PROJECT_ID": "ee-growthandheat"
+      }
+    },
+    {
       "name": "Debug GLASS MODIS Daily LST Download",
       "type": "debugpy",
       "request": "launch",
@@ -82,7 +100,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/gnt/data/download/main.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/eog-download.json"],
+      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.json"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -92,10 +110,8 @@
       ],
       "env": {
         "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat",
-        "EOG_USERNAME": "your_eog_username",
-        "EOG_PASSWORD": "your_eog_password"
-      }
+        "GCP_PROJECT_ID": "ee-growthandheat"
+      },
     }
   ]
 }
