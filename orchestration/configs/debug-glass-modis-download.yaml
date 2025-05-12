@@ -1,0 +1,23 @@
+# Debug configuration for GLASS LST data download
+
+# Workflow definition
+tasks:
+  - data_source: "glass"
+    mode: "download"
+    bucket_name: "growthandheat"
+    
+    # Source configuration
+    base_url: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
+    file_extensions: [".hdf"]
+    
+    # Processing controls
+    max_concurrent_downloads: 2
+    max_queue_size: 8
+    
+    # Debug settings
+    debug: true
+    verbose_logging: true
+    
+    # Retry settings
+    max_retries: 3
+    retry_delay: 10

@@ -4,9 +4,31 @@ set -e
 CONFIG_FILE="$1"
 echo "Reading config from: $CONFIG_FILE"
 
-# Parse processing mode from config file
+# Detect file extension to determine format
+FILE_EXT="${CONFIG_FILE##*.}"
+FILE_EXT_LOWER=$(echo "$FILE_EXT" | tr '[:upper:]' '[:lower:]')
+
+# Parse processing mode from config file based on format (YAML or JSON)
 if [ -f "$CONFIG_FILE" ]; then
-    PROCESSING_MODE=$(grep -o '"processing_mode": *"[^"]*"' "$CONFIG_FILE" | cut -d'"' -f4)
+    if [ "$FILE_EXT_LOWER" = "yaml" ] || [ "$FILE_EXT_LOWER" = "yml" ]; then
+        # Parse YAML format
+        if command -v yq >/dev/null 2>&1; then
+            # If yq is available, use it
+            PROCESSING_MODE=$(yq e '.processing_mode' "$CONFIG_FILE" 2>/dev/null)
+        else
+            # Simple grep-based YAML parsing
+            PROCESSING_MODE=$(grep -E '^processing_mode:' "$CONFIG_FILE" | sed 's/^processing_mode:\s*//' | sed 's/^"\(.*\)"$/\1/' | sed "s/^'\(.*\)'$/\1/")
+        fi
+    else
+        # Parse JSON format
+        PROCESSING_MODE=$(grep -o '"processing_mode": *"[^"]*"' "$CONFIG_FILE" | cut -d'"' -f4)
+    fi
+    
+    # Handle null, undefined, or empty value
+    if [ "$PROCESSING_MODE" = "null" ] || [ "$PROCESSING_MODE" = "~" ] || [ -z "$PROCESSING_MODE" ]; then
+        PROCESSING_MODE=""
+    fi
+    
     echo "Detected processing mode from config: $PROCESSING_MODE"
 fi
 

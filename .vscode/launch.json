@@ -43,7 +43,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/gnt/data/download/main.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-modis-download.json"],
+      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-modis-download.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -100,7 +100,7 @@
       "request": "launch",
       "program": "${workspaceFolder}/gnt/data/download/main.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.json"],
+      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -110,8 +110,8 @@
       ],
       "env": {
         "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      },
+        "GCP_PROJECT_ID": "ee-growthandheat",
+      }
     }
   ]
 }

@@ -1,0 +1,120 @@
+# Configuration for EOG data download and indexing
+
+# Workflow definition
+tasks:
+  # # 1. DMSP nighttime lights data - Index
+  # - data_source: "eog"
+  #   mode: "index"
+  #   bucket_name: "growthandheat"
+    
+  #   # Authentication settings
+  #   # Note: Authentication credentials should be set as environment variables:
+  #   # - EOG_USERNAME
+  #   # - EOG_PASSWORD
+    
+  #   # Source configuration
+  #   base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+  #   file_extensions: [".global.stable_lights.avg_vis.tif"]
+  #   output_path: "eog/dmsp/stable_lights"
+    
+  #   # Processing controls
+  #   max_concurrent_downloads: 1
+  #   max_queue_size: 10
+    
+  #   # Debug settings
+  #   debug: true
+  #   verbose_logging: true
+    
+  #   # Retry settings
+  #   max_retries: 3
+  #   retry_delay: 10
+
+  # 2. DMSP nighttime lights data - Download
+  - data_source: "eog"
+    mode: "download"
+    bucket_name: "growthandheat"
+    
+    # Source configuration
+    base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+    file_extensions: [".global.stable_lights.avg_vis.tif"]
+    output_path: "eog/dmsp/stable_lights"
+    
+    # Processing controls
+    max_concurrent_downloads: 1
+    max_queue_size: 20
+    
+    # Retry settings
+    max_retries: 3
+    retry_delay: 10
+
+  # 3. VIIRS DVNL data - Index
+  - data_source: "eog"
+    mode: "index"
+    bucket_name: "growthandheat"
+    
+    # Source configuration
+    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+    file_extensions: [".tif"]
+    output_path: "eog/viirs/dvnl"
+    
+    # Processing controls
+    max_concurrent_downloads: 1
+    max_queue_size: 10
+    
+    # Retry settings
+    max_retries: 3
+    retry_delay: 10
+
+  # 4. VIIRS DVNL data - Download
+  - data_source: "eog"
+    mode: "download"
+    bucket_name: "growthandheat"
+    
+    # Source configuration
+    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+    file_extensions: [".tif"]
+    output_path: "eog/viirs/dvnl"
+    
+    # Processing controls
+    max_concurrent_downloads: 1
+    max_queue_size: 20
+    
+    # Retry settings
+    max_retries: 3
+    retry_delay: 10
+
+  # 5. VIIRS Annual Stable Lights data - Index
+  - data_source: "eog"
+    mode: "index"
+    bucket_name: "growthandheat"
+    
+    # Source configuration
+    base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+    file_extensions: ["median_masked.dat.tif.gz"]
+    output_path: "eog/viirs/stable_lights"
+    
+    # Processing controls
+    max_concurrent_downloads: 1
+    max_queue_size: 10
+    
+    # Retry settings
+    max_retries: 3
+    retry_delay: 10
+
+  # 6. VIIRS Annual Stable Lights data - Download
+  - data_source: "eog"
+    mode: "download"
+    bucket_name: "growthandheat"
+    
+    # Source configuration
+    base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+    file_extensions: ["median_masked.dat.tif.gz"]
+    output_path: "eog/viirs/stable_lights"
+    
+    # Processing controls
+    max_concurrent_downloads: 1
+    max_queue_size: 20
+    
+    # Retry settings
+    max_retries: 3
+    retry_delay: 10

@@ -16,7 +16,7 @@ spec:
       containers:
       - name: data-processor
         image: gcr.io/ee-growthandheat/data-processor:latest
-        args: ["/config/workflow-config.json"]
+        args: ["/config/workflow-config.yaml"]
         resources:
           requests:
             cpu: "200m"
@@ -27,6 +27,8 @@ spec:
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
+        - name: LOG_LEVEL
+          value: "INFO"
         - name: PROCESSING_MODE
           value: "download"
         volumeMounts:
@@ -48,17 +50,27 @@ kind: ConfigMap
 metadata:
   name: glass-lst-modis-download-config
 data:
-  workflow-config.json: |
-    {
-      "processing_mode": "download",
-      "dataset": "glass",
-      "parameters": {
-        "gcs_bucket": "growthandheat",
-        "project_id": "ee-growthandheat",
-        "base_url": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/",
-        "file_extensions": ".hdf",
-        "max_concurrent_downloads": 2,
-        "max_queue_size": 8,
-        "output_path": "glass/lst/modis/daily/1km/raw"
-      }
-    }
+  workflow-config.yaml: |
+    # Add a processing_mode parameter at the root level
+    processing_mode: download
+    
+    # Workflow definition
+    tasks:
+      - data_source: "glass"
+        mode: "download"
+        bucket_name: "growthandheat"
+        
+        # Source configuration
+        base_url: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
+        file_extensions: [".hdf"]
+        
+        # Processing controls
+        max_concurrent_downloads: 2
+        max_queue_size: 8
+        
+        # Resource limits
+        memory_limit: 2000  # 2GB
+        
+        # Retry settings
+        max_retries: 3
+        retry_delay: 10
