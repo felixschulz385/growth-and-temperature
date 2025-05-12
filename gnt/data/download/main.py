@@ -1,105 +1,157 @@
-# main.py
+#!/usr/bin/env python3
+"""
+Main entry point for the geodata download system.
+
+This script provides a command-line interface to run download workflows
+with various options for configuration and execution.
+"""
+
+import os
+import argparse
+import logging
 import sys
 import json
-import logging
-import os
 from pathlib import Path
+from typing import Optional
 
-from gnt.data.download.workflow import run
-from gnt.data.download.sources.factory import create_data_source
+from workflow import run_workflow  # Changed from 'run' to 'run_workflow'
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler()
+        logging.StreamHandler(sys.stdout)
     ]
 )
-
 logger = logging.getLogger(__name__)
+
+
+def parse_arguments():
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Geodata download system",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    parser.add_argument(
+        "config",
+        help="Path to the workflow configuration file (YAML or JSON)"
+    )
+    
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        default="INFO",
+        help="Set the logging level"
+    )
+    
+    parser.add_argument(
+        "--log-file",
+        default="download.log",
+        help="Path to the log file"
+    )
+    
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode with verbose logging"
+    )
+    
+    return parser.parse_args()
+
+
+def setup_logging(level: str, log_file: Optional[str] = None):
+    """Configure logging with the specified level and output file."""
+    numeric_level = getattr(logging, level.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f"Invalid log level: {level}")
+    
+    # Configure root logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(numeric_level)
+    
+    # Clear existing handlers
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+    
+    # Add stdout handler
+    stdout_handler = logging.StreamHandler(sys.stdout)
+    stdout_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+    root_logger.addHandler(stdout_handler)
+    
+    # Add file handler if specified
+    if log_file:
+        log_dir = Path(os.path.dirname(log_file))
+        if log_dir and str(log_dir) != ".":
+            log_dir.mkdir(exist_ok=True)
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
+        root_logger.addHandler(file_handler)
+    
+    logger.debug("Logging configured successfully")
+
 
 def parse_bool_env(key, default=False):
     """Parse boolean environment variable with fallback."""
     val = os.environ.get(key, str(default)).strip().lower()
     return val in ('true', 't', 'yes', 'y', '1')
 
-def main(config_path=None):
+
+def check_environment():
+    """Check if the environment is properly set up for downloading."""
     try:
-        # Require a config file path
-        if not config_path or not os.path.exists(config_path):
-            logger.error("Configuration file required but not found. Please provide a valid JSON config file path.")
-            return 1
-            
-        # Config file approach
-        logger.info(f"Reading configuration from: {config_path}")
-        with open(config_path) as f:
-            config = json.load(f)
+        import requests
+        import google.cloud.storage
+        import bs4
         
-        # Validate config
-        if config.get('processing_mode') != 'download':
-            logger.error(f"Invalid processing mode: {config.get('processing_mode')}")
-            return 1
-            
-        # Extract parameters
-        dataset = config.get('dataset')
-        parameters = config.get('parameters', {})
+        logger.debug("Environment check passed: All required packages are available")
+        return True
+    except ImportError as e:
+        logger.error(f"Environment check failed: {str(e)}")
+        logger.error("Please ensure all required packages are installed.")
+        return False
+
+
+def main():
+    """Main entry point for the download system."""
+    try:
+        # Parse command-line arguments
+        args = parse_arguments()
+        
+        # Set up logging
+        setup_logging(args.log_level, args.log_file)
         
         # Configure debug logging if requested
-        if parameters.get('debug', False):
+        if args.debug:
             logging.getLogger().setLevel(logging.DEBUG)
             logger.debug("Debug logging enabled")
         
-        # Extract config parameters with defaults
-        gcs_bucket = parameters.get('gcs_bucket', 'growthandheat')
-        base_url = parameters.get('base_url')
-        file_extensions = parameters.get('file_extensions', '.hdf').split(',')
-        max_concurrent_downloads = int(parameters.get('max_concurrent_downloads', 2))
-        max_queue_size = int(parameters.get('max_queue_size', 8))
+        logger.info("Starting geodata download system")
         
-        # Get workflow config options
-        auto_index = parse_bool_env('AUTO_INDEX', parameters.get('auto_index', False))
-        build_index_only = parse_bool_env('BUILD_INDEX_ONLY', parameters.get('build_index_only', False))
+        # Check environment
+        if not check_environment():
+            logger.critical("Exiting due to environment check failure")
+            return 1
         
-        # Create data source using factory
-        data_source = create_data_source(
-            dataset_name=dataset,
-            base_url=base_url,
-            file_extensions=file_extensions,
-        )
-        
-        # Log the configuration
-        logger.info(f"Configuration: auto_index={auto_index}, build_index_only={build_index_only}")
-        logger.info(f"Running workflow with max_concurrent_downloads={max_concurrent_downloads}, "
-                  f"max_queue_size={max_queue_size}")
+        # Validate config file path
+        config_path = Path(args.config)
+        if not config_path.exists():
+            logger.error(f"Configuration file not found: {config_path}")
+            return 1
         
         # Run the workflow
-        run(
-            data_source, 
-            gcs_bucket, 
-            max_concurrent_downloads=max_concurrent_downloads,
-            max_queue_size=max_queue_size,
-            auto_index=auto_index,
-            build_index_only=build_index_only
-        )
+        logger.info(f"Running download workflow with configuration from {config_path}")
+        run_workflow(config_path)
         
-        logger.info("Download process completed successfully")
+        logger.info("Download completed successfully")
         return 0
         
     except Exception as e:
-        logger.error(f"An error occurred: {str(e)}", exc_info=True)
+        logger.exception(f"Unexpected error occurred: {str(e)}")
         return 1
 
+
 if __name__ == "__main__":
-    # Get config path from command line argument
-    config_path = sys.argv[1] if len(sys.argv) > 1 else None
-    
-    # Add file log handler if not in test mode
-    if not parse_bool_env('LOCAL_TEST', False):
-        log_dir = Path('logs')
-        log_dir.mkdir(exist_ok=True)
-        file_handler = logging.FileHandler(log_dir / 'download.log')
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        logging.getLogger().addHandler(file_handler)
-    
-    sys.exit(main(config_path))
+    exit_code = main()
+    sys.exit(exit_code)

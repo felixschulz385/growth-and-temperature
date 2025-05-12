@@ -194,11 +194,15 @@ class DataDownloadIndex(BaseIndex):
         gcs_client = GCSClient(self.bucket_name)
         
         blob_list = self.bucket.blob(self.blob_list_path)
+        
         try:
-            if blob_list.exists():
-                logger.info(f"Loading cached blob list")
-                blob_list_json = blob_list.download_as_text()
-                existing_files = set(json.loads(blob_list_json))
+            if blob_list.exists():  # 1 day
+                age = (datetime.now() - blob_list.age).total_seconds()
+                if age < 86400:
+                    # Use cached list if fresh enough
+                    logger.info(f"Loading cached blob list")
+                    blob_list_json = blob_list.download_as_text()
+                    existing_files = set(json.loads(blob_list_json))
             else:
                 logger.info(f"Creating new blob list for {self.data_path}")
                 existing_files = gcs_client.list_existing_files(prefix=self.data_path)
@@ -509,8 +513,28 @@ class DataDownloadIndex(BaseIndex):
         logger.info("Saving index to GCS")
         try:
             # Close all connections to ensure data is flushed
-            if hasattr(self, '_thread_local') and hasattr(self._thread_local, 'conn') and self._thread_local.conn:
-                self._thread_local.conn = None
+            self._close_all_connections()
+            
+            # Small delay to allow SQLite to release locks
+            time.sleep(0.5)
+            
+            # Create a fresh connection for the checkpoint
+            temp_conn = sqlite3.connect(self.local_db_path)
+            temp_cursor = temp_conn.cursor()
+
+            try:
+                # Step 1: Force a checkpoint to sync WAL to main DB
+                temp_cursor.execute("PRAGMA wal_checkpoint(FULL)")
+                
+                # Step 2: Switch journal mode to DELETE to close WAL file
+                temp_cursor.execute("PRAGMA journal_mode = DELETE")
+                
+                # Step 3: Commit any pending transactions
+                temp_conn.commit()
+            finally:
+                # Close the temporary connection
+                temp_cursor.close()
+                temp_conn.close()
                 
             # Upload to GCS
             blob = self.bucket.blob(self.db_path)
@@ -524,10 +548,20 @@ class DataDownloadIndex(BaseIndex):
             
         except Exception as e:
             logger.error(f"Error saving index: {e}")
-        finally:
-            # Ensure we can reconnect if needed
-            if hasattr(self._thread_local, 'conn'):
-                self._thread_local.conn = None
+            # Add more detail to the error message
+            import traceback
+            logger.debug(f"Full error: {traceback.format_exc()}")
+
+    def _close_all_connections(self):
+        """Close all database connections."""
+        with self._lock:
+            try:
+                if hasattr(self, '_thread_local') and hasattr(self._thread_local, 'conn') and self._thread_local.conn:
+                    self._thread_local.conn.commit()  # Ensure all changes are committed
+                    self._thread_local.conn.close()   # Properly close the connection
+                    self._thread_local.conn = None
+            except Exception as e:
+                logger.warning(f"Error closing thread-local connections: {e}")
     
     def list_successful_files(self, prefix: str = None) -> List[str]:
         """List all successfully downloaded files with optional prefix filter."""

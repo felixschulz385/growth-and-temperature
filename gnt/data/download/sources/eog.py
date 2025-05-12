@@ -1,12 +1,12 @@
-# download/glass.py
+# download/eog.py
 import requests
 import logging
 import os
 import time
+import hashlib
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-import hashlib
-from typing import Generator, Tuple
+from typing import Generator, Tuple, List, Dict, Any, Optional
 
 from gnt.data.download.sources.base import BaseDataSource
 
@@ -29,7 +29,7 @@ class EOGDataSource(BaseDataSource):
         self.DATA_SOURCE_NAME = "eog"
         self.base_url = base_url
         self.file_extensions = file_extensions or [".tif", ".tgz", ".tar.gz"]
-        self.has_entrypoints = False
+        self.has_entrypoints = False  # Changed to False to disable entrypoint functionality
         
         # Parse URL to extract data path
         parsed = urlparse(base_url)
@@ -44,13 +44,13 @@ class EOGDataSource(BaseDataSource):
         
         logger.info(f"Initialized EOG data source with path: {self.data_path}")
 
-    def list_remote_files(self, entrypoint: dict = None):
+    def list_remote_files(self, entrypoint: dict = None) -> Generator[Tuple[str, str], None, None]:
         """
         Lists all files from the EOG data repository using a generator approach.
         Uses a simple tree-based crawling approach.
         
         Args:
-            entrypoint: Not used for EOG, but included for API compatibility
+            entrypoint: Ignored parameter (entrypoint functionality removed)
             
         Returns:
             Generator yielding tuples of (relative_path, file_url)
@@ -90,7 +90,11 @@ class EOGDataSource(BaseDataSource):
                 links = [link for link in soup.find_all("td", {"class": "indexcolname"})]
 
                 for link in links:
-                    href = link.find("a").get("href")
+                    href_elem = link.find("a")
+                    if not href_elem:
+                        continue
+                        
+                    href = href_elem.get("href")
                     
                     # Skip invalid, parent directory and self-references
                     if not href or href in ("../", "./", "/"):
@@ -148,9 +152,12 @@ class EOGDataSource(BaseDataSource):
             requests.Session: Authenticated session with valid cookies
         """
         logger.info("Creating authenticated session for EOG data")
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        import time
+        try:
+            from selenium import webdriver
+            from selenium.webdriver.chrome.options import Options
+        except ImportError:
+            logger.error("Selenium is required for EOG authentication. Please install with: pip install selenium")
+            raise ImportError("Selenium is required for EOG authentication")
 
         # Use Selenium to log in and get cookies
         username = os.environ.get("EOG_USERNAME")
@@ -179,28 +186,31 @@ class EOGDataSource(BaseDataSource):
         logger.info(f"Navigating to login page via {login_prompting_url}")
         driver.get(login_prompting_url)
 
-        # Fill login form
-        logger.info("Filling login form")
-        driver.find_element("id", "username").send_keys(username)
-        driver.find_element("id", "password").send_keys(password)
-        driver.find_element("name", "login").click()
+        try:
+            # Fill login form
+            logger.info("Filling login form")
+            driver.find_element("id", "username").send_keys(username)
+            driver.find_element("id", "password").send_keys(password)
+            driver.find_element("name", "login").click()
 
-        # Wait for login & redirect
-        logger.info("Waiting for login to complete")
-        time.sleep(5)
+            # Wait for login & redirect
+            logger.info("Waiting for login to complete")
+            time.sleep(5)
 
-        # Download using cookies from the session
-        cookies = driver.get_cookies()
-        driver.quit()
-        logger.info("Browser session closed")
-
-        # Create session with cookies
-        session = requests.Session()
-        for c in cookies:
-            session.cookies.set(c['name'], c['value'])
+            # Download using cookies from the session
+            cookies = driver.get_cookies()
+            
+            # Create session with cookies
+            session = requests.Session()
+            for c in cookies:
+                session.cookies.set(c['name'], c['value'])
+            
+            logger.info("Authenticated session created successfully")
+            return session
         
-        logger.info("Authenticated session created successfully")
-        return session
+        finally:
+            driver.quit()
+            logger.info("Browser session closed")
 
     def download(self, file_url: str, output_path: str, session: requests.Session = None) -> None:
         """
@@ -212,7 +222,8 @@ class EOGDataSource(BaseDataSource):
             session: Authenticated session (required for EOG)
         """
         if session is None:
-            raise ValueError("Authenticated session must be provided for EOG downloads.")
+            logger.info("No session provided, creating new authenticated session")
+            session = self.get_authenticated_session()
 
         try:
             # Add a small delay to avoid rate limiting
@@ -245,34 +256,33 @@ class EOGDataSource(BaseDataSource):
             GCS path for the file
         """
         # Extract the relative path from the full URL structure
-        # Remove year directory pattern (e.g., F10_1993/, F10_1994/, etc.)
-        base_path = "/".join(relative_path.split("/")[1:])  # Skip the first directory
+        path_parts = relative_path.split("/")
         
-        # Combine with data source path to create final GCS path
-        return f"{self.data_path}/{base_path}"
-    
-    def filename_to_entrypoint(self, relative_path: str) -> dict:
-        """
-        EOG data doesn't use entrypoints, but we implement this method
-        to maintain compatibility with the BaseDataSource API.
-        
-        Args:
-            relative_path: Relative path of the file
+        # For DMSP data (e.g., F10_1992/F101992.v4b.global.avg_vis.tif)
+        # Extract data type (dmsp or viirs)
+        if "dmsp" in self.data_path.lower():
+            # Keep filename and append to data_path
+            filename = path_parts[-1]
+            # Include satellite identifier if present in the path
+            satellite = None
+            for part in path_parts:
+                if part.startswith("F") and "_" in part:
+                    satellite = part.split("_")[0]
+                    break
             
-        Returns:
-            None since EOG doesn't use entrypoints
-        """
-        return None
-    
-    def get_all_entrypoints(self):
-        """
-        EOG data doesn't use entrypoints because files are organized by satellite/year.
+            if satellite:
+                return f"{self.data_path}/dmsp/{satellite}/{filename}"
+            else:
+                return f"{self.data_path}/dmsp/{filename}"
         
-        Returns:
-            Empty list for compatibility
-        """
-        return []
-    
+        elif "viirs" in self.data_path.lower():
+            # Keep filename and append to data_path
+            filename = path_parts[-1]
+            return f"{self.data_path}/viirs/{filename}"
+        
+        # Default case - use full relative path
+        return f"{self.data_path}/{relative_path}"
+
     def get_file_hash(self, file_url: str) -> str:
         """
         Generate a unique hash for a file URL.
@@ -285,4 +295,19 @@ class EOGDataSource(BaseDataSource):
             MD5 hash of the file URL
         """
         return hashlib.md5(file_url.encode()).hexdigest()
+
+    def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
+        pass
+
+    def get_all_entrypoints(self) -> List[Dict[str, Any]]:
+        """
+        Returns an empty list as this data source doesn't use entrypoints.
+        Implementation required by the abstract base class.
+        
+        Returns:
+            An empty list
+        """
+        logger.info("Entrypoints not used for this data source")
+        return []
+
 

@@ -13,7 +13,7 @@ import os
 from gnt.data.download.sources.base import BaseDataSource
 
 class GlassLSTDataSource(BaseDataSource):
-    def __init__(self, base_url: str, file_extensions=None):
+    def __init__(self, base_url: str, file_extensions: list[str] = None, output_path: str = None):
         self.DATA_SOURCE_NAME = "glass"
         self.base_url = base_url
         self.file_extensions = file_extensions or [".hdf"]
@@ -22,7 +22,12 @@ class GlassLSTDataSource(BaseDataSource):
         parsed = urlparse(base_url)
         parts = parsed.path.strip("/").split("/")
         datatype = "/".join(parts[1:]) if len(parts) > 2 else "unknown"
-        self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
+        
+        # Use custom output path if provided, otherwise construct from URL
+        if output_path:
+            self.data_path = output_path
+        else:
+            self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
 
     def list_remote_files(self, entrypoint: dict = None) -> list:
         def crawl(url: str, relative_path: str = ""):
