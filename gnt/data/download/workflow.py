@@ -17,6 +17,8 @@ import threading
 import tempfile
 from pathlib import Path
 from typing import Dict, Any, List, Union, Optional
+import hashlib
+from datetime import datetime
 
 from google.cloud import storage
 from gnt.data.common.gcs.client import GCSClient
@@ -396,14 +398,6 @@ def download_with_threads(data_source, context, max_concurrent, max_queue_size, 
     """
     logger.info(f"Using thread-based download for {data_source.DATA_SOURCE_NAME}")
     
-    # If only building index, exit
-    if task_config.get('build_index_only', False):
-        if not task_config.get('auto_index', False):
-            logger.info("Building index only without downloading files")
-            download_index.refresh_index(data_source)
-        logger.info("Index built successfully")
-        return
-    
     # Create bounded job queue
     job_queue = queue.Queue(maxsize=max_queue_size)
     
@@ -577,7 +571,6 @@ def process_task(task_config: Dict[str, Any], context=None) -> None:
             bucket_name=bucket_name,
             data_source=data_source,
             client=context.storage_client,
-            auto_index=mode != "download"  # Auto index unless we're just downloading
         ) as download_index:
             
             # Select and execute appropriate handler based on mode
@@ -626,9 +619,32 @@ class TaskHandlers:
     
     @staticmethod
     def handle_validate(data_source, download_index, context, task_config):
-        """Handle validation task."""
-        logger.info(f"Validating downloads for {data_source.DATA_SOURCE_NAME}")
-        validate_downloads(data_source, context.gcs_client, download_index)
+        """
+        Handle validation task with simplified workflow.
+        Delegates validation logic to index methods.
+        """
+        logger.info(f"Starting validation for {data_source.DATA_SOURCE_NAME}")
+        
+        # Force refresh option from task config
+        force_refresh = task_config.get("force_refresh_gcs", False)
+        
+        # Delegate to index's validation method which uses _get_existing_files()
+        stats = download_index.validate_against_gcs(context.gcs_client, force_file_list_update=force_refresh)
+        
+        # Summarize results
+        logger.info(f"Validation complete:")
+        logger.info(f"  - Updated {stats['updated']} file statuses to 'success'") 
+        logger.info(f"  - Added {stats['added']} new files to the index")
+        logger.info(f"  - Found {stats['orphaned']} orphaned entries (reset to 'indexed' status)")
+        
+        # Save index
+        download_index.save()
+        
+        # Show final statistics
+        index_stats = download_index.get_stats()
+        logger.info(f"Index status: {index_stats.get('files_success', 0)} successful files, "
+                   f"{index_stats.get('files_pending', 0)} pending, "
+                   f"{index_stats.get('files_failed', 0)} failed")
 
 
 def run_workflow(config_path: Union[str, Path]) -> None:

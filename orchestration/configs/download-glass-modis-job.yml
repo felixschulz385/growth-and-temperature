@@ -19,11 +19,11 @@ spec:
         args: ["/config/workflow-config.yaml"]
         resources:
           requests:
-            cpu: "200m"
-            memory: "1024Mi"
+            cpu: "100m"
+            memory: "512Mi"
           limits:
-            cpu: "500m"
-            memory: "2048Mi"
+            cpu: "250m"
+            memory: "1024Mi"
         env:
         - name: PYTHONUNBUFFERED
           value: "1"
@@ -65,11 +65,11 @@ data:
         file_extensions: [".hdf"]
         
         # Processing controls
-        max_concurrent_downloads: 2
+        max_concurrent_downloads: 4
         max_queue_size: 8
         
         # Resource limits
-        memory_limit: 2000  # 2GB
+        memory_limit: 1000  # 1GB
         
         # Retry settings
         max_retries: 3

@@ -20,7 +20,7 @@ class DataDownloadIndex(BaseIndex):
     """Memory-efficient SQLite-based index for managing file downloads."""
     
     def __init__(self, bucket_name: str, data_source: BaseDataSource, client=None, 
-                 temp_dir=None, auto_index=False, save_interval_seconds=300):
+                 temp_dir=None, save_interval_seconds=300):
         # Extract data source properties
         self.data_source_name = getattr(data_source, "DATA_SOURCE_NAME", "unknown")
         self.data_path = getattr(data_source, "data_path", "unknown")
@@ -58,10 +58,6 @@ class DataDownloadIndex(BaseIndex):
         # Setup database
         self._setup_database()
         self._load_metadata()
-        
-        # Build index if requested
-        if auto_index:
-            self.refresh_index(data_source)
     
     def _setup_temp_dir(self, temp_dir):
         """Set up temporary directory for the index."""
@@ -122,60 +118,103 @@ class DataDownloadIndex(BaseIndex):
         return self._thread_local.conn
     
     def refresh_index(self, data_source):
-        """Build or update the index from the data source."""
-        logger.info(f"Refreshing index from {self.data_source_name}")
+        """
+        DEPRECATED: Use build_index_from_source instead.
+        This method is maintained for backward compatibility.
+        """
+        logger.warning(
+            "refresh_index() is deprecated and will be removed in a future version. "
+            "Use build_index_from_source(data_source, check_gcs=True, only_missing_entrypoints=True) instead."
+        )
+        return self.build_index_from_source(
+            data_source, 
+            rebuild=False, 
+            check_gcs=True, 
+            only_missing_entrypoints=True
+        )
+    
+    def build_index_from_source(self, data_source, rebuild=False, check_gcs=False, 
+                                only_missing_entrypoints=True, force_refresh_gcs=False):
+        """
+        Build index from data source with configurable behavior.
+        
+        Args:
+            data_source: Data source to index
+            rebuild: Whether to rebuild the index from scratch
+            check_gcs: Whether to check GCS for existing files
+            only_missing_entrypoints: Only process entrypoints not already in index
+            force_refresh_gcs: Whether to force a refresh of the GCS file list
+        
+        Returns:
+            int: Number of files indexed
+        """
+        logger.info(f"Building index for {data_source.DATA_SOURCE_NAME} from remote sources")
         total_indexed = 0
         
+        # Clear existing index if requested
+        if rebuild:
+            logger.info("Rebuilding index from scratch")
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM files")
+            conn.commit()
+        
         try:
-            # Get existing files in GCS
-            existing_files = self._get_existing_files()
-            
+            # Check for existing files in GCS if requested
+            existing_files = set()
+            if check_gcs:
+                existing_files = self._get_existing_files(force_refresh=force_refresh_gcs)
+                
             # Process files based on data source capabilities
-            if getattr(data_source, "has_entrypoints", False):
+            if hasattr(data_source, "has_entrypoints") and data_source.has_entrypoints:
                 # Process entrypoint-based data sources
                 all_entrypoints = self._load_entrypoints(data_source)
-                missing_entrypoints = self._find_missing_entrypoints(data_source, all_entrypoints)
+                logger.info(f"Found {len(all_entrypoints)} entrypoints to process")
                 
-                if not missing_entrypoints:
-                    logger.info("No missing entrypoints found. Index is up to date.")
-                    return 0
+                # Filter to only missing entrypoints if requested
+                entrypoints_to_process = all_entrypoints
+                if only_missing_entrypoints:
+                    entrypoints_to_process = self._find_missing_entrypoints(data_source, all_entrypoints)
+                    logger.info(f"Filtered to {len(entrypoints_to_process)} missing entrypoints")
+                    
+                    if not entrypoints_to_process:
+                        logger.info("No missing entrypoints found. Index is up to date.")
+                        return 0
                 
-                # Process each missing entrypoint
-                for i, entrypoint in enumerate(missing_entrypoints):
-                    logger.info(f"Processing entrypoint {i+1}/{len(missing_entrypoints)}: "
-                                f"year={entrypoint['year']}, day={entrypoint['day']}")
+                # Process each entrypoint
+                for i, entrypoint in enumerate(entrypoints_to_process):
+                    logger.info(f"Processing entrypoint {i+1}/{len(entrypoints_to_process)}: {entrypoint}")
                     
-                    entrypoint_files = list(data_source.list_remote_files(entrypoint))
-                    
-                    if not entrypoint_files:
-                        logger.warning(f"No files found for entrypoint: "
-                                      f"year={entrypoint['year']}, day={entrypoint['day']}")
-                        continue
-                    
-                    logger.info(f"Found {len(entrypoint_files)} files for this entrypoint")
-                    
-                    # Process this entrypoint's files
-                    indexed = self._add_files_to_index(data_source, entrypoint_files, existing_files)
-                    total_indexed += indexed
-                    
-                    # Update metadata after each entrypoint
-                    self.metadata["last_processed_entrypoint"] = {
-                        "year": entrypoint["year"],
-                        "day": entrypoint["day"],
-                        "timestamp": datetime.now().isoformat()
-                    }
+                    try:
+                        remote_files = list(data_source.list_remote_files(entrypoint))
+                        
+                        if remote_files:
+                            logger.info(f"Found {len(remote_files)} files for this entrypoint")
+                            # Add files to index
+                            indexed = self._add_files_to_index(data_source, remote_files, existing_files)
+                            total_indexed += indexed
+                            
+                            # Update metadata after each entrypoint
+                            self.metadata["last_processed_entrypoint"] = entrypoint
+                        else:
+                            logger.warning(f"No files found for entrypoint: {entrypoint}")
+                    except Exception as e:
+                        logger.error(f"Error processing entrypoint {entrypoint}: {e}")
                     
                     # Periodic save
                     self._check_save_needed(force=False)
             else:
-                # Process simple data sources
+                # Simple data source
                 logger.info("Processing all available files")
-                all_files = list(data_source.list_remote_files())
-                logger.info(f"Found {len(all_files)} files")
-                total_indexed = self._add_files_to_index(data_source, all_files, existing_files)
+                try:
+                    remote_files = list(data_source.list_remote_files())
+                    logger.info(f"Found {len(remote_files)} remote files")
+                    total_indexed = self._add_files_to_index(data_source, remote_files, existing_files)
+                except Exception as e:
+                    logger.error(f"Error listing remote files: {e}")
                 
         except Exception as e:
-            logger.error(f"Error refreshing index: {e}", exc_info=True)
+            logger.error(f"Error building index: {e}", exc_info=True)
             raise
         finally:
             # Ensure we commit changes and update stats
@@ -183,33 +222,66 @@ class DataDownloadIndex(BaseIndex):
                 conn = self._get_connection()
                 conn.commit()
                 self._update_stats(total_indexed)
-                self.save()
             except Exception as e:
-                logger.error(f"Error during final index save: {e}")
-        
+                logger.error(f"Error during final index update: {e}")
+
         return total_indexed
     
-    def _get_existing_files(self):
-        """Get set of existing files in GCS, using cached blob list if available."""
-        gcs_client = GCSClient(self.bucket_name)
+    def _get_existing_files(self, force_refresh=False):
+        """
+        Get set of existing files in GCS with option to refresh.
         
-        blob_list = self.bucket.blob(self.blob_list_path)
+        Args:
+            force_refresh: If True, always fetch a fresh list from GCS
+            
+        Returns:
+            set: Set of blob paths that exist in GCS
+        """
+        from datetime import datetime, timedelta
+        import json
+        
+        gcs_client = GCSClient(self.bucket_name)
+        blob_list_path = f"_index/blob_list_{self.data_path.replace('/', '_')}.json"
+        blob_list = self.bucket.blob(blob_list_path)
         
         try:
-            if blob_list.exists():  # 1 day
-                age = (datetime.now() - blob_list.age).total_seconds()
-                if age < 86400:
-                    # Use cached list if fresh enough
+            # Check if we should use cached list
+            if not force_refresh and blob_list.exists():
+                try:
                     logger.info(f"Loading cached blob list")
                     blob_list_json = blob_list.download_as_text()
                     existing_files = set(json.loads(blob_list_json))
-            else:
-                logger.info(f"Creating new blob list for {self.data_path}")
-                existing_files = gcs_client.list_existing_files(prefix=self.data_path)
-                blob_list.upload_from_string(json.dumps(list(existing_files)))
+                    logger.info(f"Found {len(existing_files)} existing files in GCS (from cache)")
+                    return existing_files
+                except Exception as e:
+                    logger.warning(f"Error accessing cached blob list: {e}, will refresh")
+                    
+            # If we get here, we need to refresh the list
+            logger.info(f"Creating new blob list for {self.data_path}")
+            
+            # Collect all blob names with paging
+            blob_paths = set()
+            logger.info(f"Scanning GCS bucket for files with prefix {self.data_path}/")
+            blob_iterator = gcs_client.bucket.list_blobs(prefix=f"{self.data_path}/")
+            page_count = 0
+            
+            for page in blob_iterator.pages:
+                page_count += 1
+                page_blobs = {blob.name for blob in page}
+                blob_paths.update(page_blobs)
+                logger.info(f"Processed page {page_count}, found {len(page_blobs)} blobs (total: {len(blob_paths)})")
                 
-            logger.info(f"Found {len(existing_files)} existing files in GCS")
-            return existing_files
+            logger.info(f"Found {len(blob_paths)} existing files in GCS")
+            
+            # Save the blob list for future use
+            try:
+                blob_list.upload_from_string(json.dumps(list(blob_paths)))
+                logger.debug(f"Updated cached blob list at gs://{self.bucket_name}/{blob_list_path}")
+            except Exception as e:
+                logger.warning(f"Error saving blob list: {e}")
+                
+            return blob_paths
+            
         except Exception as e:
             logger.warning(f"Error getting blob list: {e}. Will assume no existing files.")
             return set()
@@ -333,17 +405,27 @@ class DataDownloadIndex(BaseIndex):
             
         return total_indexed
     
-    def _check_save_needed(self, force=False):
-        """Check if we should save the index based on elapsed time."""
+    def _check_save_needed(self, force=False, operations_since_save=0):
+        """
+        Check if index should be saved based on time elapsed or operations count.
+        
+        Args:
+            force: Whether to force a save
+            operations_since_save: Number of operations since last save
+        
+        Returns:
+            bool: Whether save was performed
+        """
         current_time = time.time()
         elapsed = current_time - self._last_save_time
         
-        if force or elapsed >= self.save_interval_seconds:
-            logger.info(f"Performing periodic save (elapsed: {elapsed:.1f}s)")
+        # Save if forced, time interval exceeded, or significant operations performed
+        if force or elapsed >= self.save_interval_seconds or operations_since_save >= 1000:
+            logger.info(f"Saving index (forced: {force}, elapsed: {elapsed:.1f}s, operations: {operations_since_save})")
             try:
                 self.save()
             except Exception as e:
-                logger.error(f"Error during periodic save: {e}")
+                logger.error(f"Error during save: {e}")
             self._last_save_time = current_time
             return True
         return False
@@ -403,8 +485,8 @@ class DataDownloadIndex(BaseIndex):
         return "unknown", None
 
     def record_download_status(self, file_hash: str, source_url: str, 
-                              destination_blob: str, status: str, error: str = None):
-        """Update the status of a file download with thread safety."""
+                          destination_blob: str, status: str, error: str = None):
+        """Update the status of a file download with consolidated save logic."""
         with self._lock:
             try:
                 conn = self._get_connection()
@@ -431,14 +513,16 @@ class DataDownloadIndex(BaseIndex):
                         self.metadata["stats"]["failed_downloads"] = 0
                     self.metadata["stats"]["failed_downloads"] += 1
                 
-                # Periodic metadata save
-                completed = (
-                    self.metadata["stats"].get("successful_downloads", 0) + 
-                    self.metadata["stats"].get("failed_downloads", 0)
-                )
-                if completed % 100 == 0:
-                    self._save_metadata()
-                    self._check_save_needed()
+                # Track operations since last save
+                if not hasattr(self, '_ops_since_save'):
+                    self._ops_since_save = 0
+                self._ops_since_save += 1
+                
+                # Check if we should save based on operations count
+                if self._ops_since_save >= 1000:
+                    save_performed = self._check_save_needed(operations_since_save=self._ops_since_save)
+                    if save_performed:
+                        self._ops_since_save = 0
                 
                 # Update cache
                 cache_key = f"file_status_{file_hash}"
@@ -614,3 +698,158 @@ class DataDownloadIndex(BaseIndex):
             self.save()
         finally:
             self._cleanup_temp_files()
+    
+    def validate_against_gcs(self, gcs_client, force_file_list_update=False):
+        """
+        Validate index against GCS bucket contents.
+        Uses centralized status management.
+        
+        Args:
+            gcs_client: GCSClient instance to use
+            force_file_list_update: Whether to force a refresh of the GCS file list
+
+        Returns:
+            dict: Validation statistics
+        """
+        stats = {"updated": 0, "added": 0, "orphaned": 0}
+        logger.info(f"Validating index against GCS for {self.data_source_name}")
+        
+        # Get all existing files in GCS using centralized method
+        all_blobs = self._get_existing_files(force_refresh=force_file_list_update)
+        logger.info(f"Found {len(all_blobs)} files in GCS")
+        
+        try:
+            # Process in batches
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # 1. Fix statuses for files that exist in GCS but aren't marked as success
+            logger.info("Updating status for files that exist in GCS but aren't marked as successful")
+            cursor.execute("SELECT file_hash, destination_blob, source_url, status FROM files WHERE status != 'success'")
+            rows = cursor.fetchall()
+            
+            # Store all rows in memory to avoid cursor issues if connection is reset
+            all_rows = list(rows)
+            logger.info(f"Found {len(all_rows)} files to check for status updates")
+            
+            batch_size = 500
+            for i in range(0, len(all_rows), batch_size):
+                batch = all_rows[i:i+batch_size]
+                for file_hash, destination_blob, source_url, status in batch:
+                    if destination_blob in all_blobs:
+                        # Use centralized status update method
+                        self.record_download_status(
+                            file_hash=file_hash,
+                            source_url=source_url or "",
+                            destination_blob=destination_blob,
+                            status="success"
+                        )
+                        stats["updated"] += 1
+            
+            if stats["updated"] > 0 and i % batch_size == 0:
+                logger.info(f"Updated {stats['updated']} of {len(all_rows)} file statuses so far")
+        
+            if stats["updated"] > 0:
+                logger.info(f"Updated a total of {stats['updated']} file statuses to 'success'")
+            
+            # 2. Find and add files in GCS not tracked in index
+            logger.info("Finding files in GCS that aren't in the index")
+            cursor.execute("SELECT destination_blob FROM files")
+            # Store results in memory to avoid cursor issues
+            indexed_blobs = {row[0] for row in cursor.fetchall()}
+            
+            unindexed_blobs = all_blobs - indexed_blobs
+            if unindexed_blobs:
+                logger.info(f"Found {len(unindexed_blobs)} files in GCS not in the index")
+                
+                # Add these to index
+                for i, blob_name in enumerate(unindexed_blobs):
+                    # Check connection is still valid
+                    if i % 100 == 0:
+                        try:
+                            conn.execute("SELECT 1")
+                        except sqlite3.ProgrammingError:
+                            # Reconnect if needed
+                            logger.warning("Database connection lost, reconnecting")
+                            conn = self._get_connection()
+                            cursor = conn.cursor()
+                    
+                    relative_path = blob_name.replace(f"{self.data_path}/", "", 1)
+                    file_hash = hashlib.md5(relative_path.encode()).hexdigest()
+                    
+                    try:
+                        # Insert the file first
+                        cursor.execute(
+                            """INSERT OR IGNORE INTO files 
+                            (file_hash, relative_path, source_url, destination_blob, status, timestamp)
+                            VALUES (?, ?, ?, ?, ?, ?)""",
+                            (file_hash, relative_path, None, blob_name, "indexed", 
+                            datetime.now().isoformat())
+                        )
+                        
+                        # Then update status using the centralized method
+                        self.record_download_status(
+                            file_hash=file_hash,
+                            source_url=None,
+                            destination_blob=blob_name,
+                            status="success"
+                        )
+                        stats["added"] += 1
+                        
+                        if stats["added"] % 100 == 0:
+                            conn.commit()
+                            logger.info(f"Added {stats['added']} missing files to the index so far")
+                    except Exception as e:
+                        logger.warning(f"Error adding file {blob_name}: {e}")
+                
+                try:
+                    conn.commit()
+                except:
+                    # Reconnect and continue if needed
+                    conn = self._get_connection()
+                    
+                logger.info(f"Added a total of {stats['added']} missing files to the index")
+            
+            # 3. Find orphaned entries (marked as success but not in GCS)
+            logger.info("Checking for orphaned entries (marked as success but missing from GCS)")
+            cursor.execute("SELECT file_hash, destination_blob FROM files WHERE status = 'success'")
+            
+            # Store results in memory to avoid cursor issues
+            success_files = list(cursor.fetchall())
+            
+            for i, (file_hash, destination_blob) in enumerate(success_files):
+                # Check connection every so often
+                if i % 100 == 0:
+                    try:
+                        conn.execute("SELECT 1")
+                    except sqlite3.ProgrammingError:
+                        # Reconnect if needed
+                        logger.warning("Database connection lost, reconnecting")
+                        conn = self._get_connection()
+                
+                if destination_blob not in all_blobs:
+                    try:
+                        # Use centralized status update method
+                        self.record_download_status(
+                            file_hash=file_hash,
+                            source_url=None,
+                            destination_blob=destination_blob,
+                            status="indexed",
+                            error="File marked as success but missing from GCS"
+                        )
+                        stats["orphaned"] += 1
+                        
+                        if stats["orphaned"] % 100 == 0:
+                            logger.info(f"Found {stats['orphaned']} orphaned entries so far")
+                    except Exception as e:
+                        logger.warning(f"Error updating orphaned entry {file_hash}: {e}")
+            
+            if stats["orphaned"] > 0:
+                logger.info(f"Found {stats['orphaned']} orphaned entries (reset to 'indexed' status)")
+        
+        except Exception as e:
+            logger.error(f"Error during validation: {e}", exc_info=True)
+            raise
+            
+        return stats
+
