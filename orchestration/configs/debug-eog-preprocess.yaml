@@ -1,0 +1,51 @@
+# Configuration for EOG data preprocessing workflow with direct data source parameters
+
+# Workflow definition
+tasks:
+  # # DMSP nighttime lights processing (1992-2013)
+  # - preprocessor: "eog"
+  #   stage: "annual"
+  #   bucket_name: "growthandheat"
+  #   year_range: [1992, 2013]
+    
+  #   # Data source parameters - match exactly with download config
+  #   base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+  #   output_path: "eog/dmsp"
+    
+  #   # Processing parameters
+  #   use_index: true
+  #   version: "v1"
+  #   dask_threads: 4
+  #   dask_memory_limit: "8GB"
+
+  # # VIIRS annual stable lights processing (2012-2022)
+  # - preprocessor: "eog"
+  #   stage: "annual"
+  #   bucket_name: "growthandheat"
+  #   year_range: [2012, 2022]
+    
+  #   # Data source parameters - match exactly with download config
+  #   base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+  #   output_path: "eog/viirs/stable_lights"
+    
+  #   # Processing parameters
+  #   use_index: true
+  #   version: "v1"
+  #   dask_threads: 4
+  #   dask_memory_limit: "8GB"
+
+    # VIIRS DVNL processing (2012-2019)
+  - preprocessor: "eog"
+    stage: "annual"
+    bucket_name: "growthandheat"
+    year_range: [2012, 2014]
+    
+    # Source configuration
+    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+    output_path: "eog/dvnl"
+    
+    # Processing parameters
+    use_index: true
+    version: "v1"
+    dask_threads: 4
+    dask_memory_limit: "8GB"

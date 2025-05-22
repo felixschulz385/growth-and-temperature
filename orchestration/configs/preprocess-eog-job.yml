@@ -1,0 +1,100 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: preprocess-eog-job
+  labels:
+    app: data-processing
+    dataset: eog
+    mode: preprocess
+spec:
+  ttlSecondsAfterFinished: 7200  # auto-cleanup after 2 hours
+  backoffLimit: 3                # retry on failure (3 times)
+  template:
+    spec:
+      serviceAccountName: k8s-data-processor
+      restartPolicy: OnFailure
+      containers:
+      - name: data-processor
+        image: gcr.io/ee-growthandheat/data-processor:latest
+        args: ["/config/workflow-config.json"]
+        resources:
+          requests:
+            cpu: "8000m"     # 8 CPU cores
+            memory: "16Gi"   # 16GB RAM
+            ephemeral-storage: "8Gi"
+          limits:
+            cpu: "8000m"     # 8 CPU cores
+            memory: "16Gi"   # 16GB RAM
+            ephemeral-storage: "16Gi"
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: PROCESSING_MODE
+          value: "preprocess"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+        - name: temp-storage
+          mountPath: /tmp
+      volumes:
+      - name: config-volume
+        configMap:
+          name: eog-nightlights-preprocess-config
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: "30Gi"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eog-nightlights-preprocess-config
+data:
+  workflow-config.json: |
+    {
+      "processing_mode": "preprocess",
+      "tasks": [
+        {
+          "preprocessor": "eog",
+          "stage": "annual",
+          "bucket_name": "growthandheat",
+          "year_range": [1992, 2013],
+          
+          "base_url": "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/",
+          "output_path": "eog/dmsp",
+          
+          "use_index": true,
+          "version": "v1",
+          "dask_threads": 8,
+          "dask_memory_limit": "14GB"
+        },
+        {
+          "preprocessor": "eog",
+          "stage": "annual",
+          "bucket_name": "growthandheat",
+          "year_range": [2012, 2022],
+          
+          "base_url": "https://eogdata.mines.edu/nighttime_light/annual/v21/",
+          "output_path": "eog/viirs/stable_lights",
+          
+          "use_index": true,
+          "version": "v1",
+          "dask_threads": 8,
+          "dask_memory_limit": "14GB"
+        },
+        {
+          "preprocessor": "eog",
+          "stage": "annual",
+          "bucket_name": "growthandheat",
+          "year_range": [2012, 2019],
+          
+          "base_url": "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/",
+          "output_path": "eog/dvnl",
+          
+          "use_index": true,
+          "version": "v1",
+          "dask_threads": 8,
+          "dask_memory_limit": "14GB"
+        }
+      ]
+    }

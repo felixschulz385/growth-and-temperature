@@ -26,8 +26,12 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         module_path = f"gnt.data.preprocess.sources.{preprocessor_name.lower()}"
         module = importlib.import_module(module_path)
         
-        # By convention, the class name is expected to be CamelCase
-        class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
+        # Special case for EOG preprocessor (all caps)
+        if preprocessor_name.lower() == "eog":
+            class_name = 'EOGPreprocessor'
+        else:
+            # By convention, the class name is expected to be CamelCase
+            class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
         
         if not hasattr(module, class_name):
             raise AttributeError(f"Module {module_path} does not have class {class_name}")

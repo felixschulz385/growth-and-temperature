@@ -12,10 +12,12 @@ import dask
 from dask.distributed import Client, LocalCluster
 import dask.array as da
 import zarr
+import numcodecs
 
-from sources.base import AbstractPreprocessor
+from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.gcs.client import GCSClient
 from gnt.data.common.dask.client import DaskClientContextManager
+from gnt.data.common.index.preprocessing_index import PreprocessingIndex
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,9 @@ class GlassPreprocessor(AbstractPreprocessor):
     
     Handles both MODIS (multiple files per day in grid cells) and AVHRR (one file per day) datasets.
     Uses Dask for distributed processing to handle datasets larger than memory.
+    
+    Integrates with PreprocessingIndex for tracking files during the preprocessing
+    stages to enable data transfer between Kubernetes and University cluster.
     """
     
     # Class constants
@@ -50,6 +55,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                 - output_dir: Directory for final output (default: "output")
                 - base_url: Base URL for the data source (used for index lookup)
                 - file_extensions: List of file extensions to look for
+                - version: Version of processing (default: "v1")
         """
         super().__init__(**kwargs)
         
@@ -86,16 +92,25 @@ class GlassPreprocessor(AbstractPreprocessor):
         # Set base_url and file_extensions (used for index lookup)
         self.base_url = kwargs.get('base_url', "https://glass-data.bnu.edu.cn/download/")
         self.file_extensions = kwargs.get('file_extensions', [".hdf"])
+        self.version = kwargs.get('version', 'v1')
         
         # Initialize GCS client
         self.gcs_client = GCSClient(self.BUCKET_NAME)
+        
+        # Initialize preprocessing index
+        self.data_path = f"glass/LST/{self.data_source}"
+        self.preprocessing_index = PreprocessingIndex(
+            bucket_name=self.BUCKET_NAME,
+            data_path=self.data_path,
+            version=self.version,
+            client=self.gcs_client.client if hasattr(self.gcs_client, 'client') else None
+        )
         
         # Dask configuration parameters - store them but don't create client yet
         self.dask_threads = kwargs.get('dask_threads', None)  # None means use all available cores
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)  # None means 75% of system memory
         self.chunk_size = kwargs.get('chunk_size', {"band": 1, "x": 500, "y": 500})
         self.dashboard_port = kwargs.get('dashboard_port', 8787)
-        # We'll create a fresh Dask client per task now
     
     def _get_dask_client_params(self):
         """
@@ -117,6 +132,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         - Groups files by year and grid cell
         - For each group, downloads the files, calculates annual statistics
         - Saves the results to the intermediate location using Dask for out-of-memory processing
+        - Updates the preprocessing index with file information
         """
         logger.info(f"Starting summarization of {self.data_source} data for years {min(self.years)}-{max(self.years)}")
         
@@ -157,20 +173,65 @@ class GlassPreprocessor(AbstractPreprocessor):
             grid_cell = f"h{h:02d}v{v:02d}"
             output_path = f"{self.data_source.lower()}/{year}/{grid_cell}.zarr"
             
-            # Skip if already processed and override is False
-            if not self.override and self.gcs_client.check_if_exists(f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_{grid_cell}_annual.zarr/.zmetadata"):
+            # Check if this year/grid_cell is already completed in the index
+            annual_files = self.preprocessing_index.get_files(
+                stage=PreprocessingIndex.STAGE_ANNUAL,
+                year=year,
+                grid_cell=grid_cell,
+                status=PreprocessingIndex.STATUS_COMPLETED
+            )
+            
+            # Skip if already processed (either in index or by checking GCS) and override is False
+            if not self.override and (annual_files or 
+                self.gcs_client.file_exists(f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_{grid_cell}_annual.zarr/.zmetadata")):
                 logger.info(f"Skipping existing output for {year} {grid_cell} ({i+1}/{total_groups})")
                 continue
                 
             logger.info(f"Processing {year} {grid_cell} ({i+1}/{total_groups})")
             
             try:
-                # Process this group of files
-                self._process_file_group(group, year, output_path, client)
+                # First, create an entry in the index for tracking
+                annual_file_hash = self._register_annual_file(year, grid_cell)
                 
+                # Process this group of files
+                success = self._process_file_group(group, year, output_path, client, grid_cell=grid_cell)
+                
+                # Update index with success/failure status
+                if success:
+                    self.preprocessing_index.update_file_status(
+                        file_hash=annual_file_hash, 
+                        status=PreprocessingIndex.STATUS_COMPLETED,
+                        metadata={
+                            "processing_time": datetime.now().isoformat(),
+                            "input_files": len(group),
+                            "source": self.data_source
+                        }
+                    )
+                    # Mark for transfer to the cluster
+                    self.preprocessing_index.mark_for_transfer(annual_file_hash, "cluster")
+                else:
+                    self.preprocessing_index.update_file_status(
+                        file_hash=annual_file_hash, 
+                        status=PreprocessingIndex.STATUS_FAILED
+                    )
+                    
             except Exception as e:
                 logger.error(f"Error processing {year} {grid_cell}: {str(e)}")
-                
+                # Update index with failure
+                # Check for files with this year/grid_cell that are still processing
+                processing_files = self.preprocessing_index.get_files(
+                    stage=PreprocessingIndex.STAGE_ANNUAL,
+                    year=year,
+                    grid_cell=grid_cell,
+                    status=PreprocessingIndex.STATUS_PROCESSING
+                )
+                if processing_files:
+                    self.preprocessing_index.update_file_status(
+                        file_hash=processing_files[0]["file_hash"], 
+                        status=PreprocessingIndex.STATUS_FAILED,
+                        metadata={"error": str(e)}
+                    )
+
     def _process_avhrr_data(self, client: Client):
         """Process AVHRR data which has one file per day globally."""
         # List all AVHRR files
@@ -193,22 +254,116 @@ class GlassPreprocessor(AbstractPreprocessor):
             annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_annual.zarr"
             output_path = f"{self.data_source.lower()}/{year}.zarr"
             
-            # Skip if already processed in cloud storage and override is False
-            if not self.override and (
-                self.gcs_client.check_if_exists(f"{annual_cloud_path}/.zmetadata") or 
-                self.gcs_client.check_if_exists(f"{annual_cloud_path}/zgroup")
-            ):
+            # For AVHRR, grid cell is "global"
+            grid_cell = "global"
+            
+            # Check using get_files method from the index
+            annual_files = []
+            try:
+                cursor = self.preprocessing_index._get_connection().cursor()
+                cursor.execute(
+                    "SELECT * FROM files WHERE stage = ? AND year = ? AND grid_cell = ? AND status = ?",
+                    (PreprocessingIndex.STAGE_ANNUAL, year, grid_cell, PreprocessingIndex.STATUS_COMPLETED)
+                )
+                columns = [description[0] for description in cursor.description]
+                for row in cursor.fetchall():
+                    file_info = dict(zip(columns, row))
+                    # Parse metadata if it exists
+                    if file_info.get('metadata'):
+                        try:
+                            file_info['metadata'] = json.loads(file_info['metadata'])
+                        except:
+                            pass  # Keep as string if not valid JSON
+                    annual_files.append(file_info)
+            except Exception as e:
+                logger.warning(f"Error querying index: {e}")
+                
+            # Skip if already processed and override is False
+            if not self.override and (annual_files or 
+                self.gcs_client.file_exists(f"{annual_cloud_path}/.zmetadata") or 
+                self.gcs_client.file_exists(f"{annual_cloud_path}/zgroup")):
                 logger.info(f"Skipping existing cloud output for year {year} ({i+1}/{total_groups})")
                 continue
                 
             logger.info(f"Processing year {year} ({i+1}/{total_groups})")
             
             try:
-                # Process this group of files
-                self._process_file_group(group, year, output_path, client)
+                # First, create an entry in the index for tracking
+                annual_file_hash = self._register_annual_file(year, grid_cell)
                 
+                # Process this group of files
+                success = self._process_file_group(group, year, output_path, client)
+                
+                # Update index with success/failure status
+                if success:
+                    self.preprocessing_index.update_file_status(
+                        file_hash=annual_file_hash, 
+                        status=PreprocessingIndex.STATUS_COMPLETED,
+                        metadata={
+                            "processing_time": datetime.now().isoformat(),
+                            "input_files": len(group),
+                            "source": self.data_source
+                        }
+                    )
+                    # Mark for transfer to the cluster
+                    self.preprocessing_index.mark_for_transfer(annual_file_hash, "cluster")
+                else:
+                    self.preprocessing_index.update_file_status(
+                        file_hash=annual_file_hash, 
+                        status=PreprocessingIndex.STATUS_FAILED
+                    )
+                    
             except Exception as e:
                 logger.error(f"Error processing year {year}: {str(e)}")
+                # Try to update any processing files for this year/grid_cell
+                try:
+                    cursor = self.preprocessing_index._get_connection().cursor()
+                    cursor.execute(
+                        "SELECT file_hash FROM files WHERE stage = ? AND year = ? AND grid_cell = ? AND status = ?",
+                        (PreprocessingIndex.STAGE_ANNUAL, year, grid_cell, PreprocessingIndex.STATUS_PROCESSING)
+                    )
+                    processing_files = [{"file_hash": row[0]} for row in cursor.fetchall()]
+                    if processing_files:
+                        self.preprocessing_index.update_file_status(
+                            file_hash=processing_files[0]["file_hash"], 
+                            status=PreprocessingIndex.STATUS_FAILED,
+                            metadata={"error": str(e)}
+                        )
+                except Exception as ex:
+                    logger.error(f"Error updating file status: {ex}")
+
+    def _register_annual_file(self, year: int, grid_cell: str) -> str:
+        """
+        Register an annual file in the preprocessing index.
+        
+        Args:
+            year: The year of the data
+            grid_cell: The grid cell identifier
+            
+        Returns:
+            The file hash for the registered file
+        """
+        # Create blob path for the annual file
+        blob_path = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}_{year}_{grid_cell}_annual.zarr"
+        
+        # Create metadata
+        metadata = {
+            "filename": f"{self.data_source.lower()}_{year}_{grid_cell}_annual.zarr",
+            "data_source": self.data_source,
+            "creation_started": datetime.now().isoformat()
+        }
+        
+        # Create file entry in index
+        file_hash = self.preprocessing_index.add_file(
+            stage=PreprocessingIndex.STAGE_ANNUAL,
+            year=year,
+            grid_cell=grid_cell,
+            status=PreprocessingIndex.STATUS_PROCESSING,
+            blob_path=blob_path,
+            metadata=metadata
+        )
+        
+        return file_hash
     
     def _list_files_from_gcs(self) -> List[str]:
         """
@@ -225,15 +380,15 @@ class GlassPreprocessor(AbstractPreprocessor):
             data_source_name = "glass"  # Use appropriate source name
             data_source = create_data_source(
                 dataset_name=data_source_name,
-                base_url=self.base_url,  # Use the base_url parameter passed to the class
-                file_extensions=self.file_extensions,  # Use the file_extensions parameter passed to the class
+                config = {
+                    "base_url": self.base_url, 
+                    "file_extensions": self.file_extensions},
             )
             
             # Initialize download index without auto-indexing (we just want to query it)
             index = DataDownloadIndex(
                 bucket_name=self.BUCKET_NAME,
                 data_source=data_source,
-                auto_index=False,  # Don't rebuild the index
                 client=self.gcs_client.client if hasattr(self.gcs_client, 'client') else None
             )
             
@@ -339,7 +494,8 @@ class GlassPreprocessor(AbstractPreprocessor):
                 
         return pd.DataFrame(result)
 
-    def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: str, client: Client) -> None:
+    def _process_file_group(self, files_df: pd.DataFrame, year: int, output_path: str, 
+                         client: Client, grid_cell: str = None) -> bool:
         """
         Process a group of files for a specific year (and grid cell for MODIS).
         All local processing uses temporary directories, with only compressed results uploaded to cloud.
@@ -349,12 +505,16 @@ class GlassPreprocessor(AbstractPreprocessor):
             year: Year being processed
             output_path: Path for output data
             client: Dask client for distributed processing
+            grid_cell: Optional grid cell identifier
+        
+        Returns:
+            Boolean indicating success
         """
         
         # Create temporary directory for downloads and processing
         with tempfile.TemporaryDirectory(dir='/tmp') as temp_dir:
             files_df = files_df.sort_values(by = 'day')  # Ensure files are in chronological order
-            # files_df = files_df.iloc[:3]  # TODO: remove; For testing, only process the first three files
+            #files_df = files_df.iloc[:3]  # TODO: remove; For testing, only process the first three files
             
             # First pass: get metadata and coordinates without loading all data
             sample_data = None
@@ -381,7 +541,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             # Check if we successfully got sample data
             if sample_data is None:
                 logger.warning(f"No valid sample data found for {year}")
-                return
+                return False
             
             # Process each file and store in a list for later concatenation
             array_list = []
@@ -421,8 +581,8 @@ class GlassPreprocessor(AbstractPreprocessor):
             annual_stats, monthly_stats = self._calculate_statistics(combined_data)
             
             # Set up compression for Zarr output
-            compressor = zarr.codecs.BloscCodec(cname='zstd', clevel=3, shuffle=zarr.codecs.BloscShuffle.shuffle)
-            encoding = {var: {'compressors': compressor} for var in annual_stats.data_vars}
+            compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)#compressor = zarr.codecs.BloscCodec(cname='zstd', clevel=3, shuffle=zarr.codecs.BloscShuffle.shuffle) #
+            encoding = {var: {'compressors': compressor} for var in annual_stats.data_vars}# edit: 'compressors':
             
             # Create temporary paths for zarr storage
             output_basename = os.path.basename(output_path.rstrip('.zarr'))
@@ -433,24 +593,26 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.info(f"Saving annual statistics to temporary location with compression")
             annual_stats.to_zarr(
                 str(annual_output_path),
-                zarr_format=3,
                 mode="w",
-                consolidated=False,
-                encoding=encoding
+                encoding=encoding,
+                zarr_version=2,
+                consolidated=True
             )
         
             
             logger.info(f"Saving monthly statistics to temporary location with compression")
             monthly_stats.to_zarr(
                 str(monthly_output_path),
-                zarr_format=3,
                 mode="w",
-                consolidated=False,
-                encoding=encoding
+                encoding=encoding,
+                zarr_version=2,
+                consolidated=True
             )
             
             # Upload to cloud storage - this is the only persistent storage
-            self._upload_to_cloud(annual_output_path, monthly_output_path, year)
+            upload_success = self._upload_to_cloud(annual_output_path, monthly_output_path, year, grid_cell)
+            
+            return upload_success
 
     def _calculate_statistics(self, data: xr.Dataset) -> Tuple[xr.Dataset, xr.Dataset]:
         """
@@ -462,15 +624,16 @@ class GlassPreprocessor(AbstractPreprocessor):
         Returns:
             Tuple of (annual_stats, monthly_stats)
         """
-        # Create a mask for invalid values
-        mask = ~data[self.VARIABLE_NAME].isnull()
+        # Create a mask for invalid values        
+        mask = np.logical_and(data[self.VARIABLE_NAME] >= 20000, data[self.VARIABLE_NAME] <= 35000)
+        masked = data.where(mask)
         
         # Calculate annual statistics
         annual_stats = xr.Dataset({
-            "mean": data[self.VARIABLE_NAME].resample(time="1YE").mean(),
-            "median": data[self.VARIABLE_NAME].resample(time="1YE").median(),
-            "std": data[self.VARIABLE_NAME].resample(time="1YE").std(),
-            "count": mask.resample(time="1YE").sum()
+            "mean": masked[self.VARIABLE_NAME].resample(time="1YE").mean(),
+            "median": masked[self.VARIABLE_NAME].resample(time="1YE").median(),
+            "std": masked[self.VARIABLE_NAME].resample(time="1YE").std(),
+            "valid_count": mask.resample(time="1YE").sum().astype(np.int32)
         })
         
         # Calculate monthly statistics
@@ -478,7 +641,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             "mean": data[self.VARIABLE_NAME].resample(time="1ME").mean(),
             "median": data[self.VARIABLE_NAME].resample(time="1ME").median(),
             "std": data[self.VARIABLE_NAME].resample(time="1ME").std(),
-            "count": mask.resample(time="1ME").sum()
+            "valid_count": mask.resample(time="1ME").sum().astype(np.int32)
         })
         
         # Rechunk using the same chunk sizes defined in the class initialization
@@ -498,7 +661,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         return annual_stats, monthly_stats
     
-    def _upload_to_cloud(self, annual_path: Path, monthly_path: Path, year: int) -> None:
+    def _upload_to_cloud(self, annual_path: Path, monthly_path: Path, year: int, grid_cell: str = None) -> bool:
         """
         Upload compressed processed data to cloud storage.
         
@@ -506,18 +669,28 @@ class GlassPreprocessor(AbstractPreprocessor):
             annual_path: Local path to annual statistics
             monthly_path: Local path to monthly statistics
             year: Year being processed
+            grid_cell: Optional grid cell identifier
+            
+        Returns:
+            Boolean indicating success
         """
         try:
             # Determine the cloud storage paths
             data_type = self.data_source.lower()
             
-            grid_cell = ""
-            if self.data_source == "MODIS" and annual_path.stem.split('_')[-2:-1]:
-                grid_cell = f"_{annual_path.stem.split('_')[-2]}"
+            if grid_cell is None and self.data_source == "MODIS":
+                # For MODIS, try to extract grid_cell from the annual_path filename if not provided
+                if annual_path.stem.split('_')[-2:-1]:
+                    grid_cell = annual_path.stem.split('_')[-2]
+                else:
+                    grid_cell = "unknown"
+            elif grid_cell is None:
+                # For AVHRR, use "global" as the grid cell identifier
+                grid_cell = "global"
             
             # Create cloud paths with appropriate naming
-            annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{data_type}_{year}{grid_cell}_annual.zarr"
-            monthly_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{data_type}_{year}{grid_cell}_monthly.zarr"
+            annual_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{data_type}_{year}_{grid_cell}_annual.zarr"
+            monthly_cloud_path = f"{self.path_prefix}{self.intermediate_dir}/{data_type}_{year}_{grid_cell}_monthly.zarr"
             
             logger.info(f"Uploading annual statistics to cloud: {annual_cloud_path}")
             # Upload annual statistics (directory)
@@ -536,45 +709,17 @@ class GlassPreprocessor(AbstractPreprocessor):
                     self.gcs_client.upload_file(file_path, destination)
             
             logger.info("Uploads completed successfully")
+            return True
                     
         except Exception as e:
             logger.error(f"Error uploading to cloud: {str(e)}")
+            return False
     
-    def _combine_time_series(self, data_arrays: List[xr.DataArray], files_df: pd.DataFrame, year: int) -> Optional[xr.DataArray]:
-        """
-        Combine multiple DataArrays into a time series.
-        
-        Args:
-            data_arrays: List of DataArrays to combine
-            files_df: DataFrame with metadata about the files
-            year: The year being processed
-            
-        Returns:
-            Combined DataArray with proper time dimension
-        """
-        try:
-            if len(data_arrays) == 0:
-                return None
-                
-            # Concatenate along a new dimension (will become time)
-            concat_dim = 'day'
-            combined = xr.concat(data_arrays, dim=pd.Index(files_df['day'].values, name=concat_dim))
-            
-            # Convert day of year to datetime
-            times = pd.to_datetime([f"{year}{day:03d}" for day in combined[concat_dim].values], format="%Y%j").values
-            combined = combined.assign_coords({concat_dim: times}).rename({concat_dim: "time"})
-            
-            return combined
-            
-        except Exception as e:
-            logger.error(f"Error combining time series data: {str(e)}")
-            return None
-
     def finalize_stage1(self) -> None:
         """
         Finalize Stage 1 processing.
         
-        Creates a manifest of processed files in the cloud.
+        Creates a manifest of processed files in the cloud and ensures the index is up to date.
         """
         logger.info("Finalizing Stage 1 processing")
         
@@ -587,94 +732,247 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             processed_files = []
             
-            # Query the cloud storage for processed files instead of local directory
-            annual_prefix = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}"
+            # Query the index for all completed annual files
             try:
-                # List all annual stats files in the cloud
-                cloud_files = self.gcs_client.list_existing_files(prefix=annual_prefix)
-                
-                # Process the list of files
-                for file_path in cloud_files:
-                    if "_annual.zarr/.zmetadata" in file_path:
-                        # Extract year and possibly grid cell from path
-                        path_parts = file_path.split('/')
-                        filename = path_parts[-2].split('_annual.zarr')[0]  # Remove the suffix
-                        
-                        if self.data_source == "MODIS":
-                            # For MODIS: path contains year and grid cell (e.g., modis_2000_h08v05_annual.zarr)
-                            parts = filename.split('_')
-                            if len(parts) >= 3:
-                                year = parts[1]
-                                grid_cell = parts[2]
-                                processed_files.append({
-                                    "data_source": self.data_source,
-                                    "year": year,
-                                    "grid_cell": grid_cell,
-                                    "path": file_path.replace("/.zmetadata", "")
-                                })
-                        else:
-                            # For AVHRR: path contains year (e.g., avhrr_2000_annual.zarr)
-                            parts = filename.split('_')
-                            if len(parts) >= 2:
-                                year = parts[1]
-                                processed_files.append({
-                                    "data_source": self.data_source,
-                                    "year": year,
-                                    "grid_cell": "global",
-                                    "path": file_path.replace("/.zmetadata", "")
-                                })
-                
-                # Save manifest to a temporary file and upload to cloud
-                if processed_files:
-                    with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp_file:
-                        manifest_df = pd.DataFrame(processed_files)
-                        manifest_df.to_csv(temp_file.name, index=False)
-                        
-                        # Upload the manifest to cloud
-                        self.gcs_client.upload_file(temp_file.name, cloud_manifest_path)
-                        
-                        logger.info(f"Created and uploaded manifest with {len(processed_files)} processed files to {cloud_manifest_path}")
-                        
-                        # Clean up the temporary file
-                        os.unlink(temp_file.name)
-                else:
-                    logger.warning("No processed files found in cloud storage to include in manifest")
-                        
+                cursor = self.preprocessing_index._get_connection().cursor()
+                cursor.execute(
+                    "SELECT * FROM files WHERE stage = ? AND status = ?",
+                    (PreprocessingIndex.STAGE_ANNUAL, PreprocessingIndex.STATUS_COMPLETED)
+                )
+                columns = [description[0] for description in cursor.description]
+                for row in cursor.fetchall():
+                    file_info = dict(zip(columns, row))
+                    # Parse metadata if it exists
+                    if file_info.get('metadata'):
+                        try:
+                            file_info['metadata'] = json.loads(file_info['metadata'])
+                        except:
+                            pass  # Keep as string if not valid JSON
+                    
+                    blob_path = file_info.get("blob_path", "")
+                    year = file_info.get("year")
+                    grid_cell = file_info.get("grid_cell", "global")
+                    
+                    processed_files.append({
+                        "data_source": self.data_source,
+                        "year": year,
+                        "grid_cell": grid_cell,
+                        "path": blob_path,
+                        "file_hash": file_info.get("file_hash")
+                    })
             except Exception as e:
-                logger.error(f"Error creating cloud manifest: {str(e)}")
+                logger.error(f"Error querying index: {e}")
+            
+            logger.info(f"Found {len(processed_files)} completed annual files in the index")
+            
+            # If the index doesn't have files (though it should), fall back to cloud listing
+            if not processed_files:
+                # Query the cloud storage for processed files
+                annual_prefix = f"{self.path_prefix}{self.intermediate_dir}/{self.data_source.lower()}"
+                try:
+                    # List all annual stats files in the cloud
+                    cloud_files = self.gcs_client.list_existing_files(prefix=annual_prefix)
+                    
+                    # Process the list of files
+                    for file_path in cloud_files:
+                        if "_annual.zarr/.zmetadata" in file_path:
+                            # Extract year and possibly grid cell from path
+                            path_parts = file_path.split('/')
+                            filename = path_parts[-2].split('_annual.zarr')[0]  # Remove the suffix
+                            
+                            if self.data_source == "MODIS":
+                                # For MODIS: path contains year and grid cell (e.g., modis_2000_h08v05_annual.zarr)
+                                parts = filename.split('_')
+                                if len(parts) >= 3:
+                                    year = parts[1]
+                                    grid_cell = parts[2]
+                                    processed_files.append({
+                                        "data_source": self.data_source,
+                                        "year": year,
+                                        "grid_cell": grid_cell,
+                                        "path": file_path.replace("/.zmetadata", "")
+                                    })
+                            else:
+                                # For AVHRR: path contains year (e.g., avhrr_2000_annual.zarr)
+                                parts = filename.split('_')
+                                if len(parts) >= 2:
+                                    year = parts[1]
+                                    processed_files.append({
+                                        "data_source": self.data_source,
+                                        "year": year,
+                                        "grid_cell": "global",
+                                        "path": file_path.replace("/.zmetadata", "")
+                                    })
+                    
+                    logger.warning(f"Found {len(processed_files)} files in cloud not in index; adding them to index")
+                    
+                    # Add these files to the index if they weren't there already
+                    for file_info in processed_files:
+                        # Only add if it has year and other required info
+                        if "year" in file_info and file_info["year"]:
+                            try:
+                                year = int(file_info["year"])
+                                grid_cell = file_info["grid_cell"]
+                                blob_path = file_info["path"]
+                                
+                                # Add to index with completed status
+                                self.preprocessing_index.add_file(
+                                    stage=PreprocessingIndex.STAGE_ANNUAL,
+                                    year=year,
+                                    grid_cell=grid_cell,
+                                    status=PreprocessingIndex.STATUS_COMPLETED,
+                                    blob_path=blob_path,
+                                    metadata={
+                                        "filename": os.path.basename(blob_path),
+                                        "data_source": self.data_source,
+                                        "imported_from_cloud": datetime.now().isoformat()
+                                    }
+                                )
+                            except Exception as e:
+                                logger.error(f"Error adding cloud file to index: {str(e)}")
+                
+                except Exception as e:
+                    logger.error(f"Error listing cloud files: {str(e)}")
+            
+            # Save index to make sure all changes are persisted
+            self.preprocessing_index.save()
+            
+            # Save manifest to a temporary file and upload to cloud
+            if processed_files:
+                with tempfile.NamedTemporaryFile(mode='w+', suffix='.csv', delete=False) as temp_file:
+                    manifest_df = pd.DataFrame(processed_files)
+                    manifest_df.to_csv(temp_file.name, index=False)
+                    
+                    # Upload the manifest to cloud
+                    self.gcs_client.upload_file(temp_file.name, cloud_manifest_path)
+                    
+                    logger.info(f"Created and uploaded manifest with {len(processed_files)} processed files to {cloud_manifest_path}")
+                    
+                    # Clean up the temporary file
+                    os.unlink(temp_file.name)
+            else:
+                logger.warning("No processed files found to include in manifest")
 
-    def validate_input(self) -> bool:
-        """
-        Validate that the input data exists and is accessible.
-        
-        For GCS input, checks that the bucket and prefix exist and are accessible
-        by trying to list just one file, rather than all files.
-        """
-        try:
-            # Check if the GCS client can access the bucket by listing just one file
-            # This is much more efficient than listing all files
-            for _ in self.gcs_client.list_blobs_with_limit(prefix=self.path_prefix, limit=1):
-                # If we can iterate even one file, access is working
-                return True
-                
-            logger.warning(f"No files found with prefix {self.path_prefix} in bucket {self.BUCKET_NAME}")
-            return False
-                
-        except Exception as e:
-            logger.error(f"Error validating input: {str(e)}")
-            return False
-    
     def project_to_unified_grid(self) -> None:
         """
         Stage 2: Project data onto a unified grid.
         
-        This is a placeholder for the Stage 2 implementation, which will be added later.
-        It will read data from Stage 1 and reproject it to a standard grid.
+        This method would be run on the university cluster after stage 1 files are
+        transferred. It reads from the preprocessing index to determine which files
+        need processing.
         """
         # Create a new Dask client just for this task
         with DaskClientContextManager(**self._get_dask_client_params()) as client:
             logger.info(f"Created Dask client for projection task: {client.dashboard_link}")
             logger.warning("Stage 2 (project_to_unified_grid) not yet implemented for GLASS data")
+            
+            # Get files that are ready for stage 2 processing
+            files_to_process = []
+            try:
+                # Use direct SQL query instead of the missing method
+                conn = self.preprocessing_index._get_connection()
+                cursor = conn.cursor()
+                
+                # Query for annual files that are completed but don't have spatial counterparts
+                query = """
+                SELECT a.* 
+                FROM files a
+                WHERE a.stage = ? AND a.status = ?
+                AND NOT EXISTS (
+                    SELECT 1 FROM files b 
+                    WHERE b.stage = ? AND b.year = a.year AND b.grid_cell = a.grid_cell
+                    AND (b.status = ? OR b.status = ?)
+                )
+                LIMIT 10
+                """
+                cursor.execute(query, (
+                    PreprocessingIndex.STAGE_ANNUAL, 
+                    PreprocessingIndex.STATUS_COMPLETED,
+                    PreprocessingIndex.STAGE_SPATIAL,
+                    PreprocessingIndex.STATUS_COMPLETED, 
+                    PreprocessingIndex.STATUS_PROCESSING
+                ))
+                
+                columns = [description[0] for description in cursor.description]
+                for row in cursor.fetchall():
+                    file_info = dict(zip(columns, row))
+                    # Parse metadata if it exists
+                    if file_info.get('metadata'):
+                        try:
+                            file_info['metadata'] = json.loads(file_info['metadata'])
+                        except:
+                            pass
+                    files_to_process.append(file_info)
+                    
+            except Exception as e:
+                logger.error(f"Error querying for files to process: {e}")
+            
+            logger.info(f"Found {len(files_to_process)} files ready for Stage 2 processing")
+            
+            # Process each file
+            for file_info in files_to_process:
+                try:
+                    year = file_info["year"]
+                    grid_cell = file_info["grid_cell"]
+                    
+                    # Register a new spatial file in the index
+                    spatial_file_hash = self.preprocessing_index.add_file(
+                        stage=PreprocessingIndex.STAGE_SPATIAL,
+                        year=year,
+                        grid_cell=grid_cell,
+                        status=PreprocessingIndex.STATUS_PROCESSING,
+                        parent_hash=file_info["file_hash"],
+                        metadata={
+                            "processing_started": datetime.now().isoformat(),
+                            "source": self.data_source,
+                            "parent_blob": file_info["blob_path"]
+                        }
+                    )
+                    
+                    # In a real implementation, process the file here
+                    # This is just a placeholder
+                    
+                    # Update the status to completed
+                    self.preprocessing_index.update_file_status(
+                        file_hash=spatial_file_hash,
+                        status=PreprocessingIndex.STATUS_COMPLETED,
+                        metadata={
+                            "processing_completed": datetime.now().isoformat(),
+                            "note": "This is a placeholder - no actual processing was performed"
+                        }
+                    )
+                    
+                except Exception as e:
+                    logger.error(f"Error in stage 2 processing for {file_info.get('year')}/{file_info.get('grid_cell')}: {str(e)}")
+
+    def preprocess(self) -> bool:
+        """
+        Main preprocessing method that performs all necessary preprocessing steps.
+        
+        Returns:
+            Boolean indicating overall success
+        """
+        try:
+            # Validate input data
+            if not self.validate_input():
+                logger.error("Input validation failed")
+                return False
+                
+            # Stage 1: Create annual summaries
+            logger.info("Starting Stage 1: Creating annual summaries")
+            self.summarize_annual_means()
+            
+            # Finalize Stage 1 and prepare for Stage 2
+            self.finalize_stage1()
+            
+            # Save the index for transfer between environments
+            self.preprocessing_index.save()
+            
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in preprocessing: {str(e)}")
+            return False
     
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "GlassPreprocessor":
