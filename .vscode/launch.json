@@ -2,6 +2,25 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Debug GLASS AVHRR Daily LST Download",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-avhrr-download.json"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true,
+      "exceptionBreakpointFilters": [
+        {"filter": "raised", "label": "Raised Exceptions", "default": true},
+        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "GCP_PROJECT_ID": "ee-growthandheat"
+      }
+    },
+    {
       "name": "Debug GLASS AVHRR Preprocessing",
       "type": "debugpy",
       "request": "launch",
@@ -20,11 +39,30 @@
       }
     },
     {
+      "name": "Debug EOG Data Download",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.yaml"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true,
+      "exceptionBreakpointFilters": [
+        {"filter": "raised", "label": "Raised Exceptions", "default": true},
+        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "GCP_PROJECT_ID": "ee-growthandheat",
+      }
+    },
+    {
       "name": "Debug EOG Preprocessing",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yml"],
+      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -57,25 +95,6 @@
       }
     },
     {
-      "name": "Debug GLASS AVHRR Daily LST Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-avhrr-download.json"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
       "name": "Debug Harvard Data Download",
       "type": "debugpy",
       "request": "launch",
@@ -95,12 +114,12 @@
       }
     },
     {
-      "name": "Debug EOG Data Download",
+      "name": "Debug Misc Data Download",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/gnt/data/download/main.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.yaml"],
+      "args": ["${workspaceFolder}/orchestration/configs/debug-misc-download.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -110,7 +129,7 @@
       ],
       "env": {
         "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat",
+        "GCP_PROJECT_ID": "ee-growthandheat"
       }
     }
   ]

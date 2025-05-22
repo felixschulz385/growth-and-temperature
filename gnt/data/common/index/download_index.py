@@ -34,7 +34,7 @@ class DataDownloadIndex(BaseIndex):
         
         # Paths for the SQLite database in GCS
         self.db_path = f"_index/download_{self.data_path.replace('/', '_')}.sqlite"
-        self.blob_list_path = f"_index/download_{self.data_path.replace('/', '_')}.json"
+        self.blob_list_path = f"_index/download_{self.data_path.replace('/', '_')}_bloblist.json"
         self.entrypoints_path = f"_index/download_{self.data_path.replace('/', '_')}_entrypoints.json"
         
         # Instance identifier for thread safety
@@ -241,8 +241,7 @@ class DataDownloadIndex(BaseIndex):
         import json
         
         gcs_client = GCSClient(self.bucket_name)
-        blob_list_path = f"_index/blob_list_{self.data_path.replace('/', '_')}.json"
-        blob_list = self.bucket.blob(blob_list_path)
+        blob_list = self.bucket.blob(self.blob_list_path)
         
         try:
             # Check if we should use cached list
@@ -276,7 +275,7 @@ class DataDownloadIndex(BaseIndex):
             # Save the blob list for future use
             try:
                 blob_list.upload_from_string(json.dumps(list(blob_paths)))
-                logger.debug(f"Updated cached blob list at gs://{self.bucket_name}/{blob_list_path}")
+                logger.debug(f"Updated cached blob list at gs://{self.bucket_name}/{self.blob_list_path}")
             except Exception as e:
                 logger.warning(f"Error saving blob list: {e}")
                 

@@ -82,7 +82,7 @@ class EOGDataSource(BaseDataSource):
                 time.sleep(0.5)
                 logger.debug(f"Crawling directory: {url}")
                 
-                res = requests.get(url)
+                res = requests.get(url, verify=False)
                 res.raise_for_status()
                 soup = BeautifulSoup(res.text, "html.parser")
                 
@@ -170,6 +170,8 @@ class EOGDataSource(BaseDataSource):
         chrome_options.add_argument("--headless")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument('--ignore-ssl-errors=yes')
+        chrome_options.add_argument('--ignore-certificate-errors')
 
         # This disables downloads
         prefs = {
@@ -230,7 +232,7 @@ class EOGDataSource(BaseDataSource):
             time.sleep(0.5)
             
             logger.info(f"Downloading {os.path.basename(output_path)} from EOG")
-            r = session.get(file_url, stream=True)
+            r = session.get(file_url, stream=True, verify=False)
             r.raise_for_status()
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -271,14 +273,14 @@ class EOGDataSource(BaseDataSource):
                     break
             
             if satellite:
-                return f"{self.data_path}/dmsp/{satellite}/{filename}"
+                return f"{self.data_path}/{satellite}/{filename}"
             else:
-                return f"{self.data_path}/dmsp/{filename}"
+                return f"{self.data_path}/{filename}"
         
         elif "viirs" in self.data_path.lower():
             # Keep filename and append to data_path
             filename = path_parts[-1]
-            return f"{self.data_path}/viirs/{filename}"
+            return f"{self.data_path}/{filename}"
         
         # Default case - use full relative path
         return f"{self.data_path}/{relative_path}"

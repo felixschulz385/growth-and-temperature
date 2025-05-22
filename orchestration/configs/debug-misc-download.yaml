@@ -1,0 +1,80 @@
+# Configuration for boundaries and administrative data downloads
+
+# Workflow definition
+tasks:
+  # 1. Index boundary data
+  - data_source: "misc"
+    mode: "index"
+    bucket_name: "growthandheat"
+    
+    # Files to index
+    files:
+      - url: "https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip"
+        name: "land-polygons-complete-4326.zip"
+        description: "OpenStreetMap land polygons (WGS84)"
+        subfolder: "osm"
+      
+      - url: "https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip"
+        name: "gadm_410-levels.zip"
+        description: "GADM administrative boundaries v4.1"
+        subfolder: "gadm"
+    
+    # Storage settings
+    output_path: "auxiliary/boundaries"
+
+  # # 2. Download boundary data
+  # - data_source: "misc"
+  #   mode: "download"
+  #   bucket_name: "growthandheat"
+    
+  #   # Files to download
+  #   files:
+  #     - url: "https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip"
+  #       name: "land-polygons-complete-4326.zip"
+  #       description: "OpenStreetMap land polygons (WGS84)"
+  #       subfolder: "osm"
+      
+  #     - url: "https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip"
+  #       name: "gadm_410-levels.zip"
+  #       description: "GADM administrative boundaries v4.1"
+  #       subfolder: "gadm"
+    
+  #   # Storage settings
+  #   output_path: "auxiliary/boundaries"
+    
+  #   # Processing controls - these files are large, so allow longer timeout
+  #   max_concurrent_downloads: 1
+  #   max_queue_size: 5
+    
+  #   # Retry settings
+  #   max_retries: 3
+  #   retry_delay: 30
+    
+  #   # Advanced settings
+  #   timeout: 600  # 10 minutes - these are large files
+  #   chunk_size: 8192  # bytes
+
+  # 3. Validate boundary data
+  - data_source: "misc"
+    mode: "validate"
+    bucket_name: "growthandheat"
+    force_refresh_gcs: true
+    
+    # Files to validate (same as above)
+    files:
+      - url: "https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip"
+        name: "land-polygons-complete-4326.zip"
+        description: "OpenStreetMap land polygons (WGS84)"
+        subfolder: "osm"
+      
+      - url: "https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip"
+        name: "gadm_410-levels.zip"
+        description: "GADM administrative boundaries v4.1"
+        subfolder: "gadm"
+    
+    # Storage settings
+    output_path: "auxiliary/boundaries"
+    
+    # Validation settings
+    sample_percentage: 100  # Validate all files
+    fix_issues: true        # Attempt to redownload invalid files
