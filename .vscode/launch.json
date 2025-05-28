@@ -62,7 +62,7 @@
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yaml"],
+      "args": ["--debug", "${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -131,6 +131,25 @@
         "PYTHONPATH": "${workspaceFolder}",
         "GCP_PROJECT_ID": "ee-growthandheat"
       }
-    }
+    },
+    {
+      "name": "Debug Misc Data Preprocess",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
+      "cwd": "${workspaceFolder}",
+      "args": ["${workspaceFolder}/orchestration/configs/debug-misc-preprocess.yaml"],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true,
+      "exceptionBreakpointFilters": [
+        {"filter": "raised", "label": "Raised Exceptions", "default": true},
+        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      ],
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}",
+        "GCP_PROJECT_ID": "ee-growthandheat"
+      }
+    },
   ]
 }

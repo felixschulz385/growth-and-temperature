@@ -1,0 +1,129 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: eog-data-download-job
+  labels:
+    app: data-processing
+    dataset: eog
+    mode: download
+spec:
+  ttlSecondsAfterFinished: 3600  # auto-cleanup after 1 hour
+  backoffLimit: 3                # retry on failure (3 times)
+  template:
+    spec:
+      serviceAccountName: k8s-data-processor
+      restartPolicy: OnFailure
+      containers:
+      - name: data-processor
+        image: gcr.io/ee-growthandheat/data-processor:latest
+        args: ["/config/workflow-config.yaml"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "512Mi"
+          limits:
+            cpu: "250m"
+            memory: "1024Mi"
+        env:
+        - name: PYTHONUNBUFFERED
+          value: "1"
+        - name: LOG_LEVEL
+          value: "INFO"
+        - name: PROCESSING_MODE
+          value: "download"
+        volumeMounts:
+        - name: config-volume
+          mountPath: /config
+          readOnly: true
+        - name: temp-storage
+          mountPath: /tmp
+      volumes:
+      - name: config-volume
+        configMap:
+          name: eog-download-config
+      - name: temp-storage
+        emptyDir:
+          sizeLimit: "2Gi"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: eog-download-config
+data:
+  workflow-config.yaml: |
+    # Configuration for EOG data download with validation
+    processing_mode: download
+    
+    # Workflow definition
+    tasks:
+      # DMSP nighttime lights data
+      - data_source: "eog"
+        mode: "validate"
+        bucket_name: "growthandheat"
+        force_refresh_gcs: true
+        base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+        file_extensions: [".global.stable_lights.avg_vis.tif"]
+        output_path: "eog/dmsp"
+        sample_percentage: 100
+        fix_issues: false
+        max_retries: 3
+        retry_delay: 10
+      
+      - data_source: "eog"
+        mode: "download"
+        bucket_name: "growthandheat"
+        base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+        file_extensions: [".global.stable_lights.avg_vis.tif"]
+        output_path: "eog/dmsp"
+        max_concurrent_downloads: 2
+        max_queue_size: 20
+        max_retries: 3
+        retry_delay: 10
+      
+      # VIIRS DVNL data
+      - data_source: "eog"
+        mode: "validate"
+        bucket_name: "growthandheat"
+        force_refresh_gcs: true
+        base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+        file_extensions: [".tif"]
+        output_path: "eog/dvnl"
+        sample_percentage: 100
+        fix_issues: false
+        max_retries: 3
+        retry_delay: 10
+      
+      - data_source: "eog"
+        mode: "download"
+        bucket_name: "growthandheat"
+        base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+        file_extensions: [".tif"]
+        output_path: "eog/dvnl"
+        max_concurrent_downloads: 2
+        max_queue_size: 20
+        max_retries: 3
+        retry_delay: 10
+      
+      # VIIRS Annual Stable Lights data
+      - data_source: "eog"
+        mode: "validate"
+        bucket_name: "growthandheat"
+        force_refresh_gcs: true
+        base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+        file_extensions: ["median_masked.dat.tif.gz"]
+        output_path: "eog/viirs"
+        sample_percentage: 100
+        fix_issues: false
+        max_retries: 3
+        retry_delay: 10
+      
+      - data_source: "eog"
+        mode: "download"
+        bucket_name: "growthandheat"
+        base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+        file_extensions: ["median_masked.dat.tif.gz"]
+        output_path: "eog/viirs"
+        max_concurrent_downloads: 2
+        max_queue_size: 20
+        max_retries: 3
+        retry_delay: 10

@@ -20,8 +20,8 @@ spec:
         args: ["/config/workflow-config.json"]
         resources:
           requests:
-            cpu: "4000m"     # 2 CPU cores
-            memory: "16Gi"    # 8GB RAM
+            cpu: "4000m"     # 4 CPU cores
+            memory: "16Gi"   # 16GB RAM
             ephemeral-storage: "4Gi"
           limits:
             cpu: "4000m"     # 4 CPU cores
@@ -57,6 +57,18 @@ data:
       "tasks": [
         {
           "preprocessor": "glass",
+          "mode": "validate",
+          "data_source": "AVHRR",
+          "base_url": "https://glass.hku.hk/archive/LST/AVHRR/0.05D/",
+          "file_extensions": [".hdf"],
+          "force_refresh_gcs": true,
+          "fix_orphaned_transfers": true,
+          "remove_missing_from_index": false,
+          "auto_index_files": true,
+          "years": [1982, 2021]
+        },
+        {
+          "preprocessor": "glass",
           "stage": "stage1",
           "data_source": "AVHRR",
           "years": [1982, 2021],
@@ -69,7 +81,19 @@ data:
             "x": 500,
             "y": 500
           },
-          "override": true
+          "override": false
+        },
+        {
+          "preprocessor": "glass",
+          "mode": "validate",
+          "data_source": "AVHRR",
+          "base_url": "https://glass.hku.hk/archive/LST/AVHRR/0.05D/",
+          "file_extensions": [".hdf"],
+          "force_refresh_gcs": true,
+          "fix_orphaned_transfers": true,
+          "remove_missing_from_index": false,
+          "auto_index_files": true,
+          "years": [1982, 2021]
         }
       ]
     }

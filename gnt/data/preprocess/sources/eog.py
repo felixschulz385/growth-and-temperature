@@ -12,6 +12,7 @@ import dask
 from dask.distributed import Client, LocalCluster
 import dask.array as da
 import zarr
+import numcodecs
 import re
 import json
 
@@ -313,10 +314,17 @@ class EOGPreprocessor(AbstractPreprocessor):
             dataset = data_array.to_dataset(name=self.source_type)
                 
             # Write to local zarr with compression
-            compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=2)
-            encoding = {var: {"compressor": compressor} for var in dataset.data_vars}
+            # Set up compression for Zarr output
+            compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)#compressor = zarr.codecs.BloscCodec(cname='zstd', clevel=3, shuffle=zarr.codecs.BloscShuffle.shuffle) #
+            encoding = {var: {'compressors': compressor} for var in dataset.data_vars}# edit: 'compressors':
             
-            dataset.chunk(chunks).to_zarr(local_zarr, mode="w", encoding=encoding)
+            dataset.chunk(chunks).to_zarr(
+                local_zarr, 
+                mode="w", 
+                encoding=encoding, 
+                zarr_version=2, 
+                consolidated=True
+                )
             
             # Upload to GCS
             self.upload_directory(local_zarr, output_path)
@@ -342,7 +350,7 @@ class EOGPreprocessor(AbstractPreprocessor):
         logger.info(f"Processing annual data for year {year}")
         
         # Check if this year is already processed
-        if hasattr(self, 'index') and self.preprocessing_index:
+        if hasattr(self, 'preprocessing_index') and self.preprocessing_index:
             existing = self.preprocessing_index.get_files(
                 stage=PreprocessingIndex.STAGE_ANNUAL,
                 year=year,
@@ -355,7 +363,7 @@ class EOGPreprocessor(AbstractPreprocessor):
         
         # Register the file we're about to create in the index
         file_hash = None
-        if hasattr(self, 'index') and self.preprocessing_index:
+        if hasattr(self, 'preprocessing_index') and self.preprocessing_index:
             file_hash = self.preprocessing_index.add_file(
                 stage=PreprocessingIndex.STAGE_ANNUAL,
                 year=year,
@@ -374,7 +382,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             logger.warning(f"No data found for year {year}")
             
             # Update index if available
-            if hasattr(self, 'index') and self.preprocessing_index and file_hash:
+            if hasattr(self, 'preprocessing_index') and self.preprocessing_index and file_hash:
                 self.preprocessing_index.update_file_status(
                     file_hash=file_hash,
                     status=PreprocessingIndex.STATUS_FAILED,
@@ -393,7 +401,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             logger.warning(f"No files selected after filtering for year {year}")
             
             # Update index if available
-            if hasattr(self, 'index') and self.preprocessing_index and file_hash:
+            if hasattr(self, 'preprocessing_index') and self.preprocessing_index and file_hash:
                 self.preprocessing_index.update_file_status(
                     file_hash=file_hash,
                     status=PreprocessingIndex.STATUS_FAILED,
@@ -413,7 +421,7 @@ class EOGPreprocessor(AbstractPreprocessor):
                 logger.error(f"Failed to create DataArray for year {year}")
                 
                 # Update index if available
-                if hasattr(self, 'index') and self.preprocessing_index and file_hash:
+                if hasattr(self, 'preprocessing_index') and self.preprocessing_index and file_hash:
                     self.preprocessing_index.update_file_status(
                         file_hash=file_hash,
                         status=PreprocessingIndex.STATUS_FAILED,
@@ -429,7 +437,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             output_path = self._create_annual_zarr(data_array, year)
             
             # Update index if available
-            if hasattr(self, 'index') and self.preprocessing_index and file_hash:
+            if hasattr(self, 'preprocessing_index') and self.preprocessing_index and file_hash:
                 self.preprocessing_index.update_file_status(
                     file_hash=file_hash,
                     status=PreprocessingIndex.STATUS_COMPLETED,
@@ -449,7 +457,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             logger.exception(f"Error processing annual data for year {year}: {e}")
             
             # Update index if available
-            if hasattr(self, 'index') and self.preprocessing_index and file_hash:
+            if hasattr(self, 'preprocessing_index') and self.preprocessing_index and file_hash:
                 self.preprocessing_index.update_file_status(
                     file_hash=file_hash,
                     status=PreprocessingIndex.STATUS_FAILED,
@@ -479,7 +487,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             results.append(result is not None)
             
             # Save index after each year
-            if hasattr(self, 'index'):
+            if hasattr(self, 'preprocessing_index'):
                 self.preprocessing_index.save()
         
         # Return True only if all years were processed successfully
@@ -649,7 +657,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             results.append(result is not None)
             
             # Save index after each year/cell combination
-            if hasattr(self, 'index'):
+            if hasattr(self, 'preprocessing_index'):
                 self.preprocessing_index.save()
         
         # Return True only if all combinations were processed successfully

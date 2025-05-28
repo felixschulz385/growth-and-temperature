@@ -9,7 +9,7 @@ tasks:
     
   #   # Source configuration
   #   base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
-  #   file_extensions: [".global.stable_lights.avg_vis.tif"]
+  #   file_extensions: [".global.intercal.stable_lights.avg_vis.tif"]
   #   output_path: "eog/dmsp"
     
   #   # Processing controls
@@ -24,32 +24,33 @@ tasks:
   #   max_retries: 3
   #   retry_delay: 10
 
-  # 2. DMSP nighttime lights data - Download
-  - data_source: "eog"
-    mode: "download"
-    bucket_name: "growthandheat"
+  # # 2. DMSP nighttime lights data - Download
+  # - data_source: "eog"
+  #   mode: "download"
+  #   bucket_name: "growthandheat"
     
-    # Source configuration
-    base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
-    file_extensions: [".global.stable_lights.avg_vis.tif"]
-    output_path: "eog/dmsp"
+  #   # Source configuration
+  #   base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+  #   file_extensions: [".global.intercal.stable_lights.avg_vis.tif"]
+  #   output_path: "eog/dmsp"
     
-    # Processing controls
-    max_concurrent_downloads: 1
-    max_queue_size: 20
+  #   # Processing controls
+  #   max_concurrent_downloads: 1
+  #   max_queue_size: 20
     
-    # Retry settings
-    max_retries: 3
-    retry_delay: 10
+  #   # Retry settings
+  #   max_retries: 3
+  #   retry_delay: 10
 
   # 3. DMSP nighttime lights data - Validate
   - data_source: "eog"
     mode: "validate"
     bucket_name: "growthandheat"
+    force_refresh_gcs: true
     
     # Source configuration
     base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
-    file_extensions: [".global.stable_lights.avg_vis.tif"]
+    file_extensions: [".global.intercal.stable_lights.avg_vis.tif"]
     output_path: "eog/dmsp"
     
     # Validation settings
@@ -74,37 +75,38 @@ tasks:
   #   max_retries: 3
   #   retry_delay: 10
 
-  # 5. VIIRS DVNL data - Download
-  - data_source: "eog"
-    mode: "download"
-    bucket_name: "growthandheat"
+  # # 5. VIIRS DVNL data - Download
+  # - data_source: "eog"
+  #   mode: "download"
+  #   bucket_name: "growthandheat"
     
-    # Source configuration
-    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
-    file_extensions: [".tif"]
-    output_path: "eog/dvnl"
+  #   # Source configuration
+  #   base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+  #   file_extensions: [".tif"]
+  #   output_path: "eog/dvnl"
     
-    # Processing controls
-    max_concurrent_downloads: 1
-    max_queue_size: 20
+  #   # Processing controls
+  #   max_concurrent_downloads: 1
+  #   max_queue_size: 20
     
-    # Retry settings
-    max_retries: 3
-    retry_delay: 10
+  #   # Retry settings
+  #   max_retries: 3
+  #   retry_delay: 10
 
-  # 6. VIIRS DVNL data - Validate
-  - data_source: "eog"
-    mode: "validate"
-    bucket_name: "growthandheat"
+  # # 6. VIIRS DVNL data - Validate
+  # - data_source: "eog"
+  #   mode: "validate"
+  #   bucket_name: "growthandheat"
+  #   force_refresh_gcs: true
     
-    # Source configuration
-    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
-    file_extensions: [".tif"]
-    output_path: "eog/dvnl"
+  #   # Source configuration
+  #   base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+  #   file_extensions: [".tif"]
+  #   output_path: "eog/dvnl"
     
-    # Validation settings
-    sample_percentage: 100  # Validate all files
-    fix_issues: true        # Attempt to redownload invalid files
+  #   # Validation settings
+  #   sample_percentage: 100  # Validate all files
+  #   fix_issues: true        # Attempt to redownload invalid files
 
   # # 7. VIIRS Annual Stable Lights data - Index
   # - data_source: "eog"
@@ -124,35 +126,36 @@ tasks:
   #   max_retries: 3
   #   retry_delay: 10
 
-  # 8. VIIRS Annual Stable Lights data - Download
-  - data_source: "eog"
-    mode: "download"
-    force-refresh: true
-    bucket_name: "growthandheat"
+  # # 8. VIIRS Annual Stable Lights data - Download
+  # - data_source: "eog"
+  #   mode: "download"
+  #   force-refresh: true
+  #   bucket_name: "growthandheat"
     
-    # Source configuration
-    base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
-    file_extensions: ["median_masked.dat.tif.gz"]
-    output_path: "eog/viirs"
+  #   # Source configuration
+  #   base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+  #   file_extensions: ["median_masked.dat.tif.gz"]
+  #   output_path: "eog/viirs"
     
-    # Processing controls
-    max_concurrent_downloads: 1
-    max_queue_size: 20
+  #   # Processing controls
+  #   max_concurrent_downloads: 1
+  #   max_queue_size: 20
     
-    # Retry settings
-    max_retries: 3
-    retry_delay: 10
+  #   # Retry settings
+  #   max_retries: 3
+  #   retry_delay: 10
 
-  # 9. VIIRS Annual Stable Lights data - Validate
-  - data_source: "eog"
-    mode: "validate"
-    bucket_name: "growthandheat"
+  # # 9. VIIRS Annual Stable Lights data - Validate
+  # - data_source: "eog"
+  #   mode: "validate"
+  #   bucket_name: "growthandheat"
+  #   force_refresh_gcs: true
     
-    # Source configuration
-    base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
-    file_extensions: ["median_masked.dat.tif.gz"]
-    output_path: "eog/viirs"
+  #   # Source configuration
+  #   base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
+  #   file_extensions: ["median_masked.dat.tif.gz"]
+  #   output_path: "eog/viirs"
     
-    # Validation settings
-    sample_percentage: 100  # Validate all files
-    fix_issues: true        # Attempt to redownload invalid files
+  #   # Validation settings
+  #   sample_percentage: 100  # Validate all files
+  #   fix_issues: true        # Attempt to redownload invalid files

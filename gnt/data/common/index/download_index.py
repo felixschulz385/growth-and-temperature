@@ -698,24 +698,36 @@ class DataDownloadIndex(BaseIndex):
         finally:
             self._cleanup_temp_files()
     
-    def validate_against_gcs(self, gcs_client, force_file_list_update=False):
+    def validate_against_gcs(self, gcs_client, force_file_list_update=False, ignore_patterns=None):
         """
-        Validate index against GCS bucket contents.
-        Uses centralized status management.
+        Validate index against files actually in GCS.
         
         Args:
-            gcs_client: GCSClient instance to use
-            force_file_list_update: Whether to force a refresh of the GCS file list
-
+            gcs_client: GCS client to use
+            force_file_list_update: Force refresh of GCS file list
+            ignore_patterns: List of patterns to ignore in file paths
+            
         Returns:
-            dict: Validation statistics
+            Stats dictionary with updated/added/orphaned counts
         """
+        # Initialize stats
         stats = {"updated": 0, "added": 0, "orphaned": 0}
         logger.info(f"Validating index against GCS for {self.data_source_name}")
         
         # Get all existing files in GCS using centralized method
         all_blobs = self._get_existing_files(force_refresh=force_file_list_update)
         logger.info(f"Found {len(all_blobs)} files in GCS")
+        
+        # Filter out paths containing ignore patterns
+        if ignore_patterns:
+            filtered_blobs = set()
+            for blob_path in all_blobs:
+                if not any(pattern in blob_path for pattern in ignore_patterns):
+                    filtered_blobs.add(blob_path)
+            
+            ignored_count = len(all_blobs) - len(filtered_blobs)
+            logger.info(f"Filtered out {ignored_count} files matching ignore patterns")
+            all_blobs = filtered_blobs
         
         try:
             # Process in batches

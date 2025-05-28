@@ -49,19 +49,21 @@ class GCSClient:
             logger.error(f"Failed to initialize GCS client: {str(e)}")
             raise
 
-    def list_existing_files(self, prefix: str = "") -> Set[str]:
+    def list_existing_files(self, prefix: str = "", delimiter: str = None) -> Set[str]:
         """
         List all files in the bucket with the given prefix.
         
         Args:
             prefix: File path prefix to filter results
+            delimiter: Optional delimiter to emulate directory-like hierarchy
             
         Returns:
             Set of file paths in the bucket matching the prefix
         """
         try:
             logger.debug(f"Listing files with prefix '{prefix}'")
-            return {blob.name for blob in self.bucket.list_blobs(prefix=prefix)}
+            blobs = self.bucket.list_blobs(prefix=prefix, delimiter=delimiter)
+            return {blob.name for blob in blobs}
         except Exception as e:
             logger.error(f"Failed to list files with prefix '{prefix}': {str(e)}")
             return set()  # Return empty set instead of raising exception
@@ -154,3 +156,54 @@ class GCSClient:
         except Exception as e:
             logger.error(f"Failed to list blobs with prefix '{prefix}': {str(e)}")
             # Just yield nothing instead of raising an exception
+
+    def list_zarr_directories(self, prefix: str = "") -> Set[str]:
+        """
+        List only zarr directories in the bucket with the given prefix.
+        
+        Uses delimiter-based searching for efficiency to avoid listing 
+        all the internal files of each zarr directory.
+        
+        Args:
+            prefix: File path prefix to filter results
+            
+        Returns:
+            Set of zarr directory paths in the bucket matching the prefix
+        """
+        zarr_dirs = set()
+        try:
+            logger.debug(f"Listing zarr directories with prefix '{prefix}'")
+            
+            # First list objects at the current level with delimiter
+            blobs = self.bucket.list_blobs(prefix=prefix, delimiter='/')
+            
+            # Process direct objects
+            for blob in blobs:
+                if blob.name.endswith(".zarr"):
+                    zarr_dirs.add(blob.name)
+            
+            # Process prefixes (directories)
+            for prefix_path in blobs.prefixes:
+                # Check if this is a zarr directory
+                if prefix_path.endswith(".zarr/"):
+                    # Remove trailing slash
+                    zarr_dirs.add(prefix_path[:-1])
+                else:
+                    # Look for zarr directories in subdirectories
+                    # This handles nested structure like year/gridcell.zarr
+                    sub_blobs = self.bucket.list_blobs(prefix=prefix_path, delimiter='/')
+                    
+                    for sub_blob in sub_blobs:
+                        if sub_blob.name.endswith(".zarr"):
+                            zarr_dirs.add(sub_blob.name)
+                    
+                    for sub_prefix in sub_blobs.prefixes:
+                        if sub_prefix.endswith(".zarr/"):
+                            zarr_dirs.add(sub_prefix[:-1])
+            
+            logger.debug(f"Found {len(zarr_dirs)} zarr directories")
+            return zarr_dirs
+        
+        except Exception as e:
+            logger.error(f"Failed to list zarr directories with prefix '{prefix}': {str(e)}")
+            return set()

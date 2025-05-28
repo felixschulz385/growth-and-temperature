@@ -628,8 +628,17 @@ class TaskHandlers:
         # Force refresh option from task config
         force_refresh = task_config.get("force_refresh_gcs", False)
         
+        # Get ignore patterns from task config or use default
+        ignore_patterns = task_config.get("ignore_patterns", ["/intermediate/", "/annual/"])
+        if ignore_patterns:
+            logger.info(f"Ignoring paths containing: {', '.join(ignore_patterns)}")
+        
         # Delegate to index's validation method which uses _get_existing_files()
-        stats = download_index.validate_against_gcs(context.gcs_client, force_file_list_update=force_refresh)
+        stats = download_index.validate_against_gcs(
+            context.gcs_client, 
+            force_file_list_update=force_refresh,
+            ignore_patterns=ignore_patterns
+        )
         
         # Summarize results
         logger.info(f"Validation complete:")

@@ -232,6 +232,7 @@ class PreprocessingIndex(BaseIndex):
         - {data_path}/raw/[...]/YYYY/[...]/filename.ext
         - {data_path}/annual/YYYY/gridcellXXXXX/filename.zarr
         - {data_path}/spatial/YYYY/gridcellXXXXX/filename.parquet
+        - {data_path}/annual/avhrr_YYYY_GRIDCELL_annual.zarr (GLASS AVHRR format)
         
         Returns a dictionary with extracted information.
         """
@@ -248,56 +249,53 @@ class PreprocessingIndex(BaseIndex):
             relative_path = blob_path[len(self.raw_path):]
         else:
             relative_path = blob_path
-            
-        # Extract year using regex (4 consecutive digits)
-        year_match = re.search(r'/(\d{4})/', relative_path)
-        year = int(year_match.group(1)) if year_match else None
-        
-        # Extract grid cell (assuming format like gridcellXXXXX)
-        grid_match = re.search(r'gridcell(\w+)', relative_path)
-        grid_cell = grid_match.group(1) if grid_match else None
-        
-        # If we couldn't extract both year and grid cell, try alternative parsing from filename
-        if not year or not grid_cell:
-            filename = os.path.basename(blob_path)
-            
-            # Look for year in filename
-            if not year:
-                year_match = re.search(r'_(\d{4})_', filename)
-                if year_match:
-                    year = int(year_match.group(1))
-            
-            # Look for grid cell in filename
-            if not grid_cell:
-                grid_match = re.search(r'_grid(\w+)_', filename)
-                if grid_match:
-                    grid_cell = grid_match.group(1)
-        
-        # Determine data type from the data path
-        data_type = self.data_path.rstrip('/').split('/')[-1]
-        
-        return {
+    
+        # Initialize result
+        result = {
             "stage": stage,
-            "year": year,
-            "grid_cell": grid_cell,
-            "data_type": data_type,
+            "year": None,
+            "grid_cell": "global",
+            "data_type": self.dataset_name,
             "filename": os.path.basename(blob_path)
         }
+        
+        # Extract year using regex (4 consecutive digits)
+        year_match = re.search(r'^(\d{4})', relative_path)
+        if year_match:
+            result["year"] = int(year_match.group(1))
+        
+        # Extract grid cell (assuming format like gridcellXXXXX)
+        grid_match = re.search(r'(\w+)\.zarr', relative_path)
+        if grid_match:
+            result["grid_cell"] = grid_match.group(1)
+        
+        return result
     
-    def index_existing_files(self):
+    def index_existing_files(self, paths_to_check=None):
         """
         Index all existing files across all stages.
+        
+        Args:
+            paths_to_check: Optional list of specific paths to check in GCS
+                          (defaults to all stage paths if None)
         """
         logger.info(f"Indexing existing files for dataset {self.dataset_name}")
         
         # Get existing files from GCS
-        from gnt.data.download.gcs.client import GCSClient
+        from gnt.data.common.gcs.client import GCSClient  # Update import path
         gcs_client = GCSClient(self.bucket_name, client=self.client)
         
         try:
-            # Index files in all stages
+            # Default to all stage paths if none provided
+            if paths_to_check is None:
+                paths_to_check = [self.raw_path, self.annual_path, self.spatial_path]
+                logger.info(f"Indexing files in all paths: {paths_to_check}")
+            else:
+                logger.info(f"Indexing files in specified paths: {paths_to_check}")
+            
+            # Index files in specified paths
             indexed_count = 0
-            for stage_path in [self.raw_path, self.annual_path, self.spatial_path]:
+            for stage_path in paths_to_check:
                 existing_files = gcs_client.list_existing_files(prefix=stage_path)
                 logger.info(f"Found {len(existing_files)} files in {stage_path}")
                 
@@ -366,16 +364,16 @@ class PreprocessingIndex(BaseIndex):
                         except Exception as e:
                             logger.error(f"Error inserting batch: {e}")
                             # Try to continue with next batch
-                    
-                indexed_count += stage_indexed
-        
+                
+            indexed_count += stage_indexed
+    
             # Update metadata with indexing stats
             self.metadata["last_indexed"] = datetime.now().isoformat()
             self.metadata["indexed_files"] = indexed_count
             self._save_metadata()
             
-            logger.info(f"Completed indexing {indexed_count} files across all stages")
-        
+            logger.info(f"Completed indexing {indexed_count} files across specified paths")
+    
         except Exception as e:
             logger.error(f"Error indexing existing files: {e}")
             logger.debug(f"Full error: {traceback.format_exc()}")
@@ -1476,19 +1474,18 @@ class PreprocessingIndex(BaseIndex):
             return result
         return wrapper
 
-    def validate_against_gcs(self, gcs_client=None, force_file_list_update=False):
+    def validate_against_gcs(self, gcs_client=None, force_file_list_update=False, paths_to_check=None):
         """
         Validate the index against actual GCS bucket contents.
         
-        This method performs several validations:
-        1. Finds files in GCS that aren't in the index
-        2. Identifies indexed files that don't exist in GCS
-        3. Checks for consistency between index stages
-        
+        This method checks for zarr directories in GCS vs. the index.
+    
         Args:
             gcs_client: Optional pre-configured GCS client
             force_file_list_update: Whether to force refresh of file list from GCS
-        
+            paths_to_check: Optional list of specific paths to check in GCS
+                           (defaults to annual and spatial paths if None)
+    
         Returns:
             Dict with validation results
         """
@@ -1496,49 +1493,85 @@ class PreprocessingIndex(BaseIndex):
         
         # Create GCS client if not provided
         if gcs_client is None:
-            from gnt.data.download.gcs.client import GCSClient
+            from gnt.data.common.gcs.client import GCSClient
             gcs_client = GCSClient(self.bucket_name, client=self.client)
+    
+        # Default to annual and spatial paths if none provided
+        if paths_to_check is None:
+            paths_to_check = [self.annual_path, self.spatial_path]
+            logger.info(f"Validating only annual and spatial paths: {paths_to_check}")
+    
+        # Get zarr directories from GCS for each stage path
+        gcs_zarr_dirs = {
+            self.STAGE_ANNUAL: set(),
+            self.STAGE_SPATIAL: set()
+        }
+        total_gcs_dirs = 0
         
-        # Get all existing files from GCS for each stage path
-        gcs_files = {}
-        total_gcs_files = 0
-        
-        for stage_name, stage_path in [
-            (self.STAGE_RAW, self.raw_path),
-            (self.STAGE_ANNUAL, self.annual_path),
-            (self.STAGE_SPATIAL, self.spatial_path)
-        ]:
-            # Clear cache if forced update
-            if force_file_list_update:
-                self.clear_cache()
-                
-            # Get existing files
-            logger.info(f"Listing files in GCS path: {stage_path}")
+        # Process each path to check
+        for path in paths_to_check:
+            logger.info(f"Listing zarr directories in GCS path: {path}")
+            
             try:
-                files = gcs_client.list_existing_files(prefix=stage_path)
-                gcs_files[stage_name] = set(files)
-                total_gcs_files += len(files)
-                logger.info(f"Found {len(files)} files for stage {stage_name} in GCS")
-            except Exception as e:
-                logger.error(f"Error listing files for stage {stage_name}: {e}")
-                gcs_files[stage_name] = set()
+                # Use the new method to efficiently find zarr directories
+                zarr_dirs = gcs_client.list_zarr_directories(prefix=path)
+                
+                # Categorize zarr directories by stage
+                for zarr_dir in zarr_dirs:
+                    if path == self.annual_path or zarr_dir.startswith(self.annual_path):
+                        gcs_zarr_dirs[self.STAGE_ANNUAL].add(zarr_dir)
+                    elif path == self.spatial_path or zarr_dir.startswith(self.spatial_path):
+                        gcs_zarr_dirs[self.STAGE_SPATIAL].add(zarr_dir)
         
-        # Get all indexed files
+                # Log the count of zarr directories found
+                stage_key = self.STAGE_ANNUAL if path.startswith(self.annual_path) else self.STAGE_SPATIAL
+                logger.info(f"Found {len(gcs_zarr_dirs[stage_key])} zarr directories in {path}")
+                total_gcs_dirs += len(gcs_zarr_dirs[stage_key])
+                
+            except Exception as e:
+                logger.error(f"Error listing files for path {path}: {e}")
+    
+        # Get all indexed zarr files
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        cursor.execute("SELECT file_hash, blob_path, stage, status FROM files")
+        # Only get zarr files from the index
+        if paths_to_check:
+            conditions = []
+            for path in paths_to_check:
+                conditions.append(f"blob_path LIKE '{path}%' AND blob_path LIKE '%.zarr%'")
+        
+            where_clause = " OR ".join(conditions)
+            query = f"SELECT file_hash, blob_path, stage, status FROM files WHERE ({where_clause})"
+        else:
+            query = "SELECT file_hash, blob_path, stage, status FROM files WHERE blob_path LIKE '%.zarr%'"
+    
+        cursor.execute(query)
         indexed_files = cursor.fetchall()
         
-        # Organize indexed files by stage
-        index_files = {stage: set() for stage in [self.STAGE_RAW, self.STAGE_ANNUAL, self.STAGE_SPATIAL]}
+        # Organize indexed zarr files by stage
+        index_zarr_dirs = {
+            self.STAGE_ANNUAL: set(),
+            self.STAGE_SPATIAL: set()
+        }
+        
         index_path_to_hash = {}
         index_hash_to_data = {}
         
         for file_hash, blob_path, stage, status in indexed_files:
-            index_files[stage].add(blob_path)
-            index_path_to_hash[blob_path] = file_hash
-            index_hash_to_data[file_hash] = {"path": blob_path, "stage": stage, "status": status}
+            # Normalize zarr paths to directory level
+            if ".zarr/" in blob_path:
+                zarr_dir = blob_path.split(".zarr/")[0] + ".zarr"
+            else:
+                zarr_dir = blob_path
+            
+            if stage == self.STAGE_ANNUAL:
+                index_zarr_dirs[self.STAGE_ANNUAL].add(zarr_dir)
+            elif stage == self.STAGE_SPATIAL:
+                index_zarr_dirs[self.STAGE_SPATIAL].add(zarr_dir)
+                
+            index_path_to_hash[zarr_dir] = file_hash
+            index_hash_to_data[file_hash] = {"path": zarr_dir, "stage": stage, "status": status}
         
         # Find inconsistencies
         results = {
@@ -1546,34 +1579,49 @@ class PreprocessingIndex(BaseIndex):
             "missing_from_gcs": {},
             "stage_counts": {},
             "status_by_stage": {},
-            "total_indexed": len(indexed_files),
-            "total_in_gcs": total_gcs_files,
+            "total_indexed": len(index_zarr_dirs[self.STAGE_ANNUAL]) + len(index_zarr_dirs[self.STAGE_SPATIAL]),
+            "total_in_gcs": total_gcs_dirs,
             "orphaned_transfers": []
         }
         
         # Files in GCS but not in index
-        for stage in [self.STAGE_RAW, self.STAGE_ANNUAL, self.STAGE_SPATIAL]:
-            in_gcs_not_in_index = gcs_files[stage] - index_files[stage]
+        for stage in [self.STAGE_ANNUAL, self.STAGE_SPATIAL]:
+            in_gcs_not_in_index = gcs_zarr_dirs[stage] - index_zarr_dirs[stage]
             results["missing_from_index"][stage] = list(in_gcs_not_in_index)
             
             # Files in index but not in GCS
-            in_index_not_in_gcs = index_files[stage] - gcs_files[stage]
+            in_index_not_in_gcs = index_zarr_dirs[stage] - gcs_zarr_dirs[stage]
             results["missing_from_gcs"][stage] = list(in_index_not_in_gcs)
             
             # Count by stage
-            results["stage_counts"][stage] = len(index_files[stage])
+            results["stage_counts"][stage] = len(index_zarr_dirs[stage])
+    
+        # Get status counts by stage (only for zarr files)
+        if paths_to_check:
+            conditions = []
+            for path in paths_to_check:
+                conditions.append(f"blob_path LIKE '{path}%' AND blob_path LIKE '%.zarr%'")
         
-        # Get status counts by stage
-        cursor.execute("""
-        SELECT stage, status, COUNT(*) FROM files
-        GROUP BY stage, status
-        """)
-        
+            where_clause = " OR ".join(conditions)
+            query = f"""
+            SELECT stage, status, COUNT(*) FROM files
+            WHERE ({where_clause})
+            GROUP BY stage, status
+            """
+        else:
+            query = """
+            SELECT stage, status, COUNT(*) FROM files
+            WHERE blob_path LIKE '%.zarr%'
+            GROUP BY stage, status
+            """
+    
+        cursor.execute(query)
+    
         for stage, status, count in cursor.fetchall():
             if stage not in results["status_by_stage"]:
                 results["status_by_stage"][stage] = {}
             results["status_by_stage"][stage][status] = count
-        
+    
         # Check for orphaned transfers (transfers for non-existent files)
         cursor.execute("""
         SELECT t.file_hash FROM file_transfers t
@@ -1582,7 +1630,7 @@ class PreprocessingIndex(BaseIndex):
         """)
         orphaned_transfers = cursor.fetchall()
         results["orphaned_transfers"] = [hash[0] for hash in orphaned_transfers]
-        
+    
         # Save validation results in metadata
         validation_summary = {
             "performed_at": datetime.now().isoformat(),
@@ -1590,149 +1638,147 @@ class PreprocessingIndex(BaseIndex):
             "missing_from_gcs_count": sum(len(files) for files in results["missing_from_gcs"].values()),
             "orphaned_transfers_count": len(results["orphaned_transfers"]),
             "total_indexed": results["total_indexed"],
-            "total_in_gcs": results["total_gcs_files"]
-        }
+            "total_in_gcs": results["total_in_gcs"],
+            "paths_checked": paths_to_check,
+            "zarr_only": True  # Add flag to indicate this is a zarr-only validation
+        };
         
         self.metadata["last_validation"] = validation_summary
-        self._save_metadata()
+        self._save_metadata();
         
-        logger.info(f"Validation complete: found {validation_summary['missing_from_index_count']} files in GCS not in index, " 
-                    f"{validation_summary['missing_from_gcs_count']} files in index not in GCS")
-        
+        logger.info(f"Validation complete: found {validation_summary['missing_from_index_count']} zarr dirs in GCS not in index, " 
+                    f"{validation_summary['missing_from_gcs_count']} zarr dirs in index not in GCS")
+    
         return results
-
-    def cleanup_missing_files(self, fix_orphaned_transfers=True, remove_missing_from_index=False):
+    
+    def cleanup_missing_files(self, fix_orphaned_transfers: bool = True, 
+                         remove_missing_from_index: bool = False) -> Dict[str, int]:
         """
-        Clean up the index by removing or fixing inconsistencies.
-        
+        Clean up inconsistencies in the preprocessing index.
+    
         Args:
             fix_orphaned_transfers: Whether to remove orphaned transfers
             remove_missing_from_index: Whether to remove files from index that don't exist in GCS
-            
+        
         Returns:
-            Dict with cleanup results
+            Dictionary with cleanup statistics
         """
-        logger.info(f"Cleaning up index for {self.dataset_name}")
-        
-        conn = self._get_connection()
-        cursor = conn.cursor()
-        
         results = {
             "orphaned_transfers_removed": 0,
             "missing_files_removed": 0
         }
-        
-        # Fix orphaned transfers
-        if fix_orphaned_transfers:
-            cursor.execute("""
-            DELETE FROM file_transfers WHERE file_hash IN (
-                SELECT t.file_hash FROM file_transfers t
-                LEFT JOIN files f ON t.file_hash = f.file_hash
-                WHERE f.file_hash IS NULL
-            )
-            """)
-            results["orphaned_transfers_removed"] = cursor.rowcount
-            logger.info(f"Removed {results['orphaned_transfers_removed']} orphaned transfers")
-        
-        # Remove files that don't exist in GCS
-        if remove_missing_from_index:
-            # We'll need to check each file individually
-            cursor.execute("SELECT file_hash, blob_path FROM files")
-            all_files = cursor.fetchall()
-            
-            files_to_remove = []
-            for file_hash, blob_path in all_files:
-                if not self.is_blob_exists(blob_path):
-                    files_to_remove.append(file_hash)
-            
-            if files_to_remove:
-                # Remove from transfers first to maintain foreign key constraints
-                placeholders = ','.join(['?'] * len(files_to_remove))
-                cursor.execute(f"DELETE FROM file_transfers WHERE file_hash IN ({placeholders})", files_to_remove)
-                
-                # Then remove from main index
-                cursor.execute(f"DELETE FROM files WHERE file_hash IN ({placeholders})", files_to_remove)
-                results["missing_files_removed"] = len(files_to_remove)
-                logger.info(f"Removed {results['missing_files_removed']} indexed files that don't exist in GCS")
-        
-        conn.commit()
-        
-        # Schedule a save operation
-        self._operations_since_save += max(results["orphaned_transfers_removed"], results["missing_files_removed"])
-        self._check_save_needed(force=True)
-        
-        return results
-
-    def create_auto_save_thread(self, interval_seconds=300):
-        """
-        Create a background thread that automatically saves the index at intervals.
-        
-        Args:
-            interval_seconds: How often to save the index (in seconds)
-            
-        Returns:
-            The started thread
-        """
-        import threading
-        
-        def auto_save_worker():
-            logger.info(f"Starting auto-save thread with {interval_seconds}s interval")
-            while True:
-                try:
-                    # Sleep for the interval
-                    time.sleep(interval_seconds)
-                    
-                    # Check if we need to save
-                    with self._lock:
-                        if self._operations_since_save > 0:
-                            logger.info(f"Auto-save thread: saving after {self._operations_since_save} operations")
-                            self.save()
-                except Exception as e:
-                    logger.error(f"Error in auto-save thread: {e}")
-        
-        # Create and start the thread
-        thread = threading.Thread(target=auto_save_worker, daemon=True)
-        thread.start()
-        
-        # Store thread reference
-        self._auto_save_thread = thread
-        
-        return thread
-
-    def stop_auto_save(self):
-        """Stop the auto-save thread if running."""
-        if hasattr(self, '_auto_save_thread'):
-            # We can't really stop daemon threads, but we can clear the reference
-            logger.info("Auto-save thread will terminate when program exits")
-            delattr(self, '_auto_save_thread')
     
-    def _cleanup_temp_files(self):
-        """Clean up temporary files."""
-        try:
-            logger.info(f"Cleaning up temporary directory: {self._temp_dir}")
-            if os.path.exists(self._temp_dir):
-                shutil.rmtree(self._temp_dir)
-        except Exception as e:
-            logger.warning(f"Failed to clean up temporary directory: {e}")
+        with self._lock:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            
+            # 1. Fix orphaned transfers (transfers for files that don't exist)
+            if fix_orphaned_transfers:
+                logger.info("Removing orphaned transfers...")
+                cursor.execute("""
+                DELETE FROM file_transfers 
+                WHERE file_hash IN (
+                    SELECT t.file_hash FROM file_transfers t
+                    LEFT JOIN files f ON t.file_hash = f.file_hash
+                    WHERE f.file_hash IS NULL
+                )
+                """)
+                
+                results["orphaned_transfers_removed"] = cursor.rowcount
+                logger.info(f"Removed {results['orphaned_transfers_removed']} orphaned transfers")
+            
+            # 2. Remove files from index that don't exist in GCS
+            if remove_missing_from_index:
+                # First get a list of files that might be missing
+                cursor.execute("""
+                SELECT file_hash, blob_path, stage 
+                FROM files 
+                WHERE blob_path LIKE '%.zarr%' 
+                AND status = 'completed'
+                """)
+                
+                potential_missing = cursor.fetchall()
+                logger.info(f"Checking {len(potential_missing)} completed zarr files for existence in GCS...")
+                
+                # Only check files from annual and spatial stages
+                missing_hashes = []
+                for file_hash, blob_path, stage in potential_missing:
+                    if stage in [self.STAGE_ANNUAL, self.STAGE_SPATIAL]:
+                        # Normalize zarr path to directory level
+                        if ".zarr/" in blob_path:
+                            zarr_dir = blob_path.split(".zarr/")[0] + ".zarr"
+                        else:
+                            zarr_dir = blob_path
+                            
+                        # Check if zarr directory exists in GCS
+                        exists = self.is_blob_exists(f"{zarr_dir}/.zmetadata") or self.is_blob_exists(f"{zarr_dir}/zgroup")
+                        
+                        if not exists:
+                            missing_hashes.append(file_hash)
+                
+                # Delete files that don't exist in GCS
+                if missing_hashes:
+                    for hash_batch in [missing_hashes[i:i+100] for i in range(0, len(missing_hashes), 100)]:
+                        placeholders = ",".join(["?"] * len(hash_batch))
+                        cursor.execute(f"""
+                        DELETE FROM files 
+                        WHERE file_hash IN ({placeholders})
+                        """, hash_batch)
+                        
+                        results["missing_files_removed"] += cursor.rowcount
+                    
+                    # Also delete any transfers for these files
+                    for hash_batch in [missing_hashes[i:i+100] for i in range(0, len(missing_hashes), 100)]:
+                        placeholders = ",".join(["?"] * len(hash_batch))
+                        cursor.execute(f"""
+                        DELETE FROM file_transfers 
+                        WHERE file_hash IN ({placeholders})
+                        """, hash_batch)
+                    
+                    logger.info(f"Removed {results['missing_files_removed']} files from index that don't exist in GCS")
+            
+            # Commit changes
+            conn.commit()
+            
+            # Increment operations count and save
+            self._operations_since_save += results["orphaned_transfers_removed"] + results["missing_files_removed"]
+            self._check_save_needed(force=True)
+            
+            return results
     
     def _close_all_connections(self):
-        """Close all database connections."""
+        """
+        Close all database connections to ensure data is safely written.
+        
+        This is important before saving the database to GCS or when performing
+        operations that require exclusive access to the database file.
+        """
         with self._lock:
             try:
-                # Close thread-local connections
+                # Close the thread-local connection if it exists
                 if hasattr(self._thread_local, 'conn') and self._thread_local.conn is not None:
-                    self._thread_local.conn.commit()
-                    self._thread_local.conn.close()
-                    self._thread_local.conn = None
+                    try:
+                        # Commit any pending transactions
+                        self._thread_local.conn.commit()
+                    except sqlite3.Error:
+                        # Ignore errors during commit, just try to close
+                        pass
+                    
+                    try:
+                        # Close the connection
+                        self._thread_local.conn.close()
+                        self._thread_local.conn = None
+                    except sqlite3.Error as e:
+                        logger.warning(f"Error closing thread-local SQLite connection: {e}")
+                
+                # Additional safety measure - create a temporary connection and 
+                # run a checkpoint to ensure WAL file data is merged into the main DB
+                try:
+                    temp_conn = sqlite3.connect(self.local_db_path)
+                    temp_conn.execute("PRAGMA wal_checkpoint(FULL)")
+                    temp_conn.close()
+                except sqlite3.Error as e:
+                    logger.warning(f"Error running WAL checkpoint: {e}")
+            
             except Exception as e:
-                logger.error(f"Error closing database connection: {e}")
-    
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        try:
-            self.save()
-        finally:
-            self._close_all_connections()
-            self._cleanup_temp_files()
+                logger.error(f"Error closing database connections: {e}")

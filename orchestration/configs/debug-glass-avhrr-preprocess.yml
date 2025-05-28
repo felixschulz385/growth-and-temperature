@@ -1,8 +1,19 @@
 tasks:
+  # # Task 1: Validate the GLASS AVHRR data
+  # - preprocessor: glass
+  #   mode: "validate"
+  #   data_source: "AVHRR"
+  #   base_url: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
+  #   file_extensions: [".hdf"]
+  #   force_refresh_gcs: true
+  #   fix_orphaned_transfers: true
+  #   auto_index_files: true
+
+  # Task 2: Process Stage 1 (annual summarization)
   - preprocessor: glass
     stage: "stage1"
     data_source: "AVHRR"
-    years: [1981, 2021]
+    years: [1981, 2021]  # Full range, you may want to use a smaller range for debugging
     base_url: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
     file_extensions: [".hdf"]
     dask_threads: 2
@@ -11,4 +22,4 @@ tasks:
       time: 1
       x: 500
       y: 500
-    override: true
+    override: false
