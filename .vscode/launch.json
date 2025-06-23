@@ -2,29 +2,18 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug GLASS MODIS Download",
+      "name": "Debug EOG MODIS Download",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
       "args": [
-        "download",
-        "--config", "${workspaceFolder}/orchestration/configs/debug-unified-glass-modis.yaml",
-        "--source", "glass",
+        "index",
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "glass_modis",
         "--debug"
       ],
       "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat",
-        "HPC_TARGET": "your-username@your-hpc-server:/path/to/data"
-      }
     },
     {
       "name": "Debug EOG DVNL Download",
@@ -39,8 +28,6 @@
         "--debug"
       ],
       "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true
     },
   ]
 }
