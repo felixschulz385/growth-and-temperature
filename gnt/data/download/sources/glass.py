@@ -4,11 +4,12 @@ import calendar
 from datetime import datetime
 import logging
 import time
+import hashlib
+import os
 
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
-import os
 
 from gnt.data.download.sources.base import BaseDataSource
 
@@ -29,10 +30,25 @@ class GlassLSTDataSource(BaseDataSource):
         else:
             self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
 
+    def get_file_hash(self, file_url: str) -> str:
+        """
+        Generate a unique hash for a file based on its URL.
+        
+        Args:
+            file_url: URL of the file
+            
+        Returns:
+            str: A unique hash identifier for the file
+        """
+        # Use the URL as the basis for the hash
+        # For GLASS data, the URL should be unique for each file
+        return hashlib.md5(file_url.encode('utf-8')).hexdigest()
+
     def list_remote_files(self, entrypoint: dict = None) -> list:
         def crawl(url: str, relative_path: str = ""):
             time.sleep(.5)
             res = requests.get(url)
+            res.raise_for_status()  # Add error handling
             soup = BeautifulSoup(res.text, "html.parser")
 
             # Sort links to process years and days in order
@@ -60,7 +76,7 @@ class GlassLSTDataSource(BaseDataSource):
                             elif len(href_stripped) == 3 and href_stripped.isdigit():
                                 day = int(href_stripped)
                                 if day == entrypoint.get("day", 0):
-                                    yield from crawl(full_url, new_relative_path) # !
+                                    yield from crawl(full_url, new_relative_path)
                             else:
                                 pass
                         else:
@@ -70,14 +86,17 @@ class GlassLSTDataSource(BaseDataSource):
                 elif any(href.endswith(ext) for ext in self.file_extensions):
                     yield (new_relative_path, full_url)
 
-        return crawl(self.base_url)
+        return list(crawl(self.base_url))  # Convert generator to list for safer handling
 
     def local_path(self, relative_path: str) -> str:
         # Assuming a local directory structure that mirrors the remote one
         return os.path.join("data", relative_path)
     
     def download(self, file_url: str, output_path: str, session: requests.Session = None) -> None:
-        r = requests.get(file_url, stream=True)
+        # Use provided session or create a new one
+        s = session or requests.Session()
+        
+        r = s.get(file_url, stream=True)
         r.raise_for_status()
 
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
