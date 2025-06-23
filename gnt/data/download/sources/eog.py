@@ -17,7 +17,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, WebDriverException, StaleElementReferenceException
 try:
     from webdriver_manager.chrome import ChromeDriverManager
     WEBDRIVER_MANAGER_AVAILABLE = True
@@ -185,7 +185,7 @@ class EOGDataSource(BaseDataSource):
                 if login_button.is_enabled():
                     logger.error("Login failed: login button still clickable")
                     return False
-            except NoSuchElementException:
+            except StaleElementReferenceException:
                 pass  # Button not found, which is good - means we're logged in
             
             # Set login state to true - we'll verify success by checking for downloads
@@ -492,14 +492,14 @@ class EOGDataSource(BaseDataSource):
 
     def gcs_upload_path(self, base_url: str, relative_path: str) -> str:
         """
-        Generate the GCS path for a file.
+        Generate the GCS path for a file relative to configured target.
         
         Args:
             base_url: Base URL (not used for EOG)
             relative_path: Relative path of the file
             
         Returns:
-            GCS path for the file
+            Path for the file relative to configured target path
         """
         # Extract the relative path from the full URL structure
         path_parts = relative_path.split("/")
@@ -517,17 +517,17 @@ class EOGDataSource(BaseDataSource):
                     break
             
             if satellite:
-                return f"{self.data_path}/{satellite}/{filename}"
+                return f"{satellite}/{filename}"
             else:
-                return f"{self.data_path}/{filename}"
+                return filename
         
         elif "viirs" in self.data_path.lower():
             # Keep filename and append to data_path
             filename = path_parts[-1]
-            return f"{self.data_path}/{filename}"
+            return filename
         
-        # Default case - use full relative path
-        return f"{self.data_path}/{relative_path}"
+        # Default case - use full relative path without the data_path prefix
+        return relative_path
 
     def get_file_hash(self, file_url: str) -> str:
         """

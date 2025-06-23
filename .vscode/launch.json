@@ -2,49 +2,17 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug GLASS AVHRR Daily LST Download",
+      "name": "Debug GLASS MODIS Download",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-avhrr-download.json"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      "args": [
+        "download",
+        "--config", "${workspaceFolder}/orchestration/configs/debug-unified-glass-modis.yaml",
+        "--source", "glass",
+        "--debug"
       ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug GLASS AVHRR Preprocessing",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-avhrr-preprocess.yml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug EOG Data Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.yaml"],
       "console": "integratedTerminal",
       "justMyCode": false,
       "showReturnValue": true,
@@ -55,101 +23,24 @@
       "env": {
         "PYTHONPATH": "${workspaceFolder}",
         "GCP_PROJECT_ID": "ee-growthandheat",
+        "HPC_TARGET": "your-username@your-hpc-server:/path/to/data"
       }
     },
     {
-      "name": "Debug EOG Preprocessing",
+      "name": "Debug EOG DVNL Download",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "args": ["--debug", "${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug GLASS MODIS Daily LST Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-modis-download.yaml"],
+      "args": [
+        "validate_download",
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "eog_dvnl",
+        "--debug"
+      ],
       "console": "integratedTerminal",
       "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug Harvard Data Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/harvard-download.json"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug Misc Data Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-misc-download.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug Misc Data Preprocess",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-misc-preprocess.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
+      "showReturnValue": true
     },
   ]
 }
