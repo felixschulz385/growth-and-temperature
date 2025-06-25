@@ -2,7 +2,7 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug GLASS MODIS Download",
+      "name": "Debug EOG MODIS Download",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/run.py",
@@ -45,8 +45,6 @@
         "--debug"
       ],
       "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true
     },
   ]
 }

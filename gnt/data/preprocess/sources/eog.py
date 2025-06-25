@@ -20,7 +20,7 @@ from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.gcs.client import GCSClient
 from gnt.data.common.dask.client import init_dask_client, close_client, DaskClientContextManager
 from gnt.data.common.index.preprocessing_index import PreprocessingIndex
-from gnt.data.common.index.download_index import DataDownloadIndex
+from gnt.data.common.index.hpc_download_index import DataDownloadIndex
 from gnt.data.download.sources.eog import EOGDataSource
 
 logger = logging.getLogger(__name__)

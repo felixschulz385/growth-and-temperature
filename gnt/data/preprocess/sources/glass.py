@@ -355,7 +355,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         logger.info(f"Attempting to list GLASS files with prefix {self.path_prefix} from download index")
         
         try:
-            from gnt.data.common.index.download_index import DataDownloadIndex
+            from gnt.data.common.index.hpc_download_index import DataDownloadIndex
             from gnt.data.download.sources.factory import create_data_source
             
             # Create a data source instance for GLASS with parameters passed from the class

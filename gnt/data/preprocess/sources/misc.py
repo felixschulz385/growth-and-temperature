@@ -681,7 +681,7 @@ class MiscPreprocessor(AbstractPreprocessor):
         # Try to find a VIIRS file using the download index
         viirs_file = None
         try:
-            from gnt.data.common.index.download_index import DataDownloadIndex
+            from gnt.data.common.index.hpc_download_index import DataDownloadIndex
             from gnt.data.download.sources.factory import create_data_source
             
             # Create a data source instance for VIIRS
