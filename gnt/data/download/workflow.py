@@ -56,6 +56,66 @@ class WorkflowContext:
         self.bucket_name = bucket_name
         self.staging_dir = os.path.join(os.getcwd(), "staging")
         os.makedirs(self.staging_dir, exist_ok=True)
+        self._persistent_sessions = {}
+        self._session_locks = {}  # Add locks for thread safety
+
+    def get_persistent_session(self, key: str, creator_fn):
+        """
+        Get or create a persistent session object for a given key.
+        This method is thread-safe.
+        
+        Args:
+            key: Unique key for the session (e.g., data source name)
+            creator_fn: Function to create the session if not present
+        Returns:
+            The persistent session object
+        """
+        # Create lock for this session key if it doesn't exist
+        if key not in self._session_locks:
+            self._session_locks[key] = threading.RLock()
+        
+        # Use lock to ensure thread safety
+        with self._session_locks[key]:
+            if key not in self._persistent_sessions or self._persistent_sessions[key] is None:
+                logger.info(f"Creating new persistent session for {key}")
+                try:
+                    self._persistent_sessions[key] = creator_fn()
+                except Exception as e:
+                    logger.error(f"Failed to create persistent session for {key}: {e}")
+                    # Don't store None - keep trying to recreate on failure
+                    raise
+        
+        return self._persistent_sessions[key]
+
+    def close_persistent_session(self, key: str):
+        """
+        Close and remove a persistent session for a given key.
+        This method is thread-safe.
+        """
+        # Use lock if it exists
+        lock = self._session_locks.get(key)
+        if lock:
+            with lock:
+                sess = self._persistent_sessions.pop(key, None)
+                if sess:
+                    logger.info(f"Closing persistent session for {key}")
+                    try:
+                        # Try direct close() method first
+                        if hasattr(sess, "close"):
+                            sess.close()
+                        # Then try quit() method for selenium WebDriver
+                        elif hasattr(sess, "quit"):
+                            sess.quit()
+                    except Exception as e:
+                        logger.warning(f"Error closing session for {key}: {e}")
+
+    def close_all_persistent_sessions(self):
+        """
+        Close all persistent sessions.
+        """
+        logger.info(f"Closing all {len(self._persistent_sessions)} persistent sessions")
+        for key in list(self._persistent_sessions.keys()):
+            self.close_persistent_session(key)
 
 
 class DownloadWorker:
@@ -103,6 +163,9 @@ class DownloadWorker:
             # Initialize session
             self._manage_session()
             
+            # Get the data source name for persistent session key
+            persistent_session_key = getattr(self.data_source, "DATA_SOURCE_NAME", None)
+            
             # Process files until stopped
             while not self.stop_event.is_set():
                 try:
@@ -126,6 +189,9 @@ class DownloadWorker:
             
         except Exception as e:
             logger.error(f"Worker {self.worker_id}: Fatal error: {str(e)}")
+        finally:
+            # No need to close sessions here as the context will handle it
+            pass
     
     def _should_skip_file(self, file_hash):
         """Check if file should be skipped."""
@@ -324,7 +390,7 @@ def queue_files_for_download(download_index, job_queue, batch_size=500, max_queu
         if not files:
             break
         
-        # Queue files for download
+        # Queue files for download - BUG FIX: removed the [:1] slicing that was limiting to only one file
         for file_hash, source_url, relative_path, destination_blob in files:
             # Wait if queue is full
             while job_queue.qsize() >= max_queue_size:

@@ -46,6 +46,10 @@ class HPCClient:
     
         logger.debug(f"Initialized HPC client with host: {self.host}, base path: {self.base_path}")
         
+        # Flag to track SQLite availability on remote system
+        self._sqlite_available = None
+        self._sqlite_path = None
+
     def ensure_directory(self, remote_path: str) -> bool:
         """
         Ensure a directory exists on the HPC system.
@@ -189,6 +193,53 @@ class HPCClient:
                 return False, e.stdout, e.stderr
             return False, "", str(e)
     
+    def check_sqlite_availability(self) -> bool:
+        """
+        Check if SQLite is available on the remote system.
+        
+        Returns:
+            bool: Whether SQLite is available
+        """
+        if self._sqlite_available is not None:
+            return self._sqlite_available
+            
+        try:
+            # Try to run a simple SQLite command
+            ssh_cmd = self._build_ssh_command("command -v sqlite3")
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            
+            # If the command returns a path, SQLite is available
+            if result.returncode == 0 and result.stdout.strip() != "":
+                self._sqlite_available = True
+                self._sqlite_path = result.stdout.strip()
+                logger.debug(f"Found SQLite at: {self._sqlite_path}")
+                return True
+            
+            # Try with module load if available (common on HPC systems)
+            ssh_cmd = self._build_ssh_command("module avail sqlite 2>&1 | grep -i sqlite")
+            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            
+            if "sqlite" in result.stdout.lower():
+                # Module exists, try loading it and checking sqlite3
+                ssh_cmd = self._build_ssh_command("module load sqlite 2>/dev/null && command -v sqlite3")
+                result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+                
+                if result.returncode == 0 and result.stdout.strip() != "":
+                    self._sqlite_available = True
+                    self._sqlite_path = "module load sqlite && " + result.stdout.strip()
+                    logger.debug(f"SQLite available via module system")
+                    return True
+            
+            # SQLite not available
+            self._sqlite_available = False
+            logger.warning("SQLite (sqlite3 command) not available on the remote system. Some functionality will be limited.")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error checking for SQLite availability: {e}")
+            self._sqlite_available = False
+            return False
+    
     def execute_sqlite_query(self, db_path: str, query: str) -> Tuple[bool, List[Any]]:
         """
         Execute an SQLite query on the remote system.
@@ -202,6 +253,11 @@ class HPCClient:
         """
         logger.debug(f"Executing SQLite query on HPC: {query}")
         
+        # Check if SQLite is available
+        if not self.check_sqlite_availability():
+            logger.error("Cannot execute SQLite query: sqlite3 command not found on remote system")
+            return False, []
+        
         # Build full path
         if not db_path.startswith("/"):
             db_path = f"{self.base_path}/{db_path}"
@@ -210,7 +266,15 @@ class HPCClient:
             # Escape single quotes in the query for shell compatibility
             escaped_query = query.replace("'", "'\\''")
             
-            ssh_cmd = self._build_ssh_command(f"sqlite3 -csv '{db_path}' '{escaped_query}'")
+            # Build the SQLite command using the detected path/method
+            if self._sqlite_path and "module load" in self._sqlite_path:
+                # Use module load approach
+                sqlite_command = f"{self._sqlite_path} -csv"
+            else:
+                # Direct command
+                sqlite_command = "sqlite3 -csv"
+            
+            ssh_cmd = self._build_ssh_command(f"{sqlite_command} '{db_path}' '{escaped_query}'")
             result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
             
             # Parse CSV output
@@ -222,16 +286,20 @@ class HPCClient:
             return True, rows
         except subprocess.SubprocessError as e:
             logger.error(f"SQLite query failed on HPC: {e}")
+            if isinstance(e, subprocess.CalledProcessError):
+                logger.debug(f"SQLite error details - stdout: {e.stdout}, stderr: {e.stderr}")
             return False, []
-    
+
     def rsync_transfer(
         self, 
         source_path: str, 
         target_path: str, 
         source_is_local: bool = True,
         options: Dict[str, Any] = None,
-        show_progress: bool = True
-    ) -> Tuple[bool, str]:
+        show_progress: bool = True,
+        progress_callback=None,
+        return_process=False
+    ) -> Union[Tuple[bool, str], Tuple[bool, str, subprocess.Popen]]:
         """
         Transfer files using rsync.
         
@@ -241,9 +309,11 @@ class HPCClient:
             source_is_local: Whether the source is local (True) or remote (False)
             options: Dictionary of rsync options
             show_progress: Whether to show progress information
+            progress_callback: Optional callback function for progress updates
+            return_process: Whether to return the subprocess.Popen object
             
         Returns:
-            Tuple containing (success, output)
+            Tuple containing (success, output) or (success, output, process)
         """
         options = options or {
             "compress": True,
@@ -264,6 +334,8 @@ class HPCClient:
             rsync_cmd.append("-a")
         if options.get("partial"):
             rsync_cmd.append("--partial")
+        if options.get("partial-dir"):
+            rsync_cmd.extend(["--partial-dir", options.get("partial-dir")])
         if options.get("checksum"):
             rsync_cmd.append("--checksum")
         if options.get("ignore_times", False):
@@ -279,23 +351,24 @@ class HPCClient:
         if show_progress:
             rsync_cmd.append("--progress")
         
-        # Build SSH command with options INSIDE the ssh command string
-        ssh_opts = []
+        # Build SSH command with key file
+        ssh_cmd = ["ssh"]
+        
+        # Add key file if specified - use expanded path to ensure ~ is resolved
         if self.key_file:
-            # Expand user directory if path contains tilde
             expanded_key_file = os.path.expanduser(self.key_file)
-            
-            # Check if key file exists
             if os.path.isfile(expanded_key_file):
-                ssh_opts.append(f"-i {expanded_key_file}")
+                ssh_cmd.extend(["-i", expanded_key_file])
+                
+                # Add options to prevent password prompting
+                ssh_cmd.extend(["-o", "PasswordAuthentication=no"])
+                ssh_cmd.extend(["-o", "BatchMode=yes"])
             else:
                 logger.warning(f"SSH key file not found: {self.key_file} (expanded to {expanded_key_file})")
-
-        # Build the ssh command string with all options
-        ssh_cmd = f"ssh {' '.join(ssh_opts)}" if ssh_opts else "ssh"
         
-        # Add the SSH command to rsync
-        rsync_cmd.extend(["-e", ssh_cmd])
+        # Join the SSH command with quotes to handle spaces in paths
+        ssh_cmd_str = " ".join(ssh_cmd)
+        rsync_cmd.extend(["-e", ssh_cmd_str])
     
         # Format paths for rsync
         if source_is_local:
@@ -314,60 +387,178 @@ class HPCClient:
         rsync_cmd.append(formatted_target)
     
         start_time = time.time()
+        
+        logger.debug(f"Executing rsync command: {' '.join(rsync_cmd)}")
+        
+        if return_process or progress_callback:
+            # For real-time progress tracking or returning the process
+            try:
+                process = subprocess.Popen(
+                    rsync_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    bufsize=1,
+                    universal_newlines=True
+                )
+                
+                output_lines = []
+                error_lines = []
+                
+                # Process output in real-time for progress tracking
+                if progress_callback:
+                    for line in process.stdout:
+                        output_lines.append(line)
+                        # Extract transfer progress information
+                        progress_info = self._parse_rsync_progress(line)
+                        if progress_info:
+                            progress_callback(progress_info)
+                    
+                    # Collect any errors
+                    for line in process.stderr:
+                        error_lines.append(line)
+                else:
+                    # Just collect output without callbacks
+                    stdout, stderr = process.communicate()
+                    output_lines = stdout.splitlines()
+                    error_lines = stderr.splitlines()
+                
+                # Wait for completion and get return code
+                return_code = process.wait()
+                
+                if return_code == 0:
+                    elapsed = time.time() - start_time
+                    logger.info(f"Transfer completed in {elapsed:.1f} seconds")
+                    
+                    # Extract summary from output
+                    summary = "Transfer complete"
+                    for line in reversed(output_lines):
+                        if "bytes/sec" in line or "files transferred" in line:
+                            summary = line.strip()
+                            break
+                    
+                    if return_process:
+                        return True, summary, process
+                    return True, summary
+                else:
+                    logger.error(f"Rsync transfer failed with code {return_code}")
+                    error_summary = "\n".join(error_lines) if error_lines else "Unknown error"
+                    
+                    if return_process:
+                        return False, error_summary, process
+                    return False, error_summary
+                    
+            except Exception as e:
+                logger.error(f"Error during rsync transfer: {e}")
+                if return_process:
+                    return False, str(e), None
+                return False, str(e)
+        else:
+            # Simple version without real-time tracking
+            try:
+                # Execute the transfer
+                result = subprocess.run(rsync_cmd, check=True, capture_output=True, text=True)
+        
+                elapsed = time.time() - start_time
+                logger.info(f"Transfer completed in {elapsed:.1f} seconds")
+        
+                # Extract progress information
+                output_lines = result.stdout.splitlines()
+                summary = ""
+                if len(output_lines) > 2:
+                    summary = output_lines[-2]
+        
+                return True, summary
+        
+            except subprocess.SubprocessError as e:
+                logger.error(f"Rsync transfer failed: {e}")
+                if isinstance(e, subprocess.CalledProcessError):
+                    return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+                return False, str(e)
     
-        try:
-            # Execute the transfer
-            logger.debug(f"Executing rsync command: {' '.join(rsync_cmd)}")
-            result = subprocess.run(rsync_cmd, check=True, capture_output=True, text=True)
-    
-            elapsed = time.time() - start_time
-            logger.info(f"Transfer completed in {elapsed:.1f} seconds")
-    
-            # Extract progress information
-            output_lines = result.stdout.splitlines()
-            summary = ""
-            if len(output_lines) > 2:
-                summary = output_lines[-2]
-    
-            return True, summary
-    
-        except subprocess.SubprocessError as e:
-            logger.error(f"Rsync transfer failed: {e}")
-            if isinstance(e, subprocess.CalledProcessError):
-                return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
-            return False, str(e)
-    
-    def extract_tar(self, tar_path: str, extract_dir: str) -> bool:
+    def _parse_rsync_progress(self, line):
+        """Parse rsync progress output line for status information."""
+        line = line.strip()
+        progress_info = {"message": line}
+        
+        # Look for bytes transferred information
+        if "%" in line and "to-check" not in line:
+            try:
+                # Extract bytes information
+                if "bytes/sec" in line:
+                    parts = line.split()
+                    for i, part in enumerate(parts):
+                        if part.endswith("/s") or part.endswith("/sec"):
+                            # Found speed indicator, the preceding part should be bytes transferred
+                            if i > 0 and parts[i-1].isdigit():
+                                progress_info["bytes_transferred"] = int(parts[i-1])
+                                break
+                
+                # Extract percentage
+                if "%" in line:
+                    percent_part = next((p for p in line.split() if "%" in p), None)
+                    if percent_part:
+                        try:
+                            progress_info["percent"] = float(percent_part.replace("%", ""))
+                        except ValueError:
+                            pass
+                            
+            except Exception:
+                pass  # Ignore parsing errors
+                
+        return progress_info
+
+    def extract_tar(self, tar_path: str, extraction_dir: str) -> bool:
         """
         Extract a tar file on the HPC system.
         
         Args:
-            tar_path: Path to the tar file on the HPC system
-            extract_dir: Directory to extract to on the HPC system
+            tar_path: Path to the tar file on HPC
+            extraction_dir: Directory to extract to on HPC
             
         Returns:
             bool: Whether the extraction was successful
         """
-        logger.debug(f"Extracting tar on HPC: {tar_path} to {extract_dir}")
+        logger = logging.getLogger(__name__)
         
-        # Build full paths
-        if not tar_path.startswith("/"):
-            tar_path = f"{self.base_path}/{tar_path}"
-        if not extract_dir.startswith("/"):
-            extract_dir = f"{self.base_path}/{extract_dir}"
-        
-        # Build SSH command
-        extract_command = f"mkdir -p {extract_dir} && tar -xzf {tar_path} -C {extract_dir} && echo 'Extraction complete'"
-        ssh_cmd = self._build_ssh_command(extract_command)
+        # Make sure the extraction directory exists
+        self.ensure_directory(extraction_dir)
         
         try:
-            # Execute the SSH command
-            result = subprocess.run(ssh_cmd, check=True, capture_output=True, text=True)
-            logger.info(f"Successfully extracted tar on HPC")
-            return True
-        except subprocess.SubprocessError as e:
-            logger.error(f"Extraction failed on HPC: {e}")
+            # Build the command to extract tar
+            # Using tar -xzf <tar_path> -C <extraction_dir>
+            # The -C option changes to the extraction directory first
+            # FIX: Use --strip-components=1 to remove the top-level directory
+            # This removes the batch_* directory structure and places files directly in the raw dir
+            cmd = f"cd {extraction_dir} && tar -xzf {tar_path} --strip-components=1"
+            
+            # Execute SSH command
+            result, stdout, stderr = self.execute_command(cmd)
+            
+            if result:
+                logger.info(f"Successfully extracted {tar_path} to {extraction_dir}")
+                return True
+            else:
+                logger.error(f"Failed to extract {tar_path}: {stderr}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error extracting tar file {tar_path}: {e}")
             return False
+
+    def _ssh_execute(self, command: str) -> tuple:
+        """
+        DEPRECATED: Use execute_command instead.
+        Execute a command on the remote SSH host.
+        
+        Args:
+            command: Command to execute
+        
+        Returns:
+            Tuple: (success: bool, stdout: str, stderr: str)
+        """
+        logger.debug(f"DEPRECATED: _ssh_execute called. Use execute_command instead. Command: {command}")
+        return self.execute_command(command)
 
     def _build_ssh_command(self, remote_command: str) -> List[str]:
         """
@@ -640,17 +831,34 @@ class HPCIndexSynchronizer:
                 result['remote_exists'] = True
                 result['remote_modified'] = remote_info['modified']
                 
-                # Get remote file count
-                success, rows = self.client.execute_sqlite_query(
-                    remote_db_path, 
-                    "SELECT COUNT(*) FROM files"
-                )
+                # Check if SQLite is available on remote system
+                sqlite_available = self.client.check_sqlite_availability()
                 
-                if success and rows and rows[0]:
-                    try:
-                        result['remote_file_count'] = int(rows[0][0])
-                    except (ValueError, IndexError):
-                        logger.warning(f"Could not parse remote file count: {rows}")
+                # Get remote file count
+                if sqlite_available:
+                    success, rows = self.client.execute_sqlite_query(
+                        remote_db_path, 
+                        "SELECT COUNT(*) FROM files"
+                    )
+                    
+                    if success and rows and rows[0]:
+                        try:
+                            result['remote_file_count'] = int(rows[0][0])
+                        except (ValueError, IndexError):
+                            logger.warning(f"Could not parse remote file count: {rows}")
+                else:
+                    # SQLite not available - use file timestamps for comparison
+                    logger.info("SQLite not available on remote system, using timestamp comparison")
+                    
+                    # If local index exists, estimate remote count based on file size and timestamp
+                    if result['local_exists']:
+                        if remote_info['size'] > os.path.getsize(local_db_path) * 0.9:  
+                            # If remote file is similar size or larger, assume same or more files
+                            result['remote_file_count'] = result['local_file_count']
+                        else:
+                            # Otherwise, estimate proportionally by file size
+                            size_ratio = remote_info['size'] / os.path.getsize(local_db_path)
+                            result['remote_file_count'] = int(result['local_file_count'] * size_ratio)
             
             # Determine recommendation
             if result['local_exists'] and result['remote_exists']:

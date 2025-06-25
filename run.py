@@ -215,7 +215,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         elif operation_type == "validate_download":
             merged_config['mode'] = "validate_download"
         elif operation_type == "extract":
-            merged_config['mode'] = "extract"  # Added extract mode
+            merged_config['mode'] = "extract"
         else:
             merged_config['mode'] = operation_type
     
@@ -229,44 +229,16 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             merged_config[f"gcs_{key}"] = value
     
     # Determine which module to use
-    if operation_type in ["download", "index", "extract", "validate_download"]:  # Added "extract" to this condition
+    if operation_type in ["download", "index", "extract", "validate_download"]:
         # Import the download workflow - use lazy import to avoid circular dependencies
         try:
             # Use a lazy import approach to avoid circular imports
             import importlib
             hpc_module = importlib.import_module('gnt.data.download.hpc_workflow')
             
-            # Check if the newer function exists
-            if hasattr(hpc_module, 'run_hpc_workflow_with_config'):
-                logger.info("Using new HPC workflow interface")
-                hpc_module.run_hpc_workflow_with_config(merged_config)
-            else:
-                # Fall back to legacy interface using task format
-                logger.info("Using legacy HPC workflow interface")
-                
-                # Convert config back to task format
-                task = merged_config.copy()
-                task['data_source'] = source
-                task['mode'] = merged_config['mode']
-                
-                # Create a task-based config structure
-                task_config = {
-                    "hpc_target": merged_config.get("hpc_target", ""),
-                    "tasks": [task]
-                }
-                
-                # Use a temporary file for the task config
-                import tempfile
-                with tempfile.NamedTemporaryFile(suffix='.yaml', mode='w', delete=False) as temp_file:
-                    yaml.dump(task_config, temp_file)
-                    temp_path = temp_file.name
-                
-                try:
-                    hpc_module.run_hpc_workflow(temp_path)
-                finally:
-                    # Clean up temporary file
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
+            # Use the merged config directly with run_hpc_workflow_with_config
+            logger.info("Running HPC workflow with direct configuration")
+            hpc_module.run_hpc_workflow_with_config(merged_config)
                         
         except ImportError as e:
             logger.error(f"Error importing HPC workflow module: {e}")

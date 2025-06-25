@@ -16,12 +16,57 @@ from datetime import datetime
 import subprocess
 import tempfile
 from pathlib import Path
+import shutil
 
 # Import base class
 from gnt.data.common.index.download_index import DataDownloadIndex
 from gnt.data.common.hpc.client import HPCClient, HPCIndexSynchronizer
 
 logger = logging.getLogger(__name__)
+
+# Define file statuses for consistency
+class FileStatus:
+    PENDING = "pending"        # Initial state - file needs to be downloaded
+    DOWNLOADING = "downloading"  # File is currently being downloaded
+    DOWNLOADED = "downloaded"   # File has been downloaded but not yet batched
+    BATCHED = "batched"        # File has been added to a batch
+    TRANSFERRING = "transferring"  # Batch containing file is being transferred
+    TRANSFERRED = "transferred"  # Batch has been transferred but not extracted
+    EXTRACTING = "extracting"  # File is being extracted on HPC
+    EXTRACTED = "extracted"    # File has been extracted but not yet verified
+    SUCCESS = "success"        # File has been successfully processed and is available on HPC
+    FAILED = "failed"          # File download or processing failed
+    
+    # Helper for status groups
+    @staticmethod
+    def is_pending(status):
+        """Return True if the status is considered pending processing"""
+        return status in (FileStatus.PENDING, FileStatus.DOWNLOADING)
+    
+    @staticmethod
+    def is_in_progress(status):
+        """Return True if the file is somewhere in the processing pipeline"""
+        return status in (FileStatus.DOWNLOADING, FileStatus.DOWNLOADED, 
+                          FileStatus.BATCHED, FileStatus.TRANSFERRING,
+                          FileStatus.TRANSFERRED, FileStatus.EXTRACTING,
+                          FileStatus.EXTRACTED)
+    
+    @staticmethod
+    def is_terminal(status):
+        """Return True if this is a terminal status (success or failed)"""
+        return status in (FileStatus.SUCCESS, FileStatus.FAILED)
+
+# Define batch statuses for consistency
+class BatchStatus:
+    PENDING = "pending"        # Batch is being created
+    READY = "ready"            # Batch is complete and ready for transfer
+    QUEUED = "queued"          # Batch is queued for transfer
+    TRANSFERRING = "transferring"  # Batch is being transferred
+    TRANSFERRED = "transferred"  # Batch has been transferred but not extracted
+    EXTRACTING = "extracting"  # Batch is being extracted on HPC
+    SUCCESS = "success"        # Batch has been successfully processed
+    FAILED = "failed"          # Batch processing failed
+    FAILED_EXTRACTION = "failed_extraction"  # Batch extraction failed
 
 class HPCDataDownloadIndex(DataDownloadIndex):
     """
@@ -40,7 +85,8 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         local_index_dir: str = None, 
         client=None,
         temp_dir=None, 
-        save_interval_seconds=300
+        save_interval_seconds=300,
+        key_file: str = None  # Added key_file parameter
     ):
         """
         Initialize the HPC download index.
@@ -52,6 +98,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             client: GCS client (optional but kept for interface compatibility)
             temp_dir: Temporary directory for downloads
             save_interval_seconds: How often to save the index
+            key_file: Path to SSH private key file (optional)
         """
         # Set up HPC-specific attributes
         self.use_local_only = True
@@ -69,6 +116,9 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         
         # Initialize last save time
         self._last_save_time = time.time()
+        
+        # Store key_file for use in synchronization
+        self.key_file = key_file
     
     def _setup_database(self):
         """Set up SQLite database with HPC-specific tables."""
@@ -78,9 +128,16 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             f"download_{self.data_path.replace('/', '_')}.sqlite"
         )
         
-        # Connect and create tables
-        conn = self._get_connection()
+        # Connect with higher timeout and other pragmas for robustness
+        conn = self._get_connection(timeout=60)
         cursor = conn.cursor()
+        
+        # Set pragmas for better reliability
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute("PRAGMA busy_timeout=30000")  # 30 seconds
+        cursor.execute("PRAGMA temp_store=MEMORY")
+        cursor.execute("PRAGMA foreign_keys=ON")
         
         # Create standard tables (same as parent)
         cursor.execute('''
@@ -124,8 +181,145 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_relative_path ON files(relative_path)')
         conn.commit()
     
+    def _get_connection(self, timeout=30):
+        """
+        Get a SQLite database connection with improved error handling.
+        
+        Args:
+            timeout: Connection timeout in seconds
+            
+        Returns:
+            sqlite3.Connection: A connection to the database
+        """
+        # Check if database exists, if not make sure directory exists
+        db_dir = os.path.dirname(self.local_db_path)
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+        
+        # Try to recover the database if it's corrupted
+        if os.path.exists(self.local_db_path) and self._is_database_corrupted():
+            logger.warning(f"Database appears to be corrupted, attempting recovery")
+            self._recover_database()
+            
+        # Create thread local storage if doesn't exist
+        if not hasattr(self, '_thread_local'):
+            self._thread_local = threading.local()
+            
+        # Create connection if it doesn't exist for this thread
+        if not hasattr(self._thread_local, 'connection') or self._thread_local.connection is None:
+            try:
+                # Connect with a timeout to avoid hanging
+                self._thread_local.connection = sqlite3.connect(
+                    self.local_db_path, 
+                    timeout=timeout,
+                    isolation_level=None  # Autocommit mode
+                )
+                
+                # Enable extended error codes for better diagnostics
+                self._thread_local.connection.execute("PRAGMA foreign_keys=ON")
+                self._thread_local.connection.execute("PRAGMA busy_timeout=30000")  # 30 seconds
+                
+                # Use write-ahead logging for better concurrency
+                self._thread_local.connection.execute("PRAGMA journal_mode=WAL")
+                
+                # Configure for better reliability with multiple threads
+                self._thread_local.connection.execute("PRAGMA synchronous=NORMAL")
+            except sqlite3.Error as e:
+                logger.error(f"Error connecting to database: {e}")
+                # If we can't connect, try to recover or create a new database
+                self._recover_database()
+                # Try connecting one more time
+                self._thread_local.connection = sqlite3.connect(
+                    self.local_db_path, 
+                    timeout=timeout,
+                    isolation_level=None
+                )
+        
+        return self._thread_local.connection
+    
+    def _is_database_corrupted(self):
+        """Check if the database is corrupted by attempting a simple query."""
+        try:
+            # Try to connect with a short timeout
+            conn = sqlite3.connect(self.local_db_path, timeout=5)
+            cursor = conn.cursor()
+            # Simple query to check integrity
+            cursor.execute("PRAGMA integrity_check(1)")
+            result = cursor.fetchone()
+            conn.close()
+            # If result is not "ok", database is corrupted
+            return result[0] != "ok"
+        except sqlite3.Error:
+            # Any error is a sign of corruption
+            return True
+    
+    def _recover_database(self):
+        """Attempt to recover a corrupted database or create a new one if recovery fails."""
+        logger.warning(f"Attempting to recover database: {self.local_db_path}")
+        
+        # Create backup of corrupted database
+        if os.path.exists(self.local_db_path):
+            backup_path = f"{self.local_db_path}.corrupted.{int(time.time())}"
+            try:
+                shutil.copy2(self.local_db_path, backup_path)
+                logger.info(f"Created backup of corrupted database: {backup_path}")
+                
+                # Try to recover using sqlite3 .dump command
+                dump_path = f"{self.local_db_path}.dump"
+                try:
+                    # Dump the database to SQL commands
+                    with open(dump_path, 'w') as f:
+                        subprocess.run(
+                            ["sqlite3", self.local_db_path, ".dump"],
+                            stdout=f,
+                            stderr=subprocess.PIPE,
+                            check=False,
+                            timeout=120
+                        )
+                    
+                    # Remove corrupted database
+                    os.remove(self.local_db_path)
+                    
+                    # Create new database from dump
+                    subprocess.run(
+                        ["sqlite3", self.local_db_path],
+                        input=open(dump_path, 'r').read().encode(),
+                        stderr=subprocess.PIPE,
+                        check=False,
+                        timeout=120
+                    )
+                    
+                    # Check if recovery worked
+                    if not self._is_database_corrupted():
+                        logger.info("Database recovery successful")
+                        # Clean up dump file
+                        os.remove(dump_path)
+                        return True
+                    else:
+                        logger.warning("Database recovery failed, will create new database")
+                except Exception as e:
+                    logger.error(f"Error during recovery attempt: {e}")
+            except Exception as e:
+                logger.error(f"Error creating backup: {e}")
+        
+        # If recovery failed or no database existed, create a new empty database
+        if os.path.exists(self.local_db_path):
+            try:
+                os.remove(self.local_db_path)
+            except Exception as e:
+                logger.error(f"Error removing corrupted database: {e}")
+                # If we can't remove it, create a new filename
+                self.local_db_path = f"{self.local_db_path}.new.{int(time.time())}"
+        
+        logger.info(f"Creating new empty database at {self.local_db_path}")
+        # Database will be created when _setup_database is called
+        self._close_all_connections()
+        self._connections = {}
+        self._thread_local = threading.local()
+        return False
+
     def save(self):
-        """Save index to local storage instead of cloud storage."""
+        """Save index to local storage with improved error handling."""
         logger.info(f"Saving index for {self.data_source_name} to local storage")
         try:
             # Close the current thread's connection to ensure data is flushed
@@ -134,35 +328,44 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             # Allow time for SQLite to release locks
             time.sleep(0.5)
             
-            # Create a fresh connection for the checkpoint (in this thread)
-            # Don't use the thread-local storage for this one-time operation
-            temp_conn = sqlite3.connect(self.local_db_path)
-            temp_cursor = temp_conn.cursor()
-
             try:
+                # Create a fresh connection for the checkpoint (in this thread)
+                temp_conn = sqlite3.connect(self.local_db_path, timeout=60)
+                temp_cursor = temp_conn.cursor()
+    
+                # First check integrity
+                temp_cursor.execute("PRAGMA integrity_check(1)")
+                result = temp_cursor.fetchone()
+                if result[0] != "ok":
+                    logger.error("Database integrity check failed before saving")
+                    self._recover_database()
+                    return
+    
                 # Force a checkpoint to sync WAL to main DB
                 temp_cursor.execute("PRAGMA wal_checkpoint(FULL)")
                 
-                # Optionally switch journal mode if needed
-                # temp_cursor.execute("PRAGMA journal_mode = DELETE")
-                
                 # Commit any pending transactions
                 temp_conn.commit()
-            finally:
-                # Close the temporary connection
+                
+                # Close temporary connection
                 temp_cursor.close()
                 temp_conn.close()
                 
-            # Save metadata file locally
-            meta_path = os.path.join(
-                self.local_index_dir, 
-                f"download_{self.data_path.replace('/', '_')}_meta.json"
-            )
-            with open(meta_path, 'w') as f:
-                json.dump(self.metadata, f, indent=2)
-            
-            # Update last save time
-            self._last_save_time = time.time()
+                # Save metadata file locally
+                meta_path = os.path.join(
+                    self.local_index_dir, 
+                    f"download_{self.data_path.replace('/', '_')}_meta.json"
+                )
+                with open(meta_path, 'w') as f:
+                    json.dump(self.metadata, f, indent=2)
+                
+                # Update last save time
+                self._last_save_time = time.time()
+            except sqlite3.Error as e:
+                logger.error(f"SQLite error during save: {e}")
+                # Attempt recovery if error indicates corruption
+                if "malformed" in str(e).lower() or "corrupt" in str(e).lower():
+                    self._recover_database()
             
         except Exception as e:
             logger.error(f"Error saving index: {e}")
@@ -383,7 +586,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
                 relative_path,
                 file_url,
                 destination_blob,
-                "pending",  # All files start as pending
+                FileStatus.PENDING,  # Use constants for consistency
                 datetime.now().isoformat(),
                 None,  # No error
                 None,  # File size unknown until download
@@ -633,32 +836,37 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             hpc_target: SSH target in format user@host:/path
             sync_direction: 'auto', 'push', 'pull', or 'none'
             force: Whether to force sync even if timestamps indicate no changes
-            key_file: Path to SSH private key (optional)
+            key_file: Path to SSH private key file (optional)
         
         Returns:
-            bool: Whether synchronization was successful or wasn't needed
+            bool: Whether synchronization was successful
         """
-        if sync_direction.lower() == 'none':
-            logger.info("Index synchronization disabled")
-            return True
-            
-        try:
-            client = HPCClient(hpc_target, key_file=key_file)
-            synchronizer = HPCIndexSynchronizer(
-                client=client,
-                local_index_dir=self.local_index_dir,
-                remote_index_dir="hpc_data_index"
-            )
-            
-            return synchronizer.ensure_synced_index(
-                data_path=self.data_path,
-                sync_direction=sync_direction,
-                force=force
-            )
-                
-        except Exception as e:
-            logger.error(f"Error ensuring synced index: {e}")
-            return False
+        from gnt.data.common.hpc.client import HPCClient, HPCIndexSynchronizer
+        
+        # Use instance key_file if passed key_file is None
+        key_file = key_file or getattr(self, 'key_file', None)
+        
+        # Create HPC client with key file if provided
+        hpc_client = HPCClient(hpc_target, key_file=key_file)
+        
+        # Log the key being used
+        logger = logging.getLogger(__name__)
+        if key_file:
+            expanded_key = os.path.expanduser(key_file) if '~' in key_file else key_file
+            logger.debug(f"Using SSH key file for index sync: {key_file} (expanded to {expanded_key})")
+        
+        # Create synchronizer
+        synchronizer = HPCIndexSynchronizer(
+            client=hpc_client,
+            local_index_dir=self.local_index_dir
+        )
+        
+        # Perform sync and return result
+        return synchronizer.ensure_synced_index(
+            data_path=self.data_path,
+            sync_direction=sync_direction,
+            force=force
+        )
 
     def get_stats(self) -> Dict[str, int]:
         """
@@ -677,30 +885,59 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             cursor.execute("SELECT COUNT(*) FROM files")
             stats['total_files'] = cursor.fetchone()[0]
             
-            # Get status counts - simplified to just pending, success, failed
-            cursor.execute(
-                "SELECT COUNT(*) FROM files WHERE status = 'pending' OR status IN ('batched', 'transferring', 'extracted', 'transferred')"
-            )
+            # Get individual status counts
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.PENDING}'")
             stats['files_pending'] = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM files WHERE status = 'success'")
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.DOWNLOADING}'")
+            stats['files_downloading'] = cursor.fetchone()[0]
+            
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.BATCHED}'")
+            stats['files_batched'] = cursor.fetchone()[0]
+            
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.TRANSFERRING}'")
+            stats['files_transferring'] = cursor.fetchone()[0]
+            
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.TRANSFERRED}'")
+            stats['files_transferred'] = cursor.fetchone()[0]
+            
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.EXTRACTED}'")
+            stats['files_extracted'] = cursor.fetchone()[0]
+            
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.SUCCESS}'")
             stats['files_success'] = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM files WHERE status = 'failed'")
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.FAILED}'")
             stats['files_failed'] = cursor.fetchone()[0]
+            
+            # Add a composite in_progress count
+            in_progress_statuses = (
+                f"'{FileStatus.DOWNLOADING}', '{FileStatus.DOWNLOADED}', "
+                f"'{FileStatus.BATCHED}', '{FileStatus.TRANSFERRING}', "
+                f"'{FileStatus.TRANSFERRED}', '{FileStatus.EXTRACTING}', "
+                f"'{FileStatus.EXTRACTED}'"
+            )
+            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status IN ({in_progress_statuses})")
+            stats['files_in_progress'] = cursor.fetchone()[0]
             
             # Count batches
             cursor.execute("SELECT COUNT(*) FROM batches")
             stats['total_batches'] = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM batches WHERE status = 'success'")
+            cursor.execute(f"SELECT COUNT(*) FROM batches WHERE status = '{BatchStatus.SUCCESS}'")
             stats['batches_success'] = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM batches WHERE status = 'failed'")
+            cursor.execute(f"SELECT COUNT(*) FROM batches WHERE status = '{BatchStatus.FAILED}'")
             stats['batches_failed'] = cursor.fetchone()[0]
             
-            cursor.execute("SELECT COUNT(*) FROM batches WHERE status NOT IN ('success', 'failed')")
-            stats['batches_pending'] = cursor.fetchone()[0]
+            # In-progress batches
+            in_progress_batch_statuses = (
+                f"'{BatchStatus.PENDING}', '{BatchStatus.READY}', "
+                f"'{BatchStatus.QUEUED}', '{BatchStatus.TRANSFERRING}', "
+                f"'{BatchStatus.TRANSFERRED}', '{BatchStatus.EXTRACTING}'"
+            )
+            cursor.execute(f"SELECT COUNT(*) FROM batches WHERE status IN ({in_progress_batch_statuses})")
+            stats['batches_in_progress'] = cursor.fetchone()[0]
             
         except Exception as e:
             logger.error(f"Error getting stats: {e}")

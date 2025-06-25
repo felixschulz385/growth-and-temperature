@@ -14,7 +14,7 @@ hpc:
 # Global download settings
 download:
   batch_size: 100
-  max_batch_size_mb: 2000
+  max_batch_size_mb: 200
   max_concurrent_downloads: 2
   max_queue_size: 20
   sleep_between_downloads: 2
@@ -28,7 +28,7 @@ download:
 # Data source configurations
 sources:
   # GLASS MODIS configuration
-  glass:
+  glass_modis:
     base_url: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
     file_extensions: [".hdf"]
     output_path: "glass/modis/daily"

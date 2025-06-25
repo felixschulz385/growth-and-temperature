@@ -8,34 +8,40 @@
       "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
       "args": [
-        "download",
-        "--config", "${workspaceFolder}/orchestration/configs/debug-unified-glass-modis.yaml",
-        "--source", "glass",
+        "index",
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "glass_modis",
         "--debug"
       ],
       "console": "integratedTerminal",
       "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat",
-        "HPC_TARGET": "your-username@your-hpc-server:/path/to/data"
-      }
+      "showReturnValue": true
     },
     {
-      "name": "Debug EOG DVNL Download",
+      "name": "Debug EOG DMSP Download",
       "type": "debugpy",
       "request": "launch",
       "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
       "args": [
-        "validate_download",
+        "download",
         "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
-        "--source", "eog_dvnl",
+        "--source", "eog_dmsp",
+        "--debug"
+      ],
+      "console": "integratedTerminal",
+      "justMyCode": false,
+      "showReturnValue": true
+    },
+    {
+      "name": "Debug EOG DMSP Pipeline",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/download_pipeline.py",
+      "cwd": "${workspaceFolder}",
+      "args": [
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "eog_dmsp",
         "--debug"
       ],
       "console": "integratedTerminal",
