@@ -195,56 +195,123 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     if 'sources' not in config or source not in config['sources']:
         raise ValueError(f"Source '{source}' not found in configuration")
 
-    # Merge global and source-specific configurations
+    # Get source-specific configuration
     source_config = config['sources'][source]
-    merged_config = merge_configs(config, source_config, operation_type)
-    
-    # Add source name to the merged config
-    merged_config['data_source'] = source
-    
-    # Set mode based on operation type
-    if mode:
-        # Mode explicitly provided as argument
-        merged_config['mode'] = mode
-    else:
-        # Set default mode based on operation type
-        if operation_type == "index":
-            merged_config['mode'] = "index"
-        elif operation_type == "download":
-            merged_config['mode'] = "download"
-        elif operation_type == "validate_download":
-            merged_config['mode'] = "validate_download"
-        elif operation_type == "extract":
-            merged_config['mode'] = "extract"
-        else:
-            merged_config['mode'] = operation_type
-    
-    # Add HPC/GCS configuration if available
-    if 'hpc' in config:
-        for key, value in config['hpc'].items():
-            merged_config[f"hpc_{key}"] = value
-            
-    if 'gcs' in config:
-        for key, value in config['gcs'].items():
-            merged_config[f"gcs_{key}"] = value
     
     # Determine which module to use
     if operation_type in ["download", "index", "extract", "validate_download"]:
-        # Import the download workflow - use lazy import to avoid circular dependencies
-        try:
-            # Use a lazy import approach to avoid circular imports
-            import importlib
-            hpc_module = importlib.import_module('gnt.data.download.hpc_workflow')
+        # Build HPC workflow configuration structure
+        hpc_workflow_config = {
+            'source': {
+                'name': source,  # Add the source name explicitly
+                **source_config  # Include all source-specific config
+            },
+            'index': {
+                'local_dir': config.get('hpc', {}).get('local_index_dir'),
+                # Add index-specific configuration
+                'rebuild': operation_type == 'index',
+                'only_missing_entrypoints': True,
+                'sync_direction': 'auto'
+            },
+            'workflow': {
+                'tasks': []
+            },
+            'hpc': config.get('hpc', {}),
+            'source_name': source  # Also add at top level for backward compatibility
+        }
+        
+        # Define workflow tasks based on operation type
+        if operation_type == "index":
+            hpc_workflow_config['workflow']['tasks'] = [
+                {
+                    'type': 'index',
+                    'config': {
+                        'rebuild': False,
+                        'only_missing_entrypoints': True,
+                        'sync_direction': 'auto'
+                    }
+                }
+            ]
+        elif operation_type == "download":
+            # Check how many files are pending before starting
+            pending_count = 0
+            try:
+                # Create a temporary index to check pending files
+                temp_hpc_config = hpc_workflow_config.copy()
+                temp_index = None
+                
+                # Try to get pending count for progress reporting
+                from gnt.data.common.index.unified_index import UnifiedDataIndex
+                from gnt.data.download.sources.factory import create_data_source
+                
+                temp_data_source = create_data_source(temp_hpc_config['source'])
+                temp_index = UnifiedDataIndex(
+                    bucket_name="",
+                    data_source=temp_data_source,
+                    local_index_dir=temp_hpc_config['index']['local_dir'],
+                    key_file=temp_hpc_config['hpc'].get('key_file'),
+                    hpc_mode=True
+                )
+                
+                pending_count = temp_index.count_pending_files()
+                logger.info(f"Found {pending_count} files pending download for {source}")
+                
+            except Exception as e:
+                logger.debug(f"Could not get pending file count: {e}")
             
-            # Use the merged config directly with run_hpc_workflow_with_config
-            logger.info("Running HPC workflow with direct configuration")
-            hpc_module.run_hpc_workflow_with_config(merged_config)
+            # Extract download configuration
+            download_config = {
+                'batch_size': source_config.get('download', {}).get('batch_size', 50),
+                'max_concurrent_downloads': source_config.get('download', {}).get('max_concurrent_downloads', 5),
+                'tar_max_files': source_config.get('download', {}).get('tar_max_files', 100),
+                'tar_max_size_mb': source_config.get('download', {}).get('tar_max_size_mb', 500)
+            }
+            
+            hpc_workflow_config['workflow']['tasks'] = [
+                {
+                    'type': 'download',
+                    'config': download_config
+                }
+            ]
+        elif operation_type == "extract":
+            logger.error("Extract operations are not currently implemented")
+            return
+        elif operation_type == "validate_download":
+            logger.error("Validation operations are not currently implemented")
+            return
+        
+        # Import and run the unified workflow
+        try:
+            import importlib
+            workflow_module = importlib.import_module('gnt.data.download.workflow_unified')
+            
+            logger.info("Running unified workflow with structured configuration")
+            workflow_module.run_workflow_with_config(hpc_workflow_config)
                         
         except ImportError as e:
-            logger.error(f"Error importing HPC workflow module: {e}")
-            raise ValueError(f"Could not import HPC workflow module: {e}") from e
+            logger.error(f"Error importing unified workflow module: {e}")
+            raise ValueError(f"Could not import unified workflow module: {e}") from e
     
     elif operation_type in ["preprocess", "validate_preprocess"]:
+        # Merge global and source-specific configurations for preprocessing
+        merged_config = merge_configs(config, source_config, operation_type)
+        merged_config['data_source'] = source
+        
+        # Set mode based on operation type
+        if mode:
+            merged_config['mode'] = mode
+        else:
+            merged_config['mode'] = operation_type
+        
+        # Add HPC/GCS configuration if available
+        if 'hpc' in config:
+            for key, value in config['hpc'].items():
+                merged_config[f"hpc_{key}"] = value
+                
+        if 'gcs' in config:
+            for key, value in config['gcs'].items():
+                merged_config[f"gcs_{key}"] = value
+        
         # For preprocess/validate, need to convert to task format expected by existing workflow
         task = merged_config.copy()
         task['preprocessor'] = source

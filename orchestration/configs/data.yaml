@@ -1,137 +1,48 @@
-# Unified configuration for GNT data including GLASS MODIS and EOG sources
-
-# Global common settings
-common:
-  temp_dir: "/tmp/gnt-data"
-  memory_limit: 4000  # MB reduced for debugging
+# Unified configuration for GNT data system
 
 # HPC settings
 hpc:
   target: "schulz0022@transfer12.scicore.unibas.ch:/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup"
-  local_index_dir: "Z:\\hpc_data_index"
-  ssh_key_file: "Z:\\id_ed25519_scicore"
-
-# Global download settings
-download:
-  batch_size: 100
-  max_batch_size_mb: 200
-  max_concurrent_downloads: 2
-  max_queue_size: 20
-  sleep_between_downloads: 2
-  rsync_options:
-    compress: true
-    archive: true
-    partial: true
-    verbose: true
-    bwlimit: 5000
+  local_index_dir: "C:\\Users\\schulz0022\\hpc_data_index"
+  key_file: "Z:\\id_ed25519_scicore"
 
 # Data source configurations
 sources:
-  # GLASS MODIS configuration
+  # GLASS MODIS LST Daily 1KM
   glass_modis:
+    type: "glass_lst"
     base_url: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
-    file_extensions: [".hdf"]
-    output_path: "glass/modis/daily"
+    data_path: "glass/modis/daily"
     
-    # Source-specific download settings
+    # Download settings
     download:
-      # Processing controls
-      max_concurrent_downloads: 2
-      max_queue_size: 8
-      
-      # Retry settings
-      max_retries: 3
-      retry_delay: 10
-      
-      # Debug settings
-      debug: true
-      verbose_logging: true
-      skip_existing: true
-    
-    # Validation settings
-    validate:
-      force_file_list_update: false
-      debug: true
-      verbose_logging: true
+      batch_size: 1000
+      max_concurrent_downloads: 4
+      tar_max_files: 100
+      tar_max_size_mb: 500
   
-  # EOG DMSP Nightlights configuration
+  # EOG DMSP Nightlights
   eog_dmsp:
+    type: "eog_dmsp"
     base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
-    file_extensions: [".global.intercal.stable_lights.avg_vis.tif"]
-    output_path: "eog/dmsp"
-    auth_required: true
+    data_path: "eog/dmsp"
     
-    # Source-specific download settings
+    # Download settings
     download:
-      # Processing controls
-      max_concurrent_downloads: 1  # Lower for authenticated sources
-      max_queue_size: 20
-      
-      # Retry settings
-      max_retries: 3
-      retry_delay: 10
-      
-      # Debug settings
-      debug: true
-      verbose_logging: true
-    
-    # Validation settings
-    validate:
-      force_refresh_gcs: true
-      sample_percentage: 100  # Validate all files (small dataset)
-      fix_issues: true        # Attempt to redownload invalid files
+      batch_size: 10
+      max_concurrent_downloads: 2
+      tar_max_files: 50
+      tar_max_size_mb: 300
   
-  # EOG VIIRS DVNL configuration
-  eog_dvnl:
-    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
-    file_extensions: [".tif"]
-    output_path: "eog/dvnl"
-    auth_required: true
-    
-    # Source-specific download settings
-    download:
-      # Processing controls
-      max_concurrent_downloads: 1
-      max_queue_size: 20
-      
-      # Retry settings
-      max_retries: 3
-      retry_delay: 10
-      
-      # Debug settings
-      debug: true
-      verbose_logging: true
-    
-    # Validation settings
-    validate:
-      force_refresh_gcs: true
-      sample_percentage: 100  # Validate all files
-      fix_issues: true        # Attempt to redownload invalid files
-  
-  # EOG VIIRS Annual Stable Lights configuration
+  # EOG VIIRS Annual
   eog_viirs_annual:
+    type: "eog_viirs_annual"
     base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
-    file_extensions: ["median_masked.dat.tif.gz"]
-    output_path: "eog/viirs"
-    auth_required: true
+    data_path: "eog/viirs/annual"
     
-    # Source-specific download settings
+    # Download settings
     download:
-      # Processing controls
-      max_concurrent_downloads: 1
-      max_queue_size: 20
-      force_refresh: true
-      
-      # Retry settings
-      max_retries: 3
-      retry_delay: 10
-      
-      # Debug settings
-      debug: true
-      verbose_logging: true
-    
-    # Validation settings
-    validate:
-      force_refresh_gcs: true
-      sample_percentage: 100  # Validate all files
-      fix_issues: true        # Attempt to redownload invalid files
+      batch_size: 10
+      max_concurrent_downloads: 2
+      tar_max_files: 50
+      tar_max_size_mb: 300

@@ -8,70 +8,322 @@ import os
 import time
 import logging
 import subprocess
+import platform
+import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Union, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
 class HPCClient:
-    """
-    Client for interacting with HPC systems using SSH and rsync.
+    """Client for interacting with HPC systems via SSH and rsync."""
     
-    Provides functionality for:
-    - File transfers with rsync
-    - Remote command execution with SSH
-    - Directory and file management
-    - Index synchronization
-    """
-    
-    def __init__(self, host_target: str, key_file: Optional[str] = None):
+    def __init__(self, target: str, key_file: str = None):
         """
-        Initialize the HPC client.
+        Initialize HPC client.
         
         Args:
-            host_target: SSH target in format user@host:/path or just user@host
+            target: SSH target in format user@host:/path or user@host
             key_file: Path to SSH private key file (optional)
         """
-        self.host_target = host_target
+        self.target = target
         self.key_file = key_file
         
-        # Parse host and path components
-        if ":" in host_target:
-            self.host, self.base_path = host_target.split(":", 1)
-            # Remove trailing slash for consistency
-            self.base_path = self.base_path.rstrip('/')
+        # Parse target to extract host and path
+        if ":" in target:
+            self.ssh_target, self.base_path = target.split(":", 1)
         else:
-            self.host = host_target
-            self.base_path = ""  # Empty string if no path provided
-    
-        logger.debug(f"Initialized HPC client with host: {self.host}, base path: {self.base_path}")
+            self.ssh_target = target
+            self.base_path = ""
         
-        # Flag to track SQLite availability on remote system
+        # Also set host attribute for backward compatibility
+        self.host = self.ssh_target
+        
+        # Initialize cached attributes
         self._sqlite_available = None
         self._sqlite_path = None
+        self._rsync_available = shutil.which("rsync") is not None
+        
+        # Normalize key file path for Windows compatibility
+        if self.key_file:
+            self.key_file = self._normalize_key_path(self.key_file)
+            logger.debug(f"Using SSH key: {self.key_file}")
+            
+            # Verify key file exists
+            if not os.path.exists(self.key_file):
+                logger.warning(f"SSH key file not found: {self.key_file}")
+            else:
+                logger.debug(f"SSH key file verified: {self.key_file}")
+
+    def _normalize_key_path(self, key_file: str) -> str:
+        """Normalize SSH key file path for cross-platform compatibility."""
+        from pathlib import Path
+        
+        # Expand user directory and resolve path
+        key_path = Path(key_file).expanduser().resolve()
+        
+        # On Windows, convert to string with forward slashes for SSH
+        if platform.system() == 'Windows':
+            # SSH on Windows expects forward slashes
+            return str(key_path).replace('\\', '/')
+        else:
+            return str(key_path)
+
+    def _get_ssh_command_base(self) -> List[str]:
+        """Get base SSH command with proper key handling."""
+        cmd = ["ssh"]
+        
+        if self.key_file:
+            cmd.extend(["-i", self.key_file])
+        
+        # Add common SSH options for non-interactive, secure connections
+        cmd.extend([
+            "-o", "BatchMode=yes",  # Don't prompt for passwords
+            "-o", "StrictHostKeyChecking=no",  # Don't prompt for host key verification
+            "-o", "UserKnownHostsFile=/dev/null",  # Don't save host keys
+            "-o", "LogLevel=ERROR",  # Reduce verbose output
+            "-o", "ConnectTimeout=30",  # Connection timeout
+            "-o", "PasswordAuthentication=no",  # Explicitly disable password auth
+            "-o", "PubkeyAuthentication=yes",  # Ensure pubkey auth is enabled
+            "-o", "PreferredAuthentications=publickey"  # Only use public key auth
+        ])
+        
+        cmd.append(self.ssh_target)
+        return cmd
+
+    def execute_command(self, command: str, timeout: int = 300) -> Tuple[bool, str, str]:
+        """
+        Execute a command on the HPC system.
+        
+        Args:
+            command: Command to execute
+            timeout: Timeout in seconds
+            
+        Returns:
+            Tuple of (success, stdout, stderr)
+        """
+        ssh_cmd = self._get_ssh_command_base()
+        ssh_cmd.append(command)
+        
+        logger.debug(f"Executing SSH command: {' '.join(ssh_cmd[:4])} [command hidden]")
+        
+        try:
+            result = subprocess.run(
+                ssh_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                check=False
+            )
+            
+            success = result.returncode == 0
+            return success, result.stdout, result.stderr
+            
+        except subprocess.TimeoutExpired:
+            logger.error(f"SSH command timed out after {timeout} seconds")
+            return False, "", "Command timed out"
+        except Exception as e:
+            logger.error(f"Error executing SSH command: {e}")
+            return False, "", str(e)
+
+    def rsync_transfer(self, source_path: str, target_path: str, source_is_local: bool = True,
+                      options: Dict[str, Any] = None, show_progress: bool = False,
+                      progress_callback=None, return_process: bool = False):
+        """
+        Transfer files using rsync with proper SSH key handling.
+        
+        Args:
+            source_path: Source file/directory path
+            target_path: Target file/directory path  
+            source_is_local: Whether source is local (True) or remote (False)
+            options: Rsync options dictionary
+            show_progress: Whether to show progress
+            progress_callback: Callback function for progress updates
+            return_process: Whether to return the process object
+            
+        Returns:
+            Tuple of (success, summary) or (success, summary, process) if return_process=True
+        """
+        # Check if rsync is available
+        rsync_available = shutil.which("rsync") is not None
+        if not rsync_available:
+            logger.warning("rsync command not found. Will use PowerShell fallback for file transfers.")
+            # For now, let's implement a simple copy fallback
+            return self._fallback_transfer(source_path, target_path, source_is_local)
+        
+        # Build rsync command with SSH options
+        cmd = ["rsync"]
+        
+        # Add SSH options including key file
+        ssh_opts = []
+        if self.key_file:
+            ssh_opts.extend(["-i", self.key_file])
+        
+        # Add SSH connection options
+        ssh_opts.extend([
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no", 
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=30"
+        ])
+        
+        # Set SSH command for rsync
+        cmd.extend(["-e", f"ssh {' '.join(ssh_opts)}"])
+        
+        # Add rsync options
+        if options:
+            if options.get("archive", True):
+                cmd.append("-a")
+            if options.get("verbose", False):
+                cmd.append("-v")
+            if options.get("compress", False):
+                cmd.append("-z")
+            if options.get("partial", False):
+                cmd.append("--partial")
+            if show_progress or options.get("progress", False):
+                cmd.append("--progress")
+            if options.get("bwlimit"):
+                cmd.extend(["--bwlimit", str(options["bwlimit"])])
+        
+        # Construct source and target paths
+        if source_is_local:
+            src = source_path
+            
+            # For remote target, combine base_path with target_path if target_path is relative
+            if not target_path.startswith("/") and self.base_path:
+                full_target_path = f"{self.base_path}/{target_path}"
+            else:
+                full_target_path = target_path
+            
+            dst = f"{self.ssh_target}:{full_target_path}"
+        else:
+            # For remote source, combine base_path with source_path if source_path is relative
+            if not source_path.startswith("/") and self.base_path:
+                full_source_path = f"{self.base_path}/{source_path}"
+            else:
+                full_source_path = source_path
+            
+            src = f"{self.ssh_target}:{full_source_path}"
+            dst = target_path
+        
+        cmd.extend([src, dst])
+        
+        logger.debug(f"Executing rsync command: {' '.join(cmd[:6])} [paths hidden]")
+        
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+                universal_newlines=True
+            )
+            
+            if return_process:
+                # Return immediately with process for monitoring
+                return True, "Transfer started", process
+            
+            # Monitor progress if callback provided
+            if progress_callback and show_progress:
+                self._monitor_rsync_progress(process, progress_callback)
+            
+            stdout, stderr = process.communicate()
+            success = process.returncode == 0
+            
+            if success:
+                return True, f"Transfer completed successfully"
+            else:
+                logger.error(f"rsync failed: {stderr}")
+                return False, f"Transfer failed: {stderr}"
+                
+        except Exception as e:
+            logger.error(f"Error executing rsync: {e}")
+            return False, f"Transfer error: {str(e)}"
+
+    def _fallback_transfer(self, source_path: str, target_path: str, source_is_local: bool = True):
+        """
+        Fallback transfer method using SCP when rsync is not available.
+        
+        Args:
+            source_path: Source file path
+            target_path: Target file path
+            source_is_local: Whether source is local
+            
+        Returns:
+            Tuple of (success, summary)
+        """
+        # Use SCP as fallback with proper SSH key handling
+        cmd = ["scp"]
+        
+        if self.key_file:
+            cmd.extend(["-i", self.key_file])
+        
+        # Add SCP options
+        cmd.extend([
+            "-o", "BatchMode=yes",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=30"
+        ])
+        
+        # Add paths
+        if source_is_local:
+            cmd.extend([source_path, f"{self.ssh_target}:{target_path}"])
+        else:
+            cmd.extend([f"{self.ssh_target}:{source_path}", target_path])
+        
+        logger.debug(f"Executing SCP fallback: {' '.join(cmd[:4])} [paths hidden]")
+        
+        try:
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300,
+                check=False
+            )
+            
+            success = result.returncode == 0
+            if success:
+                return True, "SCP transfer completed successfully"
+            else:
+                logger.error(f"SCP failed: {result.stderr}")
+                return False, f"SCP transfer failed: {result.stderr}"
+                
+        except subprocess.TimeoutExpired:
+            return False, "SCP transfer timed out"
+        except Exception as e:
+            logger.error(f"Error executing SCP: {e}")
+            return False, f"SCP error: {str(e)}"
 
     def ensure_directory(self, remote_path: str) -> bool:
         """
         Ensure a directory exists on the HPC system.
         
         Args:
-            remote_path: Path on the HPC system
+            remote_path: Path on the HPC system (can be relative or absolute)
             
         Returns:
             bool: Whether the operation was successful
         """
         logger.debug(f"Ensuring directory exists on HPC: {remote_path}")
         
-        # Build full path
-        if not remote_path.startswith("/"):
-            remote_path = f"{self.base_path}/{remote_path}"
+        # Build full path by combining base_path with remote_path
+        if not remote_path.startswith("/") and self.base_path:
+            full_remote_path = f"{self.base_path}/{remote_path}"
+        else:
+            full_remote_path = remote_path
         
-        # Create directory via SSH
+        logger.debug(f"Full remote path: {full_remote_path}")
+        
+        # Create directory via SSH using consistent options
         try:
-            ssh_cmd = self._build_ssh_command(f"mkdir -p {remote_path}")
-            subprocess.run(ssh_cmd, check=True, capture_output=True, text=True)
-            return True
-        except subprocess.SubprocessError as e:
+            success, stdout, stderr = self.execute_command(f"mkdir -p '{full_remote_path}'")
+            return success
+        except Exception as e:
             logger.error(f"Failed to create directory on HPC: {e}")
             return False
 
@@ -95,52 +347,50 @@ class HPCClient:
         Check if a file exists on the remote system.
         
         Args:
-            remote_path: Full path to the remote file
+            remote_path: Path to the remote file (can be relative or absolute)
             
         Returns:
             bool: True if the file exists, False otherwise
         """
         try:
-            # Build the command to check if file exists
-            cmd = ["ssh"]
-            if self.key_file:
-                cmd.extend(["-i", self.key_file])
-            cmd.append(self.host)
-            cmd.append(f"test -f {remote_path} && echo 'exists' || echo 'not found'")
+            # Build full path by combining base_path with remote_path
+            if not remote_path.startswith("/") and self.base_path:
+                full_remote_path = f"{self.base_path}/{remote_path}"
+            else:
+                full_remote_path = remote_path
             
-            # Run the command
-            result = subprocess.run(
-                cmd,
-                check=False,
-                capture_output=True,
-                text=True
-            )
+            logger.debug(f"Checking file existence: {full_remote_path}")
             
-            # Check the output
-            return result.stdout.strip() == "exists"
+            # Use test -e to check for file or directory existence
+            success, stdout, stderr = self.execute_command(f"if [ -f '{full_remote_path}' ]; then echo exists; else echo missing; fi")
+            
+            if success:
+                return stdout.strip() == "exists"
+            else:
+                logger.debug(f"Command failed to check file existence: {stderr}")
+                return False
             
         except Exception as e:
             logger.error(f"Error checking if file exists: {e}")
             return False
-    
+
     def get_file_info(self, remote_path: str) -> Dict[str, Any]:
         """
         Get information about a file on the HPC system.
         
         Args:
-            remote_path: Path to the file on HPC
+            remote_path: Path to the file on HPC (can be relative or absolute)
             
         Returns:
-            Dict with file information:
-            - exists: Whether the file exists
-            - size: File size in bytes (or None if file doesn't exist)
-            - modified: Modification timestamp (or None if file doesn't exist)
+            Dict with file information
         """
         logger.debug(f"Getting file info on HPC: {remote_path}")
         
-        # Build full path
-        if not remote_path.startswith("/"):
-            remote_path = f"{self.base_path}/{remote_path}"
+        # Build full path by combining base_path with remote_path
+        if not remote_path.startswith("/") and self.base_path:
+            full_remote_path = f"{self.base_path}/{remote_path}"
+        else:
+            full_remote_path = remote_path
         
         result = {
             'exists': False,
@@ -149,28 +399,27 @@ class HPCClient:
         }
         
         try:
-            # Check if file exists
-            ssh_cmd = self._build_ssh_command(f"test -f {remote_path} && echo exists || echo missing")
-            check_result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+            # Check if file exists using consistent SSH options
+            success, stdout, stderr = self.execute_command(f"test -f '{full_remote_path}' && echo exists || echo missing")
             
-            if "exists" in check_result.stdout:
+            if success and "exists" in stdout:
                 result['exists'] = True
                 
                 # Get file size
-                ssh_cmd = self._build_ssh_command(f"stat -c %s {remote_path}")
-                size_result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
-                result['size'] = int(size_result.stdout.strip())
+                success, stdout, stderr = self.execute_command(f"stat -c %s '{full_remote_path}'")
+                if success and stdout.strip():
+                    result['size'] = int(stdout.strip())
                 
                 # Get modification time
-                ssh_cmd = self._build_ssh_command(f"stat -c %Y {remote_path}")
-                mod_result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
-                result['modified'] = int(mod_result.stdout.strip())
+                success, stdout, stderr = self.execute_command(f"stat -c %Y '{full_remote_path}'")
+                if success and stdout.strip():
+                    result['modified'] = int(stdout.strip())
             
             return result
-        except subprocess.SubprocessError as e:
+        except Exception as e:
             logger.error(f"Failed to get file info on HPC: {e}")
             return result
-    
+
     def execute_command(self, command: str) -> Tuple[bool, str, str]:
         """
         Execute a command on the HPC system.
@@ -204,29 +453,26 @@ class HPCClient:
             return self._sqlite_available
             
         try:
-            # Try to run a simple SQLite command
-            ssh_cmd = self._build_ssh_command("command -v sqlite3")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            # Try to run a simple SQLite command using consistent SSH options
+            success, stdout, stderr = self.execute_command("command -v sqlite3")
             
             # If the command returns a path, SQLite is available
-            if result.returncode == 0 and result.stdout.strip() != "":
+            if success and stdout.strip():
                 self._sqlite_available = True
-                self._sqlite_path = result.stdout.strip()
+                self._sqlite_path = stdout.strip()
                 logger.debug(f"Found SQLite at: {self._sqlite_path}")
                 return True
             
             # Try with module load if available (common on HPC systems)
-            ssh_cmd = self._build_ssh_command("module avail sqlite 2>&1 | grep -i sqlite")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+            success, stdout, stderr = self.execute_command("module avail sqlite 2>&1 | grep -i sqlite")
             
-            if "sqlite" in result.stdout.lower():
+            if success and "sqlite" in stdout.lower():
                 # Module exists, try loading it and checking sqlite3
-                ssh_cmd = self._build_ssh_command("module load sqlite 2>/dev/null && command -v sqlite3")
-                result = subprocess.run(ssh_cmd, capture_output=True, text=True)
+                success, stdout, stderr = self.execute_command("module load sqlite 2>/dev/null && command -v sqlite3")
                 
-                if result.returncode == 0 and result.stdout.strip() != "":
+                if success and stdout.strip():
                     self._sqlite_available = True
-                    self._sqlite_path = "module load sqlite && " + result.stdout.strip()
+                    self._sqlite_path = "module load sqlite && " + stdout.strip()
                     logger.debug(f"SQLite available via module system")
                     return True
             
@@ -245,7 +491,7 @@ class HPCClient:
         Execute an SQLite query on the remote system.
         
         Args:
-            db_path: Path to the SQLite database on HPC
+            db_path: Path to the SQLite database on HPC (can be relative or absolute)
             query: SQL query to execute
             
         Returns:
@@ -258,9 +504,11 @@ class HPCClient:
             logger.error("Cannot execute SQLite query: sqlite3 command not found on remote system")
             return False, []
         
-        # Build full path
-        if not db_path.startswith("/"):
-            db_path = f"{self.base_path}/{db_path}"
+        # Build full path by combining base_path with db_path
+        if not db_path.startswith("/") and self.base_path:
+            full_db_path = f"{self.base_path}/{db_path}"
+        else:
+            full_db_path = db_path
         
         try:
             # Escape single quotes in the query for shell compatibility
@@ -274,20 +522,22 @@ class HPCClient:
                 # Direct command
                 sqlite_command = "sqlite3 -csv"
             
-            ssh_cmd = self._build_ssh_command(f"{sqlite_command} '{db_path}' '{escaped_query}'")
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+            # Execute using consistent SSH options
+            success, stdout, stderr = self.execute_command(f"{sqlite_command} '{full_db_path}' '{escaped_query}'")
             
-            # Parse CSV output
-            rows = []
-            for line in result.stdout.strip().split('\n'):
-                if line:
-                    rows.append(line.split(','))
-            
-            return True, rows
-        except subprocess.SubprocessError as e:
+            if success:
+                # Parse CSV output
+                rows = []
+                for line in stdout.strip().split('\n'):
+                    if line:
+                        rows.append(line.split(','))
+                return True, rows
+            else:
+                logger.error(f"SQLite query failed: {stderr}")
+                return False, []
+                
+        except Exception as e:
             logger.error(f"SQLite query failed on HPC: {e}")
-            if isinstance(e, subprocess.CalledProcessError):
-                logger.debug(f"SQLite error details - stdout: {e.stdout}, stderr: {e.stderr}")
             return False, []
 
     def rsync_transfer(
@@ -301,7 +551,7 @@ class HPCClient:
         return_process=False
     ) -> Union[Tuple[bool, str], Tuple[bool, str, subprocess.Popen]]:
         """
-        Transfer files using rsync.
+        Transfer files using rsync with proper path handling.
         
         Args:
             source_path: Source path (local or remote)
@@ -315,6 +565,16 @@ class HPCClient:
         Returns:
             Tuple containing (success, output) or (success, output, process)
         """
+        # Use PowerShell fallback if rsync is not available
+        if not self._rsync_available:
+            logger.info("Using PowerShell fallback for file transfer")
+            if source_is_local:
+                # Upload using PowerShell
+                return self._powershell_upload(source_path, target_path, options)
+            else:
+                # Download using PowerShell
+                return self._powershell_download(source_path, target_path, options)
+        
         options = options or {
             "compress": True,
             "archive": True,
@@ -370,17 +630,30 @@ class HPCClient:
         ssh_cmd_str = " ".join(ssh_cmd)
         rsync_cmd.extend(["-e", ssh_cmd_str])
     
-        # Format paths for rsync
+        # Format paths for rsync with proper base path handling
         if source_is_local:
             # Local to remote transfer
             formatted_source = source_path
-            formatted_target = f"{self.host}:{target_path}"
-            logger.info(f"Transferring from local {source_path} to HPC {target_path}")
+            
+            # For remote target, combine base_path with target_path if target_path is relative
+            if not target_path.startswith("/") and self.base_path:
+                full_target_path = f"{self.base_path}/{target_path}"
+            else:
+                full_target_path = target_path
+            
+            formatted_target = f"{self.ssh_target}:{full_target_path}"
+            logger.info(f"Transferring from local {source_path} to HPC {full_target_path}")
         else:
             # Remote to local transfer
-            formatted_source = f"{self.host}:{source_path}"
+            # For remote source, combine base_path with source_path if source_path is relative
+            if not source_path.startswith("/") and self.base_path:
+                full_source_path = f"{self.base_path}/{source_path}"
+            else:
+                full_source_path = source_path
+            
+            formatted_source = f"{self.ssh_target}:{full_source_path}"
             formatted_target = target_path
-            logger.info(f"Transferring from HPC {source_path} to local {target_path}")
+            logger.info(f"Transferring from HPC {full_source_path} to local {target_path}")
     
         # Add source and destination to command
         rsync_cmd.append(formatted_source)
@@ -388,7 +661,7 @@ class HPCClient:
     
         start_time = time.time()
         
-        logger.debug(f"Executing rsync command: {' '.join(rsync_cmd)}")
+        logger.debug(f"Executing rsync command: {' '.join(rsync_cmd[:6])} [paths hidden]")
         
         if return_process or progress_callback:
             # For real-time progress tracking or returning the process
@@ -476,6 +749,142 @@ class HPCClient:
                     return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
                 return False, str(e)
     
+    def _powershell_upload(
+        self, 
+        local_path: str, 
+        remote_path: str, 
+        options: Dict[str, Any] = None
+    ) -> Tuple[bool, str]:
+        """
+        Upload a file using PowerShell SCP as a fallback when rsync is not available.
+        
+        Args:
+            local_path: Local source file path
+            remote_path: Remote target path (can be relative or absolute)
+            options: Transfer options (limited support)
+            
+        Returns:
+            Tuple containing (success, output)
+        """
+        # Build full remote path by combining base_path with remote_path if remote_path is relative
+        if not remote_path.startswith("/") and self.base_path:
+            full_remote_path = f"{self.base_path}/{remote_path}"
+        else:
+            full_remote_path = remote_path
+        
+        logger.info(f"PowerShell upload: {local_path} -> {full_remote_path}")
+        
+        try:
+            # Ensure remote directory exists using the relative path (ensure_directory handles base_path)
+            remote_dir = os.path.dirname(remote_path)
+            if remote_dir:
+                self.ensure_directory(remote_dir)
+            
+            # Build PowerShell command using scp
+            ps_cmd = ["powershell", "-Command"]
+            
+            # Construct the SCP command
+            scp_cmd = f"scp"
+            
+            # Add key file if specified
+            if self.key_file:
+                expanded_key_file = os.path.expanduser(self.key_file)
+                if os.path.isfile(expanded_key_file):
+                    scp_cmd += f" -i '{expanded_key_file}'"
+            
+            # Add source and destination using the full remote path
+            # Handle paths with spaces by quoting them
+            quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
+            scp_cmd += f" {quoted_local_path} {self.ssh_target}:{full_remote_path}"
+            
+            # Complete the PowerShell command
+            ps_cmd.append(scp_cmd)
+            
+            start_time = time.time()
+            logger.debug(f"Executing PowerShell command: {ps_cmd}")
+            
+            # Execute the command
+            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"PowerShell transfer completed in {elapsed:.1f} seconds")
+            
+            return True, "Transfer completed successfully"
+            
+        except subprocess.SubprocessError as e:
+            logger.error(f"PowerShell transfer failed: {e}")
+            if isinstance(e, subprocess.CalledProcessError):
+                return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+            return False, str(e)
+    
+    def _powershell_download(
+        self, 
+        remote_path: str, 
+        local_path: str, 
+        options: Dict[str, Any] = None
+    ) -> Tuple[bool, str]:
+        """
+        Download a file using PowerShell SCP as a fallback when rsync is not available.
+        
+        Args:
+            remote_path: Remote source path (can be relative or absolute)
+            local_path: Local target file path
+            options: Transfer options (limited support)
+            
+        Returns:
+            Tuple containing (success, output)
+        """
+        # Build full remote path by combining base_path with remote_path if remote_path is relative
+        if not remote_path.startswith("/") and self.base_path:
+            full_remote_path = f"{self.base_path}/{remote_path}"
+        else:
+            full_remote_path = remote_path
+        
+        logger.info(f"PowerShell download: {full_remote_path} -> {local_path}")
+        
+        try:
+            # Ensure local directory exists
+            local_dir = os.path.dirname(local_path)
+            if local_dir:
+                os.makedirs(local_dir, exist_ok=True)
+            
+            # Build PowerShell command using scp
+            ps_cmd = ["powershell", "-Command"]
+            
+            # Construct the SCP command
+            scp_cmd = f"scp"
+            
+            # Add key file if specified
+            if self.key_file:
+                expanded_key_file = os.path.expanduser(self.key_file)
+                if os.path.isfile(expanded_key_file):
+                    scp_cmd += f" -i '{expanded_key_file}'"
+            
+            # Add source and destination using the full remote path
+            # Handle paths with spaces by quoting them
+            quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
+            scp_cmd += f" {self.ssh_target}:{full_remote_path} {quoted_local_path}"
+            
+            # Complete the PowerShell command
+            ps_cmd.append(scp_cmd)
+            
+            start_time = time.time()
+            logger.debug(f"Executing PowerShell command: {ps_cmd}")
+            
+            # Execute the command
+            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True)
+            
+            elapsed = time.time() - start_time
+            logger.info(f"PowerShell transfer completed in {elapsed:.1f} seconds")
+            
+            return True, "Transfer completed successfully"
+            
+        except subprocess.SubprocessError as e:
+            logger.error(f"PowerShell transfer failed: {e}")
+            if isinstance(e, subprocess.CalledProcessError):
+                return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+            return False, str(e)
+    
     def _parse_rsync_progress(self, line):
         """Parse rsync progress output line for status information."""
         line = line.strip()
@@ -513,52 +922,47 @@ class HPCClient:
         Extract a tar file on the HPC system.
         
         Args:
-            tar_path: Path to the tar file on HPC
-            extraction_dir: Directory to extract to on HPC
+            tar_path: Path to the tar file on HPC (can be relative or absolute)
+            extraction_dir: Directory to extract to on HPC (can be relative or absolute)
             
         Returns:
             bool: Whether the extraction was successful
         """
-        logger = logging.getLogger(__name__)
+        logger.debug(f"Extracting tar file on HPC: {tar_path} to {extraction_dir}")
+        
+        # Build full paths by combining base_path with relative paths
+        if not tar_path.startswith("/") and self.base_path:
+            full_tar_path = f"{self.base_path}/{tar_path}"
+        else:
+            full_tar_path = tar_path
+            
+        if not extraction_dir.startswith("/") and self.base_path:
+            full_extraction_dir = f"{self.base_path}/{extraction_dir}"
+        else:
+            full_extraction_dir = extraction_dir
         
         # Make sure the extraction directory exists
-        self.ensure_directory(extraction_dir)
+        self.ensure_directory(extraction_dir)  # Pass original path, ensure_directory will handle base_path
         
         try:
-            # Build the command to extract tar
+            # Build the command to extract tar with proper quoting
             # Using tar -xzf <tar_path> -C <extraction_dir>
             # The -C option changes to the extraction directory first
-            # FIX: Use --strip-components=1 to remove the top-level directory
-            # This removes the batch_* directory structure and places files directly in the raw dir
-            cmd = f"cd {extraction_dir} && tar -xzf {tar_path} --strip-components=1"
+            cmd = f"cd '{full_extraction_dir}' && tar -xzf '{full_tar_path}'"
             
-            # Execute SSH command
-            result, stdout, stderr = self.execute_command(cmd)
+            # Execute SSH command with consistent options
+            success, stdout, stderr = self.execute_command(cmd)
             
-            if result:
-                logger.info(f"Successfully extracted {tar_path} to {extraction_dir}")
+            if success:
+                logger.info(f"Successfully extracted {full_tar_path} to {full_extraction_dir}")
                 return True
             else:
-                logger.error(f"Failed to extract {tar_path}: {stderr}")
+                logger.error(f"Failed to extract {full_tar_path}: {stderr}")
                 return False
                 
         except Exception as e:
-            logger.error(f"Error extracting tar file {tar_path}: {e}")
+            logger.error(f"Error extracting tar file {full_tar_path}: {e}")
             return False
-
-    def _ssh_execute(self, command: str) -> tuple:
-        """
-        DEPRECATED: Use execute_command instead.
-        Execute a command on the remote SSH host.
-        
-        Args:
-            command: Command to execute
-        
-        Returns:
-            Tuple: (success: bool, stdout: str, stderr: str)
-        """
-        logger.debug(f"DEPRECATED: _ssh_execute called. Use execute_command instead. Command: {command}")
-        return self.execute_command(command)
 
     def _build_ssh_command(self, remote_command: str) -> List[str]:
         """
@@ -581,15 +985,25 @@ class HPCClient:
             if os.path.isfile(expanded_key_file):
                 # Add the key file to the command
                 ssh_cmd.extend(["-i", expanded_key_file])
-                
-                # Add options to prevent password prompting
-                ssh_cmd.extend(["-o", "PasswordAuthentication=no"])
-                ssh_cmd.extend(["-o", "BatchMode=yes"])
-            else:
-                logger.warning(f"SSH key file not found: {self.key_file} (expanded to {expanded_key_file})")
+        
+        # Add comprehensive SSH options for secure, non-interactive connections
+        ssh_cmd.extend([
+            "-o", "BatchMode=yes",  # Don't prompt for passwords
+            "-o", "StrictHostKeyChecking=no",  # Don't prompt for host key verification  
+            "-o", "UserKnownHostsFile=/dev/null",  # Don't save host keys
+            "-o", "LogLevel=ERROR",  # Reduce verbose output
+            "-o", "ConnectTimeout=30",  # Connection timeout
+            "-o", "PasswordAuthentication=no",  # Explicitly disable password auth
+            "-o", "PubkeyAuthentication=yes",  # Ensure pubkey auth is enabled
+            "-o", "PreferredAuthentications=publickey",  # Only use public key auth
+            "-o", "IdentitiesOnly=yes"  # Only use explicitly specified identity files
+        ])
+        
+        if not self.key_file:
+            logger.warning(f"No SSH key file specified for connection to {self.ssh_target}")
     
-        # Add host and command
-        ssh_cmd.append(self.host)
+        # Add host and command - use ssh_target instead of self.host
+        ssh_cmd.append(self.ssh_target)
         ssh_cmd.append(remote_command)
     
         return ssh_cmd

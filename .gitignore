@@ -3,7 +3,8 @@
 .DS_Store
 /.vscode
 
-
+sqlite_*
+index_*
 
 *.log
 

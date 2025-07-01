@@ -1,8 +1,8 @@
 """
-SQLite-based index for managing file downloads with HPC-specific fields.
+SQLite-based index for managing file metadata with HPC synchronization.
 
-This module provides a specialized index for data downloads that works with HPC
-systems, including features for synchronizing the index between local workstations 
+This module provides a specialized index that works with HPC systems,
+including features for synchronizing the index between local workstations 
 and HPC clusters.
 """
 import os
@@ -11,7 +11,7 @@ import json
 import logging
 import sqlite3
 import threading
-from typing import Dict, Any, Optional, List, Union, Set
+from typing import Dict, Any, Optional, List, Union, Set, Tuple
 from datetime import datetime
 import subprocess
 import tempfile
@@ -24,57 +24,12 @@ from gnt.data.common.hpc.client import HPCClient, HPCIndexSynchronizer
 
 logger = logging.getLogger(__name__)
 
-# Define file statuses for consistency
-class FileStatus:
-    PENDING = "pending"        # Initial state - file needs to be downloaded
-    DOWNLOADING = "downloading"  # File is currently being downloaded
-    DOWNLOADED = "downloaded"   # File has been downloaded but not yet batched
-    BATCHED = "batched"        # File has been added to a batch
-    TRANSFERRING = "transferring"  # Batch containing file is being transferred
-    TRANSFERRED = "transferred"  # Batch has been transferred but not extracted
-    EXTRACTING = "extracting"  # File is being extracted on HPC
-    EXTRACTED = "extracted"    # File has been extracted but not yet verified
-    SUCCESS = "success"        # File has been successfully processed and is available on HPC
-    FAILED = "failed"          # File download or processing failed
-    
-    # Helper for status groups
-    @staticmethod
-    def is_pending(status):
-        """Return True if the status is considered pending processing"""
-        return status in (FileStatus.PENDING, FileStatus.DOWNLOADING)
-    
-    @staticmethod
-    def is_in_progress(status):
-        """Return True if the file is somewhere in the processing pipeline"""
-        return status in (FileStatus.DOWNLOADING, FileStatus.DOWNLOADED, 
-                          FileStatus.BATCHED, FileStatus.TRANSFERRING,
-                          FileStatus.TRANSFERRED, FileStatus.EXTRACTING,
-                          FileStatus.EXTRACTED)
-    
-    @staticmethod
-    def is_terminal(status):
-        """Return True if this is a terminal status (success or failed)"""
-        return status in (FileStatus.SUCCESS, FileStatus.FAILED)
-
-# Define batch statuses for consistency
-class BatchStatus:
-    PENDING = "pending"        # Batch is being created
-    READY = "ready"            # Batch is complete and ready for transfer
-    QUEUED = "queued"          # Batch is queued for transfer
-    TRANSFERRING = "transferring"  # Batch is being transferred
-    TRANSFERRED = "transferred"  # Batch has been transferred but not extracted
-    EXTRACTING = "extracting"  # Batch is being extracted on HPC
-    SUCCESS = "success"        # Batch has been successfully processed
-    FAILED = "failed"          # Batch processing failed
-    FAILED_EXTRACTION = "failed_extraction"  # Batch extraction failed
-
 class HPCDataDownloadIndex(DataDownloadIndex):
     """
-    SQLite-based index for managing file downloads with HPC-specific fields.
+    SQLite-based index for managing file metadata with HPC synchronization.
     
     This extends the base DataDownloadIndex with features specific to HPC environments:
     - Local index storage instead of cloud storage
-    - Batch management for efficient transfers
     - Synchronization between local and HPC systems
     """
     
@@ -86,24 +41,30 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         client=None,
         temp_dir=None, 
         save_interval_seconds=300,
-        key_file: str = None  # Added key_file parameter
+        key_file: str = None
     ):
         """
-        Initialize the HPC download index.
+        Initialize the HPC index.
         
         Args:
-            bucket_name: GCS bucket name (kept for compatibility)
-            data_source: Data source for downloads
-            local_index_dir: Local directory for index storage (not in GCS)
-            client: GCS client (optional but kept for interface compatibility)
-            temp_dir: Temporary directory for downloads
+            bucket_name: Storage bucket name (kept for compatibility)
+            data_source: Data source for indexing
+            local_index_dir: Local directory for index storage
+            client: Storage client (optional but kept for interface compatibility)
+            temp_dir: Temporary directory
             save_interval_seconds: How often to save the index
             key_file: Path to SSH private key file (optional)
         """
-        # Set up HPC-specific attributes
+        # Set up HPC-specific attributes BEFORE calling parent init
         self.use_local_only = True
         self.local_index_dir = local_index_dir or os.path.expanduser("~/hpc_data_index")
         os.makedirs(self.local_index_dir, exist_ok=True)
+        
+        # Store key_file for use in synchronization
+        self.key_file = key_file
+        
+        # Connection pooling improvements - SET BEFORE parent init
+        self.connection_timeout = 120  # Longer timeout for HPC operations
         
         # Initialize base class
         super().__init__(
@@ -116,28 +77,29 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         
         # Initialize last save time
         self._last_save_time = time.time()
-        
-        # Store key_file for use in synchronization
-        self.key_file = key_file
     
     def _setup_database(self):
-        """Set up SQLite database with HPC-specific tables."""
-        # Set up local path
+        """Set up SQLite database with optimized indexes for HPC operations."""
+        # Set up local path FIRST
         self.local_db_path = os.path.join(
             self.local_index_dir, 
-            f"download_{self.data_path.replace('/', '_')}.sqlite"
+            f"index_{self.data_path.replace('/', '_')}.sqlite"
         )
         
-        # Connect with higher timeout and other pragmas for robustness
+        # Connect with optimized settings
         conn = self._get_connection(timeout=60)
         cursor = conn.cursor()
         
-        # Set pragmas for better reliability
+        # Set pragmas for better performance with large datasets
         cursor.execute("PRAGMA journal_mode=WAL")
         cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.execute("PRAGMA busy_timeout=30000")  # 30 seconds
         cursor.execute("PRAGMA temp_store=MEMORY")
         cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.execute("PRAGMA cache_size=50000")  # Much larger cache (50MB)
+        cursor.execute("PRAGMA page_size=4096")     # Larger page size
+        cursor.execute("PRAGMA mmap_size=1073741824")  # 1GB memory mapping
+        cursor.execute("PRAGMA optimize")  # Auto-optimize for current workload
         
         # Create standard tables (same as parent)
         cursor.execute('''
@@ -146,44 +108,25 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             relative_path TEXT,
             source_url TEXT,
             destination_blob TEXT,
-            status TEXT,
             timestamp TEXT,
-            error TEXT,
             file_size INTEGER,
             metadata TEXT
         )
         ''')
         
-        # Add HPC-specific tables
-        cursor.execute('''
-        CREATE TABLE IF NOT EXISTS batches (
-            batch_id TEXT PRIMARY KEY,
-            tar_path TEXT,
-            file_count INTEGER,
-            total_size INTEGER,
-            status TEXT,
-            created_timestamp TEXT,
-            transfer_timestamp TEXT,
-            error TEXT
-        )
-        ''')
+        # Create OPTIMIZED indexes
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_timestamp ON files(timestamp)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_relative_path ON files(relative_path)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_files_destination_blob ON files(destination_blob)')
         
-        # Add column for batch_id if it doesn't exist
-        try:
-            cursor.execute("SELECT batch_id FROM files LIMIT 1")
-        except sqlite3.OperationalError:
-            cursor.execute("ALTER TABLE files ADD COLUMN batch_id TEXT")
+        # CRITICAL: Analyze tables to update statistics for query optimizer
+        cursor.execute('ANALYZE files')
         
-        # Create indexes
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_status ON files(status)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_batch_id ON files(batch_id)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_batch_status ON batches(status)')
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_relative_path ON files(relative_path)')
         conn.commit()
     
     def _get_connection(self, timeout=30):
         """
-        Get a SQLite database connection with improved error handling.
+        Get a SQLite database connection with improved pooling and error handling.
         
         Args:
             timeout: Connection timeout in seconds
@@ -191,6 +134,9 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         Returns:
             sqlite3.Connection: A connection to the database
         """
+        # Use longer timeout for HPC operations
+        timeout = max(timeout, self.connection_timeout)
+        
         # Check if database exists, if not make sure directory exists
         db_dir = os.path.dirname(self.local_db_path)
         if not os.path.exists(db_dir):
@@ -208,25 +154,25 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         # Create connection if it doesn't exist for this thread
         if not hasattr(self._thread_local, 'connection') or self._thread_local.connection is None:
             try:
-                # Connect with a timeout to avoid hanging
+                # Connect with optimized settings for bulk operations
                 self._thread_local.connection = sqlite3.connect(
                     self.local_db_path, 
                     timeout=timeout,
                     isolation_level=None  # Autocommit mode
                 )
                 
-                # Enable extended error codes for better diagnostics
-                self._thread_local.connection.execute("PRAGMA foreign_keys=ON")
-                self._thread_local.connection.execute("PRAGMA busy_timeout=30000")  # 30 seconds
+                # Optimize for bulk operations
+                conn = self._thread_local.connection
+                conn.execute("PRAGMA foreign_keys=ON")
+                conn.execute("PRAGMA busy_timeout=60000")  # 60 seconds for HPC operations
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("PRAGMA synchronous=NORMAL")
+                conn.execute("PRAGMA cache_size=10000")  # Larger cache for better performance
+                conn.execute("PRAGMA temp_store=MEMORY")
+                conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory mapping
                 
-                # Use write-ahead logging for better concurrency
-                self._thread_local.connection.execute("PRAGMA journal_mode=WAL")
-                
-                # Configure for better reliability with multiple threads
-                self._thread_local.connection.execute("PRAGMA synchronous=NORMAL")
             except sqlite3.Error as e:
                 logger.error(f"Error connecting to database: {e}")
-                # If we can't connect, try to recover or create a new database
                 self._recover_database()
                 # Try connecting one more time
                 self._thread_local.connection = sqlite3.connect(
@@ -314,7 +260,6 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         logger.info(f"Creating new empty database at {self.local_db_path}")
         # Database will be created when _setup_database is called
         self._close_all_connections()
-        self._connections = {}
         self._thread_local = threading.local()
         return False
 
@@ -354,7 +299,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
                 # Save metadata file locally
                 meta_path = os.path.join(
                     self.local_index_dir, 
-                    f"download_{self.data_path.replace('/', '_')}_meta.json"
+                    f"index_{self.data_path.replace('/', '_')}_meta.json"
                 )
                 with open(meta_path, 'w') as f:
                     json.dump(self.metadata, f, indent=2)
@@ -376,9 +321,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         self, 
         data_source, 
         rebuild=False, 
-        check_gcs=False,  # Ignored in HPC version
-        only_missing_entrypoints=True, 
-        force_refresh_gcs=False  # Ignored in HPC version
+        only_missing_entrypoints=True
     ):
         """
         Build index from data source with configurable behavior.
@@ -386,9 +329,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         Args:
             data_source: Data source to index
             rebuild: Whether to rebuild the index from scratch
-            check_gcs: Whether to check HPC for existing files (not used)
             only_missing_entrypoints: Only process entrypoints not already in index
-            force_refresh_gcs: Not used in HPC version
         
         Returns:
             int: Number of files indexed
@@ -405,9 +346,6 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             conn.commit()
         
         try:
-            # No GCS check in HPC version
-            existing_files = set()
-                
             # Process files based on data source capabilities
             if hasattr(data_source, "has_entrypoints") and data_source.has_entrypoints:
                 # Process entrypoint-based data sources
@@ -434,7 +372,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
                         if remote_files:
                             logger.info(f"Found {len(remote_files)} files for this entrypoint")
                             # Add files to index
-                            indexed = self._add_files_to_index(data_source, remote_files, existing_files)
+                            indexed = self._add_files_to_index(data_source, remote_files)
                             total_indexed += indexed
                             
                             # Update metadata after each entrypoint
@@ -452,7 +390,7 @@ class HPCDataDownloadIndex(DataDownloadIndex):
                 try:
                     remote_files = list(data_source.list_remote_files())
                     logger.info(f"Found {len(remote_files)} remote files")
-                    total_indexed = self._add_files_to_index(data_source, remote_files, existing_files)
+                    total_indexed = self._add_files_to_index(data_source, remote_files)
                 except Exception as e:
                     logger.error(f"Error listing remote files: {e}")
                 
@@ -552,18 +490,8 @@ class HPCDataDownloadIndex(DataDownloadIndex):
         
         return missing_entrypoints
 
-    def _add_files_to_index(self, data_source, remote_files, existing_files=None) -> int:
-        """
-        Add files to the index.
-        
-        Args:
-            data_source: Data source for the files
-            remote_files: List of (relative_path, file_url) tuples
-            existing_files: Set of existing file paths (not used in HPC version)
-            
-        Returns:
-            int: Number of files added to index
-        """
+    def _add_files_to_index(self, data_source, remote_files) -> int:
+        """Add files to the index."""
         conn = self._get_connection()
         cursor = conn.cursor()
         
@@ -575,20 +503,16 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             # Calculate file hash
             file_hash = data_source.get_file_hash(file_url)
             
-            # Determine destination path in local storage
-            # Note: Files will be placed under raw/ subfolder by the BatchManager
-            # but we keep the original destination path in the index for reference
-            destination_blob = data_source.gcs_upload_path(self.data_path, relative_path)
+            # Determine destination path - simplified without GCS
+            destination_blob = f"{self.data_path}/{os.path.basename(relative_path)}"
             
-            # Add to batch for insertion
+            # Add to batch for insertion - no timestamp means pending
             batch.append((
                 file_hash,
                 relative_path,
                 file_url,
                 destination_blob,
-                FileStatus.PENDING,  # Use constants for consistency
-                datetime.now().isoformat(),
-                None,  # No error
+                None,  # No timestamp - indicates pending
                 None,  # File size unknown until download
                 None   # No metadata yet
             ))
@@ -623,8 +547,8 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             cursor.executemany(
                 '''INSERT OR IGNORE INTO files 
                    (file_hash, relative_path, source_url, destination_blob, 
-                    status, timestamp, error, file_size, metadata)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                    timestamp, file_size, metadata)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)''', 
                 batch
             )
         except sqlite3.Error as e:
@@ -635,100 +559,216 @@ class HPCDataDownloadIndex(DataDownloadIndex):
                     cursor.execute(
                         '''INSERT OR IGNORE INTO files 
                            (file_hash, relative_path, source_url, destination_blob, 
-                            status, timestamp, error, file_size, metadata)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                            timestamp, file_size, metadata)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)''',
                         record
                     )
                 except Exception as e2:
                     logger.error(f"Error inserting record {record[0]}: {e2}")
 
-    def _check_save_needed(self, force=False):
+    def get_stats(self):
         """
-        Check if the index needs to be saved and save if needed.
+        Get statistics about the current index.
         
-        Args:
-            force: If True, force a save regardless of time elapsed
+        Returns:
+            dict: Statistics about indexed files
         """
-        now = time.time()
-        if force or (now - self._last_save_time > self.save_interval_seconds):
-            # Use a dedicated thread for saving to avoid blocking
-            save_thread = threading.Thread(target=self._thread_safe_save)
-            save_thread.daemon = True
-            save_thread.start() 
-            
-    def _thread_safe_save(self):
-        """Thread-safe method to save the index. Creates its own connection."""
         try:
-            # Don't close other threads' connections
+            conn = self._get_connection()
+            cursor = conn.cursor()
             
-            # Create a direct connection for checkpointing
-            temp_conn = sqlite3.connect(self.local_db_path)
-            temp_cursor = temp_conn.cursor()
-
-            try:
-                # Force a checkpoint to sync WAL to main DB
-                temp_cursor.execute("PRAGMA wal_checkpoint(FULL)")
-                temp_conn.commit()
-                
-                # Save metadata file locally
-                meta_path = os.path.join(
-                    self.local_index_dir, 
-                    f"download_{self.data_path.replace('/', '_')}_meta.json"
-                )
-                with open(meta_path, 'w') as f:
-                    json.dump(self.metadata, f, indent=2)
-                    
-                # Update last save time
-                self._last_save_time = time.time()
-                
-                logger.info(f"Index for {self.data_source_name} saved successfully")
-                
-            finally:
-                temp_cursor.close()
-                temp_conn.close()
+            # Get total file count
+            cursor.execute("SELECT COUNT(*) FROM files")
+            total_files = cursor.fetchone()[0]
+            
+            # Get file counts by status using timestamp patterns
+            cursor.execute("SELECT COUNT(*) FROM files WHERE timestamp IS NULL OR timestamp = ''")
+            pending_files = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM files WHERE timestamp = 'DOWNLOADING'")
+            downloading_files = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM files WHERE timestamp LIKE 'FAILED:%'")
+            failed_files = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM files WHERE timestamp LIKE '20%'")
+            completed_files = cursor.fetchone()[0]
+            
+            # Get file size statistics
+            cursor.execute("SELECT SUM(file_size) FROM files WHERE file_size IS NOT NULL")
+            total_size = cursor.fetchone()[0] or 0
+            
+            # Return comprehensive statistics
+            stats = {
+                'total_files': total_files,
+                'pending_files': pending_files,
+                'downloading_files': downloading_files,
+                'failed_files': failed_files,
+                'completed_files': completed_files,
+                'total_size': total_size,
+            }
+            
+            return stats
+            
         except Exception as e:
-            logger.error(f"Error in thread-safe save: {e}")
-            import traceback
-            logger.debug(f"Full error: {traceback.format_exc()}")
-
-    def _update_stats(self, total_indexed):
+            logger.error(f"Error getting stats: {e}")
+            return {
+                'total_files': 0,
+                'pending_files': 0,
+                'downloading_files': 0,
+                'failed_files': 0,
+                'completed_files': 0,
+                'total_size': 0,
+            }
+    
+    def compare_local_and_remote_index(self, hpc_target: str, key_file: str = None) -> Dict[str, Any]:
         """
-        Update index metadata with statistics.
+        Compare local and remote index files to determine sync strategy.
         
         Args:
-            total_indexed: Total number of files indexed in this run
+            hpc_target: SSH target in format user@host:/path
+            key_file: Path to SSH private key (optional)
+            
+        Returns:
+            dict: Comparison results with sync recommendations
         """
-        stats = self.get_stats()
-        self.metadata.update({
-            "last_update": datetime.now().isoformat(),
-            "total_files": stats['total_files'],
-            "total_indexed_last_run": total_indexed,
-            "pending_files": stats['files_pending'],
-            "transferred_files": stats.get('files_transferred', 0),
-            "successful_files": stats['files_success'],
-            "failed_files": stats['files_failed']
-        })
-        self.save()
+        logger.info("Comparing local and remote index files")
+        
+        try:
+            client = HPCClient(hpc_target, key_file=key_file)
+            
+            # Build remote index path
+            db_filename = f"index_{self.data_path.replace('/', '_')}.sqlite"
+            remote_db_path = f"hpc_data_index/{db_filename}"
+            
+            # Check if local index exists
+            local_exists = os.path.exists(self.local_db_path)
+            
+            # Check if remote index exists
+            remote_exists = client.check_file_exists(remote_db_path)
+            
+            # Determine recommended action based on existence
+            if local_exists and remote_exists:
+                # Both exist - could compare timestamps, but for now default to push
+                recommended_action = "push"
+            elif local_exists and not remote_exists:
+                # Only local exists - push to remote
+                recommended_action = "push"
+            elif not local_exists and remote_exists:
+                # Only remote exists - pull from remote
+                recommended_action = "pull"
+            else:
+                # Neither exists - default to push (will create new)
+                recommended_action = "push"
+            
+            return {
+                "local_exists": local_exists,
+                "remote_exists": remote_exists,
+                "recommended_action": recommended_action,
+                "local_path": self.local_db_path,
+                "remote_path": remote_db_path
+            }
+            
+        except Exception as e:
+            logger.error(f"Error comparing index files: {e}")
+            return {
+                "local_exists": os.path.exists(self.local_db_path),
+                "remote_exists": False,
+                "recommended_action": "push",
+                "error": str(e)
+            }
+
+    def ensure_synced_index(
+        self, 
+        hpc_target: str, 
+        sync_direction: str = "auto", 
+        force: bool = False,
+        key_file: str = None
+    ) -> bool:
+        """
+        Ensure the index is synchronized with HPC, automatically determining direction.
+        
+        Args:
+            hpc_target: SSH target in format user@host:/path
+            sync_direction: 'auto', 'push', 'pull', or 'none'
+            force: Whether to force sync regardless of timestamps
+            key_file: Path to SSH private key (optional)
+            
+        Returns:
+            bool: Whether sync was successful or not needed
+        """
+        if sync_direction == "none":
+            logger.info("Index sync disabled")
+            return True
+            
+        logger.info(f"Ensuring index is synced with HPC (direction: {sync_direction})")
+        
+        try:
+            if sync_direction == "auto":
+                # Compare files to determine best sync direction
+                comparison = self.compare_local_and_remote_index(hpc_target, key_file)
+                sync_direction = comparison.get("recommended_action", "push")
+                logger.info(f"Auto-detected sync direction: {sync_direction}")
+            
+            # Perform the sync
+            success = self.sync_index_with_hpc(
+                hpc_target=hpc_target,
+                direction=sync_direction,
+                sync_entrypoints=True,
+                force=force,
+                key_file=key_file
+            )
+            
+            if success:
+                logger.info(f"Index sync completed successfully ({sync_direction})")
+            else:
+                logger.warning(f"Index sync failed ({sync_direction})")
+                
+            return success
+            
+        except Exception as e:
+            logger.error(f"Error ensuring index sync: {e}")
+            return False
 
     def refresh_index(self, data_source):
         """
-        Refresh the index from the data source.
+        Legacy method for backward compatibility.
+        Calls build_index_from_source with default parameters.
         
         Args:
             data_source: Data source to refresh from
-            
-        Returns:
-            int: Number of files indexed
         """
-        logger.info(f"Refreshing index for {data_source.DATA_SOURCE_NAME}")
-        # For simple refresh, we just call build_index_from_source with default options
-        # This will only index missing entrypoints, not rebuilding everything
+        logger.warning("refresh_index is deprecated, use build_index_from_source instead")
         return self.build_index_from_source(
-            data_source,
+            data_source=data_source,
             rebuild=False,
-            check_gcs=False,  # No GCS check for HPC version
             only_missing_entrypoints=True
         )
+
+    def _check_save_needed(self, force: bool = False):
+        """
+        Check if index needs to be saved based on time interval.
+        
+        Args:
+            force: Whether to force save regardless of interval
+        """
+        current_time = time.time()
+        if force or (current_time - self._last_save_time) > self.save_interval_seconds:
+            self.save()
+
+    def _update_stats(self, files_added: int):
+        """
+        Update metadata statistics after indexing.
+        
+        Args:
+            files_added: Number of files added in this operation
+        """
+        self.metadata["last_modified"] = datetime.now().isoformat()
+        self.metadata["files_added_last_run"] = files_added
+        
+        # Get current file counts
+        stats = self.get_stats()
+        self.metadata["total_files"] = stats.get("total_files", 0)
     
     def sync_index_with_hpc(
         self, 
@@ -762,8 +802,8 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             self._close_all_connections()
             time.sleep(0.5)  # Allow time for SQLite to release locks
             
-            # Use our new client with optional key file
-            client = HPCClient(hpc_target, key_file=key_file)
+            # Use our client with optional key file
+            client = HPCClient(hpc_target, key_file=key_file or self.key_file)
             synchronizer = HPCIndexSynchronizer(
                 client=client,
                 local_index_dir=self.local_index_dir,
@@ -779,7 +819,9 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             
             # Reconnect after pull
             if direction.lower() == "pull" and success:
-                self._connections = {}
+                # Clear connection cache to force reconnection
+                if hasattr(self, '_thread_local'):
+                    self._thread_local = threading.local()
             
             return success
                 
@@ -788,159 +830,3 @@ class HPCDataDownloadIndex(DataDownloadIndex):
             import traceback
             logger.debug(f"Full error: {traceback.format_exc()}")
             return False
-
-    def compare_local_and_remote_index(self, hpc_target: str, key_file: str = None) -> Dict[str, Any]:
-        """
-        Compare local and remote index files to determine which is newer/better.
-        
-        Args:
-            hpc_target: SSH target in format user@host:/path
-            key_file: Path to SSH private key (optional)
-        
-        Returns:
-            Dict with comparison results
-        """
-        try:
-            client = HPCClient(hpc_target, key_file=key_file)
-            synchronizer = HPCIndexSynchronizer(
-                client=client,
-                local_index_dir=self.local_index_dir,
-                remote_index_dir="hpc_data_index"
-            )
-            
-            return synchronizer.compare_indices(self.data_path)
-                
-        except Exception as e:
-            logger.error(f"Error comparing indices: {e}")
-            return {
-                'local_exists': False,
-                'remote_exists': False,
-                'local_file_count': 0,
-                'remote_file_count': 0,
-                'local_modified': None,
-                'remote_modified': None,
-                'recommendation': 'push'  # Default
-            }
-
-    def ensure_synced_index(
-        self, 
-        hpc_target: str, 
-        sync_direction: str = 'auto', 
-        force: bool = False,
-        key_file: str = None
-    ) -> bool:
-        """
-        Ensure the index is synchronized with the HPC system.
-        
-        Args:
-            hpc_target: SSH target in format user@host:/path
-            sync_direction: 'auto', 'push', 'pull', or 'none'
-            force: Whether to force sync even if timestamps indicate no changes
-            key_file: Path to SSH private key file (optional)
-        
-        Returns:
-            bool: Whether synchronization was successful
-        """
-        from gnt.data.common.hpc.client import HPCClient, HPCIndexSynchronizer
-        
-        # Use instance key_file if passed key_file is None
-        key_file = key_file or getattr(self, 'key_file', None)
-        
-        # Create HPC client with key file if provided
-        hpc_client = HPCClient(hpc_target, key_file=key_file)
-        
-        # Log the key being used
-        logger = logging.getLogger(__name__)
-        if key_file:
-            expanded_key = os.path.expanduser(key_file) if '~' in key_file else key_file
-            logger.debug(f"Using SSH key file for index sync: {key_file} (expanded to {expanded_key})")
-        
-        # Create synchronizer
-        synchronizer = HPCIndexSynchronizer(
-            client=hpc_client,
-            local_index_dir=self.local_index_dir
-        )
-        
-        # Perform sync and return result
-        return synchronizer.ensure_synced_index(
-            data_path=self.data_path,
-            sync_direction=sync_direction,
-            force=force
-        )
-
-    def get_stats(self) -> Dict[str, int]:
-        """
-        Get download statistics from the index.
-        
-        Returns:
-            Dictionary with statistics
-        """
-        stats = {}
-        
-        try:
-            conn = self._get_connection()
-            cursor = conn.cursor()
-            
-            # Get total file count
-            cursor.execute("SELECT COUNT(*) FROM files")
-            stats['total_files'] = cursor.fetchone()[0]
-            
-            # Get individual status counts
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.PENDING}'")
-            stats['files_pending'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.DOWNLOADING}'")
-            stats['files_downloading'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.BATCHED}'")
-            stats['files_batched'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.TRANSFERRING}'")
-            stats['files_transferring'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.TRANSFERRED}'")
-            stats['files_transferred'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.EXTRACTED}'")
-            stats['files_extracted'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.SUCCESS}'")
-            stats['files_success'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status = '{FileStatus.FAILED}'")
-            stats['files_failed'] = cursor.fetchone()[0]
-            
-            # Add a composite in_progress count
-            in_progress_statuses = (
-                f"'{FileStatus.DOWNLOADING}', '{FileStatus.DOWNLOADED}', "
-                f"'{FileStatus.BATCHED}', '{FileStatus.TRANSFERRING}', "
-                f"'{FileStatus.TRANSFERRED}', '{FileStatus.EXTRACTING}', "
-                f"'{FileStatus.EXTRACTED}'"
-            )
-            cursor.execute(f"SELECT COUNT(*) FROM files WHERE status IN ({in_progress_statuses})")
-            stats['files_in_progress'] = cursor.fetchone()[0]
-            
-            # Count batches
-            cursor.execute("SELECT COUNT(*) FROM batches")
-            stats['total_batches'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM batches WHERE status = '{BatchStatus.SUCCESS}'")
-            stats['batches_success'] = cursor.fetchone()[0]
-            
-            cursor.execute(f"SELECT COUNT(*) FROM batches WHERE status = '{BatchStatus.FAILED}'")
-            stats['batches_failed'] = cursor.fetchone()[0]
-            
-            # In-progress batches
-            in_progress_batch_statuses = (
-                f"'{BatchStatus.PENDING}', '{BatchStatus.READY}', "
-                f"'{BatchStatus.QUEUED}', '{BatchStatus.TRANSFERRING}', "
-                f"'{BatchStatus.TRANSFERRED}', '{BatchStatus.EXTRACTING}'"
-            )
-            cursor.execute(f"SELECT COUNT(*) FROM batches WHERE status IN ({in_progress_batch_statuses})")
-            stats['batches_in_progress'] = cursor.fetchone()[0]
-            
-        except Exception as e:
-            logger.error(f"Error getting stats: {e}")
-            stats['error'] = str(e)
-            
-        return stats

@@ -1,5 +1,5 @@
 """
-Base SQLite-based index for managing file downloads.
+Base SQLite-based index for managing file metadata.
 """
 
 import os
@@ -16,18 +16,18 @@ from gnt.data.download.sources.base import BaseDataSource
 logger = logging.getLogger(__name__)
 
 class DataDownloadIndex:
-    """SQLite-based index for managing file downloads."""
+    """SQLite-based index for managing file metadata."""
     
     def __init__(self, bucket_name: str, data_source: Any, 
                  client=None, temp_dir=None, save_interval_seconds=300):
         """
-        Initialize the download index.
+        Initialize the index.
         
         Args:
-            bucket_name: GCS bucket name
-            data_source: Data source for downloads
-            client: GCS client (optional)
-            temp_dir: Temporary directory for downloads
+            bucket_name: Storage bucket name (legacy parameter)
+            data_source: Data source for indexing
+            client: Storage client (optional)
+            temp_dir: Temporary directory for index files
             save_interval_seconds: How often to save the index
         """
         self.bucket_name = bucket_name
@@ -40,12 +40,10 @@ class DataDownloadIndex:
         self.data_source_name = getattr(data_source, "DATA_SOURCE_NAME", "unknown")
         self.data_path = getattr(data_source, "data_path", "unknown")
         
-        # In-memory cache of statuses for frequent lookups
-        self.status_cache = {}
+        # Metadata
         self.metadata = {"last_modified": datetime.now().isoformat()}
         
-        # Connection pool
-        self._connections = {}
+        # Connection management
         self._last_save_time = time.time()
         
         # Set up database
@@ -54,7 +52,7 @@ class DataDownloadIndex:
     def _setup_database(self):
         """Set up the SQLite database file."""
         # Default implementation - override in subclasses
-        self.local_db_path = os.path.join(self.temp_dir, f"download_{self.data_path.replace('/', '_')}.sqlite")
+        self.local_db_path = os.path.join(self.temp_dir, f"index_{self.data_path.replace('/', '_')}.sqlite")
         os.makedirs(os.path.dirname(self.local_db_path), exist_ok=True)
         
         # Connect and create tables
@@ -68,16 +66,15 @@ class DataDownloadIndex:
             relative_path TEXT,
             source_url TEXT,
             destination_blob TEXT,
-            status TEXT,
             timestamp TEXT,
-            error TEXT,
             file_size INTEGER,
             metadata TEXT
         )
         ''')
         
-        # Create indexes
-        cursor.execute('CREATE INDEX IF NOT EXISTS idx_status ON files(status)')
+        # Create indexes for better query performance
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_timestamp ON files(timestamp)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_relative_path ON files(relative_path)')
         conn.commit()
     
     def _get_connection(self):
@@ -101,7 +98,7 @@ class DataDownloadIndex:
         if thread_id not in self._thread_local.connections:
             self._thread_local.connections[thread_id] = sqlite3.connect(
                 self.local_db_path,
-                timeout=60.0,  # Longer timeout for busy database
+                timeout=60.0,
                 isolation_level=None  # Use autocommit mode
             )
             
@@ -156,10 +153,6 @@ class DataDownloadIndex:
         conn = self._get_connection()
         cursor = conn.cursor()
         
-        # Get counts by status
-        cursor.execute("SELECT status, COUNT(*) FROM files GROUP BY status")
-        status_counts = {status: count for status, count in cursor.fetchall()}
-        
         # Get total file count
         cursor.execute("SELECT COUNT(*) FROM files")
         total_files = cursor.fetchone()[0]
@@ -172,11 +165,6 @@ class DataDownloadIndex:
         return {
             'total_files': total_files,
             'total_size': total_size,
-            'files_pending': status_counts.get('pending', 0),
-            'files_success': status_counts.get('success', 0),
-            'files_batched': status_counts.get('batched', 0),
-            'files_transferred': status_counts.get('transferred', 0),
-            'files_failed': status_counts.get('failed', 0),
         }
     
     def refresh_index(self, data_source):
