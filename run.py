@@ -293,36 +293,54 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             raise ValueError(f"Could not import unified workflow module: {e}") from e
     
     elif operation_type in ["preprocess", "validate_preprocess"]:
-        # Merge global and source-specific configurations for preprocessing
-        merged_config = merge_configs(config, source_config, operation_type)
-        merged_config['data_source'] = source
+        # Build unified workflow configuration structure similar to download
+        unified_workflow_config = {
+            'source': {
+                'name': source,
+                **source_config
+            },
+            'preprocess': merge_configs(config, source_config, 'preprocess'),
+            'workflow': {
+                'tasks': []
+            },
+            'hpc': config.get('hpc', {}),
+            'gcs': config.get('gcs', {}),
+            'source_name': source
+        }
         
-        # Set mode based on operation type
-        if mode:
-            merged_config['mode'] = mode
-        else:
-            merged_config['mode'] = operation_type
+        # Define workflow tasks based on operation type
+        if operation_type == "preprocess":
+            preprocess_config = unified_workflow_config['preprocess'].copy()
+            preprocess_config['mode'] = mode or 'preprocess'
+            
+            unified_workflow_config['workflow']['tasks'] = [
+                {
+                    'type': 'preprocess',
+                    'config': preprocess_config
+                }
+            ]
+        elif operation_type == "validate_preprocess":
+            validate_config = unified_workflow_config['preprocess'].copy()
+            validate_config['mode'] = mode or 'validate'
+            
+            unified_workflow_config['workflow']['tasks'] = [
+                {
+                    'type': 'validate',
+                    'config': validate_config
+                }
+            ]
         
-        # Add HPC/GCS configuration if available
-        if 'hpc' in config:
-            for key, value in config['hpc'].items():
-                merged_config[f"hpc_{key}"] = value
-                
-        if 'gcs' in config:
-            for key, value in config['gcs'].items():
-                merged_config[f"gcs_{key}"] = value
-        
-        # For preprocess/validate, need to convert to task format expected by existing workflow
-        task = merged_config.copy()
-        task['preprocessor'] = source
-        
-        # Import the preprocess workflow
+        # Import and run the unified preprocessing workflow
         try:
-            from gnt.data.preprocess.workflow import process_task
-            process_task(task)
+            import importlib
+            preprocess_workflow_module = importlib.import_module('gnt.data.preprocess.workflow')
+            
+            logger.info("Running unified preprocessing workflow with structured configuration")
+            preprocess_workflow_module.run_workflow_with_config(unified_workflow_config)
+                        
         except ImportError as e:
-            logger.error(f"Error importing preprocess workflow module: {e}")
-            raise ValueError(f"Could not import preprocess workflow module: {e}") from e
+            logger.error(f"Error importing preprocessing workflow module: {e}")
+            raise ValueError(f"Could not import preprocessing workflow module: {e}") from e
     
     else:
         raise ValueError(f"Unsupported operation type: {operation_type}")

@@ -1276,3 +1276,20 @@ class UnifiedDataIndex:
     def _close_all_connections(self):
         """Override SQLite connection closing - not needed for Parquet."""
         pass
+    
+    def add_preprocessing_metadata(self, file_hash: str, preprocessing_info: Dict[str, Any]):
+        """Add preprocessing metadata to existing file records."""
+        # Store preprocessing status, stage, outputs in metadata field
+        pass
+    
+    def query_files_for_preprocessing(self, 
+                                    stage: str, 
+                                    year_range: Tuple[int, int] = None,
+                                    status_filter: str = None) -> List[Dict[str, Any]]:
+        """Query files suitable for preprocessing at a given stage."""
+        # Filter downloaded files that haven't been processed at this stage
+        pass
+    
+    def mark_preprocessing_complete(self, file_hash: str, stage: str, output_paths: List[str]):
+        """Mark a file as processed and record output locations."""
+        pass

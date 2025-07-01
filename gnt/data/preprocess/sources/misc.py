@@ -4,7 +4,7 @@ import logging
 import zipfile
 import shutil
 from pathlib import Path
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import geopandas as gpd
 from datetime import datetime
 import json
@@ -13,6 +13,8 @@ import re
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.gcs.client import GCSClient
 from gnt.data.common.index.preprocessing_index import PreprocessingIndex
+from gnt.data.common.index.hpc_download_index import DataDownloadIndex
+from gnt.data.download.sources.misc import MiscDataSource
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +48,10 @@ class MiscPreprocessor(AbstractPreprocessor):
                 rasterize (bool): Whether to create raster versions
                 version (str): Processing version
                 temp_dir (str): Directory for temporary files
+                
+                # New HPC workflow parameters
+                base_url (str): Base URL for misc data sources
+                hpc_output_base (str): Base path for HPC outputs
         """
         super().__init__(**kwargs)
         
@@ -74,6 +80,9 @@ class MiscPreprocessor(AbstractPreprocessor):
             temp_dir=self.temp_dir
         )
         
+        # New HPC workflow setup
+        self._init_hpc_workflow(kwargs)
+        
         # Fixed data source configurations - using consistent path structure
         self.data_sources = {
             'osm': {
@@ -93,7 +102,462 @@ class MiscPreprocessor(AbstractPreprocessor):
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)  # None means 75% of system memory
         
         logger.info(f"Initialized simplified MiscPreprocessor for boundary data")
+    
+    def _init_hpc_workflow(self, kwargs):
+        """Initialize HPC workflow components if parameters are provided."""
+        base_url = kwargs.get('base_url')
+        output_path = kwargs.get('output_path')
+        self.hpc_output_base = kwargs.get('hpc_output_base', '/cluster/work/climate/fschulz/preprocessing_outputs')
         
+        # Only initialize HPC components if we have the required parameters
+        if base_url and output_path:
+            try:
+                # Create the download data source
+                self.data_source = MiscDataSource(
+                    base_url=base_url,
+                    output_path=output_path
+                )
+                
+                # Initialize download index for finding source files
+                self._init_download_index(kwargs)
+                
+                # Set input path
+                self.input_path = self.data_source.data_path
+                
+                logger.info(f"HPC workflow initialized - Input path: {self.input_path}")
+                logger.info(f"HPC output base: {self.hpc_output_base}")
+                
+            except Exception as e:
+                logger.warning(f"Failed to initialize HPC workflow components: {e}")
+                self.data_source = None
+                self.download_index = None
+                self.input_path = None
+        else:
+            logger.info("HPC workflow parameters not provided - using legacy mode")
+            self.data_source = None
+            self.download_index = None
+            self.input_path = None
+    
+    def _init_download_index(self, config):
+        """Initialize the download index to query for downloaded files."""
+        try:
+            temp_dir = config.get("temp_dir")
+            
+            # Create the download index
+            self.download_index = DataDownloadIndex(
+                bucket_name="legacy",  # Not used in HPC mode
+                data_source=self.data_source,
+                temp_dir=temp_dir
+            )
+
+            logger.info("Download index loaded successfully")
+        except Exception as e:
+            logger.warning(f"Failed to load download index: {e}")
+            self.download_index = None
+    
+    def get_preprocessing_targets(self, stage: str, year_range: Tuple[int, int] = None) -> List[Dict[str, Any]]:
+        """
+        Generate list of preprocessing targets from unified download index.
+        
+        Args:
+            stage: Processing stage ('annual' or 'spatial')  
+            year_range: Optional year range filter (not used for misc data)
+            
+        Returns:
+            List of target dictionaries with source files and output specifications
+        """
+        if not hasattr(self, 'download_index') or not self.download_index:
+            logger.warning("Download index not available - cannot generate preprocessing targets")
+            return []
+        
+        # Query successfully downloaded files
+        downloaded_files = self.download_index.list_successful_files()
+        completed_files = [f for f in downloaded_files if 'completed' in str(f).lower()]
+        
+        if stage == 'annual':
+            # For misc data, "annual" stage means initial processing
+            return self._generate_processing_targets(completed_files)
+        elif stage == 'spatial':
+            # Spatial stage means rasterization (if enabled)
+            return self._generate_rasterization_targets()
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
+    
+    def _generate_processing_targets(self, files: List[str]) -> List[Dict]:
+        """Generate initial processing targets for misc data."""
+        targets = []
+        
+        # Group files by data type
+        osm_files = [f for f in files if 'osm' in f.lower() or 'land-polygons' in f.lower()]
+        gadm_files = [f for f in files if 'gadm' in f.lower()]
+        
+        # OSM land polygons target
+        if osm_files:
+            target = {
+                'data_type': 'osm',
+                'stage': 'annual',
+                'source_files': osm_files[:1],  # Take first OSM file
+                'output_path': f"{self.get_hpc_output_path('annual')}/osm/land_polygons_simplified.gpkg",
+                'dependencies': [],
+                'metadata': {
+                    'data_type': 'osm',
+                    'processing_type': 'simplify_polygons',
+                    'source_count': len(osm_files)
+                }
+            }
+            targets.append(target)
+        
+        # GADM boundaries target
+        if gadm_files:
+            target = {
+                'data_type': 'gadm',
+                'stage': 'annual',
+                'source_files': gadm_files[:1],  # Take first GADM file
+                'output_path': f"{self.get_hpc_output_path('annual')}/gadm/gadm_levels_simplified.gpkg",
+                'dependencies': [],
+                'metadata': {
+                    'data_type': 'gadm',
+                    'processing_type': 'simplify_boundaries',
+                    'source_count': len(gadm_files)
+                }
+            }
+            targets.append(target)
+        
+        return targets
+    
+    def _generate_rasterization_targets(self) -> List[Dict]:
+        """Generate rasterization targets for processed vector data."""
+        targets = []
+        
+        if not self.rasterize:
+            return targets
+        
+        # OSM land mask rasterization
+        osm_vector_path = f"{self.get_hpc_output_path('annual')}/osm/land_polygons_simplified.gpkg"
+        if os.path.exists(osm_vector_path):
+            target = {
+                'data_type': 'osm_raster',
+                'stage': 'spatial',
+                'source_files': [osm_vector_path],
+                'output_path': f"{self.get_hpc_output_path('spatial')}/osm/land_mask.zarr",
+                'dependencies': [osm_vector_path],
+                'metadata': {
+                    'data_type': 'osm_raster',
+                    'processing_type': 'rasterize_land_mask'
+                }
+            }
+            targets.append(target)
+        
+        # GADM countries grid rasterization  
+        gadm_vector_path = f"{self.get_hpc_output_path('annual')}/gadm/gadm_level0_simplified.gpkg"
+        if os.path.exists(gadm_vector_path):
+            target = {
+                'data_type': 'gadm_raster',
+                'stage': 'spatial',
+                'source_files': [gadm_vector_path],
+                'output_path': f"{self.get_hpc_output_path('spatial')}/gadm/countries_grid.zarr",
+                'dependencies': [gadm_vector_path],
+                'metadata': {
+                    'data_type': 'gadm_raster',
+                    'processing_type': 'rasterize_countries'
+                }
+            }
+            targets.append(target)
+        
+        return targets
+    
+    def get_hpc_output_path(self, stage: str) -> str:
+        """Get HPC output path for a given stage."""
+        return f"{self.hpc_output_base}/misc/{stage}"
+    
+    def process_target(self, target: Dict[str, Any]) -> bool:
+        """
+        Process a single preprocessing target.
+        
+        Args:
+            target: Target dictionary containing processing instructions
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        data_type = target['metadata']['data_type']
+        processing_type = target['metadata']['processing_type']
+        
+        logger.info(f"Processing target: {data_type} - {processing_type}")
+        
+        try:
+            if data_type == 'osm' and processing_type == 'simplify_polygons':
+                return self._process_osm_target(target)
+            elif data_type == 'gadm' and processing_type == 'simplify_boundaries':
+                return self._process_gadm_target(target)
+            elif data_type == 'osm_raster' and processing_type == 'rasterize_land_mask':
+                return self._rasterize_osm_target(target)
+            elif data_type == 'gadm_raster' and processing_type == 'rasterize_countries':
+                return self._rasterize_gadm_target(target)
+            else:
+                logger.error(f"Unknown target type: {data_type} - {processing_type}")
+                return False
+                
+        except Exception as e:
+            logger.exception(f"Error processing target {data_type}: {e}")
+            return False
+    
+    def _process_osm_target(self, target: Dict[str, Any]) -> bool:
+        """Process OSM land polygons target."""
+        source_file = target['source_files'][0]
+        output_path = target['output_path']
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Extract and process OSM data
+        extract_dir = os.path.join(self.temp_dir, "osm_extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        # Extract zip file
+        with zipfile.ZipFile(source_file, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+        
+        # Find the shapefile
+        shapefiles = list(Path(extract_dir).glob("**/*.shp"))
+        if not shapefiles:
+            raise Exception("No shapefiles found in OSM extract")
+        
+        shapefile_path = str(shapefiles[0])
+        logger.info(f"Found OSM shapefile: {shapefile_path}")
+        
+        # Read and simplify
+        gdf = gpd.read_file(shapefile_path, engine="pyogrio")
+        logger.info(f"Simplifying {len(gdf)} OSM polygons with tolerance {self.simplify_tolerance}")
+        
+        gdf_simplified = gdf.copy()
+        gdf_simplified['geometry'] = gdf_simplified.geometry.simplify(
+            tolerance=self.simplify_tolerance,
+            preserve_topology=True
+        )
+        
+        # Save processed version
+        gdf_simplified.to_file(output_path, driver="GPKG")
+        
+        logger.info(f"OSM processing complete: {output_path}")
+        return True
+    
+    def _process_gadm_target(self, target: Dict[str, Any]) -> bool:
+        """Process GADM boundaries target."""
+        source_file = target['source_files'][0]
+        output_base = os.path.dirname(target['output_path'])
+        
+        # Ensure output directory exists
+        os.makedirs(output_base, exist_ok=True)
+        
+        # Extract and process GADM data
+        extract_dir = os.path.join(self.temp_dir, "gadm_extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+        
+        # Extract zip file
+        with zipfile.ZipFile(source_file, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+        
+        # Find shapefiles for different levels
+        levels = {}
+        for level in range(5):  # GADM has levels 0-4
+            pattern = f"*level{level}*.shp"
+            shapefiles = list(Path(extract_dir).glob(pattern))
+            if shapefiles:
+                levels[level] = str(shapefiles[0])
+        
+        if not levels:
+            raise Exception("No GADM level shapefiles found in extract")
+        
+        # Process each level
+        for level, shapefile_path in levels.items():
+            logger.info(f"Processing GADM level {level}: {shapefile_path}")
+            
+            # Read the shapefile
+            gdf = gpd.read_file(shapefile_path)
+            
+            # Simplify geometries
+            gdf_simplified = gdf.copy()
+            gdf_simplified['geometry'] = gdf_simplified.geometry.simplify(
+                tolerance=self.simplify_tolerance,
+                preserve_topology=True
+            )
+            
+            # For country level (0), create a simpler version
+            if level == 0:
+                columns_to_keep = ['GID_0', 'NAME_0', 'geometry']
+                columns_to_keep = [col for col in columns_to_keep if col in gdf_simplified.columns]
+                gdf_simplified = gdf_simplified[columns_to_keep]
+            
+            # Save processed version
+            output_path = f"{output_base}/gadm_level{level}_simplified.gpkg"
+            gdf_simplified.to_file(output_path, driver="GPKG")
+            
+            logger.info(f"GADM level {level} processing complete: {output_path}")
+        
+        return True
+    
+    def _rasterize_osm_target(self, target: Dict[str, Any]) -> bool:
+        """Rasterize OSM land polygons target."""
+        try:
+            from odc.geo.xr import rasterize
+            from odc.geo.geom import Geometry
+            import shapely
+            import xarray as xr
+            import zarr
+            
+            source_file = target['source_files'][0]
+            output_path = target['output_path']
+            
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            
+            # Load simplified polygons
+            gdf = gpd.read_file(source_file, engine="pyogrio")
+            logger.info(f"Loaded {len(gdf)} simplified land polygons for rasterization")
+            
+            # Create a Dask client for parallel processing
+            with self._initialize_dask_client() as client:
+                logger.info(f"Created Dask client for OSM rasterization: {client.dashboard_link}")
+                
+                # Get or create the standard geobox
+                geobox = self._get_or_create_geobox()
+                
+                # Create a single MultiPolygon from all land polygons
+                land_polygons = shapely.MultiPolygon(gdf.geometry.tolist())
+                geom = Geometry(land_polygons, crs=str(gdf.crs))
+                
+                # Rasterize using ODC
+                logger.info(f"Rasterizing land polygons to grid of shape {geobox.shape}")
+                land_mask = rasterize(geom, geobox)
+                
+                # Convert to Dataset and add metadata
+                ds = xr.Dataset(
+                    data_vars={'land_mask': land_mask},
+                    attrs={
+                        'description': 'Land/water mask (1=land, 0=water)',
+                        'source': 'OpenStreetMap land polygons',
+                        'date_created': datetime.now().isoformat(),
+                        'crs': str(geobox.crs)
+                    }
+                )
+                
+                # Set up compression for zarr output
+                compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=2)
+                encoding = {'land_mask': {'compressor': compressor}}
+                
+                # Save to zarr file
+                logger.info(f"Writing land mask to zarr file at {output_path}")
+                ds.to_zarr(output_path, encoding=encoding, consolidated=True)
+            
+            logger.info("OSM land mask rasterization complete")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in OSM rasterization: {e}")
+            return False
+    
+    def _rasterize_gadm_target(self, target: Dict[str, Any]) -> bool:
+        """Rasterize GADM countries target."""
+        try:
+            from odc.geo.xr import rasterize
+            from odc.geo.geom import Geometry
+            import xarray as xr
+            import zarr
+            import numpy as np
+            
+            source_file = target['source_files'][0]
+            output_path = target['output_path']
+            output_dir = os.path.dirname(output_path)
+            
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            # Load simplified country polygons
+            gdf = gpd.read_file(source_file, engine="pyogrio")
+            logger.info(f"Loaded {len(gdf)} simplified country polygons for rasterization")
+            
+            # Create country code to ID mapping
+            if 'GID_0' in gdf.columns:
+                country_codes = sorted(gdf['GID_0'].unique())
+            else:
+                country_codes = [str(i) for i in range(len(gdf))]
+        
+            code_to_id = {code: i+1 for i, code in enumerate(country_codes)}
+            
+            # Create a Dask client for parallel processing
+            with self._initialize_dask_client() as client:
+                logger.info(f"Created Dask client for GADM rasterization: {client.dashboard_link}")
+                
+                # Get or create the standard geobox
+                geobox = self._get_or_create_geobox()
+                
+                # Create empty array filled with zeros (no data)
+                logger.info(f"Creating empty countries grid of shape {geobox.shape}")
+                countries_grid = xr.DataArray(
+                    data=np.zeros(geobox.shape, dtype=np.uint16),
+                    dims=['y', 'x'],
+                    coords={
+                        'y': geobox.coords['y'],
+                        'x': geobox.coords['x']
+                    },
+                    attrs={'crs': str(geobox.crs)}
+                ).chunk(2000)
+                
+                # Rasterize each country with its ID
+                logger.info(f"Rasterizing {len(gdf)} country boundaries")
+                for idx, row in gdf.iterrows():
+                    if idx % 10 == 0:
+                        logger.info(f"Rasterizing country {idx+1}/{len(gdf)}")
+                    
+                    if 'GID_0' in gdf.columns:
+                        code = row['GID_0']
+                    else:
+                        code = str(idx)
+                    
+                    value = code_to_id[code]
+                    
+                    # Create geometry object with CRS
+                    geom = Geometry(row.geometry, crs=str(gdf.crs))
+                    
+                    # Rasterize this country
+                    country_mask = rasterize(geom, geobox, dtype='uint16', 
+                                            fill=0, value=value, chunks=2000)
+                    
+                    # Use maximum to combine with existing data
+                    countries_grid = xr.where(country_mask > 0, country_mask, countries_grid)
+                
+                # Convert to Dataset and add metadata
+                ds = xr.Dataset(
+                    data_vars={'countries': countries_grid},
+                    attrs={
+                        'description': 'Country ID grid (0=no country)',
+                        'source': 'GADM administrative boundaries',
+                        'date_created': datetime.now().isoformat(),
+                        'crs': str(geobox.crs)
+                    }
+                )
+                
+                # Set up compression for zarr output
+                compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=2)
+                encoding = {'countries': {'compressor': compressor}}
+                
+                # Save to zarr file
+                logger.info(f"Writing countries grid to zarr file at {output_path}")
+                ds.to_zarr(output_path, encoding=encoding, consolidated=True)
+            
+            # Save the country code mapping
+            mapping_file = f"{output_dir}/country_code_mapping.json"
+            with open(mapping_file, 'w') as f:
+                json.dump(code_to_id, f, indent=2)
+            
+            logger.info("GADM countries rasterization complete")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in GADM countries rasterization: {e}")
+            return False
+
     def _setup_temp_dir(self, temp_dir):
         """Set up temporary directory."""
         if not temp_dir:
@@ -109,6 +573,46 @@ class MiscPreprocessor(AbstractPreprocessor):
         Returns:
             True if successful, False otherwise
         """
+        # Check if we're in new HPC workflow mode
+        if hasattr(self, 'data_source') and self.data_source and hasattr(self, 'download_index') and self.download_index:
+            # New HPC workflow mode
+            logger.info("Running HPC workflow mode")
+            return self._preprocess_hpc_mode()
+        else:
+            # Legacy mode
+            logger.info("Running legacy workflow mode")
+            return self._preprocess_legacy_mode()
+    
+    def _preprocess_hpc_mode(self) -> bool:
+        """Run preprocessing in HPC mode using targets."""
+        try:
+            # For misc data, we run all targets in sequence
+            targets = self.get_preprocessing_targets('annual')
+            
+            for target in targets:
+                success = self.process_target(target)
+                if not success:
+                    logger.error(f"Failed to process target: {target['metadata']['data_type']}")
+                    return False
+            
+            # Process rasterization targets if enabled
+            if self.rasterize:
+                raster_targets = self.get_preprocessing_targets('spatial')
+                
+                for target in raster_targets:
+                    success = self.process_target(target)
+                    if not success:
+                        logger.error(f"Failed to process raster target: {target['metadata']['data_type']}")
+                        return False
+            
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in HPC mode preprocessing: {e}")
+            return False
+    
+    def _preprocess_legacy_mode(self) -> bool:
+        """Run preprocessing in legacy mode."""
         success_results = []
         
         # Process OSM data
@@ -644,7 +1148,6 @@ class MiscPreprocessor(AbstractPreprocessor):
         """Initialize Dask client for parallel processing."""
         from gnt.data.common.dask.client import DaskClientContextManager
         
-        # Use similar parameters to GlassPreprocessor
         dask_params = {
             'threads': self.dask_threads,
             'memory_limit': self.dask_memory_limit,
@@ -655,7 +1158,7 @@ class MiscPreprocessor(AbstractPreprocessor):
 
     def _get_or_create_geobox(self):
         """
-        Get the geobox from GCS or create it from the first VIIRS source file.
+        Get the geobox from storage or create it from a VIIRS source file.
         
         Returns:
             ODCGeoBox object for consistent rasterization
@@ -664,11 +1167,23 @@ class MiscPreprocessor(AbstractPreprocessor):
         from odc.geo.geobox import GeoBox
         import rioxarray as rxr
         
-        geobox_path = "auxiliary/geobox.pkl"
+        # Try HPC path first, then GCS path
+        if hasattr(self, 'hpc_output_base'):
+            geobox_path = f"{self.hpc_output_base}/auxiliary/geobox.pkl"
+        else:
+            geobox_path = "auxiliary/geobox.pkl"
+        
         geobox_local = os.path.join(self.temp_dir, "geobox.pkl")
         
-        # Try to download the geobox from GCS
-        if self.gcs_client.download_file(geobox_path, geobox_local):
+        # Try to load existing geobox
+        if os.path.exists(geobox_path):
+            logger.info(f"Loading existing geobox from {geobox_path}")
+            try:
+                with open(geobox_path, 'rb') as f:
+                    return pickle.load(f)
+            except Exception as e:
+                logger.warning(f"Failed to load geobox: {e}, will create new one")
+        elif hasattr(self, 'gcs_client') and self.gcs_client.download_file(geobox_path, geobox_local):
             logger.info(f"Downloaded existing geobox from {geobox_path}")
             try:
                 with open(geobox_local, 'rb') as f:
@@ -678,54 +1193,46 @@ class MiscPreprocessor(AbstractPreprocessor):
         
         logger.info("Creating new geobox from VIIRS source file")
         
-        # Try to find a VIIRS file using the download index
+        # Try to find a VIIRS file
         viirs_file = None
         try:
-            from gnt.data.common.index.hpc_download_index import DataDownloadIndex
-            from gnt.data.download.sources.factory import create_data_source
+            # Look for HPC VIIRS files first
+            if hasattr(self, 'download_index') and self.download_index:
+                # Try to find VIIRS files in download index
+                files = self.download_index.list_successful_files()
+                viirs_files = [f for f in files if 'viirs' in f.lower() or 'vnl' in f.lower()]
+                if viirs_files:
+                    viirs_file = viirs_files[0]
+                    logger.info(f"Found VIIRS file for geobox creation: {viirs_file}")
             
-            # Create a data source instance for VIIRS
-            data_source = create_data_source(
-                dataset_name="eog",
-                config={
-                    "base_url": "https://eogdata.mines.edu/nighttime_light/annual/v21/",
-                    "file_extensions": ["median_masked.dat.tif.gz"],
-                    "output_path": "eog/viirs"
-                }
-            )
-            
-            # Initialize download index
-            index = DataDownloadIndex(
-                bucket_name=self.bucket_name,
-                data_source=data_source
-            )
-            
-            # Find the first available VIIRS file
-            viirs_files = index.list_successful_files()
-            if viirs_files:
-                viirs_file = viirs_files[0]
-                logger.info(f"Found VIIRS file for geobox creation: {viirs_file}")
+            # Fallback to hardcoded path for development
+            if not viirs_file:
+                fallback_path = "/Users/felixschulz/Library/CloudStorage/OneDrive-Personal/Dokumente/Job/UNI/Basel/Research/growth-and-temperature/data/VNL_v21_npp_2013_global_vcmcfg_c202205302300.median_masked.dat.tif"
+                if os.path.exists(fallback_path):
+                    viirs_file = fallback_path
+                    logger.info(f"Using fallback VIIRS file: {viirs_file}")
         except Exception as e:
-            logger.warning(f"Error finding VIIRS file via index: {e}")
+            logger.warning(f"Error finding VIIRS file: {e}")
         
-        if not viirs_file:
-            raise Exception(f"Failed to find a VIIRS file {viirs_file}")
-        
-        # Download the VIIRS file
-        viirs_local = os.path.join(self.temp_dir, os.path.basename(viirs_file))
-        viirs_local = "/Users/felixschulz/Library/CloudStorage/OneDrive-Personal/Dokumente/Job/UNI/Basel/Research/growth-and-temperature/data/VNL_v21_npp_2013_global_vcmcfg_c202205302300.median_masked.dat.tif" # TODO: remove
-        # if not self.gcs_client.download_file(viirs_file, viirs_local):
-        #     raise Exception(f"Failed to download VIIRS file {viirs_file}")
+        if not viirs_file or not os.path.exists(viirs_file):
+            raise Exception(f"Failed to find a VIIRS file for geobox creation")
         
         # Open the file and extract the geobox
-        viirs_data = rxr.open_rasterio(viirs_local, chunks="auto")
+        viirs_data = rxr.open_rasterio(viirs_file, chunks="auto")
         geobox = viirs_data.odc.geobox
         
-        # Save the geobox to GCS
-        with open(geobox_local, 'wb') as f:
+        # Save the geobox
+        os.makedirs(os.path.dirname(geobox_path), exist_ok=True)
+        with open(geobox_path, 'wb') as f:
             pickle.dump(geobox, f)
         
-        self.gcs_client.upload_file(geobox_local, geobox_path)
+        # Also upload to GCS if available
+        if hasattr(self, 'gcs_client'):
+            try:
+                self.gcs_client.upload_file(geobox_path, "auxiliary/geobox.pkl")
+            except Exception as e:
+                logger.debug(f"Could not upload geobox to GCS: {e}")
+        
         logger.info(f"Created and saved new geobox to {geobox_path}")
         
         return geobox
@@ -966,25 +1473,15 @@ class MiscPreprocessor(AbstractPreprocessor):
                 compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=2)
                 encoding = {'countries': {'compressor': compressor}}
                 
-                # Save to temporary zarr file
-                temp_zarr = os.path.join(self.temp_dir, output_filename)
-                logger.info(f"Writing countries grid to zarr file at {temp_zarr}")
-                ds.to_zarr(temp_zarr, encoding=encoding, consolidated=True)
-                
-                # Upload to GCS recursively
-                logger.info(f"Uploading countries grid zarr to {output_blob_path}")
-                for root, dirs, files in os.walk(temp_zarr):
-                    for file in files:
-                        local_path = os.path.join(root, file)
-                        rel_path = os.path.relpath(local_path, temp_zarr)
-                        cloud_path = f"{output_blob_path}/{rel_path}"
-                        self.gcs_client.upload_file(local_path, cloud_path)
+                # Save to zarr file
+                logger.info(f"Writing countries grid to zarr file at {output_path}")
+                ds.to_zarr(output_path, encoding=encoding, consolidated=True)
             
             # Save the country code mapping
             mapping_file = os.path.join(self.temp_dir, "country_code_mapping.json")
             with open(mapping_file, 'w') as f:
                 json.dump(code_to_id, f, indent=2)
-                
+            
             mapping_blob_path = f"{output_dir}/country_code_mapping.json"
             self.gcs_client.upload_file(mapping_file, mapping_blob_path)
             
