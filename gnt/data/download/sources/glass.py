@@ -36,6 +36,16 @@ class GlassLSTDataSource(BaseDataSource):
         # Don't store the session directly in the instance
         # Just keep a flag to check if we need selenium
         self.requires_selenium = False
+        
+        # Define schema types for Parquet consistency
+        self.schema_dtypes = {
+            'year': 'int32',            # Explicitly use int32 for year
+            'day_of_year': 'int32',     # Explicitly use int32 for day_of_year
+            'timestamp_precision': 'ms', # Use millisecond precision for timestamps
+            'file_size': 'int64',       # Consistent int64 for file sizes
+            'download_status': 'string', # Consistent string type
+            'status_category': 'string'  # Consistent string type
+        }
 
     def get_selenium_session(self):
         """
@@ -229,7 +239,12 @@ class GlassLSTDataSource(BaseDataSource):
             date_part = next(part for part in parts if part.startswith('A'))
             year = int(date_part[1:5])
             day = int(date_part[5:])
-            return {'year': year, 'day': day}
+            
+            # Return with explicit int32 type specification to ensure schema consistency
+            return {
+                'year': int(year),  # Ensure int type (will be cast to int32 in index)
+                'day': int(day)     # Ensure int type (will be cast to int32 in index)
+            }
         except (IndexError, ValueError, StopIteration):
             return None
     
@@ -287,10 +302,18 @@ class GlassLSTDataSource(BaseDataSource):
                     # If day directories exist, use them
                     for day_link in day_links:
                         day = int(day_link.rstrip('/'))
-                        entrypoints.append({'year': year, 'day': day})
+                        # Ensure consistent int types for schema consistency
+                        entrypoints.append({
+                            'year': int(year),  # Will be cast to int32 in index
+                            'day': int(day)     # Will be cast to int32 in index
+                        })
                 else:
-                    # If no day directories, only use the year
-                    entrypoints.append({'year': year, 'day': 0})
+                    # If no day directories, only use the year with day=0
+                    # Ensure consistent int types for schema consistency
+                    entrypoints.append({
+                        'year': int(year),  # Will be cast to int32 in index
+                        'day': int(0)       # Will be cast to int32 in index
+                    })
             
             logger.info(f"Generated {len(entrypoints)} year/day combinations for GLASS data")
         except Exception as e:

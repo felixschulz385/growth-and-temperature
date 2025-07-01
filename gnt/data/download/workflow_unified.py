@@ -219,6 +219,14 @@ class TaskHandlers:
         sync_direction = task_config.get('sync_direction', 'auto')
         
         try:
+            # Check for schema conversion setting
+            force_schema_conversion = task_config.get('force_schema_conversion', False)
+            
+            # If schema conversion is forced, rebuild the index
+            if force_schema_conversion:
+                logger.info("Force schema conversion enabled - rebuilding index")
+                rebuild = True
+            
             # Sync index first if configured and HPC target is available
             if hasattr(context, 'hpc_target') and context.hpc_target and sync_direction != 'none':
                 success = download_index.ensure_synced_index(
@@ -229,12 +237,33 @@ class TaskHandlers:
                 if not success:
                     logger.warning("Index sync failed, continuing with local index")
             
-            # Build index from source
-            files_indexed = download_index.build_index_from_source(
-                data_source=data_source,
-                rebuild=rebuild,
-                only_missing_entrypoints=only_missing_entrypoints
-            )
+            # Get build_index_from_source parameters
+            build_params = {
+                'data_source': data_source,
+                'rebuild': rebuild,
+                'only_missing_entrypoints': only_missing_entrypoints
+            }
+            
+            # Add schema parameters only if the method accepts them
+            import inspect
+            build_index_sig = inspect.signature(download_index.build_index_from_source)
+            if 'schema_dtypes' in build_index_sig.parameters:
+                build_params['schema_dtypes'] = getattr(data_source, 'schema_dtypes', {})
+            if 'force_schema_conversion' in build_index_sig.parameters:
+                build_params['force_schema_conversion'] = force_schema_conversion
+            
+            # Build index from source with appropriate parameters
+            try:
+                files_indexed = download_index.build_index_from_source(**build_params)
+            except ValueError as e:
+                if "Schema" in str(e) or "migrate" in str(e):
+                    logger.warning(f"Schema migration error: {e}")
+                    logger.info("Attempting to rebuild index with schema conversion")
+                    # Force rebuild on schema errors
+                    build_params['rebuild'] = True
+                    files_indexed = download_index.build_index_from_source(**build_params)
+                else:
+                    raise
             
             logger.info(f"Index building complete: {files_indexed} files indexed")
             
@@ -254,6 +283,8 @@ class TaskHandlers:
             
         except Exception as e:
             logger.error(f"Error in index task: {e}")
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
             return False
     
     @staticmethod
@@ -430,7 +461,11 @@ def run_workflow_with_config(config: Dict[str, Any]):
             context = WorkflowContext(bucket_name=config.get('bucket_name'))
             logger.info("Using basic workflow context")
         
-        # Create download index
+        # Extract schema options before passing to UnifiedDataIndex
+        schema_dtypes = getattr(data_source, 'schema_dtypes', {})
+        enforce_schema = index_config.get('enforce_schema', True)
+        
+        # Create download index - don't pass schema_dtypes directly
         download_index = UnifiedDataIndex(
             bucket_name="",
             data_source=data_source,
@@ -439,6 +474,16 @@ def run_workflow_with_config(config: Dict[str, Any]):
             hpc_mode=bool(hpc_config.get('target'))  # Enable HPC mode if target is specified
         )
         
+        # Set schema options as attributes if available
+        if hasattr(download_index, 'set_schema_options') and schema_dtypes:
+            download_index.set_schema_options(schema_dtypes, enforce_schema)
+        else:
+            # Fallback - set attributes directly if needed
+            if hasattr(download_index, 'schema_dtypes') and schema_dtypes:
+                download_index.schema_dtypes = schema_dtypes
+            if hasattr(download_index, 'enforce_schema'):
+                download_index.enforce_schema = enforce_schema
+        
         # Execute tasks in order
         tasks = workflow_config.get('tasks', [])
         task_handlers = TaskHandlers()
@@ -446,6 +491,12 @@ def run_workflow_with_config(config: Dict[str, Any]):
         for task in tasks:
             task_type = task.get('type')
             task_config = task.get('config', {})
+            
+            # Check for schema conversion flag in task config or index config
+            if task_type == 'index':
+                if 'force_schema_conversion' not in task_config:
+                    # If not in task config, check index config
+                    task_config['force_schema_conversion'] = index_config.get('force_schema_conversion', False)
             
             logger.info(f"Executing task: {task_type}")
             

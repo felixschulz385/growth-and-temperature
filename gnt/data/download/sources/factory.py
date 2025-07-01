@@ -69,7 +69,7 @@ def create_data_source(source_config):
             timeout=config.get("timeout", 60),
             chunk_size=config.get("chunk_size", 8192)
         )
-    elif dataset_name.lower() in ['glass', 'glass_modis', 'glass_lst']:
+    elif dataset_name.lower() in ['glass_modis', 'glass_avhrr']:
         logger.info(f"Creating GLASS LST data source")
         from gnt.data.download.sources.glass import GlassLSTDataSource
         return GlassLSTDataSource(

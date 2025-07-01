@@ -176,22 +176,22 @@ class UnifiedDataIndex:
             logger.warning("PyArrow not available - cannot create Parquet index")
             return
             
-        # Define optimized schema for file metadata
+        # Define optimized schema for file metadata with consistent types
         schema = pa.schema([
             pa.field('file_hash', pa.string()),
             pa.field('relative_path', pa.string()),
             pa.field('source_url', pa.string()),
             pa.field('destination_blob', pa.string()),
-            pa.field('timestamp', pa.string()),
+            pa.field('timestamp', pa.string()),  # Keep as string for consistency
             pa.field('file_size', pa.int64()),
             pa.field('metadata', pa.string()),
             pa.field('download_status', pa.string()),  # Explicit download status
-            pa.field('last_updated', pa.timestamp('s')),  # When last updated
+            pa.field('last_updated', pa.timestamp('ms')),  # Consistent millisecond precision
             # Computed columns for faster queries and analytics
-            pa.field('year', pa.int32()),
-            pa.field('day_of_year', pa.int32()),
+            pa.field('year', pa.int32()),  # Consistent int32
+            pa.field('day_of_year', pa.int32()),  # Consistent int32
             pa.field('status_category', pa.string()),  # Categorical for fast filtering
-            pa.field('date_added', pa.timestamp('s'))
+            pa.field('date_added', pa.timestamp('ms'))  # Consistent millisecond precision
         ])
         
         # Create empty table
@@ -213,7 +213,7 @@ class UnifiedDataIndex:
         logger.info(f"Created empty Parquet index: {self.parquet_file}")
 
     def _compute_derived_fields(self, data: List[Tuple]) -> pa.Table:
-        """Compute derived fields for faster queries and analytics."""
+        """Compute derived fields for faster queries and analytics with consistent schema."""
         if not data or not PANDAS_AVAILABLE or not ARROW_AVAILABLE:
             logger.warning("Cannot compute derived fields - missing dependencies")
             return None
@@ -229,8 +229,8 @@ class UnifiedDataIndex:
         df['last_updated'] = pd.Timestamp.now()
         
         # Compute year and day from relative_path or filename for faster time-based queries
-        df['year'] = None
-        df['day_of_year'] = None
+        df['year'] = pd.Series(dtype='int32')  # Explicit int32 type
+        df['day_of_year'] = pd.Series(dtype='int32')  # Explicit int32 type
         
         for idx, row in df.iterrows():
             try:
@@ -247,8 +247,20 @@ class UnifiedDataIndex:
                     date_match = re.search(r'(\d{4})', filename)
                     if date_match:
                         df.at[idx, 'year'] = int(date_match.group(1))
+                        df.at[idx, 'day_of_year'] = 0  # Default day
+                    else:
+                        # Set defaults if no pattern matches
+                        df.at[idx, 'year'] = 0
+                        df.at[idx, 'day_of_year'] = 0
             except Exception as e:
                 logger.debug(f"Could not extract date from {filename}: {e}")
+                # Set defaults on error
+                df.at[idx, 'year'] = 0
+                df.at[idx, 'day_of_year'] = 0
+        
+        # Ensure year and day_of_year are int32 (not int64)
+        df['year'] = df['year'].astype('int32')
+        df['day_of_year'] = df['day_of_year'].astype('int32')
         
         # Compute status category from download_status for fast categorical queries
         def get_status_category(status):
@@ -268,8 +280,28 @@ class UnifiedDataIndex:
         # Add timestamp when added to index
         df['date_added'] = pd.Timestamp.now()
         
-        # Convert to PyArrow table for optimal storage
-        return pa.Table.from_pandas(df, preserve_index=False)
+        # Ensure consistent timestamp precision (milliseconds)
+        df['last_updated'] = pd.to_datetime(df['last_updated']).dt.round('ms')
+        df['date_added'] = pd.to_datetime(df['date_added']).dt.round('ms')
+        
+        # Convert to PyArrow table with schema enforcement
+        target_schema = pa.schema([
+            pa.field('file_hash', pa.string()),
+            pa.field('relative_path', pa.string()),
+            pa.field('source_url', pa.string()),
+            pa.field('destination_blob', pa.string()),
+            pa.field('timestamp', pa.string()),
+            pa.field('file_size', pa.int64()),
+            pa.field('metadata', pa.string()),
+            pa.field('download_status', pa.string()),
+            pa.field('last_updated', pa.timestamp('ms')),
+            pa.field('year', pa.int32()),
+            pa.field('day_of_year', pa.int32()),
+            pa.field('status_category', pa.string()),
+            pa.field('date_added', pa.timestamp('ms'))
+        ])
+        
+        return pa.Table.from_pandas(df, schema=target_schema, preserve_index=False)
 
     def get_stats(self) -> Dict[str, Any]:
         """Get lightning-fast statistics using Parquet column statistics and Arrow compute."""
@@ -461,7 +493,7 @@ class UnifiedDataIndex:
         return total_indexed
 
     def _add_files_to_index(self, data_source, remote_files) -> int:
-        """Add files to Parquet index with ultra-fast bulk operations."""
+        """Add files to Parquet index with ultra-fast bulk operations and schema consistency."""
         if not remote_files:
             return 0
         
@@ -492,27 +524,38 @@ class UnifiedDataIndex:
         if new_table is None:
             return 0
         
-        # Append to existing Parquet file with duplicate checking
+        # Handle existing Parquet file with schema migration if needed
         if self.parquet_file.exists():
-            # Read existing data
-            existing_table = pq.read_table(self.parquet_file)
-            
-            # Check for duplicates based on file_hash
-            existing_hashes = set(existing_table['file_hash'].to_pylist())
-            new_hashes = set(new_table['file_hash'].to_pylist())
-            duplicate_count = len(new_hashes.intersection(existing_hashes))
-            
-            if duplicate_count > 0:
-                logger.info(f"Skipping {duplicate_count} duplicate files")
-                # Filter out duplicates using Arrow compute
-                mask = pc.invert(pc.is_in(new_table['file_hash'], pa.array(list(existing_hashes))))
-                new_table = pc.filter(new_table, mask)
-            
-            # Combine tables
-            if len(new_table) > 0:
-                combined_table = pa.concat_tables([existing_table, new_table])
-            else:
-                combined_table = existing_table
+            try:
+                # Read existing data
+                existing_table = pq.read_table(self.parquet_file)
+                
+                # Check if schemas match
+                if not existing_table.schema.equals(new_table.schema):
+                    logger.info("Schema mismatch detected, attempting migration")
+                    existing_table = self._migrate_schema(existing_table, new_table.schema)
+                
+                # Check for duplicates based on file_hash
+                existing_hashes = set(existing_table['file_hash'].to_pylist())
+                new_hashes = set(new_table['file_hash'].to_pylist())
+                duplicate_count = len(new_hashes.intersection(existing_hashes))
+                
+                if duplicate_count > 0:
+                    logger.info(f"Skipping {duplicate_count} duplicate files")
+                    # Filter out duplicates using Arrow compute
+                    mask = pc.invert(pc.is_in(new_table['file_hash'], pa.array(list(existing_hashes))))
+                    new_table = pc.filter(new_table, mask)
+                
+                # Combine tables
+                if len(new_table) > 0:
+                    combined_table = pa.concat_tables([existing_table, new_table])
+                else:
+                    combined_table = existing_table
+                    
+            except Exception as e:
+                logger.error(f"Error reading existing Parquet file: {e}")
+                logger.info("Creating new Parquet file")
+                combined_table = new_table
         else:
             combined_table = new_table
         
@@ -530,6 +573,49 @@ class UnifiedDataIndex:
         logger.info(f"Added {files_added} new files to Parquet index")
         
         return files_added
+
+    def _migrate_schema(self, existing_table: pa.Table, target_schema: pa.Schema) -> pa.Table:
+        """Migrate existing table to new schema with type conversions."""
+        logger.info("Migrating existing table schema")
+        
+        try:
+            # Convert to pandas for easier manipulation
+            df = existing_table.to_pandas()
+            
+            # Handle specific field migrations
+            if 'year' in df.columns and df['year'].dtype != 'int32':
+                df['year'] = df['year'].fillna(0).astype('int32')
+            
+            if 'day_of_year' in df.columns and df['day_of_year'].dtype != 'int32':
+                df['day_of_year'] = df['day_of_year'].fillna(0).astype('int32')
+            
+            # Handle timestamp precision conversion
+            timestamp_columns = ['last_updated', 'date_added']
+            for col in timestamp_columns:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col]).dt.round('ms')
+            
+            # Ensure all required columns exist with proper defaults
+            for field in target_schema:
+                if field.name not in df.columns:
+                    if field.type == pa.string():
+                        df[field.name] = None
+                    elif field.type == pa.int32():
+                        df[field.name] = 0
+                    elif field.type == pa.int64():
+                        df[field.name] = 0
+                    elif field.type == pa.timestamp('ms'):
+                        df[field.name] = pd.Timestamp.now()
+                    else:
+                        df[field.name] = None
+            
+            # Convert back to Arrow table with target schema
+            return pa.Table.from_pandas(df, schema=target_schema, preserve_index=False)
+            
+        except Exception as e:
+            logger.error(f"Schema migration failed: {e}")
+            # If migration fails, recreate the file
+            raise ValueError(f"Cannot migrate schema: {e}")
 
     def query_pending_files(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
