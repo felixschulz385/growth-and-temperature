@@ -96,26 +96,33 @@ def process_task(task_config: Dict[str, Any]) -> None:
         # Get mode from task config
         mode = task_config.pop("mode", "preprocess")
         
-        # Get preprocessor name
-        preprocessor_name = task_config.pop("preprocessor")
-        
-        if mode == "validate":
+        if mode == "generate_targets":
+            # New mode: generate preprocessing targets
+            handle_generate_targets_task(task_config)
+        elif mode == "validate":
             # Handle validation task
             handle_validate_task(preprocessor_name, task_config)
         else:
             # Create preprocessor instance using the factory
             preprocessor = create_preprocessor(preprocessor_name, task_config)
             
-            # Log task start
-            logger.info(f"Starting {preprocessor_name} with stage '{preprocessor.stage}'")
+            # Get targets for this task
+            stage = task_config.get('stage', 'annual')
+            year_range = task_config.get('year_range')
             
-            # Run preprocessing
-            start_time = datetime.now()
-            preprocessor.preprocess()
-            duration = datetime.now() - start_time
+            targets = preprocessor.get_preprocessing_targets(stage, year_range)
             
-            # Log completion
-            logger.info(f"Completed {preprocessor_name} in {duration}")
+            # Filter to ready targets only
+            from gnt.data.preprocess.cache import PreprocessingTargetCache
+            cache = PreprocessingTargetCache("/tmp/preprocessing_cache", preprocessor_name)
+            valid_targets = cache.validate_targets(targets)
+            ready_targets = [t for t in valid_targets if t.get('status') == 'ready']
+            
+            logger.info(f"Found {len(ready_targets)} ready targets out of {len(targets)} total")
+            
+            # Process each ready target
+            for target in ready_targets:
+                preprocessor.process_target(target)
         
     except Exception as e:
         logger.error(f"Error processing task with {task_config.get('preprocessor', 'unknown')}: {str(e)}")
@@ -298,6 +305,168 @@ def handle_validate_task(preprocessor_name: str, task_config: Dict[str, Any]) ->
         
     else:
         logger.error("Preprocessor does not have a valid preprocessing index")
+
+
+class PreprocessWorkflowContext:
+    """Unified context for preprocessing workflow execution."""
+    
+    def __init__(self, hpc_config: Dict[str, Any] = None, gcs_config: Dict[str, Any] = None):
+        """
+        Initialize the preprocessing workflow context.
+        
+        Args:
+            hpc_config: HPC configuration dictionary
+            gcs_config: GCS configuration dictionary
+        """
+        self.hpc_config = hpc_config or {}
+        self.gcs_config = gcs_config or {}
+        
+        # Set up staging directory
+        self.staging_dir = os.path.join(os.getcwd(), "preprocessing_staging")
+        os.makedirs(self.staging_dir, exist_ok=True)
+        
+        logger.debug(f"Initialized preprocessing context with staging dir: {self.staging_dir}")
+
+
+class PreprocessTaskHandlers:
+    """Unified task handlers for preprocessing workflow operations."""
+    
+    @staticmethod
+    def handle_preprocess(source_config: Dict[str, Any], context: PreprocessWorkflowContext, task_config: Dict[str, Any]):
+        """Handle preprocessing task."""
+        logger.info(f"Starting preprocessing task for {source_config.get('name', 'unknown')}")
+        
+        try:
+            # Prepare task configuration in the format expected by existing process_task
+            legacy_task_config = task_config.copy()
+            
+            # Set preprocessor name from source configuration
+            legacy_task_config['preprocessor'] = source_config.get('name')
+            
+            # Add HPC configuration if available
+            if context.hpc_config:
+                for key, value in context.hpc_config.items():
+                    legacy_task_config[f"hpc_{key}"] = value
+                    
+            # Add GCS configuration if available  
+            if context.gcs_config:
+                for key, value in context.gcs_config.items():
+                    legacy_task_config[f"gcs_{key}"] = value
+            
+            # Set data source
+            legacy_task_config['data_source'] = source_config.get('name')
+            
+            # Run the legacy process_task function
+            process_task(legacy_task_config)
+            
+            logger.info(f"Preprocessing task completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in preprocessing task: {e}")
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
+            return False
+    
+    @staticmethod
+    def handle_validate(source_config: Dict[str, Any], context: PreprocessWorkflowContext, task_config: Dict[str, Any]):
+        """Handle validation task."""
+        logger.info(f"Starting validation task for {source_config.get('name', 'unknown')}")
+        
+        try:
+            # Prepare task configuration for validation
+            legacy_task_config = task_config.copy()
+            
+            # Set preprocessor name and mode
+            legacy_task_config['preprocessor'] = source_config.get('name')
+            legacy_task_config['mode'] = 'validate'
+            
+            # Add HPC configuration if available
+            if context.hpc_config:
+                for key, value in context.hpc_config.items():
+                    legacy_task_config[f"hpc_{key}"] = value
+                    
+            # Add GCS configuration if available
+            if context.gcs_config:
+                for key, value in context.gcs_config.items():
+                    legacy_task_config[f"gcs_{key}"] = value
+            
+            # Set data source
+            legacy_task_config['data_source'] = source_config.get('name')
+            
+            # Run the legacy process_task function in validation mode
+            process_task(legacy_task_config)
+            
+            logger.info(f"Validation task completed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in validation task: {e}")
+            import traceback
+            logger.debug(f"Full traceback: {traceback.format_exc()}")
+            return False
+
+
+def run_workflow_with_config(config: Dict[str, Any]):
+    """
+    Main entry point for running unified preprocessing workflow with configuration.
+    This function mirrors the structure of workflow_unified.py for consistency.
+    
+    Args:
+        config: Configuration dictionary containing all workflow settings
+    """
+    logger.info("Starting unified preprocessing workflow")
+    
+    try:
+        # Extract configuration sections
+        source_config = config.get('source', {})
+        preprocess_config = config.get('preprocess', {})
+        workflow_config = config.get('workflow', {})
+        hpc_config = config.get('hpc', {})
+        gcs_config = config.get('gcs', {})
+        
+        # Handle case where source name might be passed separately
+        if 'source_name' in config and not any(k in source_config for k in ['name', 'dataset_name', 'source_name', 'type']):
+            source_config['name'] = config['source_name']
+        
+        # Create workflow context
+        context = PreprocessWorkflowContext(
+            hpc_config=hpc_config,
+            gcs_config=gcs_config
+        )
+        
+        logger.info(f"Created preprocessing workflow context for source: {source_config.get('name', 'unknown')}")
+        
+        # Execute tasks in order
+        tasks = workflow_config.get('tasks', [])
+        task_handlers = PreprocessTaskHandlers()
+        
+        for task in tasks:
+            task_type = task.get('type')
+            task_config = task.get('config', {})
+            
+            logger.info(f"Executing preprocessing task: {task_type}")
+            
+            if task_type == 'preprocess':
+                success = task_handlers.handle_preprocess(source_config, context, task_config)
+            elif task_type == 'validate':
+                success = task_handlers.handle_validate(source_config, context, task_config)
+            else:
+                logger.error(f"Unknown preprocessing task type: {task_type}")
+                success = False
+            
+            if not success:
+                logger.error(f"Preprocessing task {task_type} failed")
+                return False
+        
+        logger.info("Unified preprocessing workflow completed successfully")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error in unified preprocessing workflow: {e}")
+        import traceback
+        logger.debug(f"Full traceback: {traceback.format_exc()}")
+        return False
 
 
 def run_workflow(config_path: Union[str, Path]) -> None:

@@ -2,154 +2,49 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Debug GLASS AVHRR Daily LST Download",
+      "name": "Debug EOG MODIS Download",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-avhrr-download.json"],
+      "args": [
+        "index",
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "glass_modis",
+        "--debug"
+      ],
       "console": "integratedTerminal",
       "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
+      "showReturnValue": true
     },
     {
-      "name": "Debug GLASS AVHRR Preprocessing",
+      "name": "Debug EOG DMSP Download",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-avhrr-preprocess.yml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug EOG Data Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "program": "${workspaceFolder}/run.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-eog-download.yaml"],
+      "args": [
+        "download",
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "eog_dmsp",
+        "--debug"
+      ],
       "console": "integratedTerminal",
       "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat",
-      }
+      "showReturnValue": true
     },
     {
-      "name": "Debug EOG Preprocessing",
+      "name": "Debug EOG DMSP Pipeline",
       "type": "debugpy",
       "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "args": ["--debug", "${workspaceFolder}/orchestration/configs/debug-eog-preprocess.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug GLASS MODIS Daily LST Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
+      "program": "${workspaceFolder}/download_pipeline.py",
       "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-glass-modis-download.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
+      "args": [
+        "--config", "${workspaceFolder}/orchestration/configs/data.yaml",
+        "--source", "eog_dmsp",
+        "--debug"
       ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug Harvard Data Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/harvard-download.json"],
       "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug Misc Data Download",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/download/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-misc-download.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
-    },
-    {
-      "name": "Debug Misc Data Preprocess",
-      "type": "debugpy",
-      "request": "launch",
-      "program": "${workspaceFolder}/gnt/data/preprocess/main.py",
-      "cwd": "${workspaceFolder}",
-      "args": ["${workspaceFolder}/orchestration/configs/debug-misc-preprocess.yaml"],
-      "console": "integratedTerminal",
-      "justMyCode": false,
-      "showReturnValue": true,
-      "exceptionBreakpointFilters": [
-        {"filter": "raised", "label": "Raised Exceptions", "default": true},
-        {"filter": "uncaught", "label": "Uncaught Exceptions", "default": true}
-      ],
-      "env": {
-        "PYTHONPATH": "${workspaceFolder}",
-        "GCP_PROJECT_ID": "ee-growthandheat"
-      }
     },
   ]
 }

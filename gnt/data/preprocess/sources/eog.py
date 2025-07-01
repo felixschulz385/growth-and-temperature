@@ -20,7 +20,7 @@ from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.gcs.client import GCSClient
 from gnt.data.common.dask.client import init_dask_client, close_client, DaskClientContextManager
 from gnt.data.common.index.preprocessing_index import PreprocessingIndex
-from gnt.data.common.index.download_index import DataDownloadIndex
+from gnt.data.common.index.hpc_download_index import DataDownloadIndex
 from gnt.data.download.sources.eog import EOGDataSource
 
 logger = logging.getLogger(__name__)
@@ -1022,6 +1022,95 @@ class EOGPreprocessor(AbstractPreprocessor):
         except Exception as e:
             logger.exception(f"Error uploading directory {local_path}: {e}")
             return False
+    
+    def get_preprocessing_targets(self, stage: str, year_range: Tuple[int, int] = None) -> List[Dict[str, Any]]:
+        """
+        Generate list of preprocessing targets from unified download index.
+        
+        Args:
+            stage: Processing stage ('annual' or 'spatial')
+            year_range: Optional year range filter
+            
+        Returns:
+            List of target dictionaries with source files and output specifications
+        """
+        if not hasattr(self, 'download_index') or not self.download_index:
+            raise ValueError("Download index not available")
+        
+        # Query successfully downloaded files
+        downloaded_files = self.download_index.query_pending_files(limit=None)  # Get all completed
+        completed_files = [f for f in downloaded_files if f.get('download_status') == 'completed']
+        
+        if stage == 'annual':
+            return self._generate_annual_targets(completed_files, year_range)
+        elif stage == 'spatial':
+            return self._generate_spatial_targets(completed_files, year_range)
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
+    
+    def _generate_annual_targets(self, files: List[Dict], year_range: Tuple[int, int] = None) -> List[Dict]:
+        """Generate annual processing targets."""
+        targets = []
+        
+        # Group files by year
+        files_by_year = {}
+        for file_info in files:
+            year = self._extract_year_from_path(file_info['relative_path'])
+            if year and (not year_range or year_range[0] <= year <= year_range[1]):
+                if year not in files_by_year:
+                    files_by_year[year] = []
+                files_by_year[year].append(file_info)
+        
+        # Create targets for each year
+        for year, year_files in files_by_year.items():
+            # Filter to best file for the year (e.g., latest sensor for DMSP)
+            selected_file = self._select_best_file_for_year(year_files)
+            
+            target = {
+                'year': year,
+                'stage': 'annual',
+                'source_files': [selected_file],
+                'output_path': f"{self.get_hpc_output_path('annual')}/{year}.zarr",
+                'dependencies': [],
+                'metadata': {
+                    'source_type': self.source_type,
+                    'total_candidates': len(year_files)
+                }
+            }
+            targets.append(target)
+        
+        return targets
+    
+    def _generate_spatial_targets(self, files: List[Dict], year_range: Tuple[int, int] = None) -> List[Dict]:
+        """Generate spatial processing targets."""
+        # First, find completed annual files
+        annual_targets = self._get_completed_annual_files(year_range)
+        
+        targets = []
+        for annual_file in annual_targets:
+            year = annual_file['year']
+            
+            # Generate targets for each grid cell
+            for grid_cell in self.get_grid_cells():
+                target = {
+                    'year': year,
+                    'grid_cell': grid_cell,
+                    'stage': 'spatial',
+                    'source_files': [annual_file],
+                    'output_path': f"{self.get_hpc_output_path('spatial')}/{year}/grid_{grid_cell}.parquet",
+                    'dependencies': [annual_file['output_path']],
+                    'metadata': {
+                        'grid_cell': grid_cell
+                    }
+                }
+                targets.append(target)
+        
+        return targets
+    
+    def get_hpc_output_path(self, stage: str) -> str:
+        """Get HPC output path for a given stage."""
+        base_path = f"/cluster/work/climate/fschulz/preprocessing_outputs/{self.source_type}"
+        return f"{base_path}/{stage}"
     
     # Add this class method to the EOGPreprocessor class
     @classmethod

@@ -4,7 +4,7 @@ import tempfile
 import os
 from unittest.mock import MagicMock
 
-from workflow import run
+from gnt.data.download.hpc_workflow import run
 from download.base import BaseDataSource
 
 class MockDataSource(BaseDataSource):

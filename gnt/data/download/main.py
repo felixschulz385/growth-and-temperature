@@ -14,7 +14,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from workflow import run_workflow  # Changed from 'run' to 'run_workflow'
+from gnt.data.download.hpc_workflow import run_workflow  # Changed from 'run' to 'run_workflow'
 
 # Configure logging
 logging.basicConfig(

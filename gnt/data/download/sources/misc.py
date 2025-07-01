@@ -7,6 +7,10 @@ import urllib.parse
 from typing import Generator, Tuple, List, Dict, Any, Optional
 from pathlib import Path
 
+# Add these imports for async download support
+import aiofiles
+import asyncio
+
 from gnt.data.download.sources.base import BaseDataSource
 
 logger = logging.getLogger(__name__)
@@ -41,6 +45,16 @@ class MiscDataSource(BaseDataSource):
         self.timeout = timeout
         self.chunk_size = chunk_size
         self.has_entrypoints = False
+        
+        # Define schema types for Parquet consistency (same as other sources)
+        self.schema_dtypes = {
+            'year': 'int32',            # Consistent with other sources
+            'day_of_year': 'int32',     # Consistent with other sources
+            'timestamp_precision': 'ms', # Use millisecond precision for timestamps
+            'file_size': 'int64',       # Consistent int64 for file sizes
+            'download_status': 'string', # Consistent string type
+            'status_category': 'string'  # Consistent string type
+        }
         
         # Validate and normalize file configurations
         self._normalize_file_configs()
@@ -163,13 +177,26 @@ class MiscDataSource(BaseDataSource):
                     self._validate_file_hash(output_path, file_info['md5'])
             
             elapsed = time.time() - start_time
-            logger.info(f"Successfully downloaded {filename} ({os.path.getsize(output_path)/1024/1024:.2f}MB in {elapsed:.1f}s)")
+            file_size_mb = os.path.getsize(output_path) / 1024 / 1024
+            logger.info(f"Successfully downloaded {filename} ({file_size_mb:.2f}MB in {elapsed:.1f}s)")
             
         except requests.RequestException as e:
             logger.error(f"Error downloading from {file_url}: {str(e)}")
             # Clean up partial download
             if os.path.exists(output_path):
-                os.remove(output_path)
+                try:
+                    os.remove(output_path)
+                except:
+                    pass
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error downloading from {file_url}: {str(e)}")
+            # Clean up partial download
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except:
+                    pass
             raise
 
     def _validate_file_hash(self, file_path: str, expected_md5: str) -> bool:
@@ -299,3 +326,85 @@ class MiscDataSource(BaseDataSource):
             GCS prefix path
         """
         return self.data_path
+
+    async def download_async(self, file_url: str, output_path: str, session=None) -> None:
+        """
+        Asynchronous download method for compatibility with async workflow.
+        
+        Args:
+            file_url: URL to download from
+            output_path: Local path to save the file
+            session: Optional aiohttp session for connection reuse
+        """
+        import aiohttp
+        
+        # Use provided session or create a new one
+        if session is None:
+            connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
+            timeout = aiohttp.ClientTimeout(total=self.timeout)
+            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+                await self._download_with_session_async(session, file_url, output_path)
+        else:
+            await self._download_with_session_async(session, file_url, output_path)
+    
+    async def _download_with_session_async(self, session, file_url: str, output_path: str):
+        """Helper method to download with a given async session."""
+        try:
+            filename = os.path.basename(output_path)
+            logger.info(f"Downloading {filename} from {file_url} (async)")
+            
+            start_time = time.time()
+            
+            # Add retry logic for robustness
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    async with session.get(file_url) as response:
+                        response.raise_for_status()
+                        
+                        # Ensure directory exists
+                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                        
+                        # Get content length if available
+                        total_size = int(response.headers.get('content-length', 0))
+                        downloaded = 0
+                        
+                        # Write file asynchronously
+                        async with aiofiles.open(output_path, 'wb') as f:
+                            async for chunk in response.content.iter_chunked(self.chunk_size):
+                                await f.write(chunk)
+                                downloaded += len(chunk)
+                                
+                                # Log progress for large files
+                                if total_size > 10*1024*1024 and downloaded % (5*1024*1024) < self.chunk_size:
+                                    progress = (downloaded / total_size) * 100 if total_size > 0 else 0
+                                    logger.info(f"Downloaded {downloaded/(1024*1024):.1f}MB of {total_size/(1024*1024):.1f}MB ({progress:.1f}%)")
+                        
+                        # Validate download if MD5 hash is provided
+                        for file_info in self.files:
+                            if file_info['url'] == file_url and file_info.get('md5'):
+                                self._validate_file_hash(output_path, file_info['md5'])
+                        
+                        elapsed = time.time() - start_time
+                        file_size_mb = os.path.getsize(output_path) / 1024 / 1024
+                        logger.info(f"Successfully downloaded {filename} ({file_size_mb:.2f}MB in {elapsed:.1f}s)")
+                        return  # Success, exit retry loop
+                        
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        wait_time = (attempt + 1) * 2  # Progressive backoff: 2s, 4s, 6s
+                        logger.warning(f"Download attempt {attempt + 1} failed for {file_url}, retrying in {wait_time}s: {e}")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"Failed to download {file_url} after {max_retries} attempts: {e}")
+                        raise
+                        
+        except Exception as e:
+            logger.error(f"Error downloading {file_url}: {e}")
+            # Clean up partial file if it exists
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except:
+                    pass
+            raise
