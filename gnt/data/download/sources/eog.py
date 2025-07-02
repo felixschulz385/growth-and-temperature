@@ -6,6 +6,9 @@ import hashlib
 import tempfile
 import shutil
 import random
+import asyncio
+import aiohttp
+import aiofiles
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 from typing import Generator, Tuple, List, Dict, Any, Optional
@@ -43,28 +46,35 @@ class EOGDataSource(BaseDataSource):
         Args:
             base_url: Base URL for the EOG repository
             file_extensions: List of file extensions to download (default: .tif, .tgz, .tar.gz)
-            output_path: Custom output path in GCS (optional)
+            output_path: Custom output path in GCS (required)
         """
+        # Initialize all attributes first to avoid issues in __del__
         self.DATA_SOURCE_NAME = "eog"
         self.base_url = base_url
         self.file_extensions = file_extensions or [".tif", ".tgz", ".tar.gz", ".gz"]
         self.has_entrypoints = False
         
-        # Parse URL to extract data path
-        parsed = urlparse(base_url)
-        parts = parsed.path.strip("/").split("/")
-        datatype = "/".join(parts[1:]) if len(parts) > 2 else "unknown"
-        
-        # Use custom output path if provided, otherwise construct from URL
-        if output_path:
-            self.data_path = output_path
-        else:
-            self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
-        
-        # Selenium WebDriver
+        # Selenium WebDriver attributes - initialize early
         self._driver = None
         self._download_dir = None
         self._is_logged_in = False
+        
+        # Validate required parameters
+        if not output_path:
+            logger.error("No output_path defined for EOGDataSource; cannot set data_path.")
+            raise ValueError("output_path must be defined for EOGDataSource.")
+        
+        self.data_path = output_path
+        
+        # Define schema types for Parquet consistency
+        self.schema_dtypes = {
+            'year': 'int32',            # Explicitly use int32 for year
+            'day_of_year': 'int32',     # Explicitly use int32 for day_of_year
+            'timestamp_precision': 'ms', # Use millisecond precision for timestamps
+            'file_size': 'int64',       # Consistent int64 for file sizes
+            'download_status': 'string', # Consistent string type
+            'status_category': 'string'  # Consistent string type
+        }
         
         # Credentials
         self._username = os.environ.get("EOG_USERNAME")
@@ -75,25 +85,28 @@ class EOGDataSource(BaseDataSource):
         
         logger.info(f"Initialized EOG data source with path: {self.data_path}")
 
-    def _init_selenium_driver(self):
-        """Initialize the Selenium WebDriver for downloading files."""
-        if self._driver is not None:
-            return
-            
-        logger.info("Initializing Selenium WebDriver")
+    def get_selenium_session(self):
+        """
+        Returns a selenium session (webdriver).
+        Creates it if it does not exist.
+        
+        Note: The workflow context will be responsible for maintaining
+        the persistent session, this method is just a factory.
+        """
+        logger.info("Creating new Selenium WebDriver for EOG data source")
         
         try:
-            # Create a temporary directory for downloads
-            if self._download_dir is None:
-                self._download_dir = tempfile.mkdtemp(prefix="eog_downloads_")
-                logger.info(f"Created temporary download directory: {self._download_dir}")
+            # Create a shared temporary directory for all downloads
+            # Use a consistent name so all sessions can share the same directory
+            download_dir = tempfile.mkdtemp(prefix="eog_shared_downloads_")
+            logger.info(f"Created shared download directory: {download_dir}")
             
             # Configure Chrome options
             chrome_options = Options()
             
             # Set download directory
             prefs = {
-                "download.default_directory": self._download_dir,
+                "download.default_directory": download_dir,
                 "download.prompt_for_download": False,
                 "download.directory_upgrade": True,
                 "safebrowsing.enabled": False
@@ -109,88 +122,109 @@ class EOGDataSource(BaseDataSource):
             
             # Initialize the WebDriver
             if WEBDRIVER_MANAGER_AVAILABLE:
-                self._driver = webdriver.Chrome(
+                driver = webdriver.Chrome(
                     service=Service(ChromeDriverManager().install()), 
                     options=chrome_options
                 )
             else:
-                self._driver = webdriver.Chrome(options=chrome_options)
+                driver = webdriver.Chrome(options=chrome_options)
             
             # Set page load timeout
-            self._driver.set_page_load_timeout(120)
+            driver.set_page_load_timeout(120)
+            
+            # Store download directory and login state as attributes on the driver
+            driver._eog_download_dir = download_dir
+            driver._eog_is_logged_in = False
+            driver._eog_username = self._username
+            driver._eog_password = self._password
             
             logger.info("Selenium WebDriver initialized successfully")
+            return driver
+            
         except Exception as e:
             logger.error(f"Failed to initialize Selenium WebDriver: {e}")
             raise
 
-    def _close_selenium_driver(self):
-        """Close the Selenium WebDriver if it exists."""
-        if self._driver is not None:
+    def close_selenium_session(self, session):
+        """
+        Closes the selenium session.
+        
+        Args:
+            session: The selenium session to close
+        """
+        if session is not None:
             try:
-                self._driver.quit()
-                logger.info("Selenium WebDriver closed")
+                logger.info("Closing Selenium WebDriver for EOG data source")
+                
+                # Clean up download directory if it exists
+                if hasattr(session, '_eog_download_dir') and os.path.exists(session._eog_download_dir):
+                    try:
+                        shutil.rmtree(session._eog_download_dir)
+                        logger.info(f"Removed temporary download directory: {session._eog_download_dir}")
+                    except Exception as e:
+                        logger.warning(f"Error removing temporary directory: {e}")
+                
+                session.quit()
             except Exception as e:
-                logger.warning(f"Error closing Selenium WebDriver: {e}")
-            finally:
-                self._driver = None
-                self._is_logged_in = False
+                logger.warning(f"Error closing Selenium session: {e}")
 
-        # Clean up temporary download directory
-        if self._download_dir and os.path.exists(self._download_dir):
-            try:
-                shutil.rmtree(self._download_dir)
-                logger.info(f"Removed temporary download directory: {self._download_dir}")
-                self._download_dir = None
-            except Exception as e:
-                logger.warning(f"Error removing temporary directory: {e}")
-
-    def _check_and_handle_login(self):
+    def _check_and_handle_login(self, driver=None):
         """
         Check if login form is present and handle login if needed.
-        Note: On EOG, the login form may stay visible even after successful login,
-        but the download will start automatically.
+        Uses the driver's stored login state for session persistence.
         """
+        # Use provided driver or fall back to instance driver
+        current_driver = driver or self._driver
+        
+        # Only proceed if we have a proper Selenium WebDriver
+        if not hasattr(current_driver, 'find_element'):
+            logger.warning("Login check requires Selenium WebDriver, but got different session type")
+            return True  # Assume login not needed for non-Selenium sessions
+            
         try:
             # Check for login form
-            username_field = WebDriverWait(self._driver, 5).until(
+            username_field = WebDriverWait(current_driver, 5).until(
                 EC.presence_of_element_located((By.ID, "username"))
             )
             
-            # If already logged in, the form might be visible but download already started
-            # Check if any files have started downloading before attempting login
-            if self._is_logged_in:
-                logger.info("Login form visible but already logged in - checking for downloads")
+            # Check session-specific login state
+            session_logged_in = getattr(current_driver, '_eog_is_logged_in', False)
+            
+            if session_logged_in:
+                logger.info("Session already logged in - checking for downloads")
                 return True
             
             logger.info("Login form detected, attempting to log in")
             
-            if not self._username or not self._password:
+            # Get credentials from session or instance
+            username = getattr(current_driver, '_eog_username', None) or self._username
+            password = getattr(current_driver, '_eog_password', None) or self._password
+            
+            if not username or not password:
                 raise ValueError("EOG_USERNAME and EOG_PASSWORD must be set in environment variables")
             
             # Fill in login form
-            username_field.send_keys(self._username)
-            self._driver.find_element(By.ID, "password").send_keys(self._password)
+            username_field.send_keys(username)
+            current_driver.find_element(By.ID, "password").send_keys(password)
             
-            # Submit the form - this should trigger the download directly
-            login_button = self._driver.find_element(By.ID, "kc-login")
+            # Submit the form
+            login_button = current_driver.find_element(By.ID, "kc-login")
             login_button.click()
             
             # Wait a moment for the form submission to complete
-            # Note: Form may still be visible after successful login
             time.sleep(3)
             
-            # Check if login was successful by testing if the login button is still clickable
+            # Check if login was successful
             try:
                 if login_button.is_enabled():
                     logger.error("Login failed: login button still clickable")
                     return False
             except StaleElementReferenceException:
-                pass  # Button not found, which is good - means we're logged in
+                pass  # Button not found, which is good
             
-            # Set login state to true - we'll verify success by checking for downloads
-            self._is_logged_in = True
-            logger.info("Login attempted, will verify success by checking for downloads")
+            # Set login state on the session
+            current_driver._eog_is_logged_in = True
+            logger.info("Login successful for session")
             return True
             
         except TimeoutException:
@@ -361,33 +395,48 @@ class EOGDataSource(BaseDataSource):
             
         return self._driver
 
-    def download_file(self, file_url, output_path):
+    def download_file(self, file_url, output_path, driver=None):
         """
-        Download a file using Selenium WebDriver.
-        On EOG, direct download URLs trigger downloads immediately after login,
-        even though the login form may remain visible.
+        Download a file using Selenium WebDriver with proper session handling.
+        """
+        # Use provided driver or instance driver
+        current_driver = driver or self._driver
         
-        Args:
-            file_url: URL of the file to download
-            output_path: Local path to save the file
+        # Ensure we have a proper Selenium WebDriver
+        if not hasattr(current_driver, 'get') or not hasattr(current_driver, 'find_element'):
+            logger.error("EOG downloads require Selenium WebDriver")
+            return False
             
-        Returns:
-            True if download succeeded, False otherwise
-        """
-        # Initialize driver if needed
-        if self._driver is None:
-            self._init_selenium_driver()
+        if current_driver is None:
+            logger.error("No Selenium driver available")
+            return False
         
         try:
+            # Get download directory from the driver, with fallback to instance directory
+            download_dir = getattr(current_driver, '_eog_download_dir', None)
+            
+            # If no download directory on session, try to use instance directory or create one
+            if not download_dir or not os.path.exists(download_dir):
+                if self._download_dir and os.path.exists(self._download_dir):
+                    download_dir = self._download_dir
+                    # Store it on the driver for future use
+                    current_driver._eog_download_dir = download_dir
+                    logger.info(f"Using instance download directory: {download_dir}")
+                else:
+                    # Create a new temporary download directory
+                    download_dir = tempfile.mkdtemp(prefix="eog_session_downloads_")
+                    current_driver._eog_download_dir = download_dir
+                    logger.info(f"Created new download directory for session: {download_dir}")
+            
             # Get initial directory state
-            before_files = set(os.listdir(self._download_dir))
+            before_files = set(os.listdir(download_dir))
             
-            # Navigate to the file URL - this should either start download or show login
+            # Navigate to the file URL
             logger.info(f"Navigating to file URL: {file_url}")
-            self._driver.get(file_url)
+            current_driver.get(file_url)
             
-            # Handle login if needed
-            self._check_and_handle_login()
+            # Handle login if needed, passing the current driver
+            self._check_and_handle_login(current_driver)
             
             # Wait for download to complete by checking the download directory
             max_wait_time = 300  # 5 minutes
@@ -397,10 +446,10 @@ class EOGDataSource(BaseDataSource):
             
             while elapsed < max_wait_time:
                 # Check for new files
-                current_files = set(os.listdir(self._download_dir))
+                current_files = set(os.listdir(download_dir))
                 new_files = current_files - before_files
                 
-                # Check for temporary download files - sign that download has started
+                # Check for temporary download files
                 temp_files = [f for f in new_files 
                             if f.endswith('.tmp') or f.endswith('.crdownload')]
                 
@@ -416,7 +465,7 @@ class EOGDataSource(BaseDataSource):
                 if completed_files:
                     # Get the most recently modified file
                     latest_file = max(
-                        [os.path.join(self._download_dir, f) for f in completed_files],
+                        [os.path.join(download_dir, f) for f in completed_files],
                         key=os.path.getmtime
                     )
                     
@@ -432,20 +481,6 @@ class EOGDataSource(BaseDataSource):
                 # Wait and check again
                 time.sleep(interval)
                 elapsed += interval
-                
-                # If no download started after a while, try re-submitting login
-                if not download_started and elapsed >= 30 and elapsed % 30 == 0:
-                    logger.warning(f"No download started after {elapsed}s, attempting login again")
-                    try:
-                        # Try to resubmit the login form
-                        submit_button = self._driver.find_element(By.ID, "kc-login") 
-                        if not submit_button:
-                            submit_button = self._driver.find_element(By.XPATH, "//button[@type='submit']")
-                        
-                        submit_button.click()
-                        logger.info("Re-submitted login form")
-                    except Exception as e:
-                        logger.warning(f"Could not re-submit login: {e}")
                 
                 if elapsed % 30 == 0:  # Log progress every 30 seconds
                     logger.info(f"Waiting for download to complete... ({elapsed}s elapsed)")
@@ -501,33 +536,9 @@ class EOGDataSource(BaseDataSource):
         Returns:
             Path for the file relative to configured target path
         """
-        # Extract the relative path from the full URL structure
-        path_parts = relative_path.split("/")
-        
-        # For DMSP data (e.g., F10_1992/F101992.v4b.global.avg_vis.tif)
-        # Extract data type (dmsp or viirs)
-        if "dmsp" in self.data_path.lower():
-            # Keep filename and append to data_path
-            filename = path_parts[-1]
-            # Include satellite identifier if present in the path
-            satellite = None
-            for part in path_parts:
-                if part.startswith("F") and "_" in part:
-                    satellite = part.split("_")[0]
-                    break
-            
-            if satellite:
-                return f"{satellite}/{filename}"
-            else:
-                return filename
-        
-        elif "viirs" in self.data_path.lower():
-            # Keep filename and append to data_path
-            filename = path_parts[-1]
-            return filename
-        
-        # Default case - use full relative path without the data_path prefix
-        return relative_path
+        # Always use self.data_path as the output prefix
+        filename = os.path.basename(relative_path)
+        return f"{self.data_path}/{filename}"
 
     def get_file_hash(self, file_url: str) -> str:
         """
@@ -567,6 +578,188 @@ class EOGDataSource(BaseDataSource):
         
     def __del__(self):
         """Clean up resources when the object is destroyed."""
-        self._close_selenium_driver()
+        try:
+            if hasattr(self, '_driver'):
+                self._close_selenium_driver()
+        except Exception as e:
+            # Silently ignore cleanup errors during destruction
+            pass
 
+    async def download_async(self, file_url: str, output_path: str, session=None) -> None:
+        """
+        Asynchronous download method - uses Selenium in a thread pool since EOG requires authentication.
+        
+        Args:
+            file_url: URL to download from
+            output_path: Local path to save the file
+            session: Optional Selenium session for authentication (not aiohttp.ClientSession)
+        """
+        # EOG requires Selenium, not aiohttp sessions
+        if session is not None and not hasattr(session, 'find_element'):
+            logger.warning("EOG async download received non-Selenium session, ignoring it")
+            session = None
+            
+        # Add a small delay to be respectful to the server
+        await asyncio.sleep(0.5)  # 500ms delay between requests
+        
+        # Run the Selenium download in a thread pool to avoid blocking the event loop
+        loop = asyncio.get_event_loop()
+        
+        try:
+            # Use thread pool executor for the blocking Selenium operations
+            await loop.run_in_executor(
+                None,  # Use default thread pool
+                self._download_sync_wrapper,
+                file_url,
+                output_path,
+                session
+            )
+        except Exception as e:
+            logger.error(f"Error in async download for {file_url}: {e}")
+            # Clean up partial file if it exists
+            if os.path.exists(output_path):
+                try:
+                    os.remove(output_path)
+                except:
+                    pass
+            raise
+
+    async def list_remote_files_async(self, entrypoint: dict = None) -> list:
+        """
+        Asynchronous version of list_remote_files.
+        Since EOG requires Selenium for authentication, we run it in a thread pool.
+        
+        Args:
+            entrypoint: Optional entrypoint to filter results (not used for EOG)
+            
+        Returns:
+            List of (relative_path, file_url) tuples
+        """
+        loop = asyncio.get_event_loop()
+        
+        # Run the synchronous list_remote_files in a thread pool
+        try:
+            files = await loop.run_in_executor(
+                None,  # Use default thread pool
+                self._list_remote_files_sync,
+                entrypoint
+            )
+            return files
+        except Exception as e:
+            logger.error(f"Error in async file listing: {e}")
+            return []
+
+    def _list_remote_files_sync(self, entrypoint: dict = None) -> list:
+        """
+        Synchronous wrapper for list_remote_files to be used in thread pool.
+        """
+        return list(self.list_remote_files(entrypoint))
+        
+    def _init_selenium_driver(self):
+        """Initialize the Selenium WebDriver for downloading files."""
+        if self._driver is not None:
+            return
+            
+        logger.info("Initializing Selenium WebDriver")
+        
+        try:
+            # Create a temporary directory for downloads
+            if self._download_dir is None:
+                self._download_dir = tempfile.mkdtemp(prefix="eog_downloads_")
+                logger.info(f"Created temporary download directory: {self._download_dir}")
+            
+            # Configure Chrome options
+            chrome_options = Options()
+            
+            # Set download directory
+            prefs = {
+                "download.default_directory": self._download_dir,
+                "download.prompt_for_download": False,
+                "download.directory_upgrade": True,
+                "safebrowsing.enabled": False
+            }
+            chrome_options.add_experimental_option("prefs", prefs)
+            
+            # Headless mode for server environments
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument('--ignore-ssl-errors=yes')
+            chrome_options.add_argument('--ignore-certificate-errors')
+            
+            # Initialize the WebDriver
+            if WEBDRIVER_MANAGER_AVAILABLE:
+                self._driver = webdriver.Chrome(
+                    service=Service(ChromeDriverManager().install()), 
+                    options=chrome_options
+                )
+            else:
+                self._driver = webdriver.Chrome(options=chrome_options)
+            
+            # Set page load timeout
+            self._driver.set_page_load_timeout(120)
+            
+            logger.info("Selenium WebDriver initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Selenium WebDriver: {e}")
+            raise
+
+    def _close_selenium_driver(self):
+        """Close the Selenium WebDriver if it exists."""
+        if self._driver is not None:
+            try:
+                self._driver.quit()
+                logger.info("Selenium WebDriver closed")
+            except Exception as e:
+                logger.warning(f"Error closing Selenium WebDriver: {e}")
+            finally:
+                self._driver = None
+                self._is_logged_in = False
+
+        # Clean up temporary download directory
+        if self._download_dir and os.path.exists(self._download_dir):
+            try:
+                shutil.rmtree(self._download_dir)
+                logger.info(f"Removed temporary download directory: {self._download_dir}")
+                self._download_dir = None
+            except Exception as e:
+                logger.warning(f"Error removing temporary directory: {e}")
+            finally:
+                self._driver = None
+                self._is_logged_in = False
+
+        # Clean up temporary download directory
+        if self._download_dir and os.path.exists(self._download_dir):
+            try:
+                shutil.rmtree(self._download_dir)
+                logger.info(f"Removed temporary download directory: {self._download_dir}")
+                self._download_dir = None
+            except Exception as e:
+                logger.warning(f"Error removing temporary directory: {e}")
+
+    def _download_sync_wrapper(self, file_url: str, output_path: str, session=None):
+        """
+        Synchronous wrapper that properly handles Selenium sessions.
+        """
+        # Check if session is a Selenium WebDriver
+        if session is not None and hasattr(session, 'find_element'):
+            # Use the provided Selenium session
+            success = self.download_file(file_url, output_path, driver=session)
+            if not success:
+                raise RuntimeError(f"Failed to download {file_url}")
+        else:
+            # No valid session provided, use instance driver (create if needed)
+            close_driver = False
+            try:
+                if self._driver is None:
+                    self._init_selenium_driver()
+                    close_driver = True
+                
+                success = self.download_file(file_url, output_path, driver=self._driver)
+                if not success:
+                    raise RuntimeError(f"Failed to download {file_url}")
+                    
+            finally:
+                if close_driver:
+                    self._close_selenium_driver()
 
