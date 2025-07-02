@@ -48,12 +48,12 @@ def create_data_source(source_config):
         dataset_config = config[dataset_name]
         base_url = dataset_config.get('base_url', dataset_config.get('url'))
         file_extensions = dataset_config.get('file_extensions')
-        output_path = dataset_config.get('output_path')
+        output_path = dataset_config.get('output_path', dataset_config.get('data_path'))
     else:
         # Configuration is at the top level
         base_url = config.get('base_url', config.get('url'))
         file_extensions = config.get('file_extensions')
-        output_path = config.get('output_path')
+        output_path = config.get('output_path', config.get('data_path'))
     
     logger.debug(f"Creating data source for {dataset_name}")
     
@@ -77,10 +77,12 @@ def create_data_source(source_config):
             file_extensions=file_extensions,
             output_path=output_path
         )
-    elif dataset_name.lower() in ['modis', 'modis_lst']:
-        logger.info(f"Creating MODIS LST data source")
-        from gnt.data.download.sources.modis import ModisLSTDataSource
-        return ModisLSTDataSource(
+    elif dataset_name.lower() in ['eog_dmsp', 'eog_viirs']:
+        logger.info(f"Creating EOG data source: {dataset_name}")
+        if not output_path:
+            raise ValueError(f"EOG data source requires 'output_path' or 'data_path' in configuration")
+        from gnt.data.download.sources.eog import EOGDataSource
+        return EOGDataSource(
             base_url=base_url,
             file_extensions=file_extensions,
             output_path=output_path
