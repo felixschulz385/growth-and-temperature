@@ -181,7 +181,7 @@ def check_environment(operation_type: str) -> bool:
         return False
 
 
-def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode: str = None):
+def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode: str = None, stage: str = None):
     """
     Run the specified data operation for a source.
     
@@ -190,6 +190,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         source: Data source name
         config: Full configuration dictionary
         mode: Override mode (optional)
+        stage: Stage for preprocess operation (optional)
     """
     # Ensure the source exists in configuration
     if 'sources' not in config or source not in config['sources']:
@@ -312,6 +313,8 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         if operation_type == "preprocess":
             preprocess_config = unified_workflow_config['preprocess'].copy()
             preprocess_config['mode'] = mode or 'preprocess'
+            if stage:
+                preprocess_config['stage'] = stage
             
             unified_workflow_config['workflow']['tasks'] = [
                 {
@@ -319,16 +322,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
                     'config': preprocess_config
                 }
             ]
-        elif operation_type == "validate_preprocess":
-            validate_config = unified_workflow_config['preprocess'].copy()
-            validate_config['mode'] = mode or 'validate'
-            
-            unified_workflow_config['workflow']['tasks'] = [
-                {
-                    'type': 'validate',
-                    'config': validate_config
-                }
-            ]
+
         
         # Import and run the unified preprocessing workflow
         try:
@@ -396,6 +390,11 @@ def main():
         help="Enable debug mode with verbose logging"
     )
     
+    parser.add_argument(
+        "--stage",
+        help="Processing stage for preprocess operation (e.g., annual, spatial)"
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -415,7 +414,7 @@ def main():
         config = load_config_with_env_vars(args.config)
         
         # Run the operation
-        run_operation(args.operation, args.source, config, args.mode)
+        run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None))
         
         logger.info(f"{args.operation.title()} operation for {args.source} completed successfully")
         return 0

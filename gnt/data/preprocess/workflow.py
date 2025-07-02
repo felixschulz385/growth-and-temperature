@@ -22,7 +22,6 @@ import signal
 import sys
 
 from gnt.data.preprocess.sources.factory import create_preprocessor
-from gnt.data.common.gcs.client import GCSClient
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -92,17 +91,27 @@ def process_task(task_config: Dict[str, Any]) -> None:
         except (ImportError, ValueError, resource.error) as e:
             logger.warning(f"Could not set memory limit: {str(e)}")
     
+    # Fix: Extract preprocessor_name from task_config
+    preprocessor_name = task_config.get('preprocessor', 'unknown')
+
+    # --- Generalize: always pass hpc_local_index_dir as local_index_dir if present ---
+    if "hpc_local_index_dir" in task_config and "local_index_dir" not in task_config:
+        task_config["local_index_dir"] = task_config["hpc_local_index_dir"]
+    # --- end generalize ---
+
     try:
         # Get mode from task config
         mode = task_config.pop("mode", "preprocess")
         
-        if mode == "generate_targets":
-            # New mode: generate preprocessing targets
-            handle_generate_targets_task(task_config)
-        elif mode == "validate":
+        # Enable rasterization if specified
+        enable_rasterization = task_config.get("enable_rasterization", False)
+        if enable_rasterization:
+            logger.info("Rasterization enabled for this task")
+
+        if mode == "validate":
             # Handle validation task
             handle_validate_task(preprocessor_name, task_config)
-        else:
+        elif mode == "preprocess":
             # Create preprocessor instance using the factory
             preprocessor = create_preprocessor(preprocessor_name, task_config)
             
@@ -112,20 +121,20 @@ def process_task(task_config: Dict[str, Any]) -> None:
             
             targets = preprocessor.get_preprocessing_targets(stage, year_range)
             
-            # Filter to ready targets only
-            from gnt.data.preprocess.cache import PreprocessingTargetCache
-            cache = PreprocessingTargetCache("/tmp/preprocessing_cache", preprocessor_name)
-            valid_targets = cache.validate_targets(targets)
-            ready_targets = [t for t in valid_targets if t.get('status') == 'ready']
-            
-            logger.info(f"Found {len(ready_targets)} ready targets out of {len(targets)} total")
+            # Skip cache validation - use direct file existence checks instead
+            logger.info(f"Processing {len(targets)} targets (bypassing cache validation)")
             
             # Process each ready target
-            for target in ready_targets:
-                preprocessor.process_target(target)
+            for target in targets:
+                try:
+                    preprocessor.process_target(target)
+                except Exception as e:
+                    logger.error(f"Error processing target {target.get('year', 'unknown')}/{target.get('grid_cell', 'global')}: {e}")
+                    # Continue with next target instead of failing entire task
+                    continue
         
     except Exception as e:
-        logger.error(f"Error processing task with {task_config.get('preprocessor', 'unknown')}: {str(e)}")
+        logger.error(f"Error processing task with {preprocessor_name}: {str(e)}")
         raise
 
 
@@ -171,11 +180,6 @@ def handle_validate_task(preprocessor_name: str, task_config: Dict[str, Any]) ->
         
         # Check if the index has validate_against_gcs method
         if hasattr(index, 'validate_against_gcs'):
-            # Create GCS client if needed
-            gcs_client = None
-            if hasattr(preprocessor, 'bucket_name'):
-                gcs_client = GCSClient(preprocessor.bucket_name)
-            
             # Set validation paths to only include annual and spatial
             validation_paths = []
             
@@ -189,9 +193,9 @@ def handle_validate_task(preprocessor_name: str, task_config: Dict[str, Any]) ->
                 
             try:
                 # Run validation
-                logger.info(f"Validating preprocessing index against GCS for paths: {validation_paths}")
+                logger.info(f"Validating preprocessing index for paths: {validation_paths}")
                 validation_results = index.validate_against_gcs(
-                    gcs_client=gcs_client,
+                    gcs_client=None,  # No GCS client
                     force_file_list_update=force_refresh,
                     paths_to_check=validation_paths
                 )
@@ -343,6 +347,11 @@ class PreprocessTaskHandlers:
             # Set preprocessor name from source configuration
             legacy_task_config['preprocessor'] = source_config.get('name')
             
+            # Enable rasterization if specified in source config
+            if source_config.get('enable_rasterization', False):
+                legacy_task_config['enable_rasterization'] = True
+                logger.info("Rasterization enabled from source configuration")
+            
             # Add HPC configuration if available
             if context.hpc_config:
                 for key, value in context.hpc_config.items():
@@ -355,6 +364,11 @@ class PreprocessTaskHandlers:
             
             # Set data source
             legacy_task_config['data_source'] = source_config.get('name')
+            
+            # Always inject hpc_local_index_dir if available
+            hpc_local_index_dir = context.hpc_config.get("local_index_dir")
+            if hpc_local_index_dir:
+                legacy_task_config["hpc_local_index_dir"] = hpc_local_index_dir
             
             # Run the legacy process_task function
             process_task(legacy_task_config)

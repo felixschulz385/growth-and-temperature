@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import dask
 from dask.distributed import Client, LocalCluster
@@ -60,11 +61,17 @@ def init_dask_client(threads=None, memory_limit=None, dashboard_port=8787,
         
         threads_per_worker = worker_threads_per_cpu
         
+        
         # Default memory limit if not specified (75% of system memory)
         if memory_limit is None:
             total_memory = psutil.virtual_memory().total
             memory_limit = int(0.75 * total_memory / n_workers)
-        
+        elif isinstance(memory_limit, str):
+            memory_per_worker = int(int(re.search(r"\d*", memory_limit).group(0)) / n_workers)
+            memory_limit = str(memory_per_worker) + re.search(r"[GB]i*B", memory_limit).group(0)
+        else:
+            memory_limit = memory_limit / n_workers
+                    
         # Create LocalCluster with specific worker configuration
         cluster = LocalCluster(
             n_workers=n_workers,
