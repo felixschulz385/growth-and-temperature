@@ -3,6 +3,8 @@
 /misc
 .DS_Store
 /.vscode
+data.yaml
+_data.yaml
 
 sqlite_*
 index_*
@@ -12,5 +14,6 @@ index_*
 
 *.pyc
 __init__.py
+
 debug_eog_credentials.sh
 git_access_token
