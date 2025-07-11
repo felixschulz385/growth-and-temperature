@@ -21,7 +21,7 @@ import os
 import signal
 import sys
 
-from gnt.data.preprocess.sources.factory import create_preprocessor
+from gnt.data.preprocess.sources.factory import create_preprocessor, get_preprocessor_class, create_source
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -332,6 +332,9 @@ class PreprocessWorkflowContext:
         logger.debug(f"Initialized preprocessing context with staging dir: {self.staging_dir}")
 
 
+
+
+
 class PreprocessTaskHandlers:
     """Unified task handlers for preprocessing workflow operations."""
     
@@ -362,8 +365,20 @@ class PreprocessTaskHandlers:
                 for key, value in context.gcs_config.items():
                     legacy_task_config[f"gcs_{key}"] = value
             
-            # Set data source
-            legacy_task_config['data_source'] = source_config.get('name')
+            # Create data source using the factory
+            try:
+                if 'source_class' in source_config:
+                    # If a specific class is provided, use it
+                    data_source = create_source(source_config['source_class'], source_config)
+                else:
+                    data_source = create_source(source_config.get('name'), source_config)
+                
+                # Store the data source instance for use by preprocessor
+                legacy_task_config['data_source_instance'] = data_source
+            except Exception as e:
+                logger.warning(f"Could not create data source: {e}")
+                # Fallback to old behavior
+                legacy_task_config['data_source'] = source_config.get('name')
             
             # Always inject hpc_local_index_dir if available
             hpc_local_index_dir = context.hpc_config.get("local_index_dir")
@@ -405,8 +420,17 @@ class PreprocessTaskHandlers:
                 for key, value in context.gcs_config.items():
                     legacy_task_config[f"gcs_{key}"] = value
             
-            # Set data source
-            legacy_task_config['data_source'] = source_config.get('name')
+            # Create data source using the factory
+            try:
+                if 'source_class' in source_config:
+                    data_source = create_source(source_config['source_class'], source_config)
+                else:
+                    data_source = create_source(source_config.get('name'), source_config)
+                
+                legacy_task_config['data_source_instance'] = data_source
+            except Exception as e:
+                logger.warning(f"Could not create data source: {e}")
+                legacy_task_config['data_source'] = source_config.get('name')
             
             # Run the legacy process_task function in validation mode
             process_task(legacy_task_config)
