@@ -1,6 +1,6 @@
 # 🌍 File Downloader and GCS Uploader
 
-This project downloads data files from one or more **pluggable sources** (e.g. [GLASS archive](https://glass.hku.hk/)) and uploads them to a specified Google Cloud Storage (GCS) bucket.
+This project downloads data files from one or more **pluggable sources** (e.g. [GLASS archive](https://glass.hku.hk/), [ESA CCI](https://climate.esa.int/en/projects/climate-data-store/)) and uploads them to a specified Google Cloud Storage (GCS) bucket.
 
 The containerized app is designed to run once (e.g. via a Kubernetes Job), checking which files already exist in GCS, downloading missing files, and uploading them. It supports multiple data sources using a unified interface (`BaseDataSource`), making it easy to extend.
 
@@ -13,6 +13,7 @@ The containerized app is designed to run once (e.g. via a Kubernetes Job), check
 ├── download/           # Logic for file discovery and data source classes
 │   ├── base.py         # Abstract base class for data sources
 │   ├── glass.py        # GLASS-specific implementation
+│   ├── esacci.py       # ESA CCI-specific implementation
 │   └── ...
 ├── gcs/                # GCS upload logic
 ├── tests/              # Unit tests
@@ -35,7 +36,7 @@ These values can be set via your Kubernetes job (see below), `.env`, or your dep
 |------------------|---------------------------------------------------------|------------------------------------------------------------------|
 | `GCP_PROJECT_ID` | Your Google Cloud project ID                            | `ee-growthandheat`                                              |
 | `GCS_BUCKET_NAME`| Name of the GCS bucket                                  | `growthandheat`                                                 |
-| `DATA_SOURCE_NAME`| Identifier for which data source to use                | `glass`                                                         |
+| `DATA_SOURCE_NAME`| Identifier for which data source to use                | `glass`, `esacci`                                               |
 | `BASE_URL`       | URL to crawl/download files from                        | `https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/`             |
 
 ---
@@ -155,9 +156,11 @@ To support a new data source:
 
 ```python
 from download.chirps import CHIRPSDataSource
+from download.esacci import ESACCIDataSource
 
 DATA_SOURCES = {
     "glass": GLASSDataSource,
+    "esacci": ESACCIDataSource,
     "chirps": CHIRPSDataSource,
 }
 ```

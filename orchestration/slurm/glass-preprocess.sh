@@ -14,6 +14,6 @@ conda activate gnt
 # Run the debugpy job
 /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" preprocess \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
-    --source viirs_annual \
+    --source glass_avhrr \
     --stage annual \
     --debug

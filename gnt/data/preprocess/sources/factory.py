@@ -22,10 +22,12 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         The preprocessor class
     """
     try:
-        # Special case for EOG preprocessor (all caps)
         if "eog" in preprocessor_name.lower():
             class_name = 'EOGPreprocessor'
             module_path = f"gnt.data.preprocess.sources.eog"
+        if "glass" in preprocessor_name.lower():
+            class_name = 'GlassPreprocessor'
+            module_path = f"gnt.data.preprocess.sources.glass"
         else:
             # By convention, the class name is expected to be CamelCase
             class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
