@@ -87,40 +87,6 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
     return process_item(config)
 
 
-def merge_configs(global_config: Dict[str, Any], source_config: Dict[str, Any], 
-                 operation_type: str) -> Dict[str, Any]:
-    """Merge global and source-specific configurations."""
-    result = {}
-    
-    # For index operation, use download settings if no specific index settings
-    if operation_type == "index" and "index" not in global_config and "index" not in source_config:
-        # Start with global download config
-        if 'download' in global_config:
-            result.update(global_config['download'])
-        # Override with source-specific download config
-        if 'download' in source_config:
-            result.update(source_config['download'])
-    else:
-        # Start with global operation-specific config
-        if operation_type in global_config:
-            result.update(global_config[operation_type])
-    
-    # Add global common settings that apply to all operations
-    if 'common' in global_config:
-        result.update(global_config['common'])
-    
-    # Override with source-specific operation config
-    if operation_type in source_config:
-        result.update(source_config[operation_type])
-    
-    # Add source-specific parameters that aren't operation-specific
-    for key, value in source_config.items():
-        if key not in ['index', 'download', 'preprocess', 'validate']:
-            result[key] = value
-    
-    return result
-
-
 def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = False):
     """Configure logging with the specified level and output file."""
     numeric_level = getattr(logging, level.upper(), None)
@@ -197,19 +163,15 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         raise ValueError(f"Source '{source}' not found in configuration")
 
     # Get source-specific configuration
-    source_config = config['sources'][source]
+    source_config = config['sources'][source].copy()
     
     # Determine which module to use
     if operation_type in ["download", "index", "extract", "validate_download"]:
         # Build HPC workflow configuration structure
         hpc_workflow_config = {
-            'source': {
-                'name': source,  # Add the source name explicitly
-                **source_config  # Include all source-specific config
-            },
+            'source': source_config,
             'index': {
                 'local_dir': config.get('hpc', {}).get('local_index_dir'),
-                # Add index-specific configuration
                 'rebuild': operation_type == 'index',
                 'only_missing_entrypoints': True,
                 'sync_direction': 'auto'
@@ -218,7 +180,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
                 'tasks': []
             },
             'hpc': config.get('hpc', {}),
-            'source_name': source  # Also add at top level for backward compatibility
+            'source_name': source
         }
         
         # Define workflow tasks based on operation type
@@ -294,13 +256,10 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             raise ValueError(f"Could not import unified workflow module: {e}") from e
     
     elif operation_type in ["preprocess", "validate_preprocess"]:
-        # Build unified workflow configuration structure similar to download
-        unified_workflow_config = {
-            'source': {
-                'name': source,
-                **source_config
-            },
-            'preprocess': merge_configs(config, source_config, 'preprocess'),
+        # Build preprocessing workflow configuration structure
+        preprocess_workflow_config = {
+            'source': source_config,
+            'preprocess': config.get('preprocess', {}),
             'workflow': {
                 'tasks': []
             },
@@ -311,18 +270,17 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         
         # Define workflow tasks based on operation type
         if operation_type == "preprocess":
-            preprocess_config = unified_workflow_config['preprocess'].copy()
-            preprocess_config['mode'] = mode or 'preprocess'
+            task_config = preprocess_workflow_config['preprocess'].copy()
+            task_config['mode'] = mode or 'preprocess'
             if stage:
-                preprocess_config['stage'] = stage
+                task_config['stage'] = stage
             
-            unified_workflow_config['workflow']['tasks'] = [
+            preprocess_workflow_config['workflow']['tasks'] = [
                 {
                     'type': 'preprocess',
-                    'config': preprocess_config
+                    'config': task_config
                 }
             ]
-
         
         # Import and run the unified preprocessing workflow
         try:
@@ -330,7 +288,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             preprocess_workflow_module = importlib.import_module('gnt.data.preprocess.workflow')
             
             logger.info("Running unified preprocessing workflow with structured configuration")
-            preprocess_workflow_module.run_workflow_with_config(unified_workflow_config)
+            preprocess_workflow_module.run_workflow_with_config(preprocess_workflow_config)
                         
         except ImportError as e:
             logger.error(f"Error importing preprocessing workflow module: {e}")
@@ -350,7 +308,7 @@ def main():
     # Main operation type argument
     parser.add_argument(
         "operation",
-        choices=["index", "download", "preprocess", "validate_download", "extract"],  # Added "extract"
+        choices=["index", "download", "preprocess", "validate_download", "extract"],
         help="Operation to perform"
     )
     
@@ -394,7 +352,20 @@ def main():
         "--stage",
         help="Processing stage for preprocess operation (e.g., annual, spatial)"
     )
-    
+
+    # Dask configuration arguments (for preprocess operations)
+    parser.add_argument('--dask-threads', type=int, help='Number of Dask threads (overrides config)')
+    parser.add_argument('--dask-memory-limit', help='Dask memory limit (overrides config)')
+    parser.add_argument('--temp-dir', help='Temporary directory (overrides config)')
+    parser.add_argument('--dashboard-port', type=int, default=8787, help='Dask dashboard port')
+
+    # Additional arguments for preprocessing
+    parser.add_argument('--year', type=int, help='Specific year to process')
+    parser.add_argument('--year-range', nargs=2, type=int, metavar=('START', 'END'),
+                       help='Year range to process (start end)')
+    parser.add_argument('--grid-cells', nargs='+', help='Grid cells to process (MODIS only)')
+    parser.add_argument('--override', action='store_true', help='Override existing outputs')
+
     # Parse arguments
     args = parser.parse_args()
     
@@ -412,7 +383,46 @@ def main():
         
         # Load configuration
         config = load_config_with_env_vars(args.config)
-        
+
+        # Apply CLI overrides to configuration
+        if args.operation == "preprocess":
+            # Apply CLI overrides to preprocess configuration section
+            preprocess_config = config.setdefault('preprocess', {})
+            source_config = config.setdefault('sources', {}).setdefault(args.source, {})
+            
+            # Override Dask configuration
+            if args.dask_threads is not None:
+                preprocess_config['dask_threads'] = args.dask_threads
+                logger.info(f"Overriding dask_threads from CLI: {args.dask_threads}")
+            if args.dask_memory_limit is not None:
+                preprocess_config['dask_memory_limit'] = args.dask_memory_limit
+                logger.info(f"Overriding dask_memory_limit from CLI: {args.dask_memory_limit}")
+            if args.temp_dir is not None:
+                preprocess_config['temp_dir'] = args.temp_dir
+                logger.info(f"Overriding temp_dir from CLI: {args.temp_dir}")
+            if args.dashboard_port != 8787:
+                preprocess_config['dashboard_port'] = args.dashboard_port
+                logger.info(f"Overriding dashboard_port from CLI: {args.dashboard_port}")
+            
+            # Apply preprocessing-specific overrides to source configuration
+            if args.year is not None:
+                source_config['year'] = args.year
+                logger.info(f"Overriding year from CLI: {args.year}")
+            if args.year_range is not None:
+                source_config['year_range'] = args.year_range
+                logger.info(f"Overriding year_range from CLI: {args.year_range}")
+            if args.grid_cells is not None:
+                source_config['grid_cells'] = args.grid_cells
+                logger.info(f"Overriding grid_cells from CLI: {args.grid_cells}")
+            if args.override:
+                source_config['override'] = True
+                logger.info("Override mode enabled from CLI")
+            
+            # Set stage if provided
+            if args.stage:
+                preprocess_config['stage'] = args.stage
+                logger.info(f"Setting stage from CLI: {args.stage}")
+
         # Run the operation
         run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None))
         

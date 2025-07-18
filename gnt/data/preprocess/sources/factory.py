@@ -73,7 +73,8 @@ def get_source_class(source_name: str) -> Type:
             'eog_dmsp': ('gnt.data.download.sources.eog', 'EOGDataSource'),
             'eog_viirs': ('gnt.data.download.sources.eog', 'EOGDataSource'),
             'eog_dvnl': ('gnt.data.download.sources.eog', 'EOGDataSource'),
-            'glass_modis': ('gnt.data.download.sources.glass_lst', 'GLASSLSTDataSource'),
+            'glass_modis': ('gnt.data.download.sources.glass', 'GlassLSTDataSource'),
+            'glass_avhrr': ('gnt.data.download.sources.glass', 'GlassLSTDataSource'),
             'misc': ('gnt.data.download.sources.misc', 'MiscDataSource'),
         }
         

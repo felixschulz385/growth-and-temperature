@@ -341,52 +341,50 @@ class PreprocessTaskHandlers:
     @staticmethod
     def handle_preprocess(source_config: Dict[str, Any], context: PreprocessWorkflowContext, task_config: Dict[str, Any]):
         """Handle preprocessing task."""
-        logger.info(f"Starting preprocessing task for {source_config.get('name', 'unknown')}")
+        source_name = source_config.get('name', 'unknown')
+        logger.info(f"Starting preprocessing task for {source_name}")
         
         try:
-            # Prepare task configuration in the format expected by existing process_task
-            legacy_task_config = task_config.copy()
+            # Create a clean configuration dictionary for the preprocessor
+            preprocessor_config = {}
             
-            # Set preprocessor name from source configuration
-            legacy_task_config['preprocessor'] = source_config.get('name')
+            # 1. Start with source configuration (base parameters)
+            preprocessor_config.update(source_config)
             
-            # Enable rasterization if specified in source config
-            if source_config.get('enable_rasterization', False):
-                legacy_task_config['enable_rasterization'] = True
-                logger.info("Rasterization enabled from source configuration")
+            # 2. Add task-specific configuration (stage, mode, etc.)
+            preprocessor_config.update(task_config)
             
-            # Add HPC configuration if available
+            # 3. Add HPC configuration with proper prefixes
             if context.hpc_config:
                 for key, value in context.hpc_config.items():
-                    legacy_task_config[f"hpc_{key}"] = value
+                    preprocessor_config[f"hpc_{key}"] = value
                     
-            # Add GCS configuration if available  
+            # 4. Add GCS configuration with proper prefixes
             if context.gcs_config:
                 for key, value in context.gcs_config.items():
-                    legacy_task_config[f"gcs_{key}"] = value
+                    preprocessor_config[f"gcs_{key}"] = value
             
-            # Create data source using the factory
+            # 5. Ensure critical parameters are set correctly
+            preprocessor_config['preprocessor'] = source_name
+            preprocessor_config['name'] = source_name
+            
+            # 6. Handle HPC local index directory mapping
+            if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
+                preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
+            
+            # 7. Create data source instance if possible
             try:
                 if 'source_class' in source_config:
-                    # If a specific class is provided, use it
                     data_source = create_source(source_config['source_class'], source_config)
                 else:
-                    data_source = create_source(source_config.get('name'), source_config)
-                
-                # Store the data source instance for use by preprocessor
-                legacy_task_config['data_source_instance'] = data_source
+                    data_source = create_source(source_name, source_config)
+                preprocessor_config['data_source_instance'] = data_source
             except Exception as e:
                 logger.warning(f"Could not create data source: {e}")
-                # Fallback to old behavior
-                legacy_task_config['data_source'] = source_config.get('name')
+                preprocessor_config['data_source'] = source_name
             
-            # Always inject hpc_local_index_dir if available
-            hpc_local_index_dir = context.hpc_config.get("local_index_dir")
-            if hpc_local_index_dir:
-                legacy_task_config["hpc_local_index_dir"] = hpc_local_index_dir
-            
-            # Run the legacy process_task function
-            process_task(legacy_task_config)
+            # Run the preprocessing task
+            process_task(preprocessor_config)
             
             logger.info(f"Preprocessing task completed successfully")
             return True
@@ -400,40 +398,53 @@ class PreprocessTaskHandlers:
     @staticmethod
     def handle_validate(source_config: Dict[str, Any], context: PreprocessWorkflowContext, task_config: Dict[str, Any]):
         """Handle validation task."""
-        logger.info(f"Starting validation task for {source_config.get('name', 'unknown')}")
+        source_name = source_config.get('name', 'unknown')
+        logger.info(f"Starting validation task for {source_name}")
         
         try:
-            # Prepare task configuration for validation
-            legacy_task_config = task_config.copy()
+            # Create a clean configuration dictionary for the preprocessor
+            preprocessor_config = {}
             
-            # Set preprocessor name and mode
-            legacy_task_config['preprocessor'] = source_config.get('name')
-            legacy_task_config['mode'] = 'validate'
+            # 1. Start with source configuration (base parameters)
+            preprocessor_config.update(source_config)
             
-            # Add HPC configuration if available
+            # 2. Add task-specific configuration (stage, mode, etc.)
+            preprocessor_config.update(task_config)
+            
+            # 3. Set validation mode
+            preprocessor_config['mode'] = 'validate'
+            
+            # 4. Add HPC configuration with proper prefixes
             if context.hpc_config:
                 for key, value in context.hpc_config.items():
-                    legacy_task_config[f"hpc_{key}"] = value
+                    preprocessor_config[f"hpc_{key}"] = value
                     
-            # Add GCS configuration if available
+            # 5. Add GCS configuration with proper prefixes
             if context.gcs_config:
                 for key, value in context.gcs_config.items():
-                    legacy_task_config[f"gcs_{key}"] = value
+                    preprocessor_config[f"gcs_{key}"] = value
             
-            # Create data source using the factory
+            # 6. Ensure critical parameters are set correctly
+            preprocessor_config['preprocessor'] = source_name
+            preprocessor_config['name'] = source_name
+            
+            # 7. Handle HPC local index directory mapping
+            if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
+                preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
+            
+            # 8. Create data source instance if possible
             try:
                 if 'source_class' in source_config:
                     data_source = create_source(source_config['source_class'], source_config)
                 else:
-                    data_source = create_source(source_config.get('name'), source_config)
-                
-                legacy_task_config['data_source_instance'] = data_source
+                    data_source = create_source(source_name, source_config)
+                preprocessor_config['data_source_instance'] = data_source
             except Exception as e:
                 logger.warning(f"Could not create data source: {e}")
-                legacy_task_config['data_source'] = source_config.get('name')
+                preprocessor_config['data_source'] = source_name
             
-            # Run the legacy process_task function in validation mode
-            process_task(legacy_task_config)
+            # Run the validation task
+            process_task(preprocessor_config)
             
             logger.info(f"Validation task completed successfully")
             return True
@@ -463,9 +474,16 @@ def run_workflow_with_config(config: Dict[str, Any]):
         hpc_config = config.get('hpc', {})
         gcs_config = config.get('gcs', {})
         
-        # Handle case where source name might be passed separately
-        if 'source_name' in config and not any(k in source_config for k in ['name', 'dataset_name', 'source_name', 'type']):
+        # Handle case where source name might be passed separately - FIXED
+        if 'source_name' in config:
             source_config['name'] = config['source_name']
+        
+        # Ensure source name is set - this is the critical fix
+        if 'name' not in source_config:
+            logger.error("Source name not found in configuration")
+            logger.debug(f"Available config keys: {list(config.keys())}")
+            logger.debug(f"Source config: {source_config}")
+            return False
         
         # Create workflow context
         context = PreprocessWorkflowContext(

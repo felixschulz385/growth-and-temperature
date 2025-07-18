@@ -7,17 +7,19 @@ import pandas as pd
 import numpy as np
 import xarray as xr
 import rioxarray as rxr
-from datetime import datetime
 import dask
 from dask.distributed import Client, LocalCluster
 import dask.array as da
-import zarr
 import numcodecs
 import re
+from functools import partial
+from odc.geo import CRS
+from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
 
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.dask.client import DaskClientContextManager
 from gnt.data.common.index.preprocessing_index import PreprocessingIndex
+from gnt.data.common.geobox import get_or_create_geobox
 
 # Add pandas for reading parquet files directly
 try:
@@ -58,12 +60,12 @@ class GlassPreprocessor(AbstractPreprocessor):
                 stage (str): Processing stage ("annual", "spatial")
                 year (int, optional): Specific year to process
                 year_range (list, optional): [start_year, end_year] range to process
-                grid_cell (str, optional): Grid cell to process (for spatial stage)
+                grid_cells (list, optional): List of grid cells to process (for MODIS)
                 data_source (str): 'MODIS' or 'AVHRR'
                 
                 # Data source parameters
                 base_url (str): Base URL for the data source
-                data_path (str): Data path where source data is stored
+                data_path (str, optional): Data path where source data is stored
                 file_extensions (list, optional): File extensions to filter by
                 
                 # HPC mode parameters
@@ -110,41 +112,41 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             self.years_to_process = list(range(self.year_start, self.year_end + 1))
             logger.info(f"Processing year range: {self.year_start}-{self.year_end} ({len(self.years_to_process)} years)")
+            
+        # Set data source-specific attributes - FIXED LOGIC
+        # Get the source name for fallback detection
+        source_name = kwargs.get('type', '').lower()
         
-        self.grid_cell = kwargs.get('grid_cell')
-        
-        # Set data source-specific attributes
-        data_source_raw = kwargs.get('data_source', 'MODIS')
-        # Accept values like 'GLASS_AVHRR', 'GLASS_MODIS', 'AVHRR', 'MODIS'
-        data_source_upper = str(data_source_raw).upper()
-        if data_source_upper.endswith("_AVHRR"):
+        # Determinedata source
+        if 'avhrr' in source_name:
             self.data_source = "AVHRR"
-        elif data_source_upper.endswith("_MODIS"):
+        elif 'modis' in source_name:
             self.data_source = "MODIS"
-        elif data_source_upper in ['MODIS', 'AVHRR']:
-            self.data_source = data_source_upper
-        else:
-            raise ValueError(f"Unsupported data source: {data_source_raw}. Use 'MODIS' or 'AVHRR'.")
         
-        # Set grid cells to process (for MODIS)
+        # Set grid cells to process (for MODIS) - moved here before it's used
         self.grid_cells = kwargs.get('grid_cells', None)
         
         # Whether to override existing processed files
         self.override = kwargs.get('override', False)
         
-        # Path prefix based on data source
+        # Path prefix based on data source - MUST BE SET BEFORE data_path derivation
         self.path_prefix = self.MODIS_PATH_PREFIX if self.data_source == 'MODIS' else self.AVHRR_PATH_PREFIX
         
         # Get data source parameters
         base_url = kwargs.get('base_url')
         data_path = kwargs.get('data_path') or kwargs.get('output_path')
+        
+        # If data_path is not provided, derive it from the path_prefix - FIXED
+        if not data_path:
+            # Remove trailing slash to get base data path
+            data_path = self.path_prefix.rstrip('/')
+            logger.info(f"Derived data_path from path_prefix: {data_path}")
+        
         file_extensions = kwargs.get('file_extensions', [".hdf"])
         
         # Validate required parameters
         if not base_url:
             raise ValueError("base_url parameter must be specified")
-        if not data_path:
-            raise ValueError("data_path or output_path parameter must be specified")
         
         # HPC mode parameters
         hpc_target = kwargs.get('hpc_target')
@@ -181,8 +183,8 @@ class GlassPreprocessor(AbstractPreprocessor):
         logger.info(f"HPC root: {self.hpc_root}")
         logger.info(f"Data path: {self.data_path}")
         logger.info(f"Years to process: {len(self.years_to_process)}")
-        if self.grid_cell:
-            logger.info(f"Grid cell: {self.grid_cell}")
+        if self.grid_cells:
+            logger.info(f"Grid cells: {self.grid_cells}")
 
     def _strip_remote_prefix(self, path):
         """Remove scp/ssh prefix like user@host: from paths."""
@@ -194,10 +196,24 @@ class GlassPreprocessor(AbstractPreprocessor):
         """Initialize parquet index path based on data source."""
         safe_data_path = self.data_path.replace("/", "_").replace("\\", "_")
         os.makedirs(self.index_dir, exist_ok=True)
-        self.parquet_index_path = os.path.join(
+        # Default expected path
+        default_path = os.path.join(
             self.index_dir,
             f"parquet_{safe_data_path}.parquet"
         )
+        # Also try legacy/remote naming convention if available
+        # e.g. parquet_glass_LST_MODIS_Daily_1KM.parquet
+        alt_path = os.path.join(
+            self.index_dir,
+            f"parquet_{self.path_prefix.strip('/').replace('/','_')}.parquet"
+        )
+        # Use the one that exists, or default
+        if os.path.exists(default_path):
+            self.parquet_index_path = default_path
+        elif os.path.exists(alt_path):
+            self.parquet_index_path = alt_path
+        else:
+            self.parquet_index_path = default_path
         logger.debug(f"Parquet index path: {self.parquet_index_path}")
 
     def get_preprocessing_targets(self, stage: str, year_range: Tuple[int, int] = None) -> List[Dict[str, Any]]:
@@ -510,9 +526,9 @@ class GlassPreprocessor(AbstractPreprocessor):
     def get_hpc_output_path(self, stage: str) -> str:
         """Get HPC output path for a given stage."""
         if stage == "annual":
-            base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_1")
+            base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_1")
         elif stage == "spatial":
-            base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_2")
+            base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_2")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -569,10 +585,12 @@ class GlassPreprocessor(AbstractPreprocessor):
             return False
 
     def _resolve_source_file_path(self, file_path: str) -> str:
-        """Resolve the full path to a source file."""
+        """Resolve the full path to a source file using path_prefix and relative_path."""
+        # If already absolute or already under hpc_root, return as is
         if os.path.isabs(file_path) or (self.hpc_root and file_path.startswith(self.hpc_root)):
             return file_path
-        return os.path.join(self.hpc_root, self.data_path, "raw", file_path)
+        # Use path_prefix for correct subdirectory structure
+        return os.path.join(self.hpc_root, self.path_prefix, "raw", file_path)
 
     def _initialize_dask_client(self):
         """Initialize Dask client for parallel processing using the context manager."""
@@ -634,13 +652,29 @@ class GlassPreprocessor(AbstractPreprocessor):
                     day = int(year_day_match[5:8])
                     days.append(day)
                     
-                    # Open as xarray with rioxarray and Dask chunks
+                    # Open file with rioxarray and handle different data structures
                     logger.debug(f"Opening GLASS file: {file_path}")
                     
-                    ds = rxr.open_rasterio(file_path, variable=self.VARIABLE_NAME, decode_coords="all", 
-                                           chunks={k: self.chunk_size[k] for k in ('band', 'y', 'x') if k in self.chunk_size})
+                    if self.data_source == 'MODIS':
+                        # MODIS files return a DataArray - access LST directly
+                        ds = rxr.open_rasterio(file_path, decode_coords="all", 
+                                               chunks={k: self.chunk_size[k] for k in ('band', 'y', 'x') if k in self.chunk_size})
+                        # For MODIS, the DataArray itself contains the LST data
+                        lst_data = ds
+                    else:
+                        # AVHRR files return a Dataset - access LST as a data variable
+                        ds = rxr.open_rasterio(file_path, decode_coords="all", 
+                                               chunks={k: self.chunk_size[k] for k in ('band', 'y', 'x') if k in self.chunk_size})
+                        # For AVHRR, LST is a data variable within the dataset
+                        if hasattr(ds, 'data_vars') and self.VARIABLE_NAME in ds.data_vars:
+                            lst_data = ds[self.VARIABLE_NAME]
+                        elif hasattr(ds, self.VARIABLE_NAME):
+                            lst_data = getattr(ds, self.VARIABLE_NAME)
+                        else:
+                            logger.error(f"Could not find {self.VARIABLE_NAME} variable in {file_path}")
+                            continue
                     
-                    array_list.append(ds[self.VARIABLE_NAME])
+                    array_list.append(lst_data)
                 
                 if not array_list:
                     logger.error(f"No valid files found for {year}/{grid_cell}")
@@ -683,27 +717,51 @@ class GlassPreprocessor(AbstractPreprocessor):
         # Set better chunk sizes for time-based resampling
         rechunked = masked.chunk({'time': -1, 'x': self.chunk_size.get('x', 500), 
                              'y': self.chunk_size.get('y', 500)})
+        # Define output attributes for all statistics
+        attrs = {
+            "_FillValue": 0,
+            "scale_factor": 0.01,
+            "add_offset": 0.0
+        }
+
+        # Helper to format output arrays: fill NaNs, set attrs, cast to uint16
+        def format_output(xarray):
+            return xarray.fillna(0).assign_attrs(attrs).astype(np.uint16, casting="unsafe")
         
-        # Calculate annual statistics
+        # Helper to format output arrays: fill NaNs, set attrs, cast to uint16
+        def format_output_count(xarray):
+            return xarray.fillna(0).astype(np.uint16, casting="unsafe")
+        
+        # Calculate annual statistics with comments and format_output where relevant
         annual_stats = xr.Dataset({
-            "mean": rechunked[self.VARIABLE_NAME].resample(time="1YE").mean().astype(np.uint16),
-            "median": rechunked[self.VARIABLE_NAME].resample(time="1YE").median().astype(np.uint16),
-            "std": rechunked[self.VARIABLE_NAME].resample(time="1YE").std().astype(np.uint16),
-            "max": rechunked[self.VARIABLE_NAME].resample(time="1YE").max().astype(np.uint16),
-            "min": rechunked[self.VARIABLE_NAME].resample(time="1YE").min().astype(np.uint16),
-            "gt30C": (rechunked[self.VARIABLE_NAME] > 30315).resample(time="1YE").max().astype(np.uint16),
-            "lt0C": (rechunked[self.VARIABLE_NAME] < 27315).resample(time="1YE").max().astype(np.uint16),
-            "rollmax5": rechunked[self.VARIABLE_NAME].rolling(time=5, center=True).mean().resample(time="1YE").max().astype(np.uint16),
-            "rollmin5": rechunked[self.VARIABLE_NAME].rolling(time=5, center=True).mean().resample(time="1YE").min().astype(np.uint16),
-            "valid_count": mask.resample(time="1YE").sum().astype(np.uint16)
+            # Mean LST
+            "mean": format_output(rechunked[self.VARIABLE_NAME].resample(time="1YE").mean()),
+            # Median LST
+            "median": format_output(rechunked[self.VARIABLE_NAME].resample(time="1YE").median()),
+            # Standard deviation
+            "std": format_output(rechunked[self.VARIABLE_NAME].resample(time="1YE").std()),
+            # Maximum value
+            "max": format_output(rechunked[self.VARIABLE_NAME].resample(time="1YE").max()),
+            # Minimum value
+            "min": format_output(rechunked[self.VARIABLE_NAME].resample(time="1YE").min()),
+            # 5-day rolling max
+            "rollmax3": format_output(rechunked[self.VARIABLE_NAME].rolling(time=3, center=True).mean().resample(time="1YE").max()),
+            # 5-day rolling min
+            "rollmin3": format_output(rechunked[self.VARIABLE_NAME].rolling(time=3, center=True).mean().resample(time="1YE").min()),
+            # Count of days > 30°C (303.15K)
+            "gt30C": format_output_count((rechunked[self.VARIABLE_NAME] > 30315).resample(time="1YE").sum()),
+            # Count of days < 0°C (273.15K)
+            "lt0C": format_output_count((rechunked[self.VARIABLE_NAME] < 27315).resample(time="1YE").sum()),
+            # Count of valid values
+            "valid_count": format_output_count(mask.resample(time="1YE").sum())
         })
         
         # Calculate monthly statistics
         monthly_stats = xr.Dataset({
-            "mean": data[self.VARIABLE_NAME].resample(time="1ME").mean().astype(np.uint16),
-            "median": data[self.VARIABLE_NAME].resample(time="1ME").median().astype(np.uint16),
-            "std": data[self.VARIABLE_NAME].resample(time="1ME").std().astype(np.uint16),
-            "valid_count": mask.resample(time="1ME").sum().astype(np.uint16)
+            "mean": format_output(data[self.VARIABLE_NAME].resample(time="1ME").mean()),
+            "median": format_output(data[self.VARIABLE_NAME].resample(time="1ME").median()),
+            "std": format_output(data[self.VARIABLE_NAME].resample(time="1ME").std()),
+            "valid_count": mask.resample(time="1ME").sum().fillna(0).astype(np.uint16, casting="unsafe")
         })
         
         # Rechunk for optimal zarr storage
@@ -816,8 +874,16 @@ class GlassPreprocessor(AbstractPreprocessor):
                     years.sort()
                     logger.info(f"Processing {len(years)} years for grid cell {grid_cell}: {years}")
                     
-                    # Load and combine all years
-                    combined_ds = self._load_and_combine_years(source_files, years)
+                    # Get the target geobox for reprojection
+                    try:
+                        target_geobox = get_or_create_geobox(self.hpc_root)
+                        logger.info(f"Using target geobox for reprojection: {target_geobox.shape}")
+                    except Exception as e:
+                        logger.error(f"Failed to get target geobox: {e}")
+                        return False
+                    
+                    # Load, reproject, and combine all years
+                    combined_ds = self._load_and_reproject_years_mfdataset(source_files, years, target_geobox)
                     
                     # Export to zarr
                     self._export_to_zarr(combined_ds, Path(output_path))
@@ -829,32 +895,35 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.exception(f"Error in GLASS spatial processing: {e}")
             return False
 
-    def _load_and_combine_years(self, source_files: List[str], years: List[int]) -> xr.Dataset:
-        """Load and combine years using open_mfdataset for maximum efficiency."""
-        logger.info(f"Loading {len(years)} years using open_mfdataset")
+    def _load_and_reproject_years_mfdataset(self, source_files: List[str], years: List[int], target_geobox) -> xr.Dataset:
+        """Load and reproject years using open_mfdataset for maximum efficiency."""
+        logger.info(f"Loading {len(years)} years using open_mfdataset with preprocess (including reprojection)")
         
         # Verify all files exist
         missing_files = [f for f in source_files if not os.path.exists(f)]
         if missing_files:
             raise FileNotFoundError(f"Missing zarr files: {missing_files}")
         
-        # Use preprocess function to ensure consistent structure
-        def preprocess_glass(ds):
-            # Ensure consistent variable names and structure
-            return ds
-        
+        # Get CRS and transform from the first dataset
+        first_ds = xr.open_zarr(source_files[0], chunks=True)
+        crs = getattr(first_ds.odc, "crs", None)
+        transform = getattr(first_ds.odc, "transform", None)
+        first_ds.close()
+
+        preprocess_func = partial(_preprocess_glass, crs=crs, transform=transform, geobox=target_geobox)
+
+        # The MODIS data requires an intermediate processing step. Data from all grid cells within a year should be combined first. Then these should be concatenated along the year axis. AVHRR is already global and does not require this step
         ds = xr.open_mfdataset(
             source_files,
             engine='zarr',
-            chunks={"time": 1, "x": 512, "y": 512},
-            concat_dim="time",
-            combine="nested",
+            chunks={"time": 1, "x": 2048, "y": 2048},
             parallel=True,
-            preprocess=preprocess_glass
+            preprocess=preprocess_func
         )
-        
-        logger.info(f"Created combined dataset with shape: {ds.dims}")
+
+        logger.info(f"Created lazy reprojected dataset with shape: {ds.dims}")
         return ds
+
 
     def _export_to_zarr(self, ds: xr.Dataset, output_path: Path) -> None:
         """Export dataset to zarr file with optimized settings."""
@@ -869,7 +938,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             var: {
                 "chunks": {"time": 1, "x": 512, "y": 512}, 
                 "compressor": compressor,
-                "dtype": "float32"
+                "dtype": "uint16"
             } 
             for var in ds.data_vars
         }
@@ -890,3 +959,17 @@ class GlassPreprocessor(AbstractPreprocessor):
     def from_config(cls, config: Dict[str, Any]) -> "GlassPreprocessor":
         """Create a GlassPreprocessor from a configuration dictionary."""
         return cls(**config)
+
+def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None):
+    """Preprocess function for GLASS data similar to EOG preprocessing."""
+    # Set CRS if needed
+    if crs and getattr(ds.rio, "crs", None) is None:
+        ds = ds.rio.write_crs(crs)
+    if transform and getattr(ds.rio, "transform", None) is None:
+        ds = ds.rio.write_transform(transform)
+    if drop_vars:
+        ds = ds.drop_vars(drop_vars, errors="ignore")
+    # Reproject if geobox is provided
+    if geobox is not None:
+        ds = xr_reproject(ds, geobox, resampling="nearest")
+    return ds
