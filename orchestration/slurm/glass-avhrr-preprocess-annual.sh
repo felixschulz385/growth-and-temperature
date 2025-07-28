@@ -2,7 +2,7 @@
 #SBATCH --job-name=glass-avhrr-preprocess
 #SBATCH --output=./log/slurm-%j.out
 #SBATCH --error=./log/slurm-%j.err
-#SBATCH --time=7-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --qos=1week
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
