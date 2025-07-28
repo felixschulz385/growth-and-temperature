@@ -18,7 +18,6 @@ from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
 
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.dask.client import DaskClientContextManager
-from gnt.data.common.index.preprocessing_index import PreprocessingIndex
 from gnt.data.common.geobox import get_or_create_geobox
 
 # Add pandas for reading parquet files directly
@@ -81,8 +80,8 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         # Set processing stage
         self.stage = kwargs.get('stage', 'annual')
-        if self.stage not in ['annual', 'spatial']:
-            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual' or 'spatial'.")
+        if self.stage not in ['annual', 'spatial', 'tabular']:
+            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual', 'spatial', or 'tabular'.")
             
         # Set year or year range
         self.year = kwargs.get('year')
@@ -255,6 +254,8 @@ class GlassPreprocessor(AbstractPreprocessor):
                 return self._generate_annual_targets(file_paths, year_range)
             elif stage == 'spatial':
                 return self._generate_spatial_targets(file_paths, year_range)
+            elif stage == 'tabular':
+                return self._generate_tabular_targets(file_paths, year_range)
             else:
                 raise ValueError(f"Unknown stage: {stage}")
                 
@@ -339,31 +340,25 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.warning(f"Missing annual files for years: {sorted(missing_years)}")
         
         if self.data_source == 'MODIS':
-            # Group annual files by grid cell
-            from collections import defaultdict
-            files_by_grid = defaultdict(list)
-            for f in annual_files:
-                files_by_grid[f['grid_cell']].append(f)
-            
-            # Create spatial target for each grid cell
-            for grid_cell, grid_files in files_by_grid.items():
-                target = {
-                    'grid_cell': grid_cell,
+            # For MODIS: Create single target combining all grid cells and years
+            target = {
+                'grid_cell': 'all_cells',
+                'data_type': f'{self.data_source.lower()}_spatial',
+                'stage': 'spatial',
+                'source_files': [f['zarr_path'] for f in annual_files],
+                'output_path': f"{self.get_hpc_output_path('spatial')}/{self.data_source.lower()}_timeseries_reprojected.zarr",
+                'dependencies': [f['zarr_path'] for f in annual_files],
+                'metadata': {
+                    'source_type': self.data_source.lower(),
                     'data_type': f'{self.data_source.lower()}_spatial',
-                    'stage': 'spatial',
-                    'source_files': [f['zarr_path'] for f in grid_files],
-                    'output_path': f"{self.get_hpc_output_path('spatial')}/{grid_cell}_timeseries_reprojected.zarr",
-                    'dependencies': [f['zarr_path'] for f in grid_files],
-                    'metadata': {
-                        'source_type': self.data_source.lower(),
-                        'data_type': f'{self.data_source.lower()}_spatial',
-                        'processing_type': 'reproject_timeseries',
-                        'years_available': [f['year'] for f in grid_files],
-                        'years_requested': self.years_to_process,
-                        'missing_years': sorted(missing_years) if missing_years else []
-                    }
+                    'processing_type': 'reproject_timeseries_combined',
+                    'years_available': [f['year'] for f in annual_files],
+                    'years_requested': self.years_to_process,
+                    'missing_years': sorted(missing_years) if missing_years else [],
+                    'grid_cells': list(set(f['grid_cell'] for f in annual_files))
                 }
-                targets.append(target)
+            }
+            targets.append(target)
         else:
             # AVHRR - single global target
             target = {
@@ -380,6 +375,37 @@ class GlassPreprocessor(AbstractPreprocessor):
                     'years_available': [f['year'] for f in annual_files],
                     'years_requested': self.years_to_process,
                     'missing_years': sorted(missing_years) if missing_years else []
+                }
+            }
+            targets.append(target)
+        
+        return targets
+    
+    def _generate_tabular_targets(self, files: List[str], year_range: Tuple[int, int] = None) -> List[Dict]:
+        """Generate tabular processing targets."""
+        targets = []
+        
+        # Check if spatial zarr files are available
+        spatial_files = self._get_all_spatial_files()
+        
+        if not spatial_files:
+            logger.warning("No spatial files available for tabular processing")
+            return targets
+        
+        # Create target for each spatial file
+        for spatial_file in spatial_files:
+            target = {
+                'grid_cell': spatial_file['grid_cell'],
+                'data_type': f'{self.data_source.lower()}_tabular',
+                'stage': 'tabular',
+                'source_files': [spatial_file['zarr_path']],
+                'output_path': f"{self.get_hpc_output_path('tabular')}/{self.data_source.lower()}_tabular.parquet",
+                'dependencies': [spatial_file['zarr_path']],
+                'metadata': {
+                    'source_type': self.data_source.lower(),
+                    'data_type': f'{self.data_source.lower()}_tabular',
+                    'processing_type': 'zarr_to_parquet',
+                    'source_file': spatial_file['zarr_path']
                 }
             }
             targets.append(target)
@@ -516,6 +542,33 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         return files
 
+    def _get_all_spatial_files(self) -> List[Dict]:
+        """
+        Return all available spatial zarr files in the spatial output directory.
+        Each dict contains 'grid_cell' and 'zarr_path'.
+        """
+        spatial_dir = self.get_hpc_output_path('spatial')
+        if not os.path.exists(spatial_dir):
+            return []
+        
+        files = []
+        
+        for fname in os.listdir(spatial_dir):
+            if fname.endswith('.zarr'):
+                if self.data_source == 'MODIS' and 'timeseries_reprojected' in fname:
+                    grid_cell = fname.replace('_timeseries_reprojected.zarr', '')
+                    files.append({
+                        'grid_cell': grid_cell,
+                        'zarr_path': os.path.join(spatial_dir, fname)
+                    })
+                elif self.data_source == 'AVHRR' and 'timeseries_reprojected' in fname:
+                    files.append({
+                        'grid_cell': 'global',
+                        'zarr_path': os.path.join(spatial_dir, fname)
+                    })
+        
+        return files
+
     def get_grid_cells(self) -> List[str]:
         """Get list of grid cells to process."""
         if self.data_source == 'MODIS':
@@ -529,6 +582,8 @@ class GlassPreprocessor(AbstractPreprocessor):
             base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_1")
         elif stage == "spatial":
             base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_2")
+        elif stage == "tabular":
+            base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_3")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -547,6 +602,8 @@ class GlassPreprocessor(AbstractPreprocessor):
                 return self._process_annual_target(target)
             elif stage == 'spatial':
                 return self._process_spatial_target(target)
+            elif stage == 'tabular':
+                return self._process_tabular_target(target)
             else:
                 logger.error(f"Unknown stage: {stage}")
                 return False
@@ -851,6 +908,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                     'array.slicing.split_large_chunks': True,
                     'array.chunk-size': '512MB',
                     'optimization.fuse.active': False,
+                    'distributed.comm.compression': 'lz4',  # Use faster compression
                 }):
                     # Extract years from source files
                     years = []
@@ -955,11 +1013,191 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         logger.info(f"Successfully exported to {output_path}")
 
+    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
+        """Process tabular stage - convert zarr to parquet with land masking."""
+        logger.info("Starting tabular stage processing")
+        
+        output_path = self._strip_remote_prefix(target['output_path'])
+        source_files = target.get('source_files', [])
+        
+        if not self.override and os.path.exists(output_path):
+            logger.info(f"Skipping tabular processing, output already exists: {output_path}")
+            return True
+        
+        if not source_files:
+            logger.error("No source files provided for tabular processing")
+            return False
+        
+        source_file = source_files[0]  # Should be single zarr file
+        
+        if not os.path.exists(source_file):
+            logger.error(f"Source file does not exist: {source_file}")
+            return False
+        
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        try:
+            with self._initialize_dask_client() as client:
+                if client is None:
+                    logger.error("Failed to initialize Dask client")
+                    return False
+                    
+                dashboard_link = getattr(client, "dashboard_link", None)
+                if dashboard_link:
+                    logger.info(f"Created Dask client for tabular processing: {dashboard_link}")
+                
+                # Load the zarr dataset
+                logger.info(f"Loading zarr dataset: {source_file}")
+                ds = xr.open_zarr(source_file)
+                
+                # Create and insert index matrix
+                logger.info("Adding index variable")
+                index_matrix = self._create_index_matrix(ds)
+                ds = ds.assign(id = (["latitude", "longitude"], index_matrix))
+                
+                # Transform time variable
+                logger.info("Transforming time variable")
+                ds.assign_coords(
+                    {"time": (pd.DatetimeIndex(ds.time).year - 1900).astype("uint8")}
+                )
+                
+                # Get or create land mask
+                land_mask = self._get_or_create_land_mask(ds)
+                
+                # Apply land mask to all variables
+                logger.info("Applying land mask")
+                ds_masked = ds.where(land_mask)
+                
+                # Unify chunks
+                ds_masked = ds_masked.unify_chunks()
+                ds_masked = ds_masked.squeeze().persist()
+                
+                # Convert to dask dataframe
+                logger.info("Converting to dask dataframe")
+                dask_df = ds_masked.to_dask_dataframe().persist()
+                del ds, land_mask, ds_masked
+                
+                # # Repartition dataframe for efficiency
+                # logger.info("Repartitioning dask dataframe")
+                # dask_df = dask_df.repartition(npartitions=10000)
+                
+                # Set index
+                logger.info("Dropping coordinate columns")           
+                dask_df = dask_df.drop(columns = ["latitude", "longitude", "band", "spatial_ref"])
+                
+                # # Categorize coordinate columns for efficiency
+                # logger.info("Categorizing coordinate columns")
+                # coord_cols = []
+                # if 'id' in dask_df.columns:
+                #     coord_cols.append('id')
+                # if 'time' in dask_df.columns:
+                #     coord_cols.append('time')
+                
+                # if coord_cols:
+                #     dask_df = dask_df.categorize(coord_cols)
+                
+                # Drop NA values
+                logger.info("Dropping NA values")
+                dask_df = dask_df.dropna(subset = ["valid_count"])
+                dask_df = dask_df.persist()
+                
+                # Write to parquet
+                logger.info(f"Writing to parquet: {output_path}")
+                dask_df.to_parquet(
+                    output_path,
+                    compression='snappy',
+                    write_index=False,
+                    overwrite=True,
+                    compute=False
+                ).compute()
+                
+                logger.info("Tabular stage processing completed successfully")
+                return True
+                
+        except Exception as e:
+            logger.exception(f"Error in GLASS tabular processing: {e}")
+            return False
+        
+    def _create_index_matrix(self, ds: xr.Dataset) -> xr.DataArray:
+        """Create index matrix for a given dataset"""
+        # Get size of matrix
+        dsize = ds.latitude.size * ds.longitude.size
+        # Compute vector with index numbers
+        id_vector = da.arange(0, dsize, 1, dtype="uint32")
+        # Reshape to Dataset dimensions
+        id_matrix = da.reshape(id_vector, (ds.latitude.size, ds.longitude.size))
+        
+        return id_matrix
+
+    def _get_or_create_land_mask(self, ds: xr.Dataset) -> xr.DataArray:
+        """Get land mask from the processed misc data or raise an error if not found."""
+        # Construct the expected land mask path relative to hpc_root
+        land_mask_path = os.path.join(
+            self.hpc_root, 
+            "misc", 
+            "processed", 
+            "stage_2", 
+            "osm", 
+            "land_mask.zarr"
+        )
+        
+        if not os.path.exists(land_mask_path):
+            raise FileNotFoundError(
+                f"Land mask not found at expected location: {land_mask_path}. "
+                "Please ensure the misc data has been processed through stage 2 "
+                "to generate the land mask from OpenStreetMap data."
+            )
+        
+        try:
+            land_mask_ds = xr.open_zarr(land_mask_path)
+            
+            # Extract the land mask array - assume it's the first data variable
+            if len(land_mask_ds.data_vars) == 0:
+                raise ValueError("Land mask zarr file contains no data variables")
+            
+            land_mask_var = list(land_mask_ds.data_vars)[0]
+            land_mask = land_mask_ds[land_mask_var]
+            
+            # Ensure the land mask coordinates match the dataset exactly
+            if not self._coordinates_match(ds, land_mask):
+                raise ValueError(
+                    "Land mask coordinates don't match dataset coordinates. "
+                    "The land mask must be on the same grid as the reprojected data. "
+                    "Please ensure the misc data was processed with the same target geobox."
+                )
+            
+            logger.info(f"Successfully loaded land mask from: {land_mask_path}")
+            return land_mask
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to load land mask from {land_mask_path}: {e}")
+
+    def _coordinates_match(self, ds: xr.Dataset, land_mask: xr.DataArray) -> bool:
+        """Check if dataset and land mask have matching coordinates."""
+        try:
+            # Check spatial coordinates
+            ds_x = ds.coords.get('x', ds.coords.get('longitude'))
+            ds_y = ds.coords.get('y', ds.coords.get('latitude'))
+            mask_x = land_mask.coords.get('x', land_mask.coords.get('longitude'))
+            mask_y = land_mask.coords.get('y', land_mask.coords.get('latitude'))
+            
+            if ds_x is None or ds_y is None or mask_x is None or mask_y is None:
+                return False
+            
+            # Check if coordinate arrays are approximately equal
+            x_match = np.allclose(ds_x.values, mask_x.values, rtol=1e-6)
+            y_match = np.allclose(ds_y.values, mask_y.values, rtol=1e-6)
+            
+            return x_match and y_match
+            
+        except Exception:
+            return False
+        
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> "GlassPreprocessor":
         """Create a GlassPreprocessor from a configuration dictionary."""
         return cls(**config)
-
+        
 def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None):
     """Preprocess function for GLASS data similar to EOG preprocessing."""
     # Set CRS if needed
@@ -969,7 +1207,19 @@ def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None)
         ds = ds.rio.write_transform(transform)
     if drop_vars:
         ds = ds.drop_vars(drop_vars, errors="ignore")
+    
     # Reproject if geobox is provided
     if geobox is not None:
         ds = xr_reproject(ds, geobox, resampling="nearest")
+    
+    return ds
+    if transform and getattr(ds.rio, "transform", None) is None:
+        ds = ds.rio.write_transform(transform)
+    if drop_vars:
+        ds = ds.drop_vars(drop_vars, errors="ignore")
+    
+    # Reproject if geobox is provided
+    if geobox is not None:
+        ds = xr_reproject(ds, geobox, resampling="nearest")
+    
     return ds
