@@ -1,24 +1,16 @@
 import os
 import tempfile
 import logging
+import re  # Added for _strip_remote_prefix regex
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Tuple
-import pandas as pd
-import numpy as np
-import xarray as xr
-import rioxarray as rxr
-import dask
 from dask.distributed import Client, LocalCluster
-import dask.array as da
-import numcodecs
-import re
 from functools import partial
-from odc.geo import CRS
-from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
-
-from gnt.data.preprocess.sources.base import AbstractPreprocessor
-from gnt.data.common.dask.client import DaskClientContextManager
-from gnt.data.common.geobox import get_or_create_geobox
+import xarray as xr
+import numpy as np
+import dask.array as da
+import numcodecs  # Added for zarr compression
+import rioxarray as rxr  # Added for rasterio-based xarray reading
 
 # Add pandas for reading parquet files directly
 try:
@@ -27,6 +19,23 @@ try:
 except ImportError:
     PANDAS_AVAILABLE = False
     pd = None
+
+# Add PyArrow for efficient parquet operations
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    PYARROW_AVAILABLE = True
+except ImportError:
+    PYARROW_AVAILABLE = False
+    pa = None
+    pq = None
+
+from gnt.data.preprocess.sources.base import AbstractPreprocessor
+from gnt.data.common.dask.client import DaskClientContextManager
+from gnt.data.common.geobox import get_or_create_geobox
+
+from odc.geo import CRS
+from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
 
 logger = logging.getLogger(__name__)
 
@@ -167,6 +176,9 @@ class GlassPreprocessor(AbstractPreprocessor):
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)
         self.chunk_size = kwargs.get('chunk_size', {"band": 1, "x": 500, "y": 500})
         self.dashboard_port = kwargs.get('dashboard_port', 8787)
+        
+        # Tabular processing configuration - optimized defaults
+        self.tabular_batch_size = kwargs.get('tabular_batch_size', 32)  # Increased default batch size
         
         # Initialize parquet index path
         self._init_parquet_index_path()
@@ -519,7 +531,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                     continue
                 
                 for fname in os.listdir(year_path):
-                    if fname.endswith('.zarr'):
+                    if fname.endswith('.zarr') and not fname.endswith('_monthly.zarr'):
                         grid_cell = os.path.splitext(fname)[0]
                         files.append({
                             'year': year,
@@ -529,7 +541,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         else:
             # AVHRR files are organized as year.zarr
             for fname in os.listdir(annual_dir):
-                if fname.endswith('.zarr'):
+                if fname.endswith('.zarr') and not fname.endswith('_monthly.zarr'):
                     try:
                         year = int(os.path.splitext(fname)[0])
                         files.append({
@@ -910,27 +922,6 @@ class GlassPreprocessor(AbstractPreprocessor):
                     'optimization.fuse.active': False,
                     'distributed.comm.compression': 'lz4',  # Use faster compression
                 }):
-                    # Extract years from source files
-                    years = []
-                    for f in source_files:
-                        try:
-                            if self.data_source == 'MODIS':
-                                # For MODIS: extract year from path like .../2000/h25v06.zarr
-                                year = int(os.path.basename(os.path.dirname(f)))
-                            else:
-                                # For AVHRR: extract year from filename like 2000.zarr
-                                year = int(os.path.splitext(os.path.basename(f))[0])
-                            years.append(year)
-                        except (ValueError, IndexError):
-                            continue
-                    
-                    if not years:
-                        logger.error("No valid years found in source files")
-                        return False
-                    
-                    # Sort years for consistent processing
-                    years.sort()
-                    logger.info(f"Processing {len(years)} years for grid cell {grid_cell}: {years}")
                     
                     # Get the target geobox for reprojection
                     try:
@@ -940,10 +931,12 @@ class GlassPreprocessor(AbstractPreprocessor):
                         logger.error(f"Failed to get target geobox: {e}")
                         return False
                     
+                    # source_files = [x for x in source_files if "2020" in x] # TODO: remove
                     # Load, reproject, and combine all years
-                    combined_ds = self._load_and_reproject_years_mfdataset(source_files, years, target_geobox)
+                    combined_ds = self._load_and_reproject_years_mfdataset(source_files, target_geobox)
                     
                     # Export to zarr
+                    # combined_ds_subset = combined_ds.rio.clip_box(*(88.0844222351, 20.670883287, 92.6727209818, 26.4465255803)).compute() # TODO: remove
                     self._export_to_zarr(combined_ds, Path(output_path))
                     
                     logger.info("Spatial stage processing completed successfully")
@@ -953,9 +946,8 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.exception(f"Error in GLASS spatial processing: {e}")
             return False
 
-    def _load_and_reproject_years_mfdataset(self, source_files: List[str], years: List[int], target_geobox) -> xr.Dataset:
+    def _load_and_reproject_years_mfdataset(self, source_files: List[str], target_geobox) -> xr.Dataset:
         """Load and reproject years using open_mfdataset for maximum efficiency."""
-        logger.info(f"Loading {len(years)} years using open_mfdataset with preprocess (including reprojection)")
         
         # Verify all files exist
         missing_files = [f for f in source_files if not os.path.exists(f)]
@@ -968,16 +960,39 @@ class GlassPreprocessor(AbstractPreprocessor):
         transform = getattr(first_ds.odc, "transform", None)
         first_ds.close()
 
-        preprocess_func = partial(_preprocess_glass, crs=crs, transform=transform, geobox=target_geobox)
-
-        # The MODIS data requires an intermediate processing step. Data from all grid cells within a year should be combined first. Then these should be concatenated along the year axis. AVHRR is already global and does not require this step
-        ds = xr.open_mfdataset(
-            source_files,
-            engine='zarr',
-            chunks={"time": 1, "x": 2048, "y": 2048},
-            parallel=True,
-            preprocess=preprocess_func
-        )
+        if self.data_source == 'AVHRR':
+            # AVHRR: Preprocess during loading (already global, just reproject)
+            logger.info("AVHRR: Preprocessing during loading with reprojection")
+            preprocess_func = partial(_preprocess_glass, crs=crs, transform=transform, geobox=target_geobox)
+            
+            ds = xr.open_mfdataset(
+                source_files,
+                engine='zarr',
+                parallel=True,
+                preprocess=preprocess_func,
+                mask_and_scale=False
+            )
+        else:
+            # MODIS: Load first, then preprocess (need to combine grid cells first)
+            logger.info("MODIS: Loading first, then preprocessing after combining grid cells")
+            
+            # Load without preprocessing first
+            ds = xr.open_mfdataset(
+                source_files,
+                engine='zarr',
+                parallel=True,
+                mask_and_scale=False,
+                decode_coords="all"
+            )
+            
+            # Set CRS and transform if needed
+            if crs and getattr(ds.rio, "crs", None) is None:
+                ds = ds.rio.set_crs("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
+                ds = ds.odc.assign_crs("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
+ 
+            # Now reproject the combined dataset
+            logger.info("MODIS: Reprojecting combined dataset")
+            ds = xr_reproject(ds, target_geobox, resampling="nearest")
 
         logger.info(f"Created lazy reprojected dataset with shape: {ds.dims}")
         return ds
@@ -994,7 +1009,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
         encoding = {
             var: {
-                "chunks": {"time": 1, "x": 512, "y": 512}, 
+                "chunks": {"time": 1, "latitude": 512, "longitude": 512}, 
                 "compressor": compressor,
                 "dtype": "uint16"
             } 
@@ -1014,7 +1029,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         logger.info(f"Successfully exported to {output_path}")
 
     def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
-        """Process tabular stage - convert zarr to parquet with land masking."""
+        """Process tabular stage - convert zarr to parquet with optimized batched processing."""
         logger.info("Starting tabular stage processing")
         
         output_path = self._strip_remote_prefix(target['output_path'])
@@ -1038,85 +1053,563 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         try:
             with self._initialize_dask_client() as client:
-                if client is None:
-                    logger.error("Failed to initialize Dask client")
-                    return False
-                    
-                dashboard_link = getattr(client, "dashboard_link", None)
-                if dashboard_link:
-                    logger.info(f"Created Dask client for tabular processing: {dashboard_link}")
+                logger.info("Processing zarr to parquet using optimized batched approach")
                 
-                # Load the zarr dataset
-                logger.info(f"Loading zarr dataset: {source_file}")
+                # Configure optimized batch size and chunking
+                batch_size = self.tabular_batch_size
+                
+                # Load the zarr dataset without forced chunking to avoid splitting stored chunks
+                logger.info("Loading zarr dataset with native chunking")
                 ds = xr.open_zarr(source_file)
                 
-                # Create and insert index matrix
-                logger.info("Adding index variable")
-                index_matrix = self._create_index_matrix(ds)
-                ds = ds.assign(id = (["latitude", "longitude"], index_matrix))
+                # Get native chunk sizes from the dataset
+                native_chunks = ds.chunks
+                logger.info(f"Native zarr chunks: {native_chunks}")
                 
-                # Transform time variable
-                logger.info("Transforming time variable")
-                ds.assign_coords(
-                    {"time": (pd.DatetimeIndex(ds.time).year - 1900).astype("uint8")}
-                )
+                # Calculate optimal chunks based on native structure and batch size
+                if 'latitude' in native_chunks and 'longitude' in native_chunks:
+                    native_lat_chunk = native_chunks['latitude'][0] if isinstance(native_chunks['latitude'], tuple) else native_chunks['latitude']
+                    native_lon_chunk = native_chunks['longitude'][0] if isinstance(native_chunks['longitude'], tuple) else native_chunks['longitude']
+                    
+                    # Use native chunk sizes or align with them
+                    optimal_lat_chunk = max(batch_size * 4, native_lat_chunk)
+                    optimal_lon_chunk = native_lon_chunk
+                else:
+                    # Fallback to default values
+                    optimal_lat_chunk = max(batch_size * 4, 128)
+                    optimal_lon_chunk = 2048
                 
-                # Get or create land mask
-                land_mask = self._get_or_create_land_mask(ds)
+                # Only rechunk if needed and align with stored boundaries
+                if (ds.chunks.get('latitude') != (optimal_lat_chunk,) or 
+                    ds.chunks.get('longitude') != (optimal_lon_chunk,)):
+                    logger.info(f"Rechunking to optimize for processing: lat={optimal_lat_chunk}, lon={optimal_lon_chunk}")
+                    ds = ds.chunk({
+                        'time': -1,  # Load all time steps at once
+                        'latitude': optimal_lat_chunk,
+                        'longitude': optimal_lon_chunk
+                    })
                 
-                # Apply land mask to all variables
-                logger.info("Applying land mask")
-                ds_masked = ds.where(land_mask)
+                # Get land mask with optimized chunking to match dataset
+                land_mask = self._get_or_create_land_mask_optimized(ds, optimal_lat_chunk, optimal_lon_chunk)
                 
-                # Unify chunks
-                ds_masked = ds_masked.unify_chunks()
-                ds_masked = ds_masked.squeeze().persist()
+                # Apply land mask with chunking-aware operations
+                ds_masked = self._apply_land_mask_optimized(ds, land_mask)
                 
-                # Convert to dask dataframe
-                logger.info("Converting to dask dataframe")
-                dask_df = ds_masked.to_dask_dataframe().persist()
-                del ds, land_mask, ds_masked
+                # Process the dataset in spatial batches with optimized processing
+                success = self._process_zarr_to_parquet_vectorized(ds_masked, output_path, batch_size)
                 
-                # # Repartition dataframe for efficiency
-                # logger.info("Repartitioning dask dataframe")
-                # dask_df = dask_df.repartition(npartitions=10000)
-                
-                # Set index
-                logger.info("Dropping coordinate columns")           
-                dask_df = dask_df.drop(columns = ["latitude", "longitude", "band", "spatial_ref"])
-                
-                # # Categorize coordinate columns for efficiency
-                # logger.info("Categorizing coordinate columns")
-                # coord_cols = []
-                # if 'id' in dask_df.columns:
-                #     coord_cols.append('id')
-                # if 'time' in dask_df.columns:
-                #     coord_cols.append('time')
-                
-                # if coord_cols:
-                #     dask_df = dask_df.categorize(coord_cols)
-                
-                # Drop NA values
-                logger.info("Dropping NA values")
-                dask_df = dask_df.dropna(subset = ["valid_count"])
-                dask_df = dask_df.persist()
-                
-                # Write to parquet
-                logger.info(f"Writing to parquet: {output_path}")
-                dask_df.to_parquet(
-                    output_path,
-                    compression='snappy',
-                    write_index=False,
-                    overwrite=True,
-                    compute=False
-                ).compute()
-                
-                logger.info("Tabular stage processing completed successfully")
-                return True
+                if success:
+                    logger.info("Tabular stage processing completed successfully")
+                return success
                 
         except Exception as e:
             logger.exception(f"Error in GLASS tabular processing: {e}")
             return False
+
+    def _get_or_create_land_mask_optimized(self, ds: xr.Dataset, lat_chunk: int, lon_chunk: int) -> xr.DataArray:
+        """Get land mask with optimized chunking to match the dataset and reduce chunk proliferation."""
+        # Construct the expected land mask path relative to hpc_root
+        land_mask_path = os.path.join(
+            self.hpc_root, 
+            "misc", 
+            "processed", 
+            "stage_2", 
+            "osm", 
+            "land_mask.zarr"
+        )
+        
+        if not os.path.exists(land_mask_path):
+            raise FileNotFoundError(
+                f"Land mask not found at expected location: {land_mask_path}. "
+                "Please ensure the misc data has been processed through stage 2 "
+                "to generate the land mask from OpenStreetMap data."
+            )
+        
+        try:
+            # Load land mask with native chunking first to avoid splitting stored chunks
+            logger.info("Loading land mask with native chunking")
+            land_mask_ds = xr.open_zarr(land_mask_path)
+            
+            # Get native chunk sizes
+            native_chunks = land_mask_ds.chunks
+            logger.debug(f"Land mask native chunks: {native_chunks}")
+            
+            # Extract the land mask array - assume it's the first data variable
+            if len(land_mask_ds.data_vars) == 0:
+                raise ValueError("Land mask zarr file contains no data variables")
+            
+            land_mask_var = list(land_mask_ds.data_vars)[0]
+            land_mask = land_mask_ds[land_mask_var]
+            
+            # Ensure the land mask coordinates match the dataset exactly
+            if not self._coordinates_match(ds, land_mask):
+                raise ValueError(
+                    "Land mask coordinates don't match dataset coordinates. "
+                    "The land mask must be on the same grid as the reprojected data. "
+                    "Please ensure the misc data was processed with the same target geobox."
+                )
+            
+            # Rechunk to exactly match dataset chunking to prevent chunk proliferation
+            target_chunks = {
+                'latitude': ds.chunks['latitude'] if 'latitude' in ds.chunks else lat_chunk,
+                'longitude': ds.chunks['longitude'] if 'longitude' in ds.chunks else lon_chunk
+            }
+            
+            land_mask = land_mask.chunk(target_chunks)
+            
+            logger.info(f"Successfully loaded and optimized land mask from: {land_mask_path}")
+            logger.info(f"Land mask chunks: {land_mask.chunks}")
+            
+            return land_mask
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to load land mask from {land_mask_path}: {e}")
+
+    def _apply_land_mask_optimized(self, ds: xr.Dataset, land_mask: xr.DataArray) -> xr.Dataset:
+        """Apply land mask with optimized operations to minimize chunk proliferation."""
+        try:
+            # Ensure consistent chunking between dataset and land mask
+            logger.info("Applying land mask with optimized chunking")
+            
+            # Apply mask using where operation with consistent chunking
+            # Convert land_mask to boolean explicitly to avoid type issues
+            land_mask_bool = land_mask.astype(bool)
+            
+            # Apply mask to each variable in the dataset
+            masked_vars = {}
+            for var_name, var_data in ds.data_vars.items():
+                logger.debug(f"Applying land mask to variable: {var_name}")
+                masked_vars[var_name] = var_data.where(land_mask_bool)
+            
+            # Create new dataset with masked variables
+            ds_masked = xr.Dataset(masked_vars, coords=ds.coords, attrs=ds.attrs)
+            
+            logger.info("Land mask applied successfully with optimized chunking")
+            return ds_masked
+            
+        except Exception as e:
+            logger.error(f"Error applying land mask: {e}")
+            # Fallback to original method if optimized version fails
+            return ds.where(land_mask)
+
+    def _process_zarr_to_parquet_vectorized(self, ds: xr.Dataset, output_path: str, batch_size: int = 32) -> bool:
+        """
+        Optimized zarr to parquet processing using vectorized operations and efficient memory management.
+        
+        Args:
+            ds: xarray Dataset
+            output_path: Output parquet file path
+            batch_size: Number of spatial rows to process at once
+        """
+        try:
+            # Remove temporary output directory if it exists
+            temp_output_dir = f"{output_path}_temp"
+            if os.path.exists(temp_output_dir):
+                import shutil
+                shutil.rmtree(temp_output_dir)
+            os.makedirs(temp_output_dir, exist_ok=True)
+            
+            # Get dimensions
+            n_lat, n_lon = ds.sizes['latitude'], ds.sizes['longitude']
+            n_time = ds.sizes['time']
+            
+            logger.info(f"Processing {n_lat}x{n_lon} spatial grid with {n_time} time steps")
+            logger.info(f"Using optimized batch size: {batch_size}")
+            logger.info(f"Dataset chunks: lat={ds.chunks.get('latitude')}, lon={ds.chunks.get('longitude')}")
+            
+            # Pre-compute global arrays once using efficient operations
+            time_years = pd.DatetimeIndex(ds.time.values).year - 1900
+            lats = ds.latitude.values
+            lons = ds.longitude.values
+            
+            # Create coordinate grids once
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            
+            # Create global index matrix with chunking that matches the dataset
+            global_index_matrix = self._create_index_matrix_optimized(ds)
+            
+            # Define the schema for consistency
+            schema = self._get_parquet_schema()
+            
+            # Configure Dask to minimize chunk operations
+            import dask
+            with dask.config.set({
+                'array.slicing.split_large_chunks': False,  # Prevent automatic chunk splitting
+                'array.chunk-size': '1GB',  # Allow larger chunks in memory
+                'optimization.fuse.active': True,  # Enable operation fusion
+            }):
+                
+                # Process batches with optimized approach
+                batch_files = []
+                total_rows_written = 0
+                
+                # Use Dask delayed for parallel processing but with optimized batch function
+                from dask import delayed
+                
+                # Create delayed tasks for each batch
+                delayed_tasks = []
+                for lat_start in range(0, n_lat, batch_size):
+                    lat_end = min(lat_start + batch_size, n_lat)
+                    
+                    task = delayed(self._process_batch_vectorized_optimized)(
+                        ds,
+                        lat_start,
+                        lat_end,
+                        temp_output_dir,
+                        time_years,
+                        lat_grid[lat_start:lat_end, :],
+                        lon_grid[lat_start:lat_end, :],
+                        global_index_matrix,
+                        schema,
+                        len(delayed_tasks)
+                    )
+                    delayed_tasks.append(task)
+                
+                logger.info(f"Created {len(delayed_tasks)} optimized batch tasks")
+                
+                batch_results = dask.compute(*delayed_tasks)
+            
+            # Collect successful batch files
+            for result in batch_results:
+                if result['success'] and result['batch_file']:
+                    batch_files.append(result['batch_file'])
+                    total_rows_written += result['rows_written']
+            
+            if not batch_files:
+                logger.warning("No data to write - all batches were empty")
+                return False
+            
+            # Combine all batch files into final parquet file
+            logger.info(f"Combining {len(batch_files)} batch files into final parquet file")
+            self._combine_parquet_files_optimized(batch_files, output_path, schema)
+            
+            # Clean up temporary files
+            import shutil
+            shutil.rmtree(temp_output_dir)
+            
+            logger.info(f"Successfully wrote {total_rows_written:,} rows to {output_path}")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in vectorized parquet processing: {e}")
+            return False
+
+    def _create_index_matrix_optimized(self, ds: xr.Dataset) -> da.Array:
+        """Create index matrix with optimized chunking to match dataset structure."""
+        # Get dataset dimensions and chunking
+        n_lat, n_lon = ds.sizes['latitude'], ds.sizes['longitude']
+        
+        # Use chunking that matches the dataset to prevent rechunking operations
+        lat_chunks = ds.chunks.get('latitude', (n_lat,))
+        lon_chunks = ds.chunks.get('longitude', (n_lon,))
+        
+        # Create index matrix as a dask array with proper chunking
+        total_size = n_lat * n_lon
+        id_vector = da.arange(total_size, dtype=np.uint32, chunks=(np.prod(lat_chunks[0]) * lon_chunks[0],))
+        
+        # Reshape first, then rechunk to match the dataset structure
+        id_matrix = da.reshape(id_vector, (n_lat, n_lon))
+        id_matrix = id_matrix.rechunk((lat_chunks, lon_chunks))
+        
+        logger.debug(f"Created optimized index matrix with chunks: {id_matrix.chunks}")
+        return id_matrix
+
+    def _process_batch_vectorized_optimized(self, ds: xr.Dataset, lat_start: int, lat_end: int, 
+                                          temp_output_dir: str, time_years: np.ndarray,
+                                          lat_grid_batch: np.ndarray, lon_grid_batch: np.ndarray,
+                                          global_index_matrix: da.Array, schema: pa.Schema, 
+                                          batch_idx: int) -> Dict[str, Any]:
+        """
+        Optimized batch processing with reduced chunk operations and memory efficiency.
+        """
+        try:
+            logger.debug(f"Processing optimized batch {batch_idx}: latitude {lat_start}:{lat_end}")
+            
+            # Extract spatial subset of the index matrix for this batch
+            index_matrix_batch = global_index_matrix[lat_start:lat_end, :].compute()
+            
+            # Use more efficient data extraction approach
+            batch_data = {}
+            variable_names = ['mean', 'median', 'std', 'max', 'min', 'rollmax3', 'rollmin3', 'gt30C', 'lt0C', 'valid_count']
+            
+            # Extract data for all variables at once to minimize zarr reads
+            for var in variable_names:
+                if var in ds.data_vars:
+                    # Use isel with computed=False to create lazy selection, then compute once
+                    var_subset = ds[var].isel(latitude=slice(lat_start, lat_end))
+                    batch_data[var] = var_subset.compute().values  # Compute once and extract values
+            
+            if not batch_data:
+                logger.warning(f"No valid variables found in batch {batch_idx}")
+                return {'success': True, 'batch_file': None, 'rows_written': 0, 'batch_idx': batch_idx}
+            
+            # Get batch dimensions from the first variable
+            first_var_data = next(iter(batch_data.values()))
+            n_times, n_lats_batch, n_lons = first_var_data.shape
+            
+            # Validate index matrix dimensions
+            if index_matrix_batch.shape != (n_lats_batch, n_lons):
+                logger.error(f"Index matrix shape mismatch: {index_matrix_batch.shape} vs ({n_lats_batch}, {n_lons})")
+                return {'success': False, 'batch_file': None, 'rows_written': 0, 'batch_idx': batch_idx}
+            
+            # Create arrays for DataFrame construction using vectorized operations
+            total_records = n_times * n_lats_batch * n_lons
+            
+            # Pre-allocate arrays for all columns with proper data types
+            df_data = {
+                'id': np.zeros(total_records, dtype=np.uint32),
+                'latitude': np.zeros(total_records, dtype=np.float32),
+                'longitude': np.zeros(total_records, dtype=np.float32),
+                'time': np.zeros(total_records, dtype=np.uint8)
+            }
+            
+            # Add variable arrays
+            for var in batch_data.keys():
+                df_data[var] = np.zeros(total_records, dtype=np.uint16)
+            
+            # Use vectorized operations to fill arrays efficiently
+            # Create broadcast arrays for coordinates
+            time_broadcast = np.repeat(time_years, n_lats_batch * n_lons)
+            id_broadcast = np.tile(index_matrix_batch.flatten(), n_times)
+            lat_broadcast = np.tile(lat_grid_batch.flatten(), n_times)
+            lon_broadcast = np.tile(lon_grid_batch.flatten(), n_times)
+            
+            # Fill coordinate data
+            df_data['time'][:] = time_broadcast
+            df_data['id'][:] = id_broadcast
+            df_data['latitude'][:] = lat_broadcast
+            df_data['longitude'][:] = lon_broadcast
+            
+            # Fill variable data using efficient reshaping
+            for var, var_values in batch_data.items():
+                # Reshape from (time, lat, lon) to (total_records,) using C-order
+                df_data[var][:] = var_values.reshape(-1, order='C')
+            
+            # Create DataFrame from pre-allocated arrays
+            df = pd.DataFrame(df_data)
+            
+            # Apply data type optimization
+            df = self._optimize_dataframe_dtypes(df)
+            
+            result = {
+                'success': False,
+                'batch_file': None,
+                'rows_written': 0,
+                'batch_idx': batch_idx
+            }
+            
+            if len(df) > 0:
+                # Write batch to temporary parquet file
+                batch_file = os.path.join(temp_output_dir, f"batch_{lat_start:06d}_{lat_end:06d}.parquet")
+                
+                # Convert to PyArrow table with consistent schema
+                table = pa.Table.from_pandas(df, schema=schema, preserve_index=False)
+                pq.write_table(table, batch_file, compression='snappy')
+                
+                result.update({
+                    'success': True,
+                    'batch_file': batch_file,
+                    'rows_written': len(df)
+                })
+                
+                logger.debug(f"Completed optimized batch {batch_idx}: {lat_start}:{lat_end} with {len(df):,} rows")
+            else:
+                result['success'] = True  # Still successful, just empty
+            
+            return result
+            
+        except Exception as e:
+            logger.exception(f"Error processing optimized batch {batch_idx}: {e}")
+            return {
+                'success': False,
+                'batch_file': None,
+                'rows_written': 0,
+                'batch_idx': batch_idx,
+                'error': str(e)
+            }
+
+    def _combine_parquet_files_optimized(self, batch_files: List[str], output_path: str, schema: pa.Schema):
+        """Optimized parquet file combination with streaming and memory management."""
+        try:
+            logger.info("Starting optimized parquet file combination")
+            
+            # Use PyArrow's optimized concatenation with streaming
+            dataset = pq.ParquetDataset(batch_files, schema=schema)
+            
+            # Write with optimized settings for large files
+            pq.write_table(
+                dataset.read(),
+                output_path,
+                compression='snappy',
+                use_dictionary=['id'],  # Only use dictionary encoding for ID column
+                write_statistics=True,
+                row_group_size=100000,  # Larger row groups for better compression
+                use_compliant_nested_type=False,  # Faster writing
+                coerce_timestamps='ms'  # Consistent timestamp handling
+            )
+            
+            logger.info("Optimized parquet combination completed")
+            
+        except Exception as e:
+            logger.warning(f"Optimized combination failed, falling back to standard method: {e}")
+            # Fallback to original method
+            self._combine_parquet_files(batch_files, output_path, schema)
+
+    # Remove the old inefficient methods and replace with vectorized approach
+    def _convert_batch_to_dataframe_simple(self, ds_batch: xr.Dataset, index_batch: np.ndarray, 
+                                         time_years: np.ndarray, lat_offset: int) -> pd.DataFrame:
+        """Legacy method - redirects to vectorized implementation."""
+        logger.warning("Using legacy conversion method - consider upgrading to vectorized processing")
+        # This method is kept for compatibility but should not be used with new vectorized approach
+        return self._convert_batch_to_dataframe_legacy(ds_batch, index_batch, time_years, lat_offset)
+
+    def _convert_batch_to_dataframe_legacy(self, ds_batch: xr.Dataset, index_batch: np.ndarray, 
+                                         time_years: np.ndarray, lat_offset: int) -> pd.DataFrame:
+        """
+        Legacy conversion method with improved bounds checking.
+        Only used as fallback for compatibility.
+        """
+        try:
+            # Load the entire batch into memory at once
+            logger.debug(f"Loading batch data into memory at once")
+            ds_computed = ds_batch.compute()
+            
+            # Get coordinates
+            lats = ds_computed.latitude.values
+            lons = ds_computed.longitude.values
+            n_lats, n_lons = len(lats), len(lons)
+            n_times = len(time_years)
+            
+            # Verify index batch dimensions match the actual batch dimensions
+            expected_shape = (n_lats, n_lons)
+            if index_batch.shape != expected_shape:
+                logger.error(f"Index batch shape {index_batch.shape} doesn't match expected shape {expected_shape}")
+                return None
+            
+            # Create coordinate meshgrids
+            lon_grid, lat_grid = np.meshgrid(lons, lats)
+            
+            # Pre-extract all variable data as numpy arrays
+            var_data = {}
+            for var in ds_computed.data_vars:
+                if var in ['mean', 'median', 'std', 'max', 'min', 'rollmax3', 'rollmin3', 'gt30C', 'lt0C', 'valid_count']:
+                    data_values = ds_computed[var].values  # Shape: (time, lat, lon)
+                    
+                    # Verify data shape matches expectations
+                    expected_data_shape = (n_times, n_lats, n_lons)
+                    if data_values.shape != expected_data_shape:
+                        logger.warning(f"Variable {var} has shape {data_values.shape}, expected {expected_data_shape}")
+                        # Skip this variable if shape doesn't match
+                        continue
+                    
+                    var_data[var] = data_values
+            
+            if not var_data:
+                logger.warning("No valid variables found in batch")
+                return None
+            
+            # Create records for all pixels and all time steps
+            records = []
+            
+            for t_idx in range(n_times):
+                for lat_idx in range(n_lats):
+                    for lon_idx in range(n_lons):
+                        # Bounds checking
+                        if lat_idx >= index_batch.shape[0] or lon_idx >= index_batch.shape[1]:
+                            logger.error(f"Index out of bounds: lat_idx={lat_idx}, lon_idx={lon_idx}, index_batch.shape={index_batch.shape}")
+                            continue
+                        
+                        record = {
+                            'id': index_batch[lat_idx, lon_idx],
+                            'latitude': lat_grid[lat_idx, lon_idx],
+                            'longitude': lon_grid[lat_idx, lon_idx],
+                            'time': time_years[t_idx]
+                        }
+                        
+                        # Add all variable values with bounds checking
+                        for var, values in var_data.items():
+                            if (t_idx < values.shape[0] and 
+                                lat_idx < values.shape[1] and 
+                                lon_idx < values.shape[2]):
+                                record[var] = values[t_idx, lat_idx, lon_idx]
+                            else:
+                                logger.warning(f"Skipping variable {var} due to index bounds: t_idx={t_idx}, lat_idx={lat_idx}, lon_idx={lon_idx}, shape={values.shape}")
+                                record[var] = 0  # Use fill value
+                        
+                        records.append(record)
+            
+            if not records:
+                return None
+            
+            # Convert to DataFrame
+            df = pd.DataFrame(records)
+            
+            # Optimize data types
+            df = self._optimize_dataframe_dtypes(df)
+            
+            logger.debug(f"Created DataFrame with {len(df)} rows from batch")
+            return df
+            
+        except Exception as e:
+            logger.exception(f"Error converting batch to dataframe: {e}")
+            return None
+
+    def _get_parquet_schema(self) -> pa.Schema:
+        """Define consistent PyArrow schema for parquet files."""
+        schema = pa.schema([
+            ('id', pa.uint32()),
+            ('latitude', pa.float32()),
+            ('longitude', pa.float32()),
+            ('time', pa.uint8()),
+            ('mean', pa.uint16()),
+            ('median', pa.uint16()),
+            ('std', pa.uint16()),
+            ('max', pa.uint16()),
+            ('min', pa.uint16()),
+            ('rollmax3', pa.uint16()),
+            ('rollmin3', pa.uint16()),
+            ('gt30C', pa.uint16()),
+            ('lt0C', pa.uint16()),
+            ('valid_count', pa.uint16())
+        ])
+        return schema
+
+    def _optimize_dataframe_dtypes(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Optimize DataFrame data types for memory efficiency."""
+        # Convert to optimal dtypes
+        df['id'] = df['id'].astype('uint32')
+        df['latitude'] = df['latitude'].astype('float32')
+        df['longitude'] = df['longitude'].astype('float32')
+        df['time'] = df['time'].astype('uint8')
+        
+        # Convert LST variables to uint16
+        lst_vars = ['mean', 'median', 'std', 'max', 'min', 'rollmax3', 'rollmin3', 'gt30C', 'lt0C', 'valid_count']
+        for var in lst_vars:
+            if var in df.columns:
+                df[var] = df[var].astype('uint16')
+        
+        return df
+
+    def _combine_parquet_files(self, batch_files: List[str], output_path: str, schema: pa.Schema):
+        """Combine multiple parquet files into a single file."""
+        # Read all batch files and combine
+        tables = []
+        for batch_file in batch_files:
+            table = pq.read_table(batch_file)
+            tables.append(table)
+        
+        # Concatenate all tables
+        combined_table = pa.concat_tables(tables)
+        
+        # Write final parquet file with compression
+        pq.write_table(
+            combined_table, 
+            output_path,
+            compression='snappy',
+            use_dictionary=True,
+            write_statistics=True,
+            row_group_size=50000
+        )
         
     def _create_index_matrix(self, ds: xr.Dataset) -> xr.DataArray:
         """Create index matrix for a given dataset"""
@@ -1213,6 +1706,12 @@ def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None)
         ds = xr_reproject(ds, geobox, resampling="nearest")
     
     return ds
+        
+def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None):
+    """Preprocess function for GLASS data similar to EOG preprocessing."""
+    # Set CRS if needed
+    if crs and getattr(ds.rio, "crs", None) is None:
+        ds = ds.rio.write_crs(crs)
     if transform and getattr(ds.rio, "transform", None) is None:
         ds = ds.rio.write_transform(transform)
     if drop_vars:

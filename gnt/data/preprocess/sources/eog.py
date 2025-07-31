@@ -28,6 +28,16 @@ except ImportError:
     PANDAS_AVAILABLE = False
     pd = None
 
+# Add PyArrow for efficient parquet operations
+try:
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    PYARROW_AVAILABLE = True
+except ImportError:
+    PYARROW_AVAILABLE = False
+    pa = None
+    pq = None
+
 logger = logging.getLogger(__name__)
 
 class EOGPreprocessor(AbstractPreprocessor):
@@ -79,8 +89,8 @@ class EOGPreprocessor(AbstractPreprocessor):
         
         # Set processing stage
         self.stage = kwargs.get('stage', 'annual')
-        if self.stage not in ['annual', 'spatial']:
-            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual' or 'spatial'.")
+        if self.stage not in ['annual', 'spatial', 'tabular']:
+            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual', 'spatial', or 'tabular'.")
             
         # Set year or year range
         self.year = kwargs.get('year')
@@ -140,6 +150,9 @@ class EOGPreprocessor(AbstractPreprocessor):
         # Dask configuration
         self.dask_threads = kwargs.get('dask_threads', None)
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)
+        
+        # Tabular processing configuration - optimized defaults
+        self.tabular_batch_size = kwargs.get('tabular_batch_size', 32)  # Increased default batch size
         
         # Create the download data source
         self.data_source = EOGDataSource(
@@ -257,6 +270,8 @@ class EOGPreprocessor(AbstractPreprocessor):
                 return self._generate_annual_targets(file_paths, year_range)
             elif stage == 'spatial':
                 return self._generate_spatial_targets(file_paths, year_range)
+            elif stage == 'tabular':
+                return self._generate_tabular_targets(file_paths, year_range)
             else:
                 raise ValueError(f"Unknown stage: {stage}")
                 
@@ -335,98 +350,61 @@ class EOGPreprocessor(AbstractPreprocessor):
         
         return targets
 
-    def _extract_year_from_path(self, file_path: str) -> Optional[int]:
-        """Extract year from file path for DMSP, VIIRS, and DVNL files."""
-        filename = os.path.basename(file_path)
-
-        # 1. DMSP: F18_2010/F182010.v4d.global.intercal.stable_lights.avg_vis.tif -> 2010
-        match = re.search(r'F\d{2}_?(\d{4})', filename)
-        if match:
-            return int(match.group(1))
-
-        # 2. DVNL: DVNL_2013.tif -> 2013
-        match = re.search(r'DVNL[_\-]?(\d{4})', filename, re.IGNORECASE)
-        if match:
-            return int(match.group(1))
-
-        # 3. VIIRS: VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.median_masked.dat.tif.gz -> 2012
-        # Look for a pattern like 201204-201212 and extract the first year
-        match = re.search(r'(\d{4})(\d{2})-(\d{4})(\d{2})', filename)
-        if match:
-            return int(match.group(1))
-
-        # Fallback: any 4-digit year between 1992 and 2100
-        match = re.search(r'(19[9]\d|20\d{2}|2100)', filename)
-        if match:
-            return int(match.group(0))
-
-        return None
-
-    def _select_best_file_for_year(self, year_files: List[str]) -> str:
-        """Select the best file for a given year based on source type."""
-        if not year_files:
-            return ""
+    def _generate_tabular_targets(self, files: List[str], year_range: Tuple[int, int] = None) -> List[Dict]:
+        """Generate tabular processing targets."""
+        targets = []
         
-        if len(year_files) == 1:
-            return year_files[0]
+        # Check if spatial zarr files are available
+        spatial_files = self._get_all_spatial_files()
         
-        if self.source_type == "dmsp":
-            sensor_files = []
-            for file_path in year_files:
-                filename = os.path.basename(file_path)
-                match = re.search(r'F(\d+)(\d{4})', filename)
-                if match:
-                    sensor = int(match.group(1))
-                    sensor_files.append((sensor, file_path))
-            
-            if sensor_files:
-                sensor_files.sort(reverse=True)
-                return sensor_files[0][1]
+        if not spatial_files:
+            logger.warning("No spatial files available for tabular processing")
+            return targets
         
-        return year_files[0]
+        # Create target for each spatial file
+        for spatial_file in spatial_files:
+            target = {
+                'grid_cell': spatial_file.get('grid_cell', 'global'),
+                'data_type': f'{self.source_type}_tabular',
+                'stage': 'tabular',
+                'source_files': [spatial_file['zarr_path']],
+                'output_path': f"{self.get_hpc_output_path('tabular')}/{self.source_type}_tabular.parquet",
+                'dependencies': [spatial_file['zarr_path']],
+                'metadata': {
+                    'source_type': self.source_type,
+                    'data_type': f'{self.source_type}_tabular',
+                    'processing_type': 'zarr_to_parquet',
+                    'source_file': spatial_file['zarr_path']
+                }
+            }
+            targets.append(target)
+        
+        return targets
 
-    def _get_completed_annual_files(self, year_range: Tuple[int, int] = None) -> List[Dict]:
-        """Get list of completed annual files."""
-        annual_dir = self.get_hpc_output_path('annual')
-        completed_files = []
+    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
+        """Process tabular stage using the common implementation."""
+        # Use the base class implementation with common tabularization
+        return super()._process_tabular_target(target)
+
+    def _get_all_spatial_files(self) -> List[Dict]:
+        """
+        Return all available spatial zarr files in the spatial output directory.
+        Each dict contains 'grid_cell' and 'zarr_path'.
+        """
+        spatial_dir = self.get_hpc_output_path('spatial')
+        if not os.path.exists(spatial_dir):
+            return []
         
-        if not os.path.exists(annual_dir):
-            return completed_files
+        files = []
         
-        for year in self.years_to_process:
-            if year_range and (year < year_range[0] or year > year_range[1]):
-                continue
-                
-            zarr_path = os.path.join(annual_dir, f"{year}.zarr")
-            if os.path.exists(zarr_path):
-                completed_files.append({
-                    'year': year,
-                    'output_path': zarr_path
+        for fname in os.listdir(spatial_dir):
+            if fname.endswith('.zarr') and 'timeseries_reprojected' in fname:
+                files.append({
+                    'grid_cell': 'global',
+                    'zarr_path': os.path.join(spatial_dir, fname)
                 })
         
-        return completed_files
-
-    def _get_all_annual_files(self) -> List[Dict]:
-        """
-        Return all available annual zarr files in the annual output directory.
-        Each dict contains 'year' and 'zarr_path'.
-        """
-        annual_dir = self.get_hpc_output_path('annual')
-        if not os.path.exists(annual_dir):
-            return []
-        files = []
-        for fname in os.listdir(annual_dir):
-            if fname.endswith('.zarr'):
-                try:
-                    year = int(os.path.splitext(fname)[0])
-                except Exception:
-                    continue
-                files.append({'year': year, 'zarr_path': os.path.join(annual_dir, fname)})
         return files
-
-    def get_grid_cells(self) -> List[str]:
-        """Get list of grid cells to process - placeholder implementation."""
-        return ["N30E100", "N40E110"]
 
     def get_hpc_output_path(self, stage: str) -> str:
         """Get HPC output path for a given stage."""
@@ -434,6 +412,8 @@ class EOGPreprocessor(AbstractPreprocessor):
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_1")
         elif stage == "spatial":
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_2")
+        elif stage == "tabular":
+            base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_3")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -442,21 +422,24 @@ class EOGPreprocessor(AbstractPreprocessor):
     def process_target(self, target: Dict[str, Any]) -> bool:
         """Process a single preprocessing target."""
         stage = target.get('stage')
-        year = target.get('year', None) # Use .get to avoid KeyError
+        year = target.get('year', None)
+        grid_cell = target.get('grid_cell', 'global')
         
-        logger.info(f"Processing target: {stage}" + (f" - year {year}" if year is not None else ""))
+        logger.info(f"Processing target: {stage}" + (f" - year {year}" if year is not None else "") + f" - grid_cell {grid_cell}")
         
         try:
             if stage == 'annual':
                 return self._process_annual_target(target)
             elif stage == 'spatial':
                 return self._process_spatial_target(target)
+            elif stage == 'tabular':
+                return self._process_tabular_target(target)
             else:
                 logger.error(f"Unknown stage: {stage}")
                 return False
                 
         except Exception as e:
-            logger.exception(f"Error processing target {stage}" + (f"/{year}" if year is not None else "") + f": {e}")
+            logger.exception(f"Error processing target {stage}" + (f"/{year}" if year is not None else "") + f"/{grid_cell}: {e}")
             return False
 
     def _process_annual_target(self, target: Dict[str, Any]) -> bool:
