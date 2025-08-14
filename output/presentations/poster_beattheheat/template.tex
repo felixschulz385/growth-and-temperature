@@ -1,0 +1,317 @@
+\documentclass[final]{beamer}
+\usepackage[size=a1,scale=1.0,orientation=portrait]{beamerposter}
+
+% Modern packages
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{graphicx}
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric,positioning,calc}
+\usepackage{tcolorbox}
+\tcbuselibrary{skins}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{colortbl}
+\usepackage{fontawesome5}
+\usepackage{qrcode}
+\usepackage{microtype}
+
+% Basel-inspired color palette
+\definecolor{baselred}{RGB}{220,20,60}
+\definecolor{baselblack}{RGB}{25,25,25}
+\definecolor{baselgray}{RGB}{240,240,240}
+\definecolor{baselwhite}{RGB}{255,255,255}
+\definecolor{accent}{RGB}{255,165,0}
+
+% ==================== Unibas Color Palette ====================
+% Primärfarben
+\definecolor{unibasMint}{RGB}{165,215,210}         % #A5D7D2
+\definecolor{unibasMintLight}{RGB}{192,227,223}    % #D2EBE9
+\definecolor{unibasRed}{RGB}{210,5,55}             % #D20537
+\definecolor{unibasAnthracite}{RGB}{45,55,60}      % #2D373C
+\definecolor{unibasAnthraciteLight}{RGB}{70,80,90} % #46505A
+
+% Weitere Farben
+\definecolor{unibasBlack}{RGB}{0,0,0}              % #000000
+\definecolor{unibasWhite}{RGB}{255,255,255}        % #FFFFFF
+\definecolor{unibasGray1}{RGB}{51,51,51}           % #333333
+\definecolor{unibasGray2}{RGB}{102,102,102}        % #666666
+\definecolor{unibasGray3}{RGB}{119,119,119}        % #777777
+\definecolor{unibasGray4}{RGB}{201,201,201}        % #C9C9C9
+\definecolor{unibasGray5}{RGB}{217,217,217}        % #D9D9D9
+\definecolor{unibasGray6}{RGB}{234,234,236}        % #EAEBEC
+
+% ==================== Unibas Beamer Style ====================
+% Example usage for blocks and backgrounds:
+\setbeamercolor{background canvas}{bg=unibasWhite}
+\setbeamercolor{normal text}{fg=unibasAnthracite}
+\setbeamercolor{alerted text}{fg=unibasRed}
+\setbeamertemplate{navigation symbols}{}
+
+% Modern fonts with better scaling
+\setbeamerfont{title}{size=\fontsize{48}{58}\selectfont,series=\bfseries}
+\setbeamerfont{author}{size=\fontsize{16}{20}\selectfont}
+\setbeamerfont{institute}{size=\fontsize{14}{18}\selectfont}
+
+% Enhanced section header with gradient effect
+\newcommand{\sectionheader}[1]{%
+  \vspace{0.8em}
+  \begin{tcolorbox}[enhanced,
+    colback=unibasMint!20,
+    colframe=unibasMint,
+    boxrule=0pt,
+    leftrule=4pt,
+    arc=3pt,
+    left=8pt,
+    right=8pt,
+    top=6pt,
+    bottom=6pt,
+    fontupper=\large\bfseries\color{unibasAnthracite}]
+    #1
+  \end{tcolorbox}
+  \vspace{0.3em}
+}
+
+% Modern highlight box
+\newcommand{\highlightbox}[1]{%
+  \begin{tcolorbox}[enhanced,
+    colback=unibasRed!10,
+    colframe=unibasRed,
+    boxrule=1pt,
+    arc=5pt,
+    left=12pt,
+    right=12pt,
+    top=10pt,
+    bottom=10pt,
+    drop shadow={unibasGray3},
+    fontupper=\bfseries\color{unibasAnthracite}]
+    #1
+  \end{tcolorbox}
+}
+
+% Enhanced figure command
+\newcommand{\modernfig}[3]{%
+  \begin{center}
+    \begin{tcolorbox}[enhanced,
+      colback=white,
+      colframe=unibasGray4,
+      boxrule=1pt,
+      arc=3pt,
+      drop shadow={unibasGray5}]
+      \includegraphics[width=#2\linewidth]{#1}
+    \end{tcolorbox}
+    \vspace{0.3em}
+    {\small\color{unibasGray2}\textit{#3}}
+  \end{center}
+}
+
+% Poster metadata
+\title{Beat the Heat}
+\subtitle{Climate Adaptation Strategies in Growth \& Temperature Research}
+\author{Your Name\textsuperscript{1} \faOrcid{} \and Collaborator Name\textsuperscript{2} \and Senior Author\textsuperscript{1}}
+\institute{\textsuperscript{1}University of Basel, Department of Environmental Sciences \\ \textsuperscript{2}Swiss Federal Institute of Technology}
+
+\begin{document}
+\begin{frame}[t]
+
+% Modern streamlined header
+\begin{tikzpicture}[remember picture,overlay]
+  % Main header bar with gradient effect
+  \fill[unibasMint] (current page.north west) rectangle ([yshift=-2.8cm]current page.north east);
+  \fill[unibasMintLight] ([yshift=-2.8cm]current page.north west) rectangle ([yshift=-3.2cm]current page.north east);
+  
+  % Decorative geometric element (left)
+  \fill[unibasRed] ([xshift=1cm,yshift=-0.5cm]current page.north west) -- ([xshift=3cm,yshift=-0.5cm]current page.north west) -- ([xshift=2.5cm,yshift=-2.3cm]current page.north west) -- ([xshift=0.5cm,yshift=-2.3cm]current page.north west) -- cycle;
+  
+  % University branding area
+  \node[anchor=north west, xshift=3.5cm, yshift=-0.8cm] at (current page.north west) {
+    \color{unibasAnthracite}\Large\textbf{UNIVERSITY OF BASEL}
+  };
+  \node[anchor=north west, xshift=3.5cm, yshift=-1.3cm] at (current page.north west) {
+    \color{unibasAnthraciteLight}\normalsize Department of Environmental Sciences
+  };
+  
+  % Title block (center-right)
+  \node[anchor=north east, xshift=-1.5cm, yshift=-0.6cm] at (current page.north east) {
+    \begin{minipage}{0.55\textwidth}
+      \raggedleft
+      {\usebeamerfont{title}\color{unibasAnthracite}\textbf{\inserttitle}}\\[0.2em]
+      {\fontsize{18}{22}\selectfont\color{unibasAnthraciteLight}\textit{\insertsubtitle}}
+    \end{minipage}
+  };
+  
+  % Author strip
+  \node[anchor=north, yshift=-2.0cm] at (current page.north) {
+    \begin{minipage}{0.9\textwidth}
+      \centering
+      {\usebeamerfont{author}\color{unibasAnthracite}\insertauthor}\\[0.1em]
+      {\fontsize{12}{14}\selectfont\color{unibasGray2}\insertinstitute}
+    \end{minipage}
+  };
+\end{tikzpicture}
+\vspace{3.4cm}
+
+% Enhanced poster grid
+\begin{columns}[t,totalwidth=\textwidth]
+  % Left column
+  \begin{column}{0.30\textwidth}
+    \sectionheader{Abstract}
+    Climate change poses unprecedented challenges to biological systems. We investigated adaptive mechanisms using multi-scale experimental designs, revealing \textbf{significant adaptive capacity} with temperature tolerance increasing by \textcolor{unibasRed}{\textbf{15--25\%}} under controlled conditions.
+    
+    \vspace{0.5em}
+    \textcolor{unibasGray2}{\textbf{Keywords:}} climate adaptation, temperature tolerance, growth dynamics, thermal stress
+
+    \vspace{1.2em}
+    \sectionheader{Research Objectives}
+    % Use basic itemize without enumitem
+    \begin{itemize}
+      \item Quantify adaptive responses to thermal stress across species
+      \item Develop predictive models for climate resilience assessment
+      \item Bridge the gap between laboratory and field studies
+      \item Establish protocols for conservation applications
+    \end{itemize}
+
+    \vspace{1.2em}
+    \sectionheader{Methodology}
+    % Use basic itemize without enumitem
+    \begin{itemize}
+      \item \textbf{Design:} Multi-factorial (Temperature $\times$ Time $\times$ Species)
+      \item \textbf{Sample size:} $n=120$ per treatment group
+      \item \textbf{Duration:} 6-month controlled experiment
+      \item \textbf{Analysis:} Mixed-effects models, Bayesian inference
+      \item \textbf{Validation:} Cross-validation with field data
+    \end{itemize}
+  \end{column}
+
+  % Middle column
+  \begin{column}{0.40\textwidth}
+    \sectionheader{Key Results}
+    
+    \modernfig{example-image-a}{0.95}{Temperature tolerance curves showing adaptive responses over time (n=360)}
+
+    \vspace{0.8em}
+    \begin{center}
+      \begin{tcolorbox}[enhanced,
+        colback=white,
+        colframe=unibasGray4,
+        boxrule=1pt,
+        arc=3pt,
+        drop shadow={unibasGray5}]
+        % Remove \rowcolors and use simple table
+        \begin{tabular}{@{}lcc@{}}
+          \toprule
+          \textbf{Treatment Protocol} & \textbf{Max Tolerance (°C)} & \textbf{Improvement} \\
+          \midrule
+          Control baseline & 28.5 $\pm$ 0.8 & -- \\
+          \rowcolor{unibasMintLight!50}
+          Gradual exposure & \textcolor{unibasRed}{\textbf{32.1 $\pm$ 1.2}} & \textcolor{unibasRed}{\textbf{+3.6°C}} \\
+          Shock treatment & 30.2 $\pm$ 1.0 & +1.7°C \\
+          \rowcolor{unibasMintLight!50}
+          Combined protocol & \textcolor{unibasRed}{\textbf{35.7 $\pm$ 1.5}} & \textcolor{unibasRed}{\textbf{+7.2°C}} \\
+          \bottomrule
+        \end{tabular}
+      \end{tcolorbox}
+    \end{center}
+
+    \vspace{0.8em}
+    \highlightbox{\faExclamationTriangle\ \textbf{Major Discovery:} Organisms can increase temperature tolerance by up to \textcolor{unibasRed}{\textbf{7°C}} within months using optimized exposure protocols — far exceeding previous estimates.}
+
+    \vspace{0.8em}
+    \modernfig{example-image-b}{0.95}{Molecular pathways and gene expression patterns during thermal adaptation}
+  \end{column}
+
+  % Right column
+  \begin{column}{0.30\textwidth}
+    \sectionheader{Impact \& Applications}
+    % Use basic itemize without enumitem
+    \begin{itemize}
+      \item \textbf{Conservation:} Evidence-based assisted migration protocols
+      \item \textbf{Aquaculture:} Breeding optimization for climate resilience
+      \item \textbf{Restoration:} Strategic habitat prioritization frameworks
+      \item \textbf{Research:} Validated predictive modeling approaches
+      \item \textbf{Policy:} Scientific foundation for adaptation strategies
+    \end{itemize}
+
+    \vspace{1.2em}
+    \sectionheader{Key Conclusions}
+    % Use basic enumerate without enumitem
+    \begin{enumerate}
+      \item \textcolor{unibasRed}{\textbf{Rapid adaptation is achievable}} — up to 7°C tolerance increase in 6 months
+      \item \textcolor{unibasRed}{\textbf{Protocol design matters}} — gradual exposure significantly outperforms shock treatment
+      \item \textcolor{unibasRed}{\textbf{Predictive accuracy is high}} — 92\% cross-validation success rate
+      \item \textcolor{unibasRed}{\textbf{Conservation optimism}} — species show greater climate resilience than expected
+    \end{enumerate}
+
+    \vspace{1.2em}
+    \sectionheader{Future Directions}
+    % Use basic itemize without enumitem
+    \begin{itemize}
+      \item Long-term field validation studies (2-5 years)
+      \item Genomic mechanisms of rapid adaptation
+      \item Multi-stressor climate scenario modeling
+      \item Ecosystem-scale implementation trials
+    \end{itemize}
+
+    \vspace{1.2em}
+    \begin{tcolorbox}[enhanced,
+      colback=unibasGray6,
+      colframe=unibasGray4,
+      boxrule=1pt,
+      arc=3pt,
+      left=8pt,
+      right=8pt,
+      top=8pt,
+      bottom=8pt]
+      {\small\textbf{Funding:} Swiss National Science Foundation (Grant \#310030\_200000), University of Basel Research Fund\\[0.3em]
+      \textbf{Acknowledgments:} Climate Change Ecology Lab team, field research assistants}
+    \end{tcolorbox}
+  \end{column}
+\end{columns}
+
+\vspace{1em}
+
+% Modern streamlined footer
+\begin{tikzpicture}[remember picture,overlay]
+  % Footer gradient bars
+  \fill[unibasMintLight] (current page.south west) rectangle ([yshift=2.2cm]current page.south east);
+  \fill[unibasMint] ([yshift=2.2cm]current page.south west) rectangle ([yshift=2.6cm]current page.south east);
+  
+  % Decorative geometric element (right)
+  \fill[unibasRed] ([xshift=-1cm,yshift=0.4cm]current page.south east) -- ([xshift=-3cm,yshift=0.4cm]current page.south east) -- ([xshift=-2.5cm,yshift=2.2cm]current page.south east) -- ([xshift=-0.5cm,yshift=2.2cm]current page.south east) -- cycle;
+  
+  % Contact grid (left side)
+  \node[anchor=south west, xshift=1.5cm, yshift=0.6cm] at (current page.south west) {
+    \begin{minipage}{0.45\textwidth}
+      {\color{unibasAnthracite}\large\textbf{Get in Touch}}\\[0.4em]
+      \begin{tabular}{@{}ll@{}}
+        \color{unibasAnthraciteLight}\faEnvelope & \color{unibasAnthracite}your.email@unibas.ch \\[0.2em]
+        \color{unibasAnthraciteLight}\faGlobe & \color{unibasAnthracite}www.yourlab.unibas.ch \\[0.2em]
+        \color{unibasAnthraciteLight}\faTwitter & \color{unibasAnthracite}@YourLabHandle \\[0.2em]
+        \color{unibasAnthraciteLight}\faPhone & \color{unibasAnthracite}+41 61 207 XXXX
+      \end{tabular}
+    \end{minipage}
+  };
+  
+  % Digital access section (center)
+  \node[anchor=south, yshift=0.6cm] at (current page.south) {
+    \begin{minipage}{0.25\textwidth}
+      \centering
+      {\color{unibasAnthracite}\large\textbf{Digital Access}}\\[0.3em]
+      \qrcode[height=1.6cm]{https://yourlab.unibas.ch}\\[0.2em]
+      {\footnotesize\color{unibasGray2}Scan for interactive poster,\\supplementary data \& references}
+    \end{minipage}
+  };
+  
+  % Conference/event info (right side, if applicable)
+  \node[anchor=south east, xshift=-3.5cm, yshift=0.6cm] at (current page.south east) {
+    \begin{minipage}{0.2\textwidth}
+      \raggedleft
+      {\color{unibasAnthracite}\textbf{Conference 2024}}\\[0.2em]
+      {\color{unibasAnthraciteLight}\small Session: Climate Adaptation}\\[0.1em]
+      {\color{unibasGray2}\footnotesize Poster \#42}
+    \end{minipage}
+  };
+\end{tikzpicture}
+
+\end{frame}
+\end{document}

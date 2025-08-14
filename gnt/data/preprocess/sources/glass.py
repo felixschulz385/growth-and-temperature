@@ -9,6 +9,7 @@ from functools import partial
 import xarray as xr
 import numpy as np
 import dask.array as da
+from zarr.codecs import BloscCodec
 import numcodecs  # Added for zarr compression
 import rioxarray as rxr  # Added for rasterio-based xarray reading
 
@@ -32,7 +33,7 @@ except ImportError:
 
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.common.dask.client import DaskClientContextManager
-from gnt.data.common.geobox import get_or_create_geobox
+from gnt.data.common.geobox.geobox import get_or_create_geobox
 
 from odc.geo import CRS
 from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
@@ -891,8 +892,8 @@ class GlassPreprocessor(AbstractPreprocessor):
             return False
 
     def _process_spatial_target(self, target: Dict[str, Any]) -> bool:
-        """Process spatial stage with optimized memory management."""
-        logger.info("Starting spatial stage processing")
+        """Process spatial stage with chunked aggregation and reprojection."""
+        logger.info("Starting spatial stage processing with chunked approach")
         
         output_path = self._strip_remote_prefix(target['output_path'])
         source_files = target.get('source_files', [])
@@ -900,7 +901,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         if not self.override and os.path.exists(output_path):
             logger.info(f"Skipping spatial processing, output already exists: {output_path}")
-            return True
+            # TODO return True
         
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
@@ -920,7 +921,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                     'array.slicing.split_large_chunks': True,
                     'array.chunk-size': '512MB',
                     'optimization.fuse.active': False,
-                    'distributed.comm.compression': 'lz4',  # Use faster compression
+                    'distributed.comm.compression': 'lz4',
                 }):
                     
                     # Get the target geobox for reprojection
@@ -931,103 +932,311 @@ class GlassPreprocessor(AbstractPreprocessor):
                         logger.error(f"Failed to get target geobox: {e}")
                         return False
                     
-                    # source_files = [x for x in source_files if "2020" in x] # TODO: remove
-                    # Load, reproject, and combine all years
-                    combined_ds = self._load_and_reproject_years_mfdataset(source_files, target_geobox)
+                    # Step 1: Create empty zarr file with target dimensions
+                    if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
+                        return False
                     
-                    # Export to zarr
-                    # combined_ds_subset = combined_ds.rio.clip_box(*(88.0844222351, 20.670883287, 92.6727209818, 26.4465255803)).compute() # TODO: remove
-                    self._export_to_zarr(combined_ds, Path(output_path))
+                    # Step 2: Process by year with aggregation and reprojection
+                    success = self._process_years_chunked(source_files, output_path, target_geobox)
                     
-                    logger.info("Spatial stage processing completed successfully")
-                    return True
+                    if success:
+                        logger.info("Spatial stage processing completed successfully")
                     
+                    return success
+                        
         except Exception as e:
             logger.exception(f"Error in GLASS spatial processing: {e}")
             return False
 
-    def _load_and_reproject_years_mfdataset(self, source_files: List[str], target_geobox) -> xr.Dataset:
-        """Load and reproject years using open_mfdataset for maximum efficiency."""
-        
-        # Verify all files exist
-        missing_files = [f for f in source_files if not os.path.exists(f)]
-        if missing_files:
-            raise FileNotFoundError(f"Missing zarr files: {missing_files}")
-        
-        # Get CRS and transform from the first dataset
-        first_ds = xr.open_zarr(source_files[0], chunks=True)
-        crs = getattr(first_ds.odc, "crs", None)
-        transform = getattr(first_ds.odc, "transform", None)
-        first_ds.close()
-
-        if self.data_source == 'AVHRR':
-            # AVHRR: Preprocess during loading (already global, just reproject)
-            logger.info("AVHRR: Preprocessing during loading with reprojection")
-            preprocess_func = partial(_preprocess_glass, crs=crs, transform=transform, geobox=target_geobox)
+    def _create_empty_target_zarr(self, output_path: str, target_geobox, source_files: List[str]) -> bool:
+        """Create empty zarr file with target dimensions and metadata."""
+        try:
+            logger.info("Creating empty target zarr file")
             
-            ds = xr.open_mfdataset(
-                source_files,
-                engine='zarr',
-                parallel=True,
-                preprocess=preprocess_func,
-                mask_and_scale=False
+            # Get sample dataset to determine variables and time dimension
+            sample_ds = xr.open_zarr(source_files[0], mask_and_scale=False, chunks='auto')
+            variables = list(sample_ds.data_vars.keys())
+            sample_attrs = sample_ds.attrs.copy()
+            
+            # Use years from year range setting to determine time dimension
+            years = sorted(self.years_to_process)
+            
+            logger.info(f"Creating zarr for {len(years)} years: {min(years)}-{max(years)}")
+            
+            # Create time coordinates
+            time_coords = pd.to_datetime([f"{year}-12-31" for year in years])
+            
+            # Create empty dataset with target geobox dimensions
+            ny, nx = target_geobox.shape
+            lat_coords = target_geobox.coords['latitude'].values; lon_coords = target_geobox.coords['longitude'].values
+            
+            # Create data variables with fill values and band dimension
+            data_vars = {}
+            for var in variables:
+                # Copy variable-specific attributes
+                var_attrs = sample_ds[var].attrs.copy() if var in sample_ds.data_vars else {
+                    "_FillValue": 0,
+                    "scale_factor": 0.01,
+                    "add_offset": 0.0
+                }
+                data_vars[var] = xr.DataArray(
+                    da.zeros((len(years), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 512, 512)),
+                    dims=['time', 'band', 'latitude', 'longitude'],
+                    coords={
+                        'time': time_coords,
+                        'band': [1],
+                        'latitude': lat_coords,
+                        'longitude': lon_coords
+                    },
+                    attrs=var_attrs
+                )
+            sample_ds.close()
+            # Create empty dataset and copy global attributes
+            empty_ds = xr.Dataset(data_vars, attrs=sample_attrs)
+            
+            # Set CRS
+            empty_ds = empty_ds.rio.write_crs(target_geobox.crs)
+            
+            # Set up compression for Zarr output
+            compressor = BloscCodec(cname="zstd")
+            encoding = {
+                var: {
+                    "chunks": (1, 1, 512, 512), 
+                    "compressors": compressor,
+                    "dtype": "uint16"
+                } 
+                for var in variables
+            }
+            
+            # Write empty zarr structure (compute=False)
+            logger.info(f"Writing empty zarr structure to: {output_path}")
+            empty_ds.to_zarr(
+                output_path, 
+                mode="w",
+                encoding=encoding,
+                compute=False
             )
-        else:
-            # MODIS: Load first, then preprocess (need to combine grid cells first)
-            logger.info("MODIS: Loading first, then preprocessing after combining grid cells")
             
-            # Load without preprocessing first
-            ds = xr.open_mfdataset(
-                source_files,
-                engine='zarr',
-                parallel=True,
-                mask_and_scale=False,
-                decode_coords="all"
-            )
+            logger.info("Empty target zarr created successfully")
+            return True
             
-            # Set CRS and transform if needed
-            if crs and getattr(ds.rio, "crs", None) is None:
-                ds = ds.rio.set_crs("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
-                ds = ds.odc.assign_crs("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
- 
-            # Now reproject the combined dataset
-            logger.info("MODIS: Reprojecting combined dataset")
-            ds = xr_reproject(ds, target_geobox, resampling="nearest")
+        except Exception as e:
+            logger.exception(f"Error creating empty target zarr: {e}")
+            return False
 
-        logger.info(f"Created lazy reprojected dataset with shape: {ds.dims}")
-        return ds
+    def _process_years_chunked(self, source_files: List[str], output_path: str, target_geobox) -> bool:
+        """Process files by year with chunked aggregation and reprojection."""
+        try:
+            # Group files by year
+            files_by_year = self._group_files_by_year(source_files)
+            
+            # Import GeoboxTiles for chunked processing
+            from odc.geo import GeoboxTiles
+            
+            # Create tiles for processing 
+            tile_size = 2048
+            tiles = GeoboxTiles(target_geobox, (tile_size, tile_size))
+            
+            # Process each year
+            for year in sorted(files_by_year.keys()):
+                year_files = files_by_year[year]
+                logger.info(f"Processing year {year} with {len(year_files)} files")
+                
+                # Step 2a: Aggregate year files if multiple exist
+                if len(year_files) > 1:
+                    annual_temp_path = f'{output_path.split("stage_2")[0]}stage_1/{year}/temp_combined.tzarr'
+                    if not self._aggregate_year_files(year_files, annual_temp_path, year):
+                        logger.error(f"Failed to aggregate files for year {year}")
+                        return False
+                    year_source = annual_temp_path
+                else:
+                    year_source = year_files[0]
+                
+                # Step 2b: Process tiles for this year
+                if not self._process_year_tiles(year_source, output_path, target_geobox, tiles, year, tile_size):
+                    logger.error(f"Failed to process tiles for year {year}")
+                    return False
+                
+                # Clean up temporary file if created
+                if len(year_files) > 1 and os.path.exists(annual_temp_path):
+                    import shutil
+                    shutil.rmtree(annual_temp_path)
+                    logger.debug(f"Cleaned up temporary file: {annual_temp_path}")
+            
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in chunked year processing: {e}")
+            return False
 
+    def _group_files_by_year(self, source_files: List[str]) -> Dict[int, List[str]]:
+        """Group source files by year."""
+        files_by_year = {}
+        
+        for file_path in source_files:
+            if self.data_source == 'MODIS':
+                # Extract year from path like: .../2020/h25v06.zarr
+                year_match = re.search(r'/(\d{4})/', file_path)
+                if year_match:
+                    year = int(year_match.group(1))
+                    if year not in files_by_year:
+                        files_by_year[year] = []
+                    files_by_year[year].append(file_path)
+            else:
+                # Extract year from filename like: 2020.zarr
+                basename = os.path.basename(file_path)
+                year_match = re.search(r'(\d{4})\.zarr', basename)
+                if year_match:
+                    year = int(year_match.group(1))
+                    if year not in files_by_year:
+                        files_by_year[year] = []
+                    files_by_year[year].append(file_path)
+        
+        return files_by_year
 
-    def _export_to_zarr(self, ds: xr.Dataset, output_path: Path) -> None:
-        """Export dataset to zarr file with optimized settings."""
-        logger.info(f"Exporting to zarr: {output_path}")
+    def _aggregate_year_files(self, year_files: List[str], temp_output_path: str, year: int) -> bool:
+        """Aggregate multiple files for a year into a temporary zarr."""
+        try:
+            
+            if os.path.exists(temp_output_path):
+                logger.warning(f"Temporary output path already exists")
+                return True
+                
+            else: 
+                logger.info(f"Aggregating {len(year_files)} files for year {year}")
+                
+                # Load all files to determine combined spatial extent
+                datasets = []
+                for file_path in year_files:
+                    ds = xr.open_zarr(file_path, chunks='auto')
+                    datasets.append(ds)
+                
+                combined = xr.combine_by_coords(datasets, combine_attrs='drop_conflicts')
+                
+                # Create coordinate arrays
+                x_coords = combined.coords["x"]; y_coords = combined.coords["y"]
+                
+                # Create empty combined dataset
+                variables = list(ds.data_vars.keys())
+                data_vars = {}
+                
+                for var in variables:
+                    data_vars[var] = xr.DataArray(
+                        da.zeros((1, ny, nx), dtype=np.uint16, chunks=(1, 512, 512)),
+                        dims=['time', 'y', 'x'],
+                        coords={
+                            'time': [pd.to_datetime(f"{year}-01-01")],
+                            'y': y_coords,
+                            'x': x_coords
+                        },
+                        attrs=first_ds[var].attrs
+                    )
+                
+                combined_ds = xr.Dataset(data_vars)
+                combined_ds = combined_ds.rio.write_crs(first_ds.rio.crs)
+                
+                # Set up encoding
+                compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
+                encoding = {
+                    var: {
+                        "chunks": (1, 512, 512), 
+                        "compressors": compressor,
+                        "dtype": "uint16"
+                    } 
+                    for var in variables
+                }
+                
+                # Write empty structure
+                combined_ds.to_zarr(temp_output_path, mode="w", encoding=encoding, compute=False)
+                
+                # Now fill regions iteratively
+                for i, ds in enumerate(datasets):
+                    logger.debug(f"Writing region {i+1}/{len(datasets)} for year {year}")
+                    
+                    ds.to_zarr(
+                        temp_output_path,
+                        region='auto'
+                    )
+                
+                ds.close()
+                ds_computed.close()
+            
+            # Close datasets
+            for ds in datasets:
+                ds.close()
+            
+            logger.info(f"Successfully aggregated year {year} to: {temp_output_path}")
+            return True
         
-        # Ensure output directory exists
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Set up compression and chunking for Zarr output
-        compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
-        encoding = {
-            var: {
-                "chunks": {"time": 1, "latitude": 512, "longitude": 512}, 
-                "compressor": compressor,
-                "dtype": "uint16"
-            } 
-            for var in ds.data_vars
-        }
-        
-        # Export to zarr
-        logger.info("Starting zarr write computation")
-        ds.to_zarr(
-            output_path, 
-            mode="w",
-            consolidated=True,
-            encoding=encoding,
-            compute=False
-        ).compute()
-        
-        logger.info(f"Successfully exported to {output_path}")
+        except Exception as e:
+            logger.exception(f"Error aggregating year files for {year}: {e}")
+            return False
 
+    def _process_year_tiles(self, year_source: str, output_path: str, target_geobox, tiles, year: int, tile_size: int) -> bool:
+        """Process tiles for a specific year with reprojection."""
+        try:            
+            # Open year source
+            year_ds = xr.open_zarr(year_source)
+            
+            # Process each tile
+            for ix in range(tiles.shape[0]):
+                for iy in range(tiles.shape[1]):
+
+                    try:
+                        # Get the tile index
+                        tile_geobox = tiles[ix, iy]
+                        
+                        def extract_slice(ds, tile_geobox):
+                            """Extract slice for the given tile using native xarray slicing."""
+                            # Calculate the slice bounds in the source dataset
+                            
+                            bbox = tile_geobox.footprint(year_ds.rio.crs).boundingbox
+                        
+                            return ds.sel(
+                                y = slice(bbox.bottom, bbox.top),
+                                x = slice(bbox.left, bbox.right)
+                                )
+                        
+                        # Clip source data to tile bounds
+                        clipped_ds = extract_slice(year_ds, tile_geobox).compute()
+                        
+                        if clipped_ds.sizes['x'] == 0 or clipped_ds.sizes['y'] == 0:
+                            # No data in this tile, skip
+                            continue
+                        
+                        # Reproject to target geobox for this tile
+                        reprojected_ds = xr_reproject(clipped_ds, tile_geobox)
+                        
+                        # Remove attributes and spatial reference
+                        reprojected_ds = reprojected_ds.drop_vars(['spatial_ref']).drop_attrs()
+                        
+                        # Write to zarr region
+                        reprojected_ds.to_zarr(
+                            output_path,
+                            region={
+                                'band': 'auto',
+                                'time': 'auto',
+                                'latitude': slice(tile_size * ix, tile_size * (ix + 1)),
+                                'longitude': slice(tile_size * iy, tile_size * (iy + 1))
+                            },
+                            align_chunks=True
+                        )
+                        
+                        reprojected_computed.close()
+                        
+                    except Exception as e:
+                        logger.warning(f"Error processing tile [{ix}, {iy}] for year {year}: {e}")
+                        continue
+            
+            year_ds.close()
+            logger.info(f"Completed processing tiles for year {year}")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error processing tiles for year {year}: {e}")
+            return False
+        
+        
     def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
         """Process tabular stage - convert zarr to parquet with optimized batched processing."""
         logger.info("Starting tabular stage processing")
