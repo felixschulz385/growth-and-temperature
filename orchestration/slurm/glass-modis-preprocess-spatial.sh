@@ -3,10 +3,10 @@
 #SBATCH --output=./log/slurm-%j.out
 #SBATCH --error=./log/slurm-%j.err
 #SBATCH --partition=scicore
-# SBATCH --time=1-00:00:00
-#SBATCH --time=00:30:00
-# SBATCH --qos=1day
-#SBATCH --qos=30min
+#SBATCH --time=1-00:00:00
+ #SBATCH --time=00:30:00
+#SBATCH --qos=1day
+# SBATCH --qos=30min
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 

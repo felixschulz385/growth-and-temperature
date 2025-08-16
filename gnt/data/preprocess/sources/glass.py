@@ -10,7 +10,6 @@ import xarray as xr
 import numpy as np
 import dask.array as da
 from zarr.codecs import BloscCodec
-import numcodecs  # Added for zarr compression
 import rioxarray as rxr  # Added for rasterio-based xarray reading
 
 # Add pandas for reading parquet files directly
@@ -858,7 +857,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             monthly_stats = monthly_stats.chunk(chunks)
             
             # Set up compression for Zarr output
-            compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
+            compressor = BloscCodec(cname="zstd", clevel=3, shuffle=2)
             encoding = {var: {'compressor': compressor} for var in annual_stats.data_vars}
             
             # Create separate paths for annual and monthly data
@@ -901,7 +900,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         if not self.override and os.path.exists(output_path):
             logger.info(f"Skipping spatial processing, output already exists: {output_path}")
-            # TODO return True
+            return True
         
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
@@ -932,7 +931,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                         logger.error(f"Failed to get target geobox: {e}")
                         return False
                     
-                    # Step 1: Create empty zarr file with target dimensions
+                    # # Step 1: Create empty zarr file with target dimensions
                     if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
                         return False
                     
@@ -954,7 +953,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             logger.info("Creating empty target zarr file")
             
             # Get sample dataset to determine variables and time dimension
-            sample_ds = xr.open_zarr(source_files[0], mask_and_scale=False, chunks='auto')
+            sample_ds = xr.open_zarr(source_files[0], mask_and_scale=False, chunks='auto', consolidated=False)
             variables = list(sample_ds.data_vars.keys())
             sample_attrs = sample_ds.attrs.copy()
             
@@ -968,13 +967,20 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             # Create empty dataset with target geobox dimensions
             ny, nx = target_geobox.shape
-            lat_coords = target_geobox.coords['latitude'].values; lon_coords = target_geobox.coords['longitude'].values
+            lat_coords = target_geobox.coords['latitude'].values.round(5)
+            lon_coords = target_geobox.coords['longitude'].values.round(5)
+            
+            default_attrs = {
+                    "_FillValue": 0,
+                    # "scale_factor": 0.01,
+                    # "add_offset": 0.0
+                }
             
             # Create data variables with fill values and band dimension
             data_vars = {}
             for var in variables:
                 # Copy variable-specific attributes
-                var_attrs = sample_ds[var].attrs.copy() if var in sample_ds.data_vars else {
+                var_attrs = sample_ds[var].attrs.copy() | default_attrs if var in sample_ds.data_vars else {
                     "_FillValue": 0,
                     "scale_factor": 0.01,
                     "add_offset": 0.0
@@ -998,11 +1004,11 @@ class GlassPreprocessor(AbstractPreprocessor):
             empty_ds = empty_ds.rio.write_crs(target_geobox.crs)
             
             # Set up compression for Zarr output
-            compressor = BloscCodec(cname="zstd")
+            compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
             encoding = {
                 var: {
                     "chunks": (1, 1, 512, 512), 
-                    "compressors": compressor,
+                    "compressors": (compressor,),
                     "dtype": "uint16"
                 } 
                 for var in variables
@@ -1014,7 +1020,9 @@ class GlassPreprocessor(AbstractPreprocessor):
                 output_path, 
                 mode="w",
                 encoding=encoding,
-                compute=False
+                compute=False,
+                zarr_format = 3,
+                consolidated = False
             )
             
             logger.info("Empty target zarr created successfully")
@@ -1056,12 +1064,6 @@ class GlassPreprocessor(AbstractPreprocessor):
                 if not self._process_year_tiles(year_source, output_path, target_geobox, tiles, year, tile_size):
                     logger.error(f"Failed to process tiles for year {year}")
                     return False
-                
-                # Clean up temporary file if created
-                if len(year_files) > 1 and os.path.exists(annual_temp_path):
-                    import shutil
-                    shutil.rmtree(annual_temp_path)
-                    logger.debug(f"Cleaned up temporary file: {annual_temp_path}")
             
             return True
             
@@ -1099,7 +1101,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         try:
             
             if os.path.exists(temp_output_path):
-                logger.warning(f"Temporary output path already exists")
+                logger.info(f"Temporary output path already exists")
                 return True
                 
             else: 
@@ -1108,60 +1110,118 @@ class GlassPreprocessor(AbstractPreprocessor):
                 # Load all files to determine combined spatial extent
                 datasets = []
                 for file_path in year_files:
-                    ds = xr.open_zarr(file_path, chunks='auto')
+                    ds = xr.open_zarr(file_path, decode_coords='all', chunks='auto')
+                    ds.coords['x'] = ds.coords['x'].astype('int')
+                    ds.coords['y'] = ds.coords['y'].astype('int')
                     datasets.append(ds)
                 
-                combined = xr.combine_by_coords(datasets, combine_attrs='drop_conflicts')
+                combined = xr.combine_by_coords(datasets, combine_attrs='drop_conflicts', join='outer')
                 
                 # Create coordinate arrays
                 x_coords = combined.coords["x"]; y_coords = combined.coords["y"]
+                nx = len(x_coords); ny = len(y_coords)
                 
                 # Create empty combined dataset
                 variables = list(ds.data_vars.keys())
+                coordinates = list(ds.coords.keys())
                 data_vars = {}
                 
+                default_attrs = {
+                        "_FillValue": 0,
+                        # "scale_factor": 0.01,
+                        # "add_offset": 0.0
+                    }
+                
                 for var in variables:
+                    var_attrs = datasets[0][var].attrs.copy() | default_attrs if var in datasets[0].data_vars else default_attrs
                     data_vars[var] = xr.DataArray(
-                        da.zeros((1, ny, nx), dtype=np.uint16, chunks=(1, 512, 512)),
-                        dims=['time', 'y', 'x'],
+                        da.zeros((1, 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 300, 300)),
+                        dims=['band', 'time', 'y', 'x'],
                         coords={
-                            'time': [pd.to_datetime(f"{year}-01-01")],
+                            'band': [1],
+                            'time': [pd.to_datetime(f"{year}-12-31")],
                             'y': y_coords,
                             'x': x_coords
                         },
-                        attrs=first_ds[var].attrs
+                        attrs=var_attrs
                     )
                 
                 combined_ds = xr.Dataset(data_vars)
-                combined_ds = combined_ds.rio.write_crs(first_ds.rio.crs)
+                
+                if self.data_source == 'MODIS':
+                    crs = "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs"
+                else:
+                    crs = 4326
+                
+                combined_ds = combined_ds.rio.write_crs(crs)
                 
                 # Set up encoding
-                compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
+                compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
                 encoding = {
                     var: {
-                        "chunks": (1, 512, 512), 
-                        "compressors": compressor,
+                        "chunks": (1, 1, 300, 300), 
+                        "compressors": (compressor,),
                         "dtype": "uint16"
                     } 
                     for var in variables
-                }
+                } | {
+                    coord: {
+                        "compressors": (compressor,)
+                        } 
+                    for coord in coordinates
+                    }
                 
                 # Write empty structure
-                combined_ds.to_zarr(temp_output_path, mode="w", encoding=encoding, compute=False)
+                combined_ds.to_zarr(temp_output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False, compute=False)
+                
+                # def get_indices(ds, x_coords, y_coords):
+                #     start_x = int(((ds.coords["x"][0] - x_coords[0]) / ds.odc.transform[0]).round())
+                #     end_x = int(((ds.coords["x"][-1] - x_coords[0]) / ds.odc.transform[0]).round())
+                #     start_y = int(((ds.coords["y"][0] - y_coords[0]) / ds.odc.transform[4]).round())
+                #     end_y = int(((ds.coords["y"][-1] - y_coords[0]) / ds.odc.transform[4]).round())
+                #     return slice(start_x, end_x + 1), slice(start_y, end_y + 1)
                 
                 # Now fill regions iteratively
                 for i, ds in enumerate(datasets):
-                    logger.debug(f"Writing region {i+1}/{len(datasets)} for year {year}")
                     
-                    ds.to_zarr(
-                        temp_output_path,
-                        region='auto'
-                    )
-                
-                ds.close()
-                ds_computed.close()
+                    try:
+                        
+                        logger.debug(f"Writing region {i+1}/{len(datasets)} for year {year}")
+                        
+                        # Write CRS
+                        ds_clean = ds.rio.write_crs(crs)
+                        # Drop spatial ref
+                        ds_clean = ds_clean.drop_vars(['spatial_ref']).drop_attrs()
+                        # Rechunk
+                        ds_clean = ds_clean.chunk({'band': 1, 'time': 1, 'y': 300, 'x': 300})
+                        # # Flip y axis
+                        ds_clean = ds_clean.isel(y=slice(None,None,-1))
+                        
+                        if ds_clean.sizes['x'] == 0 or ds_clean.sizes['y'] == 0:
+                                # No data in this tile, skip
+                                continue
+                        
+                        # slice_x, slice_y = get_indices(ds_clean, x_coords, y_coords)
+                        
+                        ds_clean.\
+                            to_zarr(
+                                temp_output_path,
+                                region='auto',
+                                # region={
+                                #     'band': 'auto',
+                                #     'time': 'auto',
+                                #     'y': slice_y,
+                                #     'x': slice_x
+                                # },
+                                align_chunks=True
+                            )
+                            
+                    except Exception as e:
+                        logger.warning(f"Error processing region {i+1}/{len(datasets)} for year {year}: {e}")
+                        continue
             
             # Close datasets
+            combined_ds.close()
             for ds in datasets:
                 ds.close()
             
@@ -1176,13 +1236,21 @@ class GlassPreprocessor(AbstractPreprocessor):
         """Process tiles for a specific year with reprojection."""
         try:            
             # Open year source
-            year_ds = xr.open_zarr(year_source)
+            year_ds = xr.open_zarr(year_source, consolidated = False, decode_coords='all')
+            
+            if year_ds.rio.crs is None:
+                try:
+                    year_ds = year_ds.rio.write_crs(year_ds.spatial_ref.crs_wkt)
+                except Exception as e:
+                    logger.warning(f"Error setting crs on dataset: {e}")
             
             # Process each tile
             for ix in range(tiles.shape[0]):
                 for iy in range(tiles.shape[1]):
 
                     try:
+                        logger.info(f"Reprojecting tile [{ix}, {iy}] for year {year} to: {year_source}")
+                        
                         # Get the tile index
                         tile_geobox = tiles[ix, iy]
                         
@@ -1210,19 +1278,27 @@ class GlassPreprocessor(AbstractPreprocessor):
                         # Remove attributes and spatial reference
                         reprojected_ds = reprojected_ds.drop_vars(['spatial_ref']).drop_attrs()
                         
+                        # Transform coordinates
+                        reprojected_ds.coords['longitude'] = reprojected_ds.coords['longitude'].round(5)
+                        reprojected_ds.coords['latitude'] = reprojected_ds.coords['latitude'].round(5)
+                        
                         # Write to zarr region
                         reprojected_ds.to_zarr(
                             output_path,
-                            region={
-                                'band': 'auto',
-                                'time': 'auto',
-                                'latitude': slice(tile_size * ix, tile_size * (ix + 1)),
-                                'longitude': slice(tile_size * iy, tile_size * (iy + 1))
-                            },
-                            align_chunks=True
+                            region='auto',
+                            # region={
+                            #     'band': 'auto',
+                            #     'time': 'auto',
+                            #     'latitude': slice(tile_size * ix, tile_size * (ix + 1)),
+                            #     'longitude': slice(tile_size * iy, tile_size * (iy + 1))
+                            # },
+                            align_chunks=True,
+                            zarr_format=3,
+                            consolidated=False
                         )
                         
-                        reprojected_computed.close()
+                        reprojected_ds.close()
+                        
                         
                     except Exception as e:
                         logger.warning(f"Error processing tile [{ix}, {iy}] for year {year}: {e}")
@@ -1899,22 +1975,6 @@ class GlassPreprocessor(AbstractPreprocessor):
     def from_config(cls, config: Dict[str, Any]) -> "GlassPreprocessor":
         """Create a GlassPreprocessor from a configuration dictionary."""
         return cls(**config)
-        
-def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None):
-    """Preprocess function for GLASS data similar to EOG preprocessing."""
-    # Set CRS if needed
-    if crs and getattr(ds.rio, "crs", None) is None:
-        ds = ds.rio.write_crs(crs)
-    if transform and getattr(ds.rio, "transform", None) is None:
-        ds = ds.rio.write_transform(transform)
-    if drop_vars:
-        ds = ds.drop_vars(drop_vars, errors="ignore")
-    
-    # Reproject if geobox is provided
-    if geobox is not None:
-        ds = xr_reproject(ds, geobox, resampling="nearest")
-    
-    return ds
         
 def _preprocess_glass(ds, crs=None, transform=None, drop_vars=None, geobox=None):
     """Preprocess function for GLASS data similar to EOG preprocessing."""

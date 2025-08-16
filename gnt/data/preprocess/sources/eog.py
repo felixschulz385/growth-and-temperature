@@ -9,13 +9,13 @@ import xarray as xr
 import rioxarray as rxr
 from datetime import datetime
 import zarr
-import numcodecs
 import re
 import dask.array as da
 from odc.geo import CRS
 from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
 from gnt.data.common.geobox import get_or_create_geobox
 from functools import partial
+from zarr.codecs import BloscCodec
 
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.download.sources.eog import EOGDataSource
@@ -514,7 +514,7 @@ class EOGPreprocessor(AbstractPreprocessor):
             dataset = dataset.chunk(chunks)
             
             # Set up compression for Zarr output
-            compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
+            compressor = BloscCodec(cname="zstd", clevel=3, shuffle=2)
             encoding = {var: {'compressor': compressor} for var in dataset.data_vars}
             
             logger.info(f"Writing EOG dataset to zarr with Dask: {output_path}")
@@ -654,7 +654,7 @@ class EOGPreprocessor(AbstractPreprocessor):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Set up compression and chunking for Zarr output
-        compressor = numcodecs.Blosc(cname="zstd", clevel=3, shuffle=2)
+        compressor = BloscCodec(cname="zstd", clevel=3, shuffle=2)
         encoding = {
             var: {
                 "chunks": {"time": 1, "latitude": 512, "longitude": 512}, 
