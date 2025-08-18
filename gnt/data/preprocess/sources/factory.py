@@ -25,7 +25,7 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         if "eog" in preprocessor_name.lower():
             class_name = 'EOGPreprocessor'
             module_path = f"gnt.data.preprocess.sources.eog"
-        if "glass" in preprocessor_name.lower():
+        elif "glass" in preprocessor_name.lower():
             class_name = 'GlassPreprocessor'
             module_path = f"gnt.data.preprocess.sources.glass"
         else:

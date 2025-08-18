@@ -64,33 +64,31 @@ class AbstractPreprocessor(abc.ABC):
             dask_context_manager = getattr(self, '_initialize_dask_client', None)
             if dask_context_manager:
                 with dask_context_manager() as client:
-                    return self._process_tabular_with_common_implementation(source_file, output_path)
+                    return self._process_tabular(source_file, output_path)
             else:
-                return self._process_tabular_with_common_implementation(source_file, output_path)
+                return self._process_tabular(source_file, output_path)
                 
         except Exception as e:
             logger.exception(f"Error in common tabular processing: {e}")
             return False
 
-    def _process_tabular_with_common_implementation(self, source_file: str, output_path: str) -> bool:
+    def _process_tabular(self, source_file: str, output_path: str) -> bool:
         """Process tabular conversion using the common implementation."""
-        from gnt.data.preprocess.common.tabularization import process_zarr_to_parquet_vectorized
+        from gnt.data.preprocess.common.tabularization import process_zarr_to_parquet
         
         logger.info("Processing zarr to parquet using common vectorized approach")
         
         # Get batch size and hpc_root from instance attributes
-        batch_size = getattr(self, 'tabular_batch_size', 32)
         hpc_root = getattr(self, 'hpc_root', None)
         
         # Load the zarr dataset
         logger.info("Loading zarr dataset")
-        ds = xr.open_zarr(source_file)
+        ds = xr.open_zarr(source_file, consolidated = False)
         
         # Process using common implementation
-        success = process_zarr_to_parquet_vectorized(
+        success = process_zarr_to_parquet(
             ds=ds,
             output_path=output_path,
-            batch_size=batch_size,
             hpc_root=hpc_root
         )
         

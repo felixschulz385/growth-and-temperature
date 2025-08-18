@@ -794,6 +794,9 @@ class EOGPreprocessor(AbstractPreprocessor):
         # ds = ds.chunk({"time": 5, "latitude": 512, "longitude": 512})
         logger.info(f"Created lazy reprojected dataset with shape: {ds.dims}")
         return ds
+    
+    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
+        return super()._process_tabular_target(target)
 
 def _preprocess_eog(ds, crs=None, transform=None, drop_vars=None, geobox=None):
     # Set CRS if needed
