@@ -140,13 +140,9 @@ def _process_single_tile(
         
         # Insert pixel ID information
         pixel_id_matrix = np.arange(tile_size**2).reshape((tile_size, tile_size))  # Create index matrix for full tile
-        pixel_id_matrix = pixel_id_matrix[:tile_ds.sizes['longitude'], :tile_ds.sizes['latitude']]  # Crop to smaller tile if necessary
-        pixel_id_matrix = np.broadcast_to(pixel_id_matrix, 
-                                          (tile_ds.sizes['time'], 
-                                           tile_ds.sizes['band'], 
-                                           tile_ds.sizes['longitude'], 
-                                           tile_ds.sizes['latitude']))
-        tile_ds = tile_ds.assign({'pixel_id': (('time', 'band', 'longitude', 'latitude'), pixel_id_matrix)})
+        pixel_id_matrix = pixel_id_matrix[:tile_ds.sizes['latitude'], :tile_ds.sizes['longitude']]  # Crop to smaller tile if necessary
+        pixel_id_matrix = np.broadcast_to(pixel_id_matrix, tile_ds.sizes.values())
+        tile_ds = tile_ds.assign({'pixel_id': (tile_ds.sizes.keys(), pixel_id_matrix)})
         
         # Convert to DataFrame
         df = tile_ds.to_dataframe().reset_index()
@@ -157,7 +153,10 @@ def _process_single_tile(
         
         # Reorder and drop columns
         col_filter = ['band', 'latitude', 'longitude', 'spatial_ref', 'time', 'pixel_id']
-        col_order = ['time', 'pixel_id'] + [x for x in df.columns if x not in col_filter]
+        col_order = ['pixel_id']
+        if 'time' in df.columns:
+            col_order.append('time')
+        col_order += [x for x in df.columns if x not in col_filter]
         df = df.loc[:,col_order]
         
         # Write DataFrame to parquet

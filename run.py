@@ -265,6 +265,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             },
             'hpc': config.get('hpc', {}),
             'gcs': config.get('gcs', {}),
+            'sources': config.get('sources', {}),  # Add sources configuration
             'source_name': source
         }
         
@@ -326,6 +327,11 @@ def main():
     )
     
     parser.add_argument(
+        "--subsource",
+        help="Subsource name for misc preprocessor (e.g., 'osm', 'gadm')"
+    )
+    
+    parser.add_argument(
         "--mode",
         help="Override operation mode (for advanced usage)"
     )
@@ -350,7 +356,7 @@ def main():
     
     parser.add_argument(
         "--stage",
-        help="Processing stage for preprocess operation (e.g., annual, spatial)"
+        help="Processing stage for preprocess operation (e.g., annual, spatial, vector)"
     )
 
     # Dask configuration arguments (for preprocess operations)
@@ -389,6 +395,11 @@ def main():
             # Apply CLI overrides to preprocess configuration section
             preprocess_config = config.setdefault('preprocess', {})
             source_config = config.setdefault('sources', {}).setdefault(args.source, {})
+            
+            # Add subsource to preprocess config if specified
+            if args.subsource:
+                preprocess_config['subsource'] = args.subsource
+                logger.info(f"Setting subsource from CLI: {args.subsource}")
             
             # Override Dask configuration
             if args.dask_threads is not None:

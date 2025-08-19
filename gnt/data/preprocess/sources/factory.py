@@ -28,6 +28,9 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif "glass" in preprocessor_name.lower():
             class_name = 'GlassPreprocessor'
             module_path = f"gnt.data.preprocess.sources.glass"
+        elif preprocessor_name.lower() in ['osm', 'gadm']:
+            class_name = 'MiscPreprocessor'
+            module_path = f"gnt.data.preprocess.sources.misc"
         else:
             # By convention, the class name is expected to be CamelCase
             class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'

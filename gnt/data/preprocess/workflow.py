@@ -117,6 +117,12 @@ def process_task(task_config: Dict[str, Any]) -> None:
             
             # Get targets for this task
             stage = task_config.get('stage', 'annual')
+            
+            # For misc preprocessor, default to 'vector' stage instead of 'annual'
+            if preprocessor_name.lower() == 'misc' and stage == 'annual':
+                stage = 'vector'
+                logger.info("Using 'vector' stage for misc preprocessor instead of 'annual'")
+            
             year_range = task_config.get('year_range')
             
             targets = preprocessor.get_preprocessing_targets(stage, year_range)
@@ -314,16 +320,21 @@ def handle_validate_task(preprocessor_name: str, task_config: Dict[str, Any]) ->
 class PreprocessWorkflowContext:
     """Unified context for preprocessing workflow execution."""
     
-    def __init__(self, hpc_config: Dict[str, Any] = None, gcs_config: Dict[str, Any] = None):
+    def __init__(self, hpc_config: Dict[str, Any] = None, gcs_config: Dict[str, Any] = None, sources_config: Dict[str, Any] = None):
         """
         Initialize the preprocessing workflow context.
         
         Args:
             hpc_config: HPC configuration dictionary
             gcs_config: GCS configuration dictionary
+            sources_config: Sources configuration dictionary
         """
         self.hpc_config = hpc_config or {}
         self.gcs_config = gcs_config or {}
+        
+        # Store sources configuration in hpc_config for preprocessors to access
+        if sources_config:
+            self.hpc_config['sources'] = sources_config
         
         # Set up staging directory
         self.staging_dir = os.path.join(os.getcwd(), "preprocessing_staging")
@@ -354,34 +365,49 @@ class PreprocessTaskHandlers:
             # 2. Add task-specific configuration (stage, mode, etc.)
             preprocessor_config.update(task_config)
             
-            # 3. Add HPC configuration with proper prefixes
+            # 3. Add source name for preprocessors that need it
+            preprocessor_config['source'] = source_name
+            
+            # 4. Add subsource if specified in task config
+            if 'subsource' in task_config:
+                preprocessor_config['subsource'] = task_config['subsource']
+            
+            # 5. Add sources configuration for preprocessors that need the full structure
+            if 'sources' in context.hpc_config:
+                preprocessor_config['sources'] = context.hpc_config['sources']
+            
+            # 6. Add HPC configuration with proper prefixes
             if context.hpc_config:
                 for key, value in context.hpc_config.items():
                     preprocessor_config[f"hpc_{key}"] = value
                     
-            # 4. Add GCS configuration with proper prefixes
+            # 7. Add GCS configuration with proper prefixes
             if context.gcs_config:
                 for key, value in context.gcs_config.items():
                     preprocessor_config[f"gcs_{key}"] = value
             
-            # 5. Ensure critical parameters are set correctly
+            # 8. Ensure critical parameters are set correctly
             preprocessor_config['preprocessor'] = source_name
             preprocessor_config['name'] = source_name
             
-            # 6. Handle HPC local index directory mapping
+            # 9. Handle HPC local index directory mapping
             if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
                 preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
             
-            # 7. Create data source instance if possible
-            try:
-                if 'source_class' in source_config:
-                    data_source = create_source(source_config['source_class'], source_config)
-                else:
-                    data_source = create_source(source_name, source_config)
-                preprocessor_config['data_source_instance'] = data_source
-            except Exception as e:
-                logger.warning(f"Could not create data source: {e}")
-                preprocessor_config['data_source'] = source_name
+            # 10. Create data source instance if possible (skip for misc preprocessor)
+            if source_name.lower() != 'misc':
+                try:
+                    if 'source_class' in source_config:
+                        data_source = create_source(source_config['source_class'], source_config)
+                    else:
+                        data_source = create_source(source_name, source_config)
+                    preprocessor_config['data_source_instance'] = data_source
+                except Exception as e:
+                    logger.warning(f"Could not create data source: {e}")
+                    preprocessor_config['data_source'] = source_name
+            else:
+                # Misc preprocessor creates its own data source
+                logger.debug("Skipping data source creation for misc preprocessor (handles internally)")
             
             # Run the preprocessing task
             process_task(preprocessor_config)
@@ -414,34 +440,49 @@ class PreprocessTaskHandlers:
             # 3. Set validation mode
             preprocessor_config['mode'] = 'validate'
             
-            # 4. Add HPC configuration with proper prefixes
+            # 4. Add source name for preprocessors that need it
+            preprocessor_config['source'] = source_name
+            
+            # 5. Add subsource if specified in task config
+            if 'subsource' in task_config:
+                preprocessor_config['subsource'] = task_config['subsource']
+            
+            # 6. Add sources configuration for preprocessors that need the full structure
+            if 'sources' in context.hpc_config:
+                preprocessor_config['sources'] = context.hpc_config['sources']
+            
+            # 7. Add HPC configuration with proper prefixes
             if context.hpc_config:
                 for key, value in context.hpc_config.items():
                     preprocessor_config[f"hpc_{key}"] = value
                     
-            # 5. Add GCS configuration with proper prefixes
+            # 8. Add GCS configuration with proper prefixes
             if context.gcs_config:
                 for key, value in context.gcs_config.items():
                     preprocessor_config[f"gcs_{key}"] = value
             
-            # 6. Ensure critical parameters are set correctly
+            # 9. Ensure critical parameters are set correctly
             preprocessor_config['preprocessor'] = source_name
             preprocessor_config['name'] = source_name
             
-            # 7. Handle HPC local index directory mapping
+            # 10. Handle HPC local index directory mapping
             if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
                 preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
             
-            # 8. Create data source instance if possible
-            try:
-                if 'source_class' in source_config:
-                    data_source = create_source(source_config['source_class'], source_config)
-                else:
-                    data_source = create_source(source_name, source_config)
-                preprocessor_config['data_source_instance'] = data_source
-            except Exception as e:
-                logger.warning(f"Could not create data source: {e}")
-                preprocessor_config['data_source'] = source_name
+            # 11. Create data source instance if possible (skip for misc preprocessor)
+            if source_name.lower() != 'misc':
+                try:
+                    if 'source_class' in source_config:
+                        data_source = create_source(source_config['source_class'], source_config)
+                    else:
+                        data_source = create_source(source_name, source_config)
+                    preprocessor_config['data_source_instance'] = data_source
+                except Exception as e:
+                    logger.warning(f"Could not create data source: {e}")
+                    preprocessor_config['data_source'] = source_name
+            else:
+                # Misc preprocessor creates its own data source
+                logger.debug("Skipping data source creation for misc preprocessor (handles internally)")
             
             # Run the validation task
             process_task(preprocessor_config)
@@ -473,6 +514,7 @@ def run_workflow_with_config(config: Dict[str, Any]):
         workflow_config = config.get('workflow', {})
         hpc_config = config.get('hpc', {})
         gcs_config = config.get('gcs', {})
+        sources_config = config.get('sources', {})  # Extract sources configuration
         
         # Handle case where source name might be passed separately - FIXED
         if 'source_name' in config:
@@ -488,7 +530,8 @@ def run_workflow_with_config(config: Dict[str, Any]):
         # Create workflow context
         context = PreprocessWorkflowContext(
             hpc_config=hpc_config,
-            gcs_config=gcs_config
+            gcs_config=gcs_config,
+            sources_config=sources_config  # Pass sources configuration
         )
         
         logger.info(f"Created preprocessing workflow context for source: {source_config.get('name', 'unknown')}")
