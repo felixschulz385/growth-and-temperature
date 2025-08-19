@@ -2,10 +2,10 @@
 #SBATCH --job-name=glass-avhrr-preprocess-tabular
 #SBATCH --output=./log/slurm-%j.out
 #SBATCH --error=./log/slurm-%j.err
-#SBATCH --time=00:30:00
-#SBATCH --qos=30min
+#SBATCH --time=1-00:00:00
+#SBATCH --qos=1day
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=256G
+#SBATCH --mem=64G
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

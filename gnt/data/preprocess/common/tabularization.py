@@ -139,11 +139,15 @@ def _process_single_tile(
             return None
         
         # Insert pixel ID information
-        pixel_id_matrix = np.arange(tile_size**2).reshape((tile_size, tile_size))  # Create index matrix for full tile
+        pixel_id_matrix = np.arange(tile_size**2, dtype = "int32").reshape((tile_size, tile_size))  # Create index matrix for full tile
         pixel_id_matrix = pixel_id_matrix[:tile_ds.sizes['latitude'], :tile_ds.sizes['longitude']]  # Crop to smaller tile if necessary
         pixel_id_matrix = np.broadcast_to(pixel_id_matrix, tile_ds.sizes.values())
         tile_ds = tile_ds.assign({'pixel_id': (tile_ds.sizes.keys(), pixel_id_matrix)})
         
+        # Transform time to year
+        if "time" in tile_ds.sizes.keys():
+            tile_ds.coords["time"] = pd.Series(tile_ds.coords["time"]).dt.year.astype("int16")
+            
         # Convert to DataFrame
         df = tile_ds.to_dataframe().reset_index()
         
