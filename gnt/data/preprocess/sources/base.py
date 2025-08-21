@@ -83,7 +83,7 @@ class AbstractPreprocessor(abc.ABC):
         
         # Load the zarr dataset
         logger.info("Loading zarr dataset")
-        ds = xr.open_zarr(source_file, consolidated = False)
+        ds = xr.open_zarr(source_file, consolidated = False, mask_and_scale = False)
         
         # Process using common implementation
         success = process_zarr_to_parquet(

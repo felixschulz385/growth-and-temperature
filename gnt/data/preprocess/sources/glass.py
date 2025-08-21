@@ -931,7 +931,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                         logger.error(f"Failed to get target geobox: {e}")
                         return False
                     
-                    # # Step 1: Create empty zarr file with target dimensions
+                    # Step 1: Create empty zarr file with target dimensions
                     if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
                         return False
                     
@@ -970,21 +970,20 @@ class GlassPreprocessor(AbstractPreprocessor):
             lat_coords = target_geobox.coords['latitude'].values.round(5)
             lon_coords = target_geobox.coords['longitude'].values.round(5)
             
-            default_attrs = {
-                    "_FillValue": 0,
-                    # "scale_factor": 0.01,
-                    # "add_offset": 0.0
-                }
-            
             # Create data variables with fill values and band dimension
             data_vars = {}
+            
+            default_attrs = {"_FillValue": 0}
+            packaging_attrs = {
+                "scale_factor": 0.01,
+                "add_offset": 0.0
+            }
+            
             for var in variables:
-                # Copy variable-specific attributes
-                var_attrs = sample_ds[var].attrs.copy() | default_attrs if var in sample_ds.data_vars else {
-                    "_FillValue": 0,
-                    "scale_factor": 0.01,
-                    "add_offset": 0.0
-                }
+                var_attrs = sample_ds[var].attrs.copy() | default_attrs
+                if "float" in str(sample_ds[var].dtype):
+                    var_attrs |= packaging_attrs
+                    
                 data_vars[var] = xr.DataArray(
                     da.zeros((len(years), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 512, 512)),
                     dims=['time', 'band', 'latitude', 'longitude'],
@@ -1126,14 +1125,17 @@ class GlassPreprocessor(AbstractPreprocessor):
                 coordinates = list(ds.coords.keys())
                 data_vars = {}
                 
-                default_attrs = {
-                        "_FillValue": 0,
-                        # "scale_factor": 0.01,
-                        # "add_offset": 0.0
-                    }
+                default_attrs = {"_FillValue": 0}
+                packaging_attrs = {
+                        "scale_factor": 0.01,
+                        "add_offset": 0.0
+                }
                 
                 for var in variables:
-                    var_attrs = datasets[0][var].attrs.copy() | default_attrs if var in datasets[0].data_vars else default_attrs
+                    var_attrs = combined[var].attrs.copy() | default_attrs
+                    if "float" in str(datasets[0][var].dtype):
+                        var_attrs |= packaging_attrs
+                    
                     data_vars[var] = xr.DataArray(
                         da.zeros((1, 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 300, 300)),
                         dims=['band', 'time', 'y', 'x'],
@@ -1173,13 +1175,6 @@ class GlassPreprocessor(AbstractPreprocessor):
                 
                 # Write empty structure
                 combined_ds.to_zarr(temp_output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False, compute=False)
-                
-                # def get_indices(ds, x_coords, y_coords):
-                #     start_x = int(((ds.coords["x"][0] - x_coords[0]) / ds.odc.transform[0]).round())
-                #     end_x = int(((ds.coords["x"][-1] - x_coords[0]) / ds.odc.transform[0]).round())
-                #     start_y = int(((ds.coords["y"][0] - y_coords[0]) / ds.odc.transform[4]).round())
-                #     end_y = int(((ds.coords["y"][-1] - y_coords[0]) / ds.odc.transform[4]).round())
-                #     return slice(start_x, end_x + 1), slice(start_y, end_y + 1)
                 
                 # Now fill regions iteratively
                 for i, ds in enumerate(datasets):
@@ -1282,16 +1277,13 @@ class GlassPreprocessor(AbstractPreprocessor):
                         reprojected_ds.coords['longitude'] = reprojected_ds.coords['longitude'].round(5)
                         reprojected_ds.coords['latitude'] = reprojected_ds.coords['latitude'].round(5)
                         
+                        # Rechunk
+                        reprojected_ds = reprojected_ds.chunk({'band': 1, 'time': 1, 'latitude': 512, 'longitude': 512})
+                        
                         # Write to zarr region
                         reprojected_ds.to_zarr(
                             output_path,
                             region='auto',
-                            # region={
-                            #     'band': 'auto',
-                            #     'time': 'auto',
-                            #     'latitude': slice(tile_size * ix, tile_size * (ix + 1)),
-                            #     'longitude': slice(tile_size * iy, tile_size * (iy + 1))
-                            # },
                             align_chunks=True,
                             zarr_format=3,
                             consolidated=False
