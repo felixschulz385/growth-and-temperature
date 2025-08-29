@@ -18,6 +18,7 @@ from functools import partial
 from zarr.codecs import BloscCodec
 
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
+from gnt.data.preprocess.common.spatial import SpatialProcessor
 from gnt.data.download.sources.eog import EOGDataSource
 
 # Add pandas for reading parquet files directly
@@ -605,80 +606,9 @@ class EOGPreprocessor(AbstractPreprocessor):
         """Create an instance from configuration dictionary."""
         return cls(**config)
 
-    def _check_stage1_ready(self, stage1_dir: Path, years: list) -> bool:
-        """Check if all years are ready from stage_1."""
-        for year in years:
-            year_file = stage1_dir / f"{year}.zarr"
-            if not year_file.exists():
-                logger.warning(f"Stage 1 file missing for year {year}: {year_file}")
-                return False
-        logger.info(f"All {len(years)} years ready from stage_1")
-        return True
-
-
-    def _load_and_reproject_years(self, stage1_dir: Path, years: list, viirs_geobox) -> xr.Dataset:
-        """Load and reproject years, keeping everything as Dask arrays."""
-        # Log the number of years to process
-        logger.info(f"Loading and reprojecting {len(years)} years from stage_1")
-        reprojected_datasets = []
-        for year in years:
-            year_file = stage1_dir / f"{year}.zarr"
-            # Open the annual zarr file with Dask chunking
-            ds = xr.open_zarr(year_file, chunks={"time": 1, "latitude": 2000, "longitude": 2000})
-            # Ensure CRS is set for reprojection
-            if ds.rio.crs is None:
-                ds.rio.write_crs(ds.odc.crs, inplace=True)
-            # Ensure transform is set for reprojection
-            if ds.rio.transform() is None:
-                ds.rio.write_transform(ds.odc.transform, inplace=True)
-            # Reproject to the target geobox using bilinear resampling
-            reprojected_ds = ds.odc.reproject(viirs_geobox, resampling="bilinear")
-            # Chunk for efficient Dask processing
-            reprojected_ds = reprojected_ds.chunk({"time": 1, "latitude": 1000, "longitude": 1000})
-            reprojected_datasets.append(reprojected_ds)
-            
-            
-        # Concatenate all years along the time dimension
-        logger.info("Combining all years")
-        combined_ds = xr.concat(reprojected_datasets, dim="time", join="override")
-        # Final chunking for output
-        combined_ds = combined_ds.chunk({"time": min(10, len(years)), "latitude": 512, "longitude": 512})
-        logger.info(f"Combined reprojected dataset shape: {combined_ds.dims}")
-        return combined_ds
-
-    def _export_to_zarr(self, ds: xr.Dataset, output_path: Path) -> None:
-        """Export dataset into single zarr file with optimized settings."""
-        logger.info(f"Exporting to zarr: {output_path}")
-        
-        # Ensure output directory exists
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Set up compression and chunking for Zarr output
-        compressor = BloscCodec(cname="zstd", clevel=3, shuffle=2)
-        encoding = {
-            var: {
-                "chunks": {"time": 1, "latitude": 512, "longitude": 512}, 
-                "compressor": compressor,
-                "dtype": "float32"  # Use float32 to save space
-            } 
-            for var in ds.data_vars
-        }
-        
-        # Export to zarr with compute=False to let Dask handle the computation
-        logger.info("Starting zarr write computation")
-        ds.to_zarr(
-            output_path, 
-            mode="w",
-            consolidated=True,
-            encoding=encoding,
-            compute=False
-        ).compute()
-        
-        logger.info(f"Successfully exported to {output_path}")
-
     def _process_spatial_target(self, target: Dict[str, Any]) -> bool:
         """
-        Process spatial stage with optimized memory management.
+        Process spatial stage using common spatial processing utilities.
         """
         logger.info("Starting spatial stage processing")
         
@@ -691,7 +621,6 @@ class EOGPreprocessor(AbstractPreprocessor):
         
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        # Use conservative Dask configuration for stability
         try:
             with self._initialize_dask_client() as client:
                 if client is None:
@@ -702,111 +631,53 @@ class EOGPreprocessor(AbstractPreprocessor):
                 if dashboard_link:
                     logger.info(f"Created Dask client for spatial processing: {dashboard_link}")
                 
-                # Configure Dask for large array operations
-                import dask
-                with dask.config.set({
-                    'array.slicing.split_large_chunks': True,
-                    'array.chunk-size': '512MB',
-                    'optimization.fuse.active': False,  # Disable fusion to reduce graph size
-                }):
-                    # Extract years from source files
-                    years = []
-                    for f in source_files:
+                # Initialize spatial processor
+                spatial_processor = SpatialProcessor(
+                    hpc_root=self.hpc_root,
+                    temp_dir=self.temp_dir,
+                    dask_client=client
+                )
+                
+                with spatial_processor.setup_dask_config():
+                    
+                    # Define EOG-specific functions
+                    def extract_year_from_eog_path(file_path: str) -> Optional[int]:
+                        """Extract year from EOG zarr file path."""
                         try:
-                            year = int(os.path.splitext(os.path.basename(f))[0])
-                            years.append(year)
-                        except Exception:
-                            continue
+                            return int(os.path.splitext(os.path.basename(file_path))[0])
+                        except ValueError:
+                            return None
                     
-                    if not years:
-                        logger.error("No valid years found in source files")
-                        return False
+                    def preprocess_eog_dataset(ds: xr.Dataset) -> xr.Dataset:
+                        """Preprocess EOG dataset for reprojection."""
+                        # Set CRS if needed
+                        if ds.rio.crs is None:
+                            ds = ds.rio.write_crs(4326)
+                        return ds
                     
-                    # Sort years for consistent processing
-                    years.sort()
-                    logger.info(f"Processing {len(years)} years: {years}")
+                    def get_eog_variables_and_attrs(file_path: str) -> Tuple[List[str], Dict]:
+                        """Get variables and attributes from EOG sample file."""
+                        sample_ds = xr.open_zarr(file_path, mask_and_scale=False, chunks='auto', consolidated=False)
+                        variables = list(sample_ds.data_vars.keys())
+                        sample_attrs = sample_ds.attrs.copy()
+                        sample_ds.close()
+                        return variables, sample_attrs
                     
-                    stage1_dir = Path(self.get_hpc_output_path('annual'))
+                    # Use standard spatial processing workflow
+                    success = spatial_processor.process_spatial_standard(
+                        source_files=source_files,
+                        output_path=output_path,
+                        years_to_process=self.years_to_process,
+                        year_pattern_func=extract_year_from_eog_path,
+                        preprocess_func=preprocess_eog_dataset,
+                        get_variables_func=get_eog_variables_and_attrs
+                    )
                     
-                    # Check if all years are ready from stage_1
-                    if not self._check_stage1_ready(stage1_dir, years):
-                        raise RuntimeError("Not all years are ready from stage_1")
+                    if success:
+                        logger.info("EOG spatial stage processing completed successfully")
                     
-                    # Get the VIIRS geobox for reprojection
-                    try:
-                        viirs_geobox = get_or_create_geobox(self.hpc_root)
-                        logger.info(f"Using VIIRS geobox for reprojection: {viirs_geobox.shape}")
-                    except Exception as e:
-                        logger.error(f"Failed to get VIIRS geobox: {e}")
-                        return False
-                    
-                    # Load, reproject in batches, then combine
-                    combined_ds = self._load_and_reproject_years_mfdataset(stage1_dir, years, viirs_geobox)
-                    
-                    # Export into single zarr file
-                    output_path_obj = Path(output_path)
-                    self._export_to_zarr(combined_ds, output_path_obj)
-                    
-                    logger.info("Spatial stage processing completed successfully")
-                    return True
-                    
-            # Context manager will handle cleanup here
-            logger.info("Dask context manager exited, waiting for cleanup to complete...")
-            
-            # Give the system a moment to complete cleanup
-            import time
-            time.sleep(3)
-            
+                    return success
+                        
         except Exception as e:
             logger.exception(f"Error in EOG spatial processing: {e}")
             return False
-
-    def _load_and_reproject_years_mfdataset(self, stage1_dir: Path, years: list, viirs_geobox) -> xr.Dataset:
-        """Load and reproject years using open_mfdataset for maximum efficiency."""
-        logger.info(f"Loading {len(years)} years using open_mfdataset with preprocess (including reprojection)")
-        
-        # Create list of zarr paths
-        zarr_paths = [str(stage1_dir / f"{year}.zarr") for year in years]
-        
-        # Verify all files exist
-        missing_files = [p for p in zarr_paths if not os.path.exists(p)]
-        if missing_files:
-            raise FileNotFoundError(f"Missing zarr files: {missing_files}")
-        
-        first_ds = xr.open_zarr(zarr_paths[0], chunks = True)
-        crs = getattr(first_ds.odc, "crs", None)
-        transform = getattr(first_ds.odc, "transform", None)
-        first_ds.close()
-
-        preprocess_func = partial(_preprocess_eog, crs=crs, transform=transform, geobox=viirs_geobox)
-
-        ds = xr.open_mfdataset(
-            zarr_paths,
-            engine='zarr',
-            chunks={"time": 1, "latitude": 2048, "longitude": 2048},
-            concat_dim="time",
-            combine="nested",
-            parallel=True,
-            preprocess=preprocess_func
-        )
-
-        # # Optionally rechunk after concatenation
-        # ds = ds.chunk({"time": 5, "latitude": 512, "longitude": 512})
-        logger.info(f"Created lazy reprojected dataset with shape: {ds.dims}")
-        return ds
-    
-    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
-        return super()._process_tabular_target(target)
-
-def _preprocess_eog(ds, crs=None, transform=None, drop_vars=None, geobox=None):
-    # Set CRS if needed
-    if crs and getattr(ds.rio, "crs", None) is None:
-        ds = ds.rio.write_crs(crs)
-    if transform and getattr(ds.rio, "transform", None) is None:
-        ds = ds.rio.write_transform(transform)
-    if drop_vars:
-        ds = ds.drop_vars(drop_vars, errors="ignore")
-    # Reproject if geobox is provided
-    if geobox is not None:
-        ds = xr_reproject(ds, geobox, resampling="nearest")
-    return ds

@@ -87,5 +87,13 @@ def create_data_source(source_config):
             file_extensions=file_extensions,
             output_path=output_path
         )
+    elif dataset_name in ['ntl_harm', 'ntlharm', 'harmonized_ntl']:
+        logger.info(f"Creating NTL Harm data source")
+        from gnt.data.download.sources.ntl_harm import NTLHarmDataSource
+        return NTLHarmDataSource(
+            base_url=base_url,
+            file_extensions=file_extensions,
+            output_path=output_path
+        )
     else:
         raise ValueError(f"Unknown data source: {dataset_name}")

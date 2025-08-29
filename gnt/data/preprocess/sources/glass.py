@@ -31,8 +31,8 @@ except ImportError:
     pq = None
 
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
+from gnt.data.preprocess.common.spatial import SpatialProcessor, create_zarr_encoding
 from gnt.data.common.dask.client import DaskClientContextManager
-from gnt.data.common.geobox import get_or_create_geobox
 
 from odc.geo import CRS
 from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
@@ -1232,6 +1232,12 @@ class GlassPreprocessor(AbstractPreprocessor):
         try:            
             # Open year source
             year_ds = xr.open_zarr(year_source, consolidated = False, decode_coords='all')
+            
+            if self.data_source == "AVHRR":
+                year_ds = year_ds.rio.write_crs(4326)
+                year_ds = year_ds.sel(y=slice(None, None, -1))
+            elif self.data_source == "MODIS":
+                year_ds = year_ds.rio.write_crs("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
             
             if year_ds.rio.crs is None:
                 try:

@@ -134,6 +134,21 @@ def check_environment(operation_type: str) -> bool:
             import rioxarray
             import numpy
             import pandas
+        
+        elif operation_type == "assemble":
+            import pyspark
+            # Check if Java is available
+            import subprocess
+            try:
+                result = subprocess.run(['java', '-version'], 
+                                      capture_output=True, text=True, timeout=5)
+                if result.returncode != 0:
+                    logger.error("Java is not available. Please run 'module load Java/21.0.2' before executing.")
+                    return False
+                logger.debug("Java is available for Spark operations")
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                logger.error("Java is not found in PATH. Please run 'module load Java/21.0.2' before executing.")
+                return False
 
         # Common packages for all operations
         import yaml
@@ -152,12 +167,34 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     Run the specified data operation for a source.
     
     Args:
-        operation_type: Type of operation ('index', 'download', 'preprocess', 'validate', 'extract')
-        source: Data source name
+        operation_type: Type of operation ('index', 'download', 'preprocess', 'validate', 'extract', 'assemble')
+        source: Data source name or assembly name for assemble operation
         config: Full configuration dictionary
         mode: Override mode (optional)
         stage: Stage for preprocess operation (optional)
     """
+    
+    if operation_type == "assemble":
+        # Handle assembly operations differently
+        assembly_config = {
+            'assemble': config.get('assemble', {}),
+            'assembly_name': source  # Use source as assembly name
+        }
+        
+        # Import and run the assembly workflow
+        try:
+            import importlib
+            assembly_module = importlib.import_module('gnt.data.assemble.workflow')
+            
+            logger.info(f"Running assembly workflow: {source}")
+            assembly_module.run_workflow_with_config(assembly_config)
+                        
+        except ImportError as e:
+            logger.error(f"Error importing assembly module: {e}")
+            raise ValueError(f"Could not import assembly module: {e}") from e
+        
+        return
+    
     # Ensure the source exists in configuration
     if 'sources' not in config or source not in config['sources']:
         raise ValueError(f"Source '{source}' not found in configuration")
@@ -309,7 +346,7 @@ def main():
     # Main operation type argument
     parser.add_argument(
         "operation",
-        choices=["index", "download", "preprocess", "validate_download", "extract"],
+        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble"],
         help="Operation to perform"
     )
     
@@ -323,7 +360,7 @@ def main():
     parser.add_argument(
         "--source",
         required=True,
-        help="Data source name (must be defined in config)"
+        help="Data source name (must be defined in config) or assembly name for assemble operation"
     )
     
     parser.add_argument(
