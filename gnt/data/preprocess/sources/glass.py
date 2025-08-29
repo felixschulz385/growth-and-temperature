@@ -891,9 +891,7 @@ class GlassPreprocessor(AbstractPreprocessor):
             return False
 
     def _process_spatial_target(self, target: Dict[str, Any]) -> bool:
-        """Process spatial stage with chunked aggregation and reprojection."""
-        logger.info("Starting spatial stage processing with chunked approach")
-        
+        """Process spatial stage with data source-specific approach."""
         output_path = self._strip_remote_prefix(target['output_path'])
         source_files = target.get('source_files', [])
         grid_cell = target.get('grid_cell', 'global')
@@ -914,37 +912,102 @@ class GlassPreprocessor(AbstractPreprocessor):
                 if dashboard_link:
                     logger.info(f"Created Dask client for spatial processing: {dashboard_link}")
                 
-                # Configure Dask for large array operations
-                import dask
-                with dask.config.set({
-                    'array.slicing.split_large_chunks': True,
-                    'array.chunk-size': '512MB',
-                    'optimization.fuse.active': False,
-                    'distributed.comm.compression': 'lz4',
-                }):
+                # Initialize spatial processor
+                spatial_processor = SpatialProcessor(
+                    hpc_root=self.hpc_root,
+                    temp_dir=self.temp_dir,
+                    dask_client=client
+                )
+                
+                with spatial_processor.setup_dask_config():
                     
-                    # Get the target geobox for reprojection
-                    try:
-                        target_geobox = get_or_create_geobox(self.hpc_root)
-                        logger.info(f"Using target geobox for reprojection: {target_geobox.shape}")
-                    except Exception as e:
-                        logger.error(f"Failed to get target geobox: {e}")
-                        return False
-                    
-                    # Step 1: Create empty zarr file with target dimensions
-                    if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
-                        return False
-                    
-                    # Step 2: Process by year with aggregation and reprojection
-                    success = self._process_years_chunked(source_files, output_path, target_geobox)
-                    
-                    if success:
-                        logger.info("Spatial stage processing completed successfully")
-                    
-                    return success
+                    if self.data_source == 'MODIS':
+                        # Use chunked processing for MODIS (multiple grid cells, large data)
+                        logger.info("Starting MODIS spatial stage processing with chunked approach")
+                        return self._process_modis_spatial_chunked(spatial_processor, source_files, output_path)
+                    else:
+                        # Use standard processing for AVHRR (single global file)
+                        logger.info("Starting AVHRR spatial stage processing with standard approach")
+                        return self._process_avhrr_spatial_standard(spatial_processor, source_files, output_path)
                         
         except Exception as e:
             logger.exception(f"Error in GLASS spatial processing: {e}")
+            return False
+
+    def _process_modis_spatial_chunked(self, spatial_processor: SpatialProcessor, source_files: List[str], output_path: str) -> bool:
+        """Process MODIS spatial stage with chunked aggregation and reprojection."""
+        try:
+            # Get the target geobox for reprojection
+            target_geobox = spatial_processor.get_target_geobox()
+            
+            # Step 1: Create empty zarr file with target dimensions
+            if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
+                return False
+            
+            # Step 2: Process by year with aggregation and reprojection
+            success = self._process_years_chunked(source_files, output_path, target_geobox)
+            
+            if success:
+                logger.info("MODIS spatial stage processing completed successfully")
+            
+            return success
+                    
+        except Exception as e:
+            logger.exception(f"Error in MODIS chunked spatial processing: {e}")
+            return False
+
+    def _process_avhrr_spatial_standard(self, spatial_processor: SpatialProcessor, source_files: List[str], output_path: str) -> bool:
+        """Process AVHRR spatial stage using standard spatial processing utilities."""
+        try:
+            # Define AVHRR-specific functions
+            def extract_year_from_avhrr_path(file_path: str) -> Optional[int]:
+                """Extract year from AVHRR zarr file path."""
+                try:
+                    basename = os.path.basename(file_path)
+                    year_match = re.search(r'(\d{4})\.zarr', basename)
+                    if year_match:
+                        return int(year_match.group(1))
+                    return None
+                except ValueError:
+                    return None
+            
+            def preprocess_avhrr_dataset(ds: xr.Dataset) -> xr.Dataset:
+                """Preprocess AVHRR dataset for reprojection."""
+                # Set CRS if needed (AVHRR should be in WGS84)
+                if ds.rio.crs is None:
+                    ds = ds.rio.write_crs(4326)
+                
+                # Flip y-axis if needed for proper orientation
+                if 'y' in ds.dims:
+                    ds = ds.sel(y=slice(None, None, -1))
+                
+                return ds
+            
+            def get_avhrr_variables_and_attrs(file_path: str) -> Tuple[List[str], Dict]:
+                """Get variables and attributes from AVHRR sample file."""
+                sample_ds = xr.open_zarr(file_path, mask_and_scale=False, chunks='auto', consolidated=False)
+                variables = list(sample_ds.data_vars.keys())
+                sample_attrs = sample_ds.attrs.copy()
+                sample_ds.close()
+                return variables, sample_attrs
+            
+            # Use standard spatial processing workflow
+            success = spatial_processor.process_spatial_standard(
+                source_files=source_files,
+                output_path=output_path,
+                years_to_process=self.years_to_process,
+                year_pattern_func=extract_year_from_avhrr_path,
+                preprocess_func=preprocess_avhrr_dataset,
+                get_variables_func=get_avhrr_variables_and_attrs
+            )
+            
+            if success:
+                logger.info("AVHRR spatial stage processing completed successfully")
+            
+            return success
+                    
+        except Exception as e:
+            logger.exception(f"Error in AVHRR standard spatial processing: {e}")
             return False
 
     def _create_empty_target_zarr(self, output_path: str, target_geobox, source_files: List[str]) -> bool:
@@ -1312,6 +1375,8 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         
     def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
+        """Process tabular stage using the common implementation."""
+        # Use the base class implementation with enhanced tabularization
         return super()._process_tabular_target(target)
 
     @classmethod
