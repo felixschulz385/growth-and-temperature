@@ -1,146 +1,105 @@
 import abc
-from pathlib import Path
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, List, Tuple
+import logging
+import os
+import xarray as xr
 
+logger = logging.getLogger(__name__)
 
 class AbstractPreprocessor(abc.ABC):
     """
-    Abstract base class defining the template for preprocessing geodata.
-    
-    This class implements a template method pattern with two main stages:
-    1. Summarize geodata into annual means while preserving subfile structure and projection
-    2. Project the data onto a unified grid
-    
-    Designed for large datasets that remain on disk. Stage 1 and Stage 2 can be run on
-    different devices, with the intermediate data transferred between them.
+    Abstract base class for geodata preprocessors.
+    Enforces the interface for common preprocessing methods.
     """
-    
+
     def __init__(self, **kwargs):
-        """
-        Initialize the preprocessor with configuration parameters.
-        
-        Args:
-            **kwargs: Configuration parameters
-        """
         self.config = kwargs
-        self.stage = kwargs.get('stage', 'all')  # Options: 'stage1', 'stage2', 'all'
-        
-    def preprocess(self) -> None:
-        """
-        Execute the preprocessing workflow according to the specified stage.
-        
-        The workflow can be run in three modes:
-        - 'all': Run both Stage 1 and Stage 2 in sequence
-        - 'stage1': Only run the summarize_annual_means step
-        - 'stage2': Only run the project_to_unified_grid step (assuming Stage 1 data is available)
-        """
-        # Validate input before processing
-        if not self.validate_input():
-            raise ValueError("Invalid input data")
-            
-        if self.stage in ('all', 'stage1'):            
-            # Stage 1: Summarize geodata into annual means
-            self.summarize_annual_means()
-            
-            # Finalization for Stage 1 (if only running Stage 1)
-            if self.stage == 'stage1':
-                self.finalize_stage1()
-        
-        if self.stage in ('all', 'stage2'):            
-            # Stage 2: Project data onto unified grid
-            self.project_to_unified_grid()
-            
-            # Finalization for Stage 2
-            self.finalize()
-    
+
     @abc.abstractmethod
-    def summarize_annual_means(self) -> None:
-        """
-        Stage 1: Summarize geodata into annual means.
-        
-        This method should:
-        - Read the input geodata from disk
-        - Calculate annual means from the data
-        - Preserve the original subfile structure
-        - Maintain the original projection
-        - Save results for later use in Stage 2
-        
-        Note: Results are stored on disk rather than returned in memory
-        due to the large data size.
-        """
+    def get_preprocessing_targets(self, stage: str, year_range: Tuple[int, int] = None) -> List[Dict[str, Any]]:
         pass
-    
+
     @abc.abstractmethod
-    def project_to_unified_grid(self) -> None:
-        """
-        Stage 2: Project data onto a unified grid.
-        
-        This method should:
-        - Read data from output of Stage 1
-        - Reproject it to a standardized grid
-        - Save the final results
-        
-        Note: Data is read from disk rather than passed as a parameter
-        due to the large data size and potential execution on different devices.
-        """
+    def get_hpc_output_path(self, stage: str) -> str:
         pass
-    
-    def finalize_stage1(self) -> None:
-        """
-        Finalization step after Stage 1 is complete.
-        
-        This can include:
-        - Validation of intermediate output
-        - Generation of metadata or manifest for data transfer
-        - Compression of output for efficient transfer
-        
-        By default, does nothing but can be overridden by concrete implementations.
-        """
+
+    @abc.abstractmethod
+    def process_target(self, target: Dict[str, Any]) -> bool:
         pass
-    
-    def finalize(self) -> None:
-        """
-        Finalization step after Stage 2 is complete.
-        
-        This can include:
-        - Cleanup of temporary files
-        - Validation of output data
-        - Generation of metadata or reports
-        
-        By default, does nothing but can be overridden by concrete implementations.
-        """
-        pass
-    
-    def validate_input(self) -> bool:
-        """
-        Validate that the input data exists and is in an expected format.
-        
-        Returns:
-            True if validation passes, False otherwise
-        """
-        return True
-    
-    def get_metadata(self) -> Dict[str, Any]:
-        """
-        Return metadata about the preprocessing operation.
-        
-        Returns:
-            Dictionary containing metadata about the preprocessing
-        """
-        return {
-            "stage": self.stage,
-            "config": self.config
-        }
-    
+
     @classmethod
-    def from_config(cls, config: Dict[str, Any]) -> "AbstractPreprocessor":
+    @abc.abstractmethod
+    def from_config(cls, config: Dict[str, Any]):
+        pass
+
+    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
         """
-        Factory method to create a preprocessor from configuration dictionary.
+        Default implementation for tabular processing using the common tabularization module.
+        Subclasses can override this method if they need custom behavior.
+        """
+        logger.info("Starting tabular stage processing using common implementation")
         
-        Args:
-            config: Dictionary containing configuration parameters
-            
-        Returns:
-            An instance of the preprocessor
-        """
-        return cls(**config)
+        output_path = self._strip_remote_prefix(target['output_path'])
+        source_files = target.get('source_files', [])
+        
+        override = getattr(self, 'override', False)
+        if not override and os.path.exists(output_path):
+            logger.info(f"Skipping tabular processing, output already exists: {output_path}")
+            return True
+        
+        if not source_files:
+            logger.error("No source files provided for tabular processing")
+            return False
+        
+        source_file = source_files[0]  # Should be single zarr file
+        
+        if not os.path.exists(source_file):
+            logger.error(f"Source file does not exist: {source_file}")
+            return False
+        
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        try:
+            # Initialize Dask client if available
+            dask_context_manager = getattr(self, '_initialize_dask_client', None)
+            if dask_context_manager:
+                with dask_context_manager() as client:
+                    return self._process_tabular(source_file, output_path)
+            else:
+                return self._process_tabular(source_file, output_path)
+                
+        except Exception as e:
+            logger.exception(f"Error in common tabular processing: {e}")
+            return False
+
+    def _process_tabular(self, source_file: str, output_path: str) -> bool:
+        """Process tabular conversion using the common implementation."""
+        from gnt.data.preprocess.common.tabularization import process_zarr_to_parquet
+        
+        logger.info("Processing zarr to parquet using common vectorized approach")
+        
+        # Get batch size and hpc_root from instance attributes
+        hpc_root = getattr(self, 'hpc_root', None)
+        
+        # Load the zarr dataset
+        logger.info("Loading zarr dataset")
+        ds = xr.open_zarr(source_file, consolidated = False, mask_and_scale = False)
+        
+        # Process using common implementation
+        success = process_zarr_to_parquet(
+            ds=ds,
+            output_path=output_path,
+            hpc_root=hpc_root
+        )
+        
+        if success:
+            logger.info("Tabular stage processing completed successfully")
+        
+        return success
+
+    def _strip_remote_prefix(self, path):
+        """Remove scp/ssh prefix like user@host: from paths. Override in subclasses if needed."""
+        if isinstance(path, str):
+            import re
+            return re.sub(r"^[^@]+@[^:]+:", "", path)
+        return path

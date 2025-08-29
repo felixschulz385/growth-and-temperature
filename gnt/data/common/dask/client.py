@@ -1,8 +1,11 @@
 import os
+import re
 import logging
 import dask
 from dask.distributed import Client, LocalCluster
 import psutil
+import asyncio
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -42,13 +45,25 @@ def init_dask_client(threads=None, memory_limit=None, dashboard_port=8787,
         
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Configure Dask for better memory management
+        # Configure Dask for better memory management and stability
         dask.config.set({
             "temporary_directory": temp_dir,
-            "distributed.worker.memory.target": 0.75,  # Target memory threshold (75%)
-            "distributed.worker.memory.spill": 0.85,   # Spill to disk threshold
-            "distributed.worker.memory.pause": 0.95,   # Pause worker at this threshold
-            "distributed.worker.memory.terminate": 0.98, # Critical threshold
+            "distributed.worker.memory.target": 0.70,  # Target memory threshold (70%)
+            "distributed.worker.memory.spill": 0.80,   # Spill to disk threshold
+            "distributed.worker.memory.pause": 0.90,   # Pause worker at this threshold
+            "distributed.worker.memory.terminate": 0.95, # Critical threshold
+            "distributed.worker.daemon": False,        # Disable daemon mode for better cleanup
+            "distributed.comm.timeouts.connect": "60s", # Increase connection timeout
+            "distributed.comm.timeouts.tcp": "60s",     # Increase TCP timeout
+            "distributed.worker.connections.outgoing": 50, # Limit outgoing connections
+            "distributed.worker.connections.incoming": 10, # Limit incoming connections
+            "distributed.scheduler.idle-timeout": "1h",    # Keep scheduler alive longer
+            "distributed.worker.heartbeat-interval": "5s", # More frequent heartbeats
+            "distributed.scheduler.worker-ttl": "300s",    # Worker time-to-live
+            # Improve shutdown behavior
+            "distributed.worker.use-file-locking": False,  # Reduce file system contention
+            "distributed.worker.multiprocessing-method": "spawn",  # Better process cleanup
+            "distributed.nanny.pre-spawn-environ": {"OMP_NUM_THREADS": "1"},  # Prevent thread conflicts
         })
         
         # Determine number of workers and threads per worker
@@ -60,11 +75,17 @@ def init_dask_client(threads=None, memory_limit=None, dashboard_port=8787,
         
         threads_per_worker = worker_threads_per_cpu
         
-        # Default memory limit if not specified (75% of system memory)
+        
+        # Default memory limit if not specified (70% of system memory for safety)
         if memory_limit is None:
             total_memory = psutil.virtual_memory().total
-            memory_limit = int(0.75 * total_memory / n_workers)
-        
+            memory_limit = int(0.70 * total_memory / n_workers)
+        elif isinstance(memory_limit, str):
+            memory_per_worker = int(int(re.search(r"\d*", memory_limit).group(0)) / n_workers)
+            memory_limit = str(memory_per_worker) + re.search(r"[GB]i*B", memory_limit).group(0)
+        else:
+            memory_limit = memory_limit / n_workers
+                    
         # Create LocalCluster with specific worker configuration
         cluster = LocalCluster(
             n_workers=n_workers,
@@ -73,11 +94,16 @@ def init_dask_client(threads=None, memory_limit=None, dashboard_port=8787,
             processes=True,  # Use processes instead of threads for better isolation
             dashboard_address=f':{dashboard_port}',
             local_directory=temp_dir,
+            silence_logs=False,  # Keep logs for debugging
+            death_timeout="30s",  # Reduced timeout for worker shutdown
+            # Additional parameters for better shutdown behavior
+            worker_class="distributed.Nanny",  # Use nannies for better process management
         )
         
         client = Client(cluster)
         logger.info(f"Dask client initialized with {n_workers} workers, "
                    f"{threads_per_worker} threads per worker")
+        logger.info(f"Memory limit per worker: {memory_limit}")
         logger.info(f"Dask dashboard available at: {client.dashboard_link}")
         
         if return_cluster:
@@ -94,21 +120,125 @@ def init_dask_client(threads=None, memory_limit=None, dashboard_port=8787,
 
 def close_client(client):
     """
-    Safely close a Dask client.
+    Safely close a Dask client with improved shutdown handling.
     
     Args:
         client: Dask client to close
     """
     if client is not None:
         try:
-            client.close()
+            # Cancel any pending futures first
+            logger.debug("Cancelling any pending futures...")
+            try:
+                # Get all futures and cancel them
+                futures = client.futures
+                if futures:
+                    logger.debug(f"Cancelling {len(futures)} pending futures")
+                    client.cancel(futures)
+                    # Wait briefly for cancellation to complete
+                    time.sleep(0.5)
+            except Exception as e:
+                logger.debug(f"Error cancelling futures: {e}")
+            
+            # Close the client
+            logger.debug("Closing Dask client...")
+            client.close(timeout=10)  # 10 second timeout
             logger.debug("Closed Dask client")
         except Exception as e:
             logger.warning(f"Error closing Dask client: {str(e)}")
 
+def close_cluster(cluster):
+    """
+    Safely close a Dask cluster with improved timeout handling and worker cleanup.
+    
+    Args:
+        cluster: Dask cluster to close
+    """
+    if cluster is not None:
+        try:
+            logger.info("Shutting down Dask cluster...")
+            
+            # First, try to retire workers gracefully
+            try:
+                logger.debug("Retiring workers gracefully...")
+                cluster.retire_workers(n_workers=len(cluster.workers))
+                time.sleep(2)  # Give workers time to retire
+            except Exception as e:
+                logger.debug(f"Error retiring workers: {e}")
+            
+            # Close the cluster with timeout
+            try:
+                cluster.close(timeout=15)  # Reduced timeout to 15 seconds
+                logger.info("Dask cluster closed successfully")
+            except Exception as e:
+                logger.warning(f"Graceful cluster shutdown failed: {e}")
+                
+                # Force shutdown if graceful shutdown fails
+                logger.info("Attempting forced cluster shutdown...")
+                try:
+                    # Kill worker processes directly if they exist
+                    if hasattr(cluster, 'workers'):
+                        for worker_name, worker_info in cluster.workers.items():
+                            try:
+                                if hasattr(worker_info, 'process') and worker_info.process:
+                                    logger.debug(f"Terminating worker process {worker_name}")
+                                    worker_info.process.terminate()
+                            except Exception as worker_e:
+                                logger.debug(f"Error terminating worker {worker_name}: {worker_e}")
+                    
+                    # Final forced close with very short timeout
+                    cluster.close(timeout=3)
+                    logger.info("Forced cluster shutdown completed")
+                    
+                except Exception as e2:
+                    logger.error(f"Forced cluster shutdown also failed: {e2}")
+                    
+                    # Last resort: try to kill any remaining processes
+                    try:
+                        _cleanup_zombie_processes()
+                    except Exception as e3:
+                        logger.debug(f"Error in zombie process cleanup: {e3}")
+                        
+        except Exception as e:
+            logger.error(f"Error during Dask cluster shutdown: {e}")
+
+def _cleanup_zombie_processes():
+    """Clean up any zombie Dask worker processes."""
+    try:
+        import signal
+        import subprocess
+        
+        # Find any remaining dask-worker processes
+        try:
+            result = subprocess.run(['pgrep', '-f', 'dask-worker'], 
+                                  capture_output=True, text=True, timeout=5)
+            if result.returncode == 0 and result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                logger.debug(f"Found {len(pids)} zombie dask-worker processes")
+                
+                for pid in pids:
+                    try:
+                        pid_int = int(pid.strip())
+                        logger.debug(f"Killing zombie process {pid_int}")
+                        os.kill(pid_int, signal.SIGTERM)
+                        time.sleep(0.5)
+                        # If still alive, use SIGKILL
+                        try:
+                            os.kill(pid_int, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass  # Process already dead
+                    except (ValueError, ProcessLookupError, PermissionError) as e:
+                        logger.debug(f"Could not kill process {pid}: {e}")
+        except (subprocess.TimeoutExpired, FileNotFoundError):
+            # pgrep not available or timeout
+            pass
+            
+    except Exception as e:
+        logger.debug(f"Error in zombie process cleanup: {e}")
+
 class DaskClientContextManager:
     """
-    Context manager for Dask client to ensure proper cleanup.
+    Context manager for Dask client to ensure proper cleanup with improved shutdown handling.
     
     Example:
         >>> with DaskClientContextManager() as client:
@@ -121,16 +251,47 @@ class DaskClientContextManager:
         self.client = None
         self.cluster = None
         self.kwargs = kwargs
+        self.return_cluster = kwargs.get('return_cluster', False)
         
     def __enter__(self):
         """Set up the Dask client when entering context."""
-        if self.kwargs.get('return_cluster', False):
+        if self.return_cluster:
             self.client, self.cluster = init_dask_client(**self.kwargs)
             return self.client
         else:
-            self.client = init_dask_client(**self.kwargs)
+            # Always get the cluster for proper cleanup, even if not returned
+            kwargs_with_cluster = self.kwargs.copy()
+            kwargs_with_cluster['return_cluster'] = True
+            self.client, self.cluster = init_dask_client(**kwargs_with_cluster)
             return self.client
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Ensure the client is closed when exiting context."""
-        close_client(self.client)
+        """Ensure the client and cluster are closed with improved error handling."""
+        shutdown_start_time = time.time()
+        
+        try:
+            # Step 1: Close the client first to stop new task submissions
+            if self.client is not None:
+                logger.info("Closing Dask client...")
+                close_client(self.client)
+                
+            # Step 2: Give workers a moment to finish current tasks
+            time.sleep(1)
+            
+            # Step 3: Close the cluster (this will shut down workers)
+            if self.cluster is not None:
+                logger.info("Shutting down Dask cluster...")
+                close_cluster(self.cluster)
+                
+        except Exception as e:
+            logger.error(f"Error during Dask cleanup: {e}")
+        finally:
+            # Ensure references are cleared
+            self.client = None
+            self.cluster = None
+            
+            shutdown_time = time.time() - shutdown_start_time
+            logger.debug(f"Dask shutdown completed in {shutdown_time:.1f} seconds")
+            
+            # Final cleanup step - small delay to let system settle
+            time.sleep(0.5)
