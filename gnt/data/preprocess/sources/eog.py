@@ -384,7 +384,7 @@ class EOGPreprocessor(AbstractPreprocessor):
 
     def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
         """Process tabular stage using the common implementation."""
-        # Use the base class implementation with common tabularization
+        # Use the base class implementation with enhanced tabularization
         return super()._process_tabular_target(target)
 
     def _get_all_spatial_files(self) -> List[Dict]:

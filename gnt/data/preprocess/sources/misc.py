@@ -1033,3 +1033,52 @@ class MiscPreprocessor(AbstractPreprocessor):
     def from_config(cls, config: Dict[str, Any]) -> 'MiscPreprocessor':
         """Create an instance from configuration dictionary."""
         return cls(**config)
+
+    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
+        """Process tabular target using enhanced tabularization."""
+        try:
+            from gnt.data.preprocess.common.tabularization import process_zarr_to_parquet
+            
+            source_file = self._strip_remote_prefix(target['source_files'][0])
+            output_path = self._strip_remote_prefix(target['output_path'])
+            
+            # Check if output already exists
+            if not self.overwrite and os.path.exists(output_path):
+                logger.info(f"Skipping tabular processing, output already exists: {output_path}")
+                return True
+            
+            # Load source zarr dataset
+            logger.info(f"Loading zarr dataset: {source_file}")
+            ds = xr.open_zarr(source_file)
+            
+            # Determine if we should apply land mask based on data type
+            metadata = target.get('metadata', {})
+            subsource = metadata.get('subsource', '')
+            apply_land_mask = subsource not in ['osm']  # Don't apply land mask to OSM data itself
+            
+            # Configure NA dropping based on data type
+            drop_na = True
+            na_columns = None  # Check all data columns by default
+            
+            # Call enhanced tabularization function
+            success = process_zarr_to_parquet(
+                ds=ds,
+                output_path=output_path,
+                hpc_root=self.hpc_root,
+                tile_size=2048,
+                apply_land_mask=apply_land_mask,
+                land_mask_path=None,  # Auto-detect
+                drop_na=drop_na,
+                na_columns=na_columns,
+            )
+            
+            if success:
+                logger.info(f"Successfully processed tabular target: {output_path}")
+            else:
+                logger.error(f"Failed to process tabular target: {output_path}")
+            
+            return success
+            
+        except Exception as e:
+            logger.exception(f"Error processing tabular target: {e}")
+            return False
