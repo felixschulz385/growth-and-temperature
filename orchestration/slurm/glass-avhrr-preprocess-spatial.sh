@@ -2,8 +2,8 @@
 #SBATCH --job-name=glass-avhrr-preprocess-spatial
 #SBATCH --output=./log/slurm-%j.out
 #SBATCH --error=./log/slurm-%j.err
-#SBATCH --time=1-00:00:00
-#SBATCH --qos=1day
+#SBATCH --time=06:00:00
+#SBATCH --qos=6hours
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
 
