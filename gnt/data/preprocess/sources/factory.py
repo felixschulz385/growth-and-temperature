@@ -28,6 +28,9 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif "glass" in preprocessor_name.lower():
             class_name = 'GlassPreprocessor'
             module_path = f"gnt.data.preprocess.sources.glass"
+        elif preprocessor_name.lower() in ['ntl_harm', 'ntlharm', 'harmonized_ntl']:
+            class_name = 'NTLHarmPreprocessor'
+            module_path = f"gnt.data.preprocess.sources.ntl_harm"
         elif preprocessor_name.lower() in ['osm', 'gadm']:
             class_name = 'MiscPreprocessor'
             module_path = f"gnt.data.preprocess.sources.misc"
@@ -78,6 +81,9 @@ def get_source_class(source_name: str) -> Type:
             'eog_dvnl': ('gnt.data.download.sources.eog', 'EOGDataSource'),
             'glass_modis': ('gnt.data.download.sources.glass', 'GlassLSTDataSource'),
             'glass_avhrr': ('gnt.data.download.sources.glass', 'GlassLSTDataSource'),
+            'ntl_harm': ('gnt.data.download.sources.ntl_harm', 'NTLHarmDataSource'),
+            'ntlharm': ('gnt.data.download.sources.ntl_harm', 'NTLHarmDataSource'),
+            'harmonized_ntl': ('gnt.data.download.sources.ntl_harm', 'NTLHarmDataSource'),
             'misc': ('gnt.data.download.sources.misc', 'MiscDataSource'),
         }
         
@@ -118,12 +124,23 @@ def create_source(source_name: str, config: Dict[str, Any]) -> Any:
     # EOGDataSource expects: base_url, file_extensions, output_path
     # MiscDataSource expects: files, output_path
     # GLASSLSTDataSource expects: base_url, file_extensions, output_path
+    # NTLHarmDataSource expects: base_url, file_extensions, output_path
 
     # EOGDataSource
     if SourceClass.__name__ == "EOGDataSource":
         if 'base_url' in config:
             source_config['base_url'] = config['base_url']
         # Use output_path if available, otherwise fall back to data_path
+        if 'output_path' in config:
+            source_config['output_path'] = config['output_path']
+        elif 'data_path' in config:
+            source_config['output_path'] = config['data_path']
+        if 'file_extensions' in config:
+            source_config['file_extensions'] = config['file_extensions']
+    # NTLHarmDataSource
+    elif SourceClass.__name__ == "NTLHarmDataSource":
+        if 'base_url' in config:
+            source_config['base_url'] = config['base_url']
         if 'output_path' in config:
             source_config['output_path'] = config['output_path']
         elif 'data_path' in config:
