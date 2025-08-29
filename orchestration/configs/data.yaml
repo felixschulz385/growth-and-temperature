@@ -3,11 +3,24 @@
 # HPC settings
 hpc:
   target: "schulz0022@transfer12.scicore.unibas.ch:/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup"
-  local_index_dir: "C:\\Users\\schulz0022\\hpc_data_index"
-  key_file: "Z:\\id_ed25519_scicore"
+  local_index_dir: "/Users/felixschulz/hpc_data_index"
+  key_file: "~/.ssh/id_ed25519_scicore"
 
 # Data source configurations
 sources:
+  # GLASS AVHRR LST Daily 0.05°
+  glass_avhrr:
+    type: "glass_lst"
+    base_url: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
+    data_path: "glass/avhrr/daily"
+    
+    # Download settings
+    download:
+      batch_size: 1000
+      max_concurrent_downloads: 4
+      tar_max_files: 100
+      tar_max_size_mb: 500
+
   # GLASS MODIS LST Daily 1KM
   glass_modis:
     type: "glass_lst"
@@ -26,23 +39,63 @@ sources:
     type: "eog_dmsp"
     base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
     data_path: "eog/dmsp"
+    file_extensions:
+      - ".global.intercal.stable_lights.avg_vis.tif"
     
     # Download settings
     download:
       batch_size: 10
-      max_concurrent_downloads: 2
+      max_concurrent_downloads: 1
+      tar_max_files: 50
+      tar_max_size_mb: 300
+
+  # EOG DVNL Nightlights
+  eog_dvnl:
+    type: "eog_dvnl"
+    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+    data_path: "eog/dvnl"
+    file_extensions:
+      - ".tif"
+    
+    # Download settings
+    download:
+      batch_size: 10
+      max_concurrent_downloads: 1
       tar_max_files: 50
       tar_max_size_mb: 300
   
-  # EOG VIIRS Annual
-  eog_viirs_annual:
-    type: "eog_viirs_annual"
+  
+  # EOG VIIRS Nightlights
+  eog_viirs:
+    type: "eog_viirs"
     base_url: "https://eogdata.mines.edu/nighttime_light/annual/v21/"
-    data_path: "eog/viirs/annual"
-    
+    data_path: "eog/viirs"
+    file_extensions:
+      - "median_masked.dat.tif.gz"
     # Download settings
     download:
-      batch_size: 10
-      max_concurrent_downloads: 2
+      batch_size: 100
+      max_concurrent_downloads: 1
       tar_max_files: 50
       tar_max_size_mb: 300
+
+  # Miscellaneous boundary and administrative data
+  misc:
+    type: "misc"
+    data_path: "auxiliary/boundaries"
+    files:
+      - url: "https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip"
+        name: "land-polygons-complete-4326.zip"
+        description: "OpenStreetMap land polygons (WGS84)"
+        subfolder: "osm"
+      - url: "https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip"
+        name: "gadm_410-levels.zip"
+        description: "GADM administrative boundaries v4.1"
+        subfolder: "gadm"
+    # Download settings
+    download:
+      batch_size: 2
+      max_concurrent_downloads: 1
+      tar_max_files: 2
+      tar_max_size_mb: 100
+      timeout: 600  # Increase timeout to 10 minutes for large files

@@ -77,15 +77,15 @@ def create_data_source(source_config):
             file_extensions=file_extensions,
             output_path=output_path
         )
-    elif dataset_name.lower() in ['eog_dmsp', 'eog_viirs']:
+    elif dataset_name.lower() in ['eog_dmsp', 'eog_viirs', 'eog_dvnl']:
         logger.info(f"Creating EOG data source: {dataset_name}")
         if not output_path:
             raise ValueError(f"EOG data source requires 'output_path' or 'data_path' in configuration")
         from gnt.data.download.sources.eog import EOGDataSource
         return EOGDataSource(
-            base_url=base_url,
-            file_extensions=file_extensions,
-            output_path=output_path
+            base_url=source_config['base_url'],
+            file_extensions=source_config.get('file_extensions', None),
+            output_path=source_config.get('data_path')
         )
     else:
         raise ValueError(f"Unknown data source: {dataset_name}")
