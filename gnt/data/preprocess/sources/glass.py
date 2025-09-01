@@ -33,6 +33,7 @@ except ImportError:
 from gnt.data.preprocess.sources.base import AbstractPreprocessor
 from gnt.data.preprocess.common.spatial import SpatialProcessor, create_zarr_encoding
 from gnt.data.common.dask.client import DaskClientContextManager
+from gnt.data.common.geobox import get_or_create_geobox
 
 from odc.geo import CRS
 from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
@@ -394,7 +395,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         return targets
     
     def _generate_tabular_targets(self, files: List[str], year_range: Tuple[int, int] = None) -> List[Dict]:
-        """Generate tabular processing targets."""
+        """Generate tabular processing targets for assembly workflow integration."""
         targets = []
         
         # Check if spatial zarr files are available
@@ -411,13 +412,14 @@ class GlassPreprocessor(AbstractPreprocessor):
                 'data_type': f'{self.data_source.lower()}_tabular',
                 'stage': 'tabular',
                 'source_files': [spatial_file['zarr_path']],
-                'output_path': f"{self.get_hpc_output_path('tabular')}/{self.data_source.lower()}_tabular.parquet",
+                'output_path': f"{self.get_hpc_output_path('tabular')}/{self.data_source.lower()}_assembly_ready.zarr",
                 'dependencies': [spatial_file['zarr_path']],
                 'metadata': {
                     'source_type': self.data_source.lower(),
                     'data_type': f'{self.data_source.lower()}_tabular',
-                    'processing_type': 'zarr_to_parquet',
-                    'source_file': spatial_file['zarr_path']
+                    'processing_type': 'zarr_assembly_optimization',
+                    'source_file': spatial_file['zarr_path'],
+                    'assembly_ready': True
                 }
             }
             targets.append(target)

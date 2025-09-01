@@ -35,9 +35,9 @@ class AbstractPreprocessor(abc.ABC):
     def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
         """
         Default implementation for tabular processing using the common tabularization module.
-        Subclasses can override this method if they need custom behavior.
+        This creates parquet tiles that are ready for assembly workflow consumption.
         """
-        logger.info("Starting tabular stage processing using common implementation")
+        logger.info("Starting tabular stage processing with parquet tile output")
         
         output_path = self._strip_remote_prefix(target['output_path'])
         source_files = target.get('source_files', [])
@@ -69,7 +69,7 @@ class AbstractPreprocessor(abc.ABC):
                 return self._process_tabular(source_file, output_path)
                 
         except Exception as e:
-            logger.exception(f"Error in common tabular processing: {e}")
+            logger.exception(f"Error in tabular processing: {e}")
             return False
 
     def _process_tabular(self, source_file: str, output_path: str) -> bool:
@@ -78,14 +78,14 @@ class AbstractPreprocessor(abc.ABC):
         
         logger.info("Processing zarr to parquet using common vectorized approach")
         
-        # Get batch size and hpc_root from instance attributes
+        # Get hpc_root from instance attributes
         hpc_root = getattr(self, 'hpc_root', None)
         
         # Load the zarr dataset
         logger.info("Loading zarr dataset")
-        ds = xr.open_zarr(source_file, consolidated = False, mask_and_scale = False)
+        ds = xr.open_zarr(source_file, consolidated=False, mask_and_scale=False)
         
-        # Process using common implementation
+        # Process using common implementation - creates parquet tiles
         success = process_zarr_to_parquet(
             ds=ds,
             output_path=output_path,

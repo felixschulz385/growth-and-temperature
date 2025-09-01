@@ -316,8 +316,6 @@ class EOGPreprocessor(AbstractPreprocessor):
     
     def _generate_spatial_targets(self, files: List[str], year_range: Tuple[int, int] = None) -> List[Dict]:
         """Generate spatial processing targets."""
-        annual_targets = self._get_completed_annual_files(year_range)
-        
         targets = []
         
         # Check if all required annual files are available
@@ -386,6 +384,30 @@ class EOGPreprocessor(AbstractPreprocessor):
         """Process tabular stage using the common implementation."""
         # Use the base class implementation with enhanced tabularization
         return super()._process_tabular_target(target)
+
+    def _get_all_annual_files(self) -> List[Dict]:
+        """
+        Return all available annual zarr files in the annual output directory.
+        Each dict contains 'year' and 'zarr_path'.
+        """
+        annual_dir = self.get_hpc_output_path('annual')
+        if not os.path.exists(annual_dir):
+            return []
+        
+        files = []
+        
+        for fname in os.listdir(annual_dir):
+            if fname.endswith('.zarr'):
+                try:
+                    year = int(os.path.splitext(fname)[0])
+                    files.append({
+                        'year': year,
+                        'zarr_path': os.path.join(annual_dir, fname)
+                    })
+                except ValueError:
+                    continue
+        
+        return files
 
     def _get_all_spatial_files(self) -> List[Dict]:
         """
