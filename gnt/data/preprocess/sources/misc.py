@@ -661,6 +661,9 @@ class MiscPreprocessor(AbstractPreprocessor):
 
             logger.info(f"Rasterizing land polygons to grid of shape {geobox.shape}")
             land_mask = rasterize(geom, geobox)
+            
+            land_mask.coords['latitude'] = land_mask.coords['latitude'].values.round(5)
+            land_mask.coords['longitude'] = land_mask.coords['longitude'].values.round(5)
                             
             ds = xr.Dataset(
                     data_vars={'land_mask': land_mask},
@@ -672,11 +675,11 @@ class MiscPreprocessor(AbstractPreprocessor):
                     }
                 )
 
-            compressor = zarr.Blosc(cname="zstd", clevel=3, shuffle=2)
-            encoding = {'land_mask': {'compressor': compressor}}
+            compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
+            encoding = {'land_mask': {'compressors': (compressor,)}}
 
             logger.info(f"Writing land mask to zarr file at {output_path}")
-            ds.to_zarr(output_path, encoding=encoding, consolidated=True, mode="w")
+            ds.to_zarr(output_path, encoding=encoding, mode="w")
 
             logger.info("OSM land mask rasterization complete")
             return True
@@ -746,7 +749,7 @@ class MiscPreprocessor(AbstractPreprocessor):
                     logger.info(f"Using geobox with shape: {geobox.shape}")
 
                     # Create tiles for processing
-                    tile_size = 2048  # Adjust based on memory constraints
+                    #size = 2048  # Adjust based on memory constraints
                     tiles = GeoboxTiles(geobox, (tile_size, tile_size))
                     logger.info(f"Created {tiles.shape[0]}x{tiles.shape[1]} tiles of size {tile_size}")
 
