@@ -109,7 +109,7 @@ def _load_land_mask(hpc_root: str, land_mask_path: str = None) -> Optional[xr.Da
         for path in potential_paths:
             if os.path.exists(path):
                 logger.info(f"Loading land mask from: {path}")
-                land_mask_ds = xr.open_zarr(path)
+                land_mask_ds = xr.open_zarr(path)["land_mask"]
                 return land_mask_ds
         
         logger.warning(f"Land mask not found in any of: {potential_paths}")
@@ -224,6 +224,12 @@ def _process_single_tile(
         
         # Drop NA rows if requested
         if drop_na:
+            
+            # Drop by land mask
+            df = df[df.land_mask]
+            df = df.drop(columns=["land_mask"])
+            
+            # Drop by columns 
             initial_rows = len(df)
             df = _drop_na_rows(df, na_columns)
             final_rows = len(df)
@@ -277,32 +283,19 @@ def _apply_land_mask_to_tile(tile_ds: xr.Dataset, land_mask_ds: xr.Dataset, bbox
                 latitude=slice(bbox.top, bbox.bottom),
                 longitude=slice(bbox.left, bbox.right)
             )
+            tile_land_mask = tile_land_mask.compute()
         else:
             logger.warning("Land mask coordinates don't match tile coordinates")
             return tile_ds
         
-        # Check if land mask has the right variable
-        mask_var = None
-        for var_name in ['land_mask', 'land', 'mask']:
-            if var_name in tile_land_mask.data_vars:
-                mask_var = var_name
-                break
-        
-        if mask_var is None:
-            logger.warning("No land mask variable found in land mask dataset")
-            return tile_ds
-        
-        # Apply mask - keep only land pixels (mask value = 1)
-        land_mask_array = tile_land_mask[mask_var]
-        
-        # Apply mask to all data variables
-        masked_ds = tile_ds.where(land_mask_array == 1)
-        
-        # Check if any land pixels remain
-        if masked_ds.to_dataframe().dropna().empty:
+        # Check if there are any land pixels
+        if tile_land_mask.isnull().all():
             return None
         
-        return masked_ds
+        # Add mask to data variables
+        tile_ds = tile_ds.merge(tile_land_mask)
+        
+        return tile_ds
         
     except Exception as e:
         logger.warning(f"Error applying land mask: {e}")
