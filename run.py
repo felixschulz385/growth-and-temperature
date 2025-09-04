@@ -121,7 +121,7 @@ def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = Fals
     
     logger.debug("Logging configured successfully")
 
-def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode: str = None, stage: str = None):
+def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode: str = None, stage: str = None, override_level: int = None):
     """
     Run the specified data operation for a source.
     
@@ -131,6 +131,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         config: Full configuration dictionary
         mode: Override mode (optional)
         stage: Stage for preprocess operation (optional)
+        override_level: Override level for demeaning (0=none, 1=results, 2=intermediate+results)
     """
     
     if operation_type == "assemble":
@@ -161,8 +162,8 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             import importlib
             demean_module = importlib.import_module('gnt.data.assemble.demean')
             
-            logger.info(f"Running demeaning workflow for assembly: {source}")
-            demean_module.run_workflow_with_config(demean_config, assembly_name=source)
+            logger.info(f"Running demeaning workflow for assembly: {source} (override_level={override_level or 0})")
+            demean_module.run_workflow_with_config(demean_config, assembly_name=source, override_level=override_level or 0)
                         
         except ImportError as e:
             logger.error(f"Error importing demeaning module: {e}")
@@ -384,6 +385,15 @@ def main():
     parser.add_argument('--grid-cells', nargs='+', help='Grid cells to process (MODIS only)')
     parser.add_argument('--override', action='store_true', help='Override existing outputs')
 
+    # Override level argument for demeaning operations
+    parser.add_argument(
+        '--override-level',
+        type=int,
+        choices=[0, 1, 2],
+        default=0,
+        help='Override level for demeaning (0=none, 1=remove results, 2=remove intermediate+results)'
+    )
+
     # Parse arguments
     args = parser.parse_args()
     
@@ -442,7 +452,7 @@ def main():
                 logger.info(f"Setting stage from CLI: {args.stage}")
 
         # Run the operation
-        run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None))
+        run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None), args.override_level)
         
         logger.info(f"{args.operation.title()} operation for {args.source} completed successfully")
         return 0

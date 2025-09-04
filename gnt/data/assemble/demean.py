@@ -10,6 +10,9 @@ The demeaning operations include:
 - Time demeaning: Removes global annual fixed effects across all tiles  
 - Two-way demeaning: Removes both pixel and time fixed effects sequentially
 
+The module handles packed data by unpacking before processing and repacking
+demeaned columns with the same parameters as their source columns.
+
 The module is designed for high-performance computing environments and automatically
 detects SLURM resource allocations for optimal parallel processing.
 """
@@ -31,62 +34,10 @@ import time
 
 # Import common utilities
 from gnt.data.common.geobox import get_or_create_geobox
+from gnt.data.common.metadata import unpack_dataframe, pack_dataframe, read_assembly_metadata
 from odc.geo import GeoboxTiles
 
 logger = logging.getLogger(__name__)
-
-def _preserve_dtypes(df: pd.DataFrame, original_dtypes: Dict[str, np.dtype]) -> pd.DataFrame:
-    """
-    Preserve original data types when creating new columns.
-    
-    This function ensures that newly created demeaned columns maintain the same
-    data types as their source columns to optimize memory usage and storage efficiency.
-    Uses rounding for float-to-integer conversions when lossless casting fails.
-    
-    Args:
-        df: DataFrame with new columns to type-cast
-        original_dtypes: Mapping of column names to their original data types
-        
-    Returns:
-        DataFrame with preserved data types
-        
-    Raises:
-        Warning: If data type conversion fails for any column
-    """
-    for col in df.columns:
-        if col in original_dtypes:
-            try:
-                target_dtype = original_dtypes[col]
-                current_dtype = df[col].dtype
-                
-                # If converting from float to integer type, round first
-                if (np.issubdtype(current_dtype, np.floating) and 
-                    np.issubdtype(target_dtype, np.integer)):
-                    logger.debug(f"Rounding {col} from {current_dtype} to {target_dtype}")
-                    df[col] = df[col].round().astype(target_dtype, casting='unsafe')
-                else:
-                    df[col] = df[col].astype(target_dtype)
-                    
-            except (ValueError, TypeError) as e:
-                logger.warning(f"Could not preserve dtype {original_dtypes[col]} for column {col}: {e}")
-    return df
-
-def _extract_dtypes_from_tile(assembly_path: str, ix: int, iy: int) -> Optional[Dict[str, np.dtype]]:
-    """
-    Extract data types from a representative tile.
-    
-    Args:
-        assembly_path: Path to the assembled parquet directory
-        ix: Tile x-coordinate index
-        iy: Tile y-coordinate index
-        
-    Returns:
-        Dictionary mapping column names to numpy data types, or None if tile cannot be loaded
-    """
-    df = _load_tile_data(assembly_path, ix, iy)
-    if df is not None:
-        return {col: df[col].dtype for col in df.columns}
-    return None
 
 def _get_representative_dtypes(assembly_path: str) -> Dict[str, np.dtype]:
     """
@@ -137,28 +88,13 @@ def _get_representative_dtypes(assembly_path: str) -> Dict[str, np.dtype]:
         except Exception as e:
             logger.debug(f"Failed to extract dtypes from schema for tile ix={ix}, iy={iy}: {e}")
             # Fallback to loading a small sample
-            dtypes = _extract_dtypes_from_tile(assembly_path, ix, iy)
-            if dtypes:
+            df = _load_tile_data(assembly_path, ix, iy)
+            if df is not None:
+                dtypes = {col: df[col].dtype for col in df.columns}
                 logger.info(f"Extracted dtypes from sample data of tile ix={ix}, iy={iy}")
                 return dtypes
     
     logger.warning("Could not extract dtypes from any tile")
-    return {}
-
-def _load_assembly_metadata(assembly_path: str) -> Dict[str, Any]:
-    """
-    Load assembly metadata from the parquet directory.
-    
-    Args:
-        assembly_path: Path to the assembled parquet directory
-        
-    Returns:
-        Dictionary containing assembly metadata, or empty dict if not found
-    """
-    metadata_path = os.path.join(assembly_path, '_metadata.yaml')
-    if os.path.exists(metadata_path):
-        with open(metadata_path, 'r') as f:
-            return yaml.safe_load(f)
     return {}
 
 def _get_available_tiles(assembly_path: str) -> List[Tuple[int, int]]:
@@ -201,7 +137,7 @@ def _get_available_tiles(assembly_path: str) -> List[Tuple[int, int]]:
     logger.info(f"Found {len(tiles)} available tiles in {assembly_path}")
     return sorted(tiles)
 
-def _load_tile_data(assembly_path: str, ix: int, iy: int) -> Optional[pd.DataFrame]:
+def _load_tile_data(assembly_path: str, ix: int, iy: int, unpack: bool = False) -> Optional[pd.DataFrame]:
     """
     Load data for a specific tile from parquet storage.
     
@@ -209,6 +145,7 @@ def _load_tile_data(assembly_path: str, ix: int, iy: int) -> Optional[pd.DataFra
         assembly_path: Path to the assembled parquet directory
         ix: Tile x-coordinate index
         iy: Tile y-coordinate index
+        unpack: Whether to unpack data using metadata
         
     Returns:
         DataFrame containing tile data, or None if tile cannot be loaded
@@ -225,6 +162,16 @@ def _load_tile_data(assembly_path: str, ix: int, iy: int) -> Optional[pd.DataFra
     try:
         df = pd.read_parquet(tile_path)
         logger.debug(f"Loaded tile ix={ix}, iy={iy} with {len(df)} records")
+        
+        # Unpack data if requested
+        if unpack:
+            metadata_path = os.path.join(assembly_path, '_metadata.yaml')
+            if os.path.exists(metadata_path):
+                df = unpack_dataframe(df, metadata_path, inplace=True)
+                logger.debug(f"Unpacked data for tile ix={ix}, iy={iy}")
+            else:
+                logger.warning(f"Metadata file not found for unpacking: {metadata_path}")
+        
         return df
     except Exception as e:
         logger.warning(f"Failed to load tile ix={ix}, iy={iy}: {e}")
@@ -253,70 +200,32 @@ def _save_tile_data(assembly_path: str, ix: int, iy: int, df: pd.DataFrame, comp
         logger.error(f"Failed to save tile ix={ix}, iy={iy}: {e}")
         raise
 
-def _compute_pixel_means_single_tile(args: Tuple[str, int, int, List[str]]) -> Tuple[Tuple[int, int], Dict[str, pd.Series]]:
+def _get_annual_means_path(assembly_path: str) -> str:
+    """Get the path for the annual means YAML file."""
+    return os.path.join(assembly_path, '_annual_means.yaml')
+
+def _compute_annual_means_single_tile(args: Tuple[str, int, int, List[str]]) -> Dict[str, Dict[int, Tuple[float, int]]]:
     """
-    Compute pixel means for a single tile - designed for parallel processing.
+    Compute annual sums and counts for a single tile using unpacked data.
     
     Args:
         args: Tuple of (assembly_path, ix, iy, columns_to_demean)
         
     Returns:
-        Tuple of ((ix, iy), {column: pixel_means_series})
+        Dictionary mapping columns to annual statistics (year -> (sum, count))
     """
     assembly_path, ix, iy, columns_to_demean = args
     
-    df = _load_tile_data(assembly_path, ix, iy)
+    # Load and unpack tile data
+    df = _load_tile_data(assembly_path, ix, iy, unpack=True)
     if df is None:
-        return ((ix, iy), {})
+        return {}
     
-    tile_pixel_means = {}
-    for col in columns_to_demean:
-        if col in df.columns:
-            # Group by pixel_id and compute mean, handling missing values
-            pixel_mean = df.groupby('pixel_id')[col].mean()
-            tile_pixel_means[col] = pixel_mean
-    
-    return ((ix, iy), tile_pixel_means)
-
-def _compute_all_statistics_single_tile(args: Tuple[str, int, int, List[str]]) -> Tuple[Tuple[int, int], Dict[str, pd.Series], Dict[str, Dict[int, Tuple[float, int]]]]:
-    """
-    Compute comprehensive statistics for a single tile in parallel processing context.
-    
-    This function performs both pixel-level and temporal aggregations in a single pass
-    through the data to maximize I/O efficiency. It computes:
-    - Pixel means grouped by pixel_id (for unit demeaning)
-    - Annual sums and counts grouped by time (for time demeaning)
-    
-    Args:
-        args: Tuple containing (assembly_path, ix, iy, columns_to_demean)
-        
-    Returns:
-        Tuple containing:
-        - Tile coordinates (ix, iy)
-        - Dictionary mapping columns to pixel mean Series
-        - Dictionary mapping columns to annual statistics (year -> (sum, count))
-        
-    Note:
-        Designed for use with ProcessPoolExecutor to enable parallel processing
-    """
-    assembly_path, ix, iy, columns_to_demean = args
-    
-    df = _load_tile_data(assembly_path, ix, iy)
-    if df is None:
-        return ((ix, iy), {}, {})
-    
-    tile_pixel_means = {}
     tile_annual_stats = {col: {} for col in columns_to_demean}
     
     for col in columns_to_demean:
         if col in df.columns:
-            # Compute pixel-level means for unit demeaning
-            # Groups by pixel_id and computes mean, handling NaN values appropriately
-            pixel_mean = df.groupby('pixel_id')[col].mean()
-            tile_pixel_means[col] = pixel_mean
-            
             # Compute temporal sums and counts for global annual mean calculation
-            # Groups by time/year and aggregates for later global mean computation
             tile_annual = df.groupby('time')[col].agg(['sum', 'count'])
             
             for year in tile_annual.index:
@@ -326,41 +235,175 @@ def _compute_all_statistics_single_tile(args: Tuple[str, int, int, List[str]]) -
                         tile_annual.loc[year, 'count']
                     )
     
-    return ((ix, iy), tile_pixel_means, tile_annual_stats)
+    return tile_annual_stats
 
-def compute_all_statistics_from_tiles(
-    assembly_path: str, 
-    columns_to_demean: List[str],
-    n_workers: Optional[int] = None
-) -> Tuple[Dict[Tuple[int, int], Dict[str, pd.Series]], Dict[str, Dict[int, float]]]:
+def _remove_demeaned_columns_single_tile(args: Tuple[str, int, int, List[str]]) -> bool:
     """
-    Compute comprehensive demeaning statistics by processing all tiles in parallel.
-    
-    This is the main statistics computation function that orchestrates parallel processing
-    of all tiles to compute both pixel-level and global temporal statistics in a single
-    pass through the data. The function maximizes I/O efficiency by reading each tile
-    only once while computing all required statistics.
+    Remove demeaned columns from a single tile.
     
     Args:
-        assembly_path: Path to the assembled parquet directory
-        columns_to_demean: List of column names to compute demeaning statistics for
-        n_workers: Number of parallel workers (auto-detected from SLURM if None)
+        args: Tuple of (assembly_path, ix, iy, columns_to_demean)
         
     Returns:
-        Tuple containing:
-        - pixel_means_dict: Maps (ix, iy) -> {column: pixel_means_series}
-        - global_annual_means_dict: Maps column -> {year: global_mean}
-        
-    Note:
-        Uses ProcessPoolExecutor for CPU-bound statistics computation with
-        automatic SLURM resource detection for optimal performance
+        True if tile processing succeeded, False otherwise
     """
-    logger.info("Computing all statistics from tiles using parallel processing...")
+    assembly_path, ix, iy, columns_to_demean = args
+    
+    try:
+        df = _load_tile_data(assembly_path, ix, iy, unpack=False)
+        if df is None:
+            return False
+        
+        # Find demeaned columns to remove
+        demeaned_suffixes = ['_time_demeaned', '_unit_demeaned', '_twoway_demeaned']
+        columns_to_remove = []
+        
+        for col in columns_to_demean:
+            for suffix in demeaned_suffixes:
+                demeaned_col = f"{col}{suffix}"
+                if demeaned_col in df.columns:
+                    columns_to_remove.append(demeaned_col)
+        
+        if columns_to_remove:
+            logger.debug(f"Removing {len(columns_to_remove)} demeaned columns from tile ix={ix}, iy={iy}: {columns_to_remove}")
+            df = df.drop(columns=columns_to_remove)
+            _save_tile_data(assembly_path, ix, iy, df)
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to remove demeaned columns from tile ix={ix}, iy={iy}: {e}")
+        return False
+
+def _remove_existing_demeaned_columns(assembly_path: str, columns_to_demean: List[str], n_workers: Optional[int] = None):
+    """
+    Remove existing demeaned columns from all tiles.
+    
+    Args:
+        assembly_path: Path to assembled parquet directory
+        columns_to_demean: List of columns that have demeaned variants to remove
+        n_workers: Number of parallel workers
+    """
+    logger.info("Removing existing demeaned columns from all tiles...")
     tiles = _get_available_tiles(assembly_path)
     
     if not tiles:
-        logger.warning("No tiles found for statistics computation")
-        return {}, {}
+        logger.warning("No tiles found for demeaned column removal")
+        return
+    
+    if n_workers is None:
+        n_workers = _get_optimal_worker_count(len(tiles), "io")
+    
+    logger.info(f"Using {n_workers} workers to remove demeaned columns from {len(tiles)} tiles")
+    
+    # Prepare arguments for parallel processing
+    tile_args = [(assembly_path, ix, iy, columns_to_demean) for ix, iy in tiles]
+    
+    # Use ThreadPoolExecutor for I/O bound operations
+    successful_tiles = 0
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        futures = [executor.submit(_remove_demeaned_columns_single_tile, args) for args in tile_args]
+        
+        with tqdm(total=len(tiles), desc="Removing demeaned columns", 
+                 position=0, leave=True, dynamic_ncols=True,
+                 smoothing=0.1, mininterval=0.5) as pbar:
+            
+            for future in as_completed(futures):
+                try:
+                    success = future.result()
+                    if success:
+                        successful_tiles += 1
+                except Exception as e:
+                    logger.warning(f"Failed to remove demeaned columns from a tile: {e}")
+                finally:
+                    pbar.update(1)
+    
+    logger.info(f"Successfully removed demeaned columns from {successful_tiles}/{len(tiles)} tiles")
+
+def _remove_annual_means_file(assembly_path: str):
+    """
+    Remove the annual means YAML file.
+    
+    Args:
+        assembly_path: Path to assembled parquet directory
+    """
+    annual_means_path = _get_annual_means_path(assembly_path)
+    
+    if os.path.exists(annual_means_path):
+        try:
+            os.remove(annual_means_path)
+            logger.info(f"Removed existing annual means file: {annual_means_path}")
+        except Exception as e:
+            logger.error(f"Failed to remove annual means file {annual_means_path}: {e}")
+    else:
+        logger.debug(f"Annual means file does not exist: {annual_means_path}")
+
+def _apply_override_level(assembly_path: str, columns_to_demean: List[str], override_level: int, n_workers: Optional[int] = None):
+    """
+    Apply the specified override level by removing existing data.
+    
+    Args:
+        assembly_path: Path to assembled parquet directory
+        columns_to_demean: List of columns to process
+        override_level: Override level (0=none, 1=results, 2=intermediate+results)
+        n_workers: Number of parallel workers
+    """
+    if override_level == 0:
+        logger.info("Override level 0: No existing data will be removed")
+        return
+    elif override_level == 1:
+        logger.info("Override level 1: Removing existing demeaned columns only")
+        _remove_existing_demeaned_columns(assembly_path, columns_to_demean, n_workers)
+    elif override_level == 2:
+        logger.info("Override level 2: Removing existing demeaned columns and annual means")
+        _remove_existing_demeaned_columns(assembly_path, columns_to_demean, n_workers)
+        _remove_annual_means_file(assembly_path)
+    else:
+        raise ValueError(f"Invalid override level: {override_level}. Must be 0, 1, or 2.")
+
+def compute_and_save_annual_means(
+    assembly_path: str, 
+    columns_to_demean: List[str],
+    n_workers: Optional[int] = None,
+    force_recompute: bool = False
+) -> Dict[str, Dict[int, float]]:
+    """
+    Compute global annual means across all tiles and save to YAML file.
+    
+    Args:
+        assembly_path: Path to the assembled parquet directory
+        columns_to_demean: List of column names to compute annual means for
+        n_workers: Number of parallel workers (auto-detected from SLURM if None)
+        force_recompute: If True, recompute even if YAML file exists
+        
+    Returns:
+        Dictionary mapping column names to annual means (year -> mean)
+    """
+    annual_means_path = _get_annual_means_path(assembly_path)
+    
+    # Check if annual means already exist
+    if not force_recompute and os.path.exists(annual_means_path):
+        logger.info(f"Loading existing annual means from {annual_means_path}")
+        try:
+            with open(annual_means_path, 'r') as f:
+                annual_means = yaml.safe_load(f)
+            
+            # Check if all requested columns are present
+            missing_columns = [col for col in columns_to_demean if col not in annual_means]
+            if not missing_columns:
+                logger.info(f"All {len(columns_to_demean)} columns found in existing annual means")
+                return annual_means
+            else:
+                logger.info(f"Missing columns {missing_columns}, will recompute all annual means")
+        except Exception as e:
+            logger.warning(f"Failed to load existing annual means: {e}, will recompute")
+    
+    logger.info("Computing annual means from all tiles using unpacked data...")
+    tiles = _get_available_tiles(assembly_path)
+    
+    if not tiles:
+        logger.warning("No tiles found for annual means computation")
+        return {}
     
     # Determine number of workers based on SLURM allocation
     if n_workers is None:
@@ -372,27 +415,22 @@ def compute_all_statistics_from_tiles(
     tile_args = [(assembly_path, ix, iy, columns_to_demean) for ix, iy in tiles]
     
     # Initialize result containers
-    pixel_means = {}
     annual_sums = {col: {} for col in columns_to_demean}
     annual_counts = {col: {} for col in columns_to_demean}
     
     # Use ProcessPoolExecutor for CPU-bound statistics computation
     with ProcessPoolExecutor(max_workers=n_workers) as executor:
         # Submit all tasks
-        futures = [executor.submit(_compute_all_statistics_single_tile, args) for args in tile_args]
+        futures = [executor.submit(_compute_annual_means_single_tile, args) for args in tile_args]
         
         # Use thread-safe progress tracking
-        with tqdm(total=len(tiles), desc="Computing statistics", 
+        with tqdm(total=len(tiles), desc="Computing annual means", 
                  position=0, leave=True, dynamic_ncols=True,
                  smoothing=0.1, mininterval=0.5) as pbar:
             
             for future in as_completed(futures):
                 try:
-                    (ix, iy), tile_pixel_means, tile_annual_stats = future.result()
-                    
-                    # Store pixel means if available
-                    if tile_pixel_means:
-                        pixel_means[(ix, iy)] = tile_pixel_means
+                    tile_annual_stats = future.result()
                     
                     # Aggregate annual statistics
                     for col in columns_to_demean:
@@ -406,7 +444,7 @@ def compute_all_statistics_from_tiles(
                                 annual_counts[col][year] += count_val
                                 
                 except Exception as e:
-                    logger.warning(f"Failed to compute statistics for a tile: {e}")
+                    logger.warning(f"Failed to compute annual statistics for a tile: {e}")
                 finally:
                     pbar.update(1)
     
@@ -418,10 +456,202 @@ def compute_all_statistics_from_tiles(
             if annual_counts[col][year] > 0:
                 col_means[year] = annual_sums[col][year] / annual_counts[col][year]
         global_annual_means[col] = col_means
-        logger.info(f"Computed statistics for {col}: {len(pixel_means)} tiles, {len(col_means)} years")
+        logger.info(f"Computed annual means for {col}: {len(col_means)} years")
     
-    logger.info(f"Computed statistics for {len(pixel_means)} tiles total")
-    return pixel_means, global_annual_means
+    # Save annual means to YAML file
+    logger.info(f"Saving annual means to {annual_means_path}")
+    with open(annual_means_path, 'w') as f:
+        yaml.dump(global_annual_means, f, default_flow_style=False)
+    
+    logger.info(f"Successfully computed and saved annual means for {len(columns_to_demean)} columns")
+    return global_annual_means
+
+def _copy_variable_metadata(source_metadata: Dict[str, Any], source_col: str, target_col: str) -> Dict[str, Any]:
+    """
+    Copy variable metadata from source column to target column for packing.
+    
+    Args:
+        source_metadata: Original variable metadata dictionary
+        source_col: Source column name
+        target_col: Target column name
+        
+    Returns:
+        Metadata dictionary for the target column
+    """
+    # Find the source column metadata
+    variable_metadata = source_metadata.get('variable_metadata', {})
+    for dataset_name, dataset_vars in variable_metadata.items():
+        if source_col in dataset_vars:
+            source_var_metadata = dataset_vars[source_col].copy()
+            # Create metadata for target column with same packing parameters
+            target_metadata = source_var_metadata.copy()
+            target_metadata['source_column'] = source_col
+            target_metadata['description'] = f"Demeaned version of {source_col}"
+            logger.debug(f"Copied metadata from {source_col} to {target_col}: {target_metadata}")
+            return target_metadata
+    
+    logger.warning(f"No metadata found for source column {source_col}")
+    return {}
+
+def _apply_demeaning_single_tile(args: Tuple[str, int, int, List[str], Dict[str, Dict[int, float]], str, Dict[str, np.dtype]]) -> bool:
+    """
+    Apply all three types of demeaning to a single tile with packing/unpacking.
+    
+    Args:
+        args: Tuple containing:
+            - assembly_path: Path to assembled parquet directory
+            - ix, iy: Tile coordinates
+            - columns_to_demean: List of columns to process
+            - annual_means: Pre-computed global annual means (in unpacked form)
+            - compression: Compression format for output
+            - original_dtypes: Data types to preserve
+        
+    Returns:
+        True if tile processing succeeded, False otherwise
+    """
+    assembly_path, ix, iy, columns_to_demean, annual_means, compression, original_dtypes = args
+    
+    try:
+        # Load tile data without unpacking initially to preserve original dtypes
+        df_packed = _load_tile_data(assembly_path, ix, iy, unpack=False)
+        if df_packed is None:
+            return False
+        
+        # Store original dtypes for all columns
+        original_dtypes_all = {col: df_packed[col].dtype for col in df_packed.columns}
+        
+        # Unpack data for processing
+        metadata_path = os.path.join(assembly_path, '_metadata.yaml')
+        if not os.path.exists(metadata_path):
+            logger.error(f"Metadata file not found: {metadata_path}")
+            return False
+        
+        df = unpack_dataframe(df_packed, metadata_path, inplace=False)
+        
+        # Check if demeaned columns already exist
+        has_demeaned_cols = any(f"{col}_time_demeaned" in df.columns for col in columns_to_demean)
+        if has_demeaned_cols:
+            logger.debug(f"Demeaned columns already exist in tile ix={ix}, iy={iy}, skipping")
+            return True
+        
+        # Apply demeaning for each column using unpacked data
+        for col in columns_to_demean:
+            if col not in df.columns:
+                logger.debug(f"Column {col} not found in tile ix={ix}, iy={iy}, skipping")
+                continue
+            
+            # 1. Time demeaning: subtract annual means
+            if col in annual_means:
+                annual_means_col = annual_means[col]
+                df[f"{col}_time_demeaned"] = df[col] - df['time'].map(annual_means_col)
+            
+            # 2. Unit demeaning: subtract pixel means within tile
+            pixel_means = df.groupby('pixel_id')[col].transform('mean')
+            df[f"{col}_unit_demeaned"] = df[col] - pixel_means
+            
+            # 3. Two-way demeaning: subtract both annual means and pixel means
+            if col in annual_means:
+                # First subtract annual means
+                time_demeaned = df[col] - df['time'].map(annual_means_col)
+                # Then subtract pixel means of the time-demeaned data
+                pixel_means_residual = time_demeaned.groupby(df['pixel_id']).transform('mean')
+                df[f"{col}_twoway_demeaned"] = time_demeaned - pixel_means_residual
+        
+        # Pack the demeaned columns back using original metadata
+        df = pack_dataframe(df, metadata_path, inplace=True)
+        
+        # Preserve original dtypes for all columns, including new demeaned ones
+        for col in df.columns:
+            if col in original_dtypes_all:
+                target_dtype = original_dtypes_all[col]
+            else:
+                # For new demeaned columns, use the dtype of their source column
+                for source_col in columns_to_demean:
+                    if col.startswith(f"{source_col}_") and col.endswith("_demeaned"):
+                        target_dtype = original_dtypes_all.get(source_col, df[col].dtype)
+                        break
+                else:
+                    target_dtype = df[col].dtype
+            
+            try:
+                if df[col].dtype != target_dtype:
+                    if (np.issubdtype(df[col].dtype, np.floating) and 
+                        np.issubdtype(target_dtype, np.integer)):
+                        df[col] = df[col].round().astype(target_dtype, casting='unsafe')
+                    else:
+                        df[col] = df[col].astype(target_dtype)
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Could not preserve dtype {target_dtype} for column {col}: {e}")
+        
+        # Save updated tile data
+        _save_tile_data(assembly_path, ix, iy, df, compression)
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to apply demeaning to tile ix={ix}, iy={iy}: {e}")
+        return False
+
+def apply_demeaning_to_all_tiles(
+    assembly_path: str, 
+    columns_to_demean: List[str],
+    annual_means: Dict[str, Dict[int, float]],
+    compression: str = 'zstd',
+    n_workers: Optional[int] = None
+):
+    """
+    Apply demeaning operations to all tiles using the pre-computed annual means.
+    
+    Args:
+        assembly_path: Path to assembled parquet directory
+        columns_to_demean: List of column names to apply demeaning to
+        annual_means: Pre-computed global annual means for each column
+        compression: Compression format for output parquet files
+        n_workers: Number of parallel workers (auto-detected from SLURM if None)
+    """
+    logger.info("Applying demeaning operations to all tiles with packing/unpacking...")
+    tiles = _get_available_tiles(assembly_path)
+    
+    if not tiles:
+        logger.warning("No tiles found for demeaning application")
+        return
+    
+    # Get representative data types to preserve
+    original_dtypes = _get_representative_dtypes(assembly_path)
+    
+    # Determine number of workers for I/O bound operations
+    if n_workers is None:
+        n_workers = _get_optimal_worker_count(len(tiles), "io")
+    
+    logger.info(f"Using {n_workers} workers to process {len(tiles)} tiles")
+    
+    # Prepare arguments for parallel processing
+    tile_args = []
+    for ix, iy in tiles:
+        args = (assembly_path, ix, iy, columns_to_demean, annual_means, compression, original_dtypes)
+        tile_args.append(args)
+    
+    # Use ThreadPoolExecutor for I/O bound operations
+    successful_tiles = 0
+    with ThreadPoolExecutor(max_workers=n_workers) as executor:
+        # Submit all tasks
+        futures = [executor.submit(_apply_demeaning_single_tile, args) for args in tile_args]
+        
+        # Use thread-safe progress tracking
+        with tqdm(total=len(tiles), desc="Applying demeaning", 
+                 position=0, leave=True, dynamic_ncols=True,
+                 smoothing=0.1, mininterval=0.5) as pbar:
+            
+            for future in as_completed(futures):
+                try:
+                    success = future.result()
+                    if success:
+                        successful_tiles += 1
+                except Exception as e:
+                    logger.warning(f"Failed to process a tile during demeaning: {e}")
+                finally:
+                    pbar.update(1)
+    
+    logger.info(f"Successfully applied demeaning to {successful_tiles}/{len(tiles)} tiles")
 
 def _get_optimal_worker_count(total_tiles: int, operation_type: str = "cpu") -> int:
     """
@@ -464,282 +694,14 @@ def _get_optimal_worker_count(total_tiles: int, operation_type: str = "cpu") -> 
     else:
         logger.warning("No SLURM CPU environment variables found, using default of 4 CPUs")
     
-    optimal_workers = min(total_tiles, slurm_cpus)
+    if operation_type == "io":
+        optimal_workers = min(total_tiles, max(1, slurm_cpus // 2))
+    else:
+        optimal_workers = min(total_tiles, slurm_cpus)
     
     logger.info(f"Optimal worker count for {operation_type} operation: {optimal_workers} "
                 f"(SLURM CPUs: {slurm_cpus}, tiles: {total_tiles})")
     return optimal_workers
-
-def _check_tile_demeaning_status(assembly_path: str, ix: int, iy: int, columns_to_demean: List[str]) -> Tuple[bool, List[str]]:
-    """
-    Check demeaning status for a specific tile using fast schema inspection.
-    
-    Args:
-        assembly_path: Path to the assembled parquet directory
-        ix: Tile x-coordinate index
-        iy: Tile y-coordinate index
-        columns_to_demean: List of columns to check for demeaning
-        
-    Returns:
-        Tuple of (all_exist, missing_columns) where:
-        - all_exist: True if all demeaned columns exist in this tile
-        - missing_columns: List of original columns that don't have all demeaned variants
-    """
-    tile_path = os.path.join(assembly_path, f"ix={ix}", f"iy={iy}", "data.parquet")
-    
-    if not os.path.exists(tile_path):
-        return False, columns_to_demean
-    
-    try:
-        import pyarrow.parquet as pq
-        
-        # Read only the schema/metadata, not the data
-        parquet_file = pq.ParquetFile(tile_path)
-        schema = parquet_file.schema_arrow
-        column_names = set(schema.names)
-        
-        missing_columns = []
-        for col in columns_to_demean:
-            if col not in column_names:
-                missing_columns.append(col)
-                continue
-                
-            # Check if all three types of demeaned columns exist
-            demeaned_cols = [f"{col}_unit_demeaned", f"{col}_time_demeaned", f"{col}_twoway_demeaned"]
-            if not all(dcol in column_names for dcol in demeaned_cols):
-                missing_columns.append(col)
-        
-        all_exist = len(missing_columns) == 0
-        return all_exist, missing_columns
-        
-    except Exception as e:
-        logger.warning(f"Failed to check schema for tile ix={ix}, iy={iy}: {e}")
-        return False, columns_to_demean
-
-def _check_if_demeaning_exists(assembly_path: str, columns_to_demean: List[str]) -> Tuple[bool, List[str], Dict[Tuple[int, int], List[str]]]:
-    """
-    Check if demeaning has already been applied by examining all tiles.
-    
-    Args:
-        assembly_path: Path to the assembled parquet directory
-        columns_to_demean: List of columns to check for demeaning
-        
-    Returns:
-        Tuple of (all_tiles_complete, globally_missing_columns, tile_status) where:
-        - all_tiles_complete: True if all tiles have all demeaned columns
-        - globally_missing_columns: List of columns missing from most tiles
-        - tile_status: Dict mapping (ix, iy) to list of missing columns for that tile
-    """
-    tiles = _get_available_tiles(assembly_path)
-    if not tiles:
-        return False, columns_to_demean, {}
-    
-    logger.info(f"Checking demeaning status for {len(tiles)} tiles...")
-    
-    tile_status = {}
-    column_missing_counts = {col: 0 for col in columns_to_demean}
-    
-    # Check each tile using fast schema inspection
-    for ix, iy in tiles:
-        all_exist, missing_columns = _check_tile_demeaning_status(assembly_path, ix, iy, columns_to_demean)
-        tile_status[(ix, iy)] = missing_columns
-        
-        # Count how many tiles are missing each column
-        for col in missing_columns:
-            if col in column_missing_counts:
-                column_missing_counts[col] += 1
-    
-    # Determine globally missing columns (missing from majority of tiles)
-    total_tiles = len(tiles)
-    globally_missing_columns = []
-    for col, missing_count in column_missing_counts.items():
-        if missing_count > total_tiles * 0.5:  # Missing from more than 50% of tiles
-            globally_missing_columns.append(col)
-    
-    # Check if all tiles are complete
-    all_tiles_complete = all(len(missing) == 0 for missing in tile_status.values())
-    
-    logger.info(f"Demeaning status check complete:")
-    logger.info(f"  - All tiles complete: {all_tiles_complete}")
-    logger.info(f"  - Globally missing columns: {globally_missing_columns}")
-    logger.info(f"  - Tiles needing processing: {sum(1 for missing in tile_status.values() if missing)}")
-    
-    return all_tiles_complete, globally_missing_columns, tile_status
-
-def _apply_demeaning_single_tile(args: Tuple[str, int, int, List[str], Dict[str, pd.Series], Dict[str, Dict[int, float]], str, Dict[str, np.dtype], Dict[Tuple[int, int], List[str]]]) -> bool:
-    """
-    Apply demeaning transformations to a single tile in parallel processing context.
-    
-    This function performs all three types of demeaning operations on a single tile:
-    1. Unit demeaning: Subtracts pixel-level means within the tile
-    2. Time demeaning: Subtracts global annual means 
-    3. Two-way demeaning: Applies both transformations sequentially
-    
-    Args:
-        args: Tuple containing all necessary parameters for parallel processing:
-            - assembly_path: Path to assembled parquet directory
-            - ix, iy: Tile coordinates
-            - columns_to_demean: List of columns to process
-            - tile_pixel_means: Pre-computed pixel means for this tile
-            - global_annual_means: Pre-computed global annual means
-            - compression: Compression format for output
-            - original_dtypes: Data types to preserve
-            - tile_status: Dict mapping (ix, iy) to missing columns for that tile
-        
-    Returns:
-        True if tile processing succeeded, False otherwise
-        
-    Note:
-        Uses _preserve_dtypes for all dtype handling to avoid redundancy.
-        Designed for use with ThreadPoolExecutor for I/O-bound operations.
-    """
-    (assembly_path, ix, iy, columns_to_demean, tile_pixel_means, 
-     global_annual_means, compression, original_dtypes, tile_status) = args
-    
-    try:
-        # Check if this specific tile needs processing
-        tile_missing_columns = tile_status.get((ix, iy), [])
-        if not tile_missing_columns:
-            logger.debug(f"Tile ix={ix}, iy={iy} already has all demeaned columns, skipping")
-            return True
-        
-        df = _load_tile_data(assembly_path, ix, iy)
-        if df is None:
-            return False
-        
-        # Apply demeaning only for columns that are missing in this specific tile
-        for col in tile_missing_columns:
-            if col not in df.columns:
-                logger.debug(f"Column {col} not found in tile ix={ix}, iy={iy}, skipping")
-                continue
-            
-            # Unit-average demeaning (subtract pixel means within tile)
-            if col in tile_pixel_means and f"{col}_unit_demeaned" not in df.columns:
-                pixel_mean_series = tile_pixel_means[col]
-                df[f"{col}_unit_demeaned"] = df[col] - df['pixel_id'].map(pixel_mean_series)
-            
-            # Annual-average demeaning (subtract global annual means)
-            if col in global_annual_means and f"{col}_time_demeaned" not in df.columns:
-                annual_means = global_annual_means[col]
-                df[f"{col}_time_demeaned"] = df[col] - df['time'].map(annual_means)
-            
-            # Two-way demeaning (subtract both pixel and annual means)
-            if (col in tile_pixel_means and col in global_annual_means and 
-                f"{col}_twoway_demeaned" not in df.columns):
-                # First subtract annual means, then subtract pixel means of residuals
-                annual_means = global_annual_means[col]
-                time_demeaned = df[col] - df['time'].map(annual_means)
-                
-                # Compute pixel means of annual-demeaned data within this tile
-                pixel_means_residual = time_demeaned.groupby(df['pixel_id']).transform('mean')
-                df[f"{col}_twoway_demeaned"] = time_demeaned - pixel_means_residual
-        
-        # Apply unified dtype preservation
-        df = _preserve_dtypes(df, original_dtypes)
-        
-        # Save updated tile data
-        _save_tile_data(assembly_path, ix, iy, df, compression)
-        return True
-        
-    except Exception as e:
-        logger.error(f"Failed to apply demeaning to tile ix={ix}, iy={iy}: {e}")
-        return False
-
-def apply_demeaning_to_tiles(
-    assembly_path: str, 
-    columns_to_demean: List[str],
-    pixel_means: Dict[Tuple[int, int], Dict[str, pd.Series]],
-    global_annual_means: Dict[str, Dict[int, float]],
-    compression: str = 'zstd',
-    n_workers: Optional[int] = None
-):
-    """
-    Apply demeaning operations to all tiles using parallel processing.
-    
-    This function orchestrates the application of demeaning transformations across
-    all tiles in the assembly. It uses ThreadPoolExecutor to parallelize I/O-bound
-    operations (reading/writing parquet files) while preserving data types and
-    providing progress tracking.
-    
-    Three types of demeaning are applied:
-    1. Unit demeaning: {column}_unit_demeaned - removes pixel fixed effects
-    2. Time demeaning: {column}_time_demeaned - removes temporal fixed effects  
-    3. Two-way demeaning: {column}_twoway_demeaned - removes both effects
-    
-    Args:
-        assembly_path: Path to assembled parquet directory
-        columns_to_demean: List of column names to apply demeaning to
-        pixel_means: Pre-computed pixel means for each tile and column
-        global_annual_means: Pre-computed global annual means for each column
-        compression: Compression format for output parquet files
-        n_workers: Number of parallel workers (auto-detected from SLURM if None)
-        
-    Note:
-        Uses ThreadPoolExecutor instead of ProcessPoolExecutor since this operation
-        is I/O-bound rather than CPU-bound. Worker count is automatically adjusted
-        for I/O operations to avoid overwhelming storage systems.
-    """
-    logger.info("Applying demeaning operations to all tiles using parallel processing...")
-    tiles = _get_available_tiles(assembly_path)
-    
-    if not tiles:
-        logger.warning("No tiles found for demeaning application")
-        return
-    
-    # Check demeaning status for each tile
-    all_tiles_complete, globally_missing_columns, tile_status = _check_if_demeaning_exists(assembly_path, columns_to_demean)
-    
-    if all_tiles_complete:
-        logger.info("All tiles already have all demeaned columns, skipping demeaning application")
-        return
-    
-    # Count tiles that need processing
-    tiles_needing_processing = [(ix, iy) for (ix, iy), missing in tile_status.items() if missing]
-    logger.info(f"Will process {len(tiles_needing_processing)} tiles that need demeaning")
-    
-    if not tiles_needing_processing:
-        logger.info("No tiles need demeaning processing")
-        return
-    
-    # Get representative data types to preserve
-    original_dtypes = _get_representative_dtypes(assembly_path)
-    
-    # Determine number of workers (use fewer workers for I/O bound operations)
-    if n_workers is None:
-        n_workers = _get_optimal_worker_count(len(tiles_needing_processing), "io")
-    
-    logger.info(f"Using {n_workers} workers to process {len(tiles_needing_processing)} tiles")
-    
-    # Prepare arguments for parallel processing - only for tiles that need processing
-    tile_args = []
-    for ix, iy in tiles_needing_processing:
-        tile_pixel_means = pixel_means.get((ix, iy), {})
-        args = (assembly_path, ix, iy, columns_to_demean, tile_pixel_means, 
-                global_annual_means, compression, original_dtypes, tile_status)
-        tile_args.append(args)
-    
-    # Use ThreadPoolExecutor for I/O bound operations (reading/writing parquet files)
-    successful_tiles = 0
-    with ThreadPoolExecutor(max_workers=n_workers) as executor:
-        # Submit all tasks
-        futures = [executor.submit(_apply_demeaning_single_tile, args) for args in tile_args]
-        
-        # Use thread-safe progress tracking with better performance
-        with tqdm(total=len(tiles_needing_processing), desc="Applying demeaning", 
-                 position=0, leave=True, dynamic_ncols=True,
-                 smoothing=0.1, mininterval=0.5) as pbar:
-            
-            for future in as_completed(futures):
-                try:
-                    success = future.result()
-                    if success:
-                        successful_tiles += 1
-                except Exception as e:
-                    logger.warning(f"Failed to process a tile during demeaning: {e}")
-                finally:
-                    pbar.update(1)
-    
-    logger.info(f"Successfully applied demeaning to {successful_tiles}/{len(tiles_needing_processing)} tiles")
 
 def update_assembly_metadata(assembly_path: str, columns_to_demean: List[str]):
     """
@@ -747,81 +709,111 @@ def update_assembly_metadata(assembly_path: str, columns_to_demean: List[str]):
     
     This function modifies the assembly's metadata file to include information about
     the demeaning operations that were performed, including column mappings and
-    transformation descriptions.
+    transformation descriptions. It also copies packing metadata from source columns
+    to demeaned columns.
     
     Args:
         assembly_path: Path to assembled parquet directory
         columns_to_demean: List of columns that were demeaned
-        
-    Metadata Added:
-        - demeaning.demeaned_columns: Original columns that were processed
-        - demeaning.demeaning_types: Types of demeaning applied
-        - demeaning.description: Explanation of demeaning operations
-        - variable_metadata: Detailed information for each new column
-        
-    Note:
-        Creates metadata file if it doesn't exist, otherwise updates existing metadata
     """
-    # Use existing metadata loading function
-    metadata = _load_assembly_metadata(assembly_path)
+    metadata_path = os.path.join(assembly_path, '_metadata.yaml')
+    
+    # Load existing metadata or create new
+    metadata = {}
+    if os.path.exists(metadata_path):
+        try:
+            metadata = read_assembly_metadata(metadata_path)
+        except Exception as e:
+            logger.warning(f"Failed to load existing metadata: {e}")
     
     # Add demeaning information
     metadata['demeaning'] = {
         'demeaned_columns': columns_to_demean,
         'demeaning_types': ['unit_demeaned', 'time_demeaned', 'twoway_demeaned'],
-        'description': 'Unit demeaning subtracts pixel-level means within tiles. Annual demeaning subtracts global annual means. Two-way demeaning applies both sequentially.'
+        'description': 'Unit demeaning subtracts pixel-level means within tiles. Time demeaning subtracts global annual means. Two-way demeaning applies both sequentially.',
+        'annual_means_file': '_annual_means.yaml'
     }
     
     # Update variable metadata for new columns
     if 'variable_metadata' not in metadata:
         metadata['variable_metadata'] = {}
     
+    variable_metadata = metadata['variable_metadata']
+    
+    # Define demeaning descriptions
+    demeaning_descriptions = {
+        'time_demeaned': 'Time demeaned version (subtracts annual means)',
+        'unit_demeaned': 'Unit demeaned version (subtracts pixel means within tile)',
+        'twoway_demeaned': 'Two-way demeaned version (subtracts both annual and pixel means)'
+    }
+    
+    # Copy packing metadata from source columns to demeaned columns
     for col in columns_to_demean:
-        for suffix in ['unit_demeaned', 'time_demeaned', 'twoway_demeaned']:
-            new_col = f"{col}_{suffix}"
-            metadata['variable_metadata'][new_col] = {
-                'description': f"{suffix.replace('_', ' ').title()} version of {col}",
+        # Find the source column's metadata and dataset
+        source_var_metadata = None
+        source_dataset = None
+        
+        for dataset_name, dataset_vars in variable_metadata.items():
+            if col in dataset_vars:
+                source_var_metadata = dataset_vars[col].copy()
+                source_dataset = dataset_name
+                break
+        
+        if source_var_metadata is None:
+            logger.warning(f"No metadata found for source column {col}, using defaults")
+            source_var_metadata = {}
+        
+        # Create metadata for each type of demeaned column
+        for suffix, desc_template in demeaning_descriptions.items():
+            demeaned_col = f"{col}_{suffix}"
+            
+            # Copy packing metadata from source column
+            demeaned_metadata = source_var_metadata.copy()
+            demeaned_metadata.update({
+                'description': f"{desc_template} of {col}",
                 'source_column': col,
                 'demeaning_type': suffix
-            }
+            })
+            
+            # Add to the same dataset as the source column or fallback to 'demeaned'
+            target_dataset = source_dataset or 'demeaned'
+            if target_dataset not in variable_metadata:
+                variable_metadata[target_dataset] = {}
+            variable_metadata[target_dataset][demeaned_col] = demeaned_metadata
     
     # Save updated metadata
-    metadata_path = os.path.join(assembly_path, '_metadata.yaml')
     with open(metadata_path, 'w') as f:
         yaml.dump(metadata, f, default_flow_style=False)
     
-    logger.info(f"Updated assembly metadata with demeaning information")
+    logger.info(f"Updated assembly metadata with demeaning information and packing metadata")
 
-def run_demeaning_workflow(assembly_name: str, config: Dict[str, Any]):
+def run_demeaning_workflow(assembly_name: str, config: Dict[str, Any], override_level: int = 0):
     """
     Execute the complete demeaning workflow for a specified assembly.
     
     This is the main entry point for the demeaning process. It orchestrates the
     entire workflow from configuration validation through final metadata updates.
-    The workflow consists of four main steps:
+    The workflow consists of three main steps:
     
-    1. Compute pixel and temporal statistics in parallel
-    2. Apply demeaning transformations to all tiles
-    3. Update assembly metadata with new column information
+    1. Apply override level (remove existing data if requested)
+    2. Compute and save annual means to YAML file (using unpacked data)
+    3. Apply demeaning transformations to all tiles (unpack -> process -> repack)
+    4. Update assembly metadata with new column information and packing metadata
     
     Args:
         assembly_name: Name of the assembly configuration to process
         config: Full configuration dictionary containing assembly definitions
+        override_level: Override level (0=none, 1=results, 2=intermediate+results)
         
     Raises:
-        ValueError: If assembly configuration is not found
+        ValueError: If assembly configuration is not found or invalid override level
         FileNotFoundError: If assembly directory does not exist
-        
-    Workflow Steps:
-        1-2. Combined statistics computation (pixel means + annual means)
-        3. Apply demeaning transformations to all tiles in parallel
-        4. Update metadata to document new columns
-        
-    Note:
-        Automatically detects SLURM resource allocation for optimal parallel processing.
-        Supports manual worker count override through configuration.
     """
-    logger.info(f"Starting demeaning workflow for assembly: {assembly_name}")
+    logger.info(f"Starting demeaning workflow for assembly: {assembly_name} (override_level={override_level})")
+    
+    # Validate override level
+    if override_level not in [0, 1, 2]:
+        raise ValueError(f"Invalid override level: {override_level}. Must be 0, 1, or 2.")
     
     # Get assembly configuration
     if 'assemble' not in config or assembly_name not in config['assemble']:
@@ -835,6 +827,7 @@ def run_demeaning_workflow(assembly_name: str, config: Dict[str, Any]):
     columns_to_demean = processing_config.get('demean_columns', [])
     compression = processing_config.get('compression', 'zstd')
     n_workers = processing_config.get('demeaning_workers')  # Allow config override
+    force_recompute = processing_config.get('force_recompute_annual_means', False)
     
     if not columns_to_demean:
         logger.warning("No columns specified for demeaning")
@@ -847,47 +840,51 @@ def run_demeaning_workflow(assembly_name: str, config: Dict[str, Any]):
     if not os.path.exists(assembly_path):
         raise FileNotFoundError(f"Assembly not found at: {assembly_path}")
     
-    # Check demeaning status across all tiles
-    all_tiles_complete, globally_missing_columns, tile_status = _check_if_demeaning_exists(assembly_path, columns_to_demean)
+    # Verify metadata exists for packing/unpacking
+    metadata_path = os.path.join(assembly_path, '_metadata.yaml')
+    if not os.path.exists(metadata_path):
+        logger.error(f"Metadata file required for packing/unpacking not found: {metadata_path}")
+        raise FileNotFoundError(f"Metadata file not found: {metadata_path}")
     
-    if all_tiles_complete:
-        logger.info("All tiles already have all demeaned columns. Skipping demeaning workflow.")
-        return
+    # Step 0: Apply override level
+    if override_level > 0:
+        logger.info(f"Step 0: Applying override level {override_level}...")
+        _apply_override_level(assembly_path, columns_to_demean, override_level, n_workers)
+        
+        # For override level 2, force recomputation of annual means
+        if override_level == 2:
+            force_recompute = True
     
-    # Use globally missing columns for statistics computation
-    if globally_missing_columns:
-        logger.info(f"Will compute statistics for globally missing columns: {globally_missing_columns}")
-        stats_columns = globally_missing_columns
-    else:
-        logger.info("Some tiles have partial demeaning. Computing statistics for all requested columns.")
-        stats_columns = columns_to_demean
-    
-    # Step 1 & 2 Combined: Compute all statistics in one pass
-    logger.info("Step 1-2 Combined: Computing all statistics from tiles...")
-    pixel_means, global_annual_means = compute_all_statistics_from_tiles(
-        assembly_path, stats_columns, n_workers
+    # Step 1: Compute and save annual means using unpacked data
+    logger.info("Step 1: Computing and saving annual means using unpacked data...")
+    annual_means = compute_and_save_annual_means(
+        assembly_path, 
+        columns_to_demean, 
+        n_workers,
+        force_recompute
     )
     
-    # Step 3: Apply demeaning operations to all tiles
-    logger.info("Step 3: Applying demeaning operations...")
-    apply_demeaning_to_tiles(
+    if not annual_means:
+        logger.error("Failed to compute annual means, cannot proceed with demeaning")
+        return
+    
+    # Step 2: Apply demeaning operations to all tiles with packing/unpacking
+    logger.info("Step 2: Applying demeaning operations to all tiles with packing/unpacking...")
+    apply_demeaning_to_all_tiles(
         assembly_path, 
-        columns_to_demean,  # Use original column list for application
-        pixel_means, 
-        global_annual_means, 
+        columns_to_demean,
+        annual_means, 
         compression,
         n_workers
     )
     
-    # Step 4: Update assembly metadata
-    logger.info("Step 4: Updating metadata...")
-    # Use original columns list for metadata (not just missing ones)
-    original_columns = processing_config.get('demean_columns', [])
-    update_assembly_metadata(assembly_path, original_columns)
+    # Step 3: Update assembly metadata with packing information for demeaned columns
+    logger.info("Step 3: Updating metadata with packing information...")
+    update_assembly_metadata(assembly_path, columns_to_demean)
     
     logger.info(f"Demeaning workflow completed successfully for assembly: {assembly_name}")
 
-def run_workflow_with_config(config: Dict[str, Any], assembly_name: str = None):
+def run_workflow_with_config(config: Dict[str, Any], assembly_name: str = None, override_level: int = 0):
     """
     Entry point for running demeaning workflow with unified configuration interface.
     
@@ -898,6 +895,7 @@ def run_workflow_with_config(config: Dict[str, Any], assembly_name: str = None):
     Args:
         config: Full configuration dictionary
         assembly_name: Name of assembly to process (uses 'main' if None)
+        override_level: Override level (0=none, 1=results, 2=intermediate+results)
         
     Note:
         This function is designed to be called from the unified run.py interface
@@ -907,7 +905,7 @@ def run_workflow_with_config(config: Dict[str, Any], assembly_name: str = None):
     if assembly_name is None:
         assembly_name = config.get('assembly_name', 'main')
     
-    run_demeaning_workflow(assembly_name, config)
+    run_demeaning_workflow(assembly_name, config, override_level)
 
 # Module-level execution guard and usage information
 if __name__ == "__main__":
