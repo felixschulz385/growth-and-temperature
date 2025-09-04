@@ -126,8 +126,8 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     Run the specified data operation for a source.
     
     Args:
-        operation_type: Type of operation ('index', 'download', 'preprocess', 'validate', 'extract', 'assemble')
-        source: Data source name or assembly name for assemble operation
+        operation_type: Type of operation ('index', 'download', 'preprocess', 'validate', 'extract', 'assemble', 'demean')
+        source: Data source name or assembly name for assemble/demean operations
         config: Full configuration dictionary
         mode: Override mode (optional)
         stage: Stage for preprocess operation (optional)
@@ -149,6 +149,24 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         except ImportError as e:
             logger.error(f"Error importing assembly module: {e}")
             raise ValueError(f"Could not import assembly module: {e}") from e
+        
+        return
+    
+    if operation_type == "demean":
+        # Handle demeaning operations
+        demean_config = config.copy()  # Pass full config
+        
+        # Import and run the demeaning workflow
+        try:
+            import importlib
+            demean_module = importlib.import_module('gnt.data.assemble.demean')
+            
+            logger.info(f"Running demeaning workflow for assembly: {source}")
+            demean_module.run_workflow_with_config(demean_config, assembly_name=source)
+                        
+        except ImportError as e:
+            logger.error(f"Error importing demeaning module: {e}")
+            raise ValueError(f"Could not import demeaning module: {e}") from e
         
         return
     
@@ -303,7 +321,7 @@ def main():
     # Main operation type argument
     parser.add_argument(
         "operation",
-        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble"],
+        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble", "demean"],
         help="Operation to perform"
     )
     
