@@ -95,5 +95,15 @@ def create_data_source(source_config):
             file_extensions=file_extensions,
             output_path=output_path
         )
+    elif dataset_name.lower() in ['harvard_plad', 'harvard']:
+        logger.info(f"Creating Harvard PLAD data source")
+        from gnt.data.download.sources.harvard import HarvardDataSource
+        # Accept either base_url or doi for flexibility
+        return HarvardDataSource(
+            base_url=base_url,
+            file_extensions=file_extensions,
+            output_path=output_path,
+            doi=config.get('doi', base_url)
+        )
     else:
         raise ValueError(f"Unknown data source: {dataset_name}")

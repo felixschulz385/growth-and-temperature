@@ -3,25 +3,25 @@ import requests
 import logging
 import os
 import time
+import hashlib
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 
-from gnt.data.download.download.base import BaseDataSource
+from gnt.data.download.sources.base import BaseDataSource
 
 logger = logging.getLogger(__name__)
 
 class HarvardDataSource(BaseDataSource):
-    def __init__(self, base_url: str, file_extensions: list[str] = None):
+    def __init__(self, base_url: str = None, file_extensions: list[str] = None, output_path: str = None, doi: str = None):
         self.DATA_SOURCE_NAME = "harvard"
-        self.base_url = base_url
-        self.file_extensions = file_extensions or [".csv", ".nc", ".tif"]
+        # Accept either base_url or doi for flexibility
+        self.doi = doi or base_url or "doi:10.7910/DVN/YUS575"
+        self.base_url = base_url or f"https://dataverse.harvard.edu/dataset.xhtml?persistentId={self.doi}"
+        self.file_extensions = file_extensions or [".csv", ".nc", ".tif", ".zip"]
         self.has_entrypoints = False
-        
-        # Parse URL to extract data path
-        parsed = urlparse(base_url)
-        self.doi = self.base_url  # Store the DOI for API requests
-        datatype = parsed.path.strip("/") if parsed.path else "general"
-        self.data_path = f"{self.DATA_SOURCE_NAME}/{datatype}"
+
+        # Use output_path if provided, otherwise default to 'harvard/plad'
+        self.data_path = output_path or f"{self.DATA_SOURCE_NAME}/plad"
 
     def list_remote_files(self, entrypoint: dict = None) -> list:
         """
@@ -29,27 +29,22 @@ class HarvardDataSource(BaseDataSource):
         For Harvard, we don't use entrypoints but still include the parameter for compatibility.
         """
         api_url = f"https://dataverse.harvard.edu/api/datasets/:persistentId?persistentId={self.doi}"
-        
         try:
             logger.info(f"Fetching dataset information from {api_url}")
             response = requests.get(api_url)
             response.raise_for_status()
             dataset_info = response.json()
-            
             files = dataset_info['data']['latestVersion']['files']
             result = []
-            
             for file in files:
                 label = file["label"]
                 if not self.file_extensions or any(label.endswith(ext) for ext in self.file_extensions):
-                    relative_path = f"{file['dataFile']['originalFileName']}"
+                    relative_path = file['dataFile'].get('originalFileName', label)
                     file_id = file['dataFile']['id']
                     full_url = f"https://dataverse.harvard.edu/api/access/datafile/{file_id}"
                     result.append((relative_path, full_url))
-            
             logger.info(f"Found {len(result)} files in Harvard dataset")
             return result
-            
         except Exception as e:
             logger.error(f"Error listing files from Harvard Dataverse: {str(e)}")
             return []
@@ -109,3 +104,13 @@ class HarvardDataSource(BaseDataSource):
         Return an empty list for compatibility.
         """
         return []
+
+    def get_file_hash(self, file_url: str) -> str:
+        """
+        Generate a unique hash for a file based on its URL.
+        Args:
+            file_url: URL of the file
+        Returns:
+            str: A unique hash identifier for the file
+        """
+        return hashlib.md5(file_url.encode('utf-8')).hexdigest()
