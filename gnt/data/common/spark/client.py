@@ -127,22 +127,40 @@ def create_spark_session(config: Optional[Dict[str, Any]] = None,
         driver_memory = driver_memory or spark_config.get('driver_memory') or _get_default_memory()
         driver_cores = str(driver_cores or spark_config.get('driver_cores') or _get_default_cores())
         temp_dir = temp_dir or spark_config.get('temp_dir') or '/tmp/spark'
+        executor_memory = spark_config.get('executor_memory', driver_memory)
+        spark_cpus = str(spark_config.get('spark_cpus', driver_cores))
         
         # Create temp directory
         os.makedirs(temp_dir, exist_ok=True)
         
-        # Build Spark session with basic configuration
+        # Build Spark session with comprehensive configuration
         builder = SparkSession.builder \
             .appName(app_name) \
-            .config("spark.driver.memory", driver_memory) \
-            .config("spark.driver.cores", driver_cores) \
-            .config("spark.local.dir", temp_dir) \
             .config("spark.sql.execution.arrow.pyspark.enabled", "true") \
+            .config("spark.sql.parquet.int96RebaseModeInRead", "CORRECTED") \
+            .config("spark.sql.parquet.outputTimestampType", "TIMESTAMP_MICROS") \
+            .config("spark.driver.memory", driver_memory) \
+            .config("spark.executor.memory", executor_memory) \
+            .config("spark.driver.cores", driver_cores) \
+            .config("spark.executor.cores", spark_cpus) \
+            .config("spark.sql.ansi.enabled", "false") \
+            .config("spark.local.dir", temp_dir) \
             .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer") \
             .config("spark.sql.adaptive.enabled", "true") \
             .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
-            .config("spark.sql.ansi.enabled", "false") \
-            .config("spark.driver.extraJavaOptions", "--add-modules=jdk.incubator.vector")
+            .config("spark.driver.extraJavaOptions", "--add-modules=jdk.incubator.vector") \
+            .config("spark.executor.memoryFraction", "0.8") \
+            .config("spark.storage.memoryFraction", "0.5") \
+            .config("spark.sql.adaptive.shuffle.targetPostShuffleInputSize", "128MB") \
+            .config("spark.sql.adaptive.advisoryPartitionSizeInBytes", "128MB") \
+            .config("spark.sql.shuffle.partitions", "200") \
+            .config("spark.sql.execution.arrow.maxRecordsPerBatch", "10000") \
+            .config("spark.sql.broadcastTimeout", "36000") \
+            .config("spark.sql.execution.arrow.fallback.enabled", "true") \
+            .config("spark.sql.files.maxPartitionBytes", "134217728") \
+            .config("spark.sql.files.openCostInBytes", "4194304") \
+            .config("spark.sql.adaptive.skewJoin.enabled", "true") \
+            .config("spark.sql.adaptive.localShuffleReader.enabled", "true")
         
         # Add any additional spark configurations from config
         additional_configs = spark_config.get('configs', {})
@@ -163,6 +181,7 @@ def create_spark_session(config: Optional[Dict[str, Any]] = None,
         logger.info(f"Created Spark session '{app_name}' with {driver_memory} memory and {driver_cores} cores")
         logger.info(f"Spark UI available at: {spark.sparkContext.uiWebUrl}")
         logger.info(f"Spark temp directory: {temp_dir}")
+        logger.info(f"Memory configuration: executor={executor_memory}, memoryFraction=0.8, storageFraction=0.5")
         
         return spark
         

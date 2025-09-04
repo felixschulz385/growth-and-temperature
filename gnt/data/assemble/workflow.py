@@ -259,6 +259,24 @@ def process_tile(
     """Process a single tile according to assembly configuration and write to parquet."""
     logger.debug(f"Processing tile ix={ix}, iy={iy}")
     
+    # Check if tile already exists using fast file existence check
+    tile_output_path = os.path.join(output_base_path, f"ix={ix}", f"iy={iy}")
+    output_file = os.path.join(tile_output_path, "data.parquet")
+    
+    if os.path.exists(output_file):
+        # Optionally verify the file is valid and not corrupted
+        try:
+            import pyarrow.parquet as pq
+            parquet_file = pq.ParquetFile(output_file)
+            # Quick check that file has some rows
+            if parquet_file.metadata.num_rows > 0:
+                logger.debug(f"Tile ix={ix}, iy={iy} already exists and is valid, skipping")
+                return True
+            else:
+                logger.warning(f"Tile ix={ix}, iy={iy} exists but is empty, will reprocess")
+        except Exception as e:
+            logger.warning(f"Tile ix={ix}, iy={iy} exists but appears corrupted ({e}), will reprocess")
+    
     datasets_config = assembly_config['datasets']
     processing_config = assembly_config.get('processing', {})
     demean_cols = processing_config.get('demean_columns', [])
@@ -301,11 +319,9 @@ def process_tile(
         return False
     
     # Write tile to output parquet partition
-    tile_output_path = os.path.join(output_base_path, f"ix={ix}", f"iy={iy}")
     os.makedirs(tile_output_path, exist_ok=True)
     
     compression = processing_config.get('compression', 'zstd')
-    output_file = os.path.join(tile_output_path, "data.parquet")
     
     logger.debug(f"Writing tile ix={ix}, iy={iy} to {output_file}")
     merged.to_parquet(output_file, compression=compression, engine='pyarrow')
@@ -425,8 +441,28 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
     
     # Process each tile
     processed_count = 0
+    skipped_count = 0
     for i, (ix, iy) in enumerate(all_tiles):
         logger.info(f"Processing tile {i+1}/{len(all_tiles)}: ix={ix}, iy={iy}")
+        
+        # Fast check if tile already exists before expensive processing
+        tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
+        output_file = os.path.join(tile_output_path, "data.parquet")
+        
+        if os.path.exists(output_file):
+            # Quick validation that the file is not corrupted
+            try:
+                import pyarrow.parquet as pq
+                parquet_file = pq.ParquetFile(output_file)
+                if parquet_file.metadata.num_rows > 0:
+                    logger.debug(f"Tile ix={ix}, iy={iy} already exists and is valid, skipping")
+                    skipped_count += 1
+                    continue
+                else:
+                    logger.warning(f"Tile ix={ix}, iy={iy} exists but is empty, will reprocess")
+            except Exception as e:
+                logger.warning(f"Tile ix={ix}, iy={iy} exists but appears corrupted ({e}), will reprocess")
+        
         try:
             tile_geobox = tiles[ix, iy]
             success = process_tile(ix, iy, tile_geobox, assembly_config, output_path, land_mask_ds)
@@ -438,7 +474,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
             logger.error(f"Failed to process tile ix={ix}, iy={iy}: {e}", exc_info=True)
             continue
     
-    logger.info(f"Assembly process completed successfully. Processed {processed_count}/{len(all_tiles)} tiles")
+    logger.info(f"Assembly process completed successfully. Processed {processed_count}/{len(all_tiles)} tiles, skipped {skipped_count} existing tiles")
 
 def run_workflow_with_config(config: Dict[str, Any]):
     """Entry point for running assembly workflow with unified configuration."""
