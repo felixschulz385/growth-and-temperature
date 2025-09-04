@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=glass-avhrr-preprocess-spatial
+#SBATCH --job-name=ntl_harm-preprocess-spatial
 #SBATCH --output=./log/slurm-%j.out
 #SBATCH --error=./log/slurm-%j.err
-#SBATCH --time=1-00:00:00
-#SBATCH --qos=1day
+#SBATCH --time=06:00:00
+#SBATCH --qos=6hours
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
 
@@ -17,7 +17,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 # Run with Dask settings from SLURM environment
 /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" preprocess \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
-    --source glass_avhrr \
+    --source ntl_harm \
     --stage spatial \
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \

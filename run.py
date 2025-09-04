@@ -121,47 +121,6 @@ def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = Fals
     
     logger.debug("Logging configured successfully")
 
-
-def check_environment(operation_type: str) -> bool:
-    """Check if the environment is properly set up for the requested operation."""
-    try:
-        if operation_type in ["download", "index"]:
-            import requests
-            import bs4
-            
-        elif operation_type == "preprocess":
-            import xarray
-            import rioxarray
-            import numpy
-            import pandas
-        
-        elif operation_type == "assemble":
-            import pyspark
-            # Check if Java is available
-            import subprocess
-            try:
-                result = subprocess.run(['java', '-version'], 
-                                      capture_output=True, text=True, timeout=5)
-                if result.returncode != 0:
-                    logger.error("Java is not available. Please run 'module load Java/21.0.2' before executing.")
-                    return False
-                logger.debug("Java is available for Spark operations")
-            except (subprocess.TimeoutExpired, FileNotFoundError):
-                logger.error("Java is not found in PATH. Please run 'module load Java/21.0.2' before executing.")
-                return False
-
-        # Common packages for all operations
-        import yaml
-        
-        logger.debug(f"Environment check passed for {operation_type} operation")
-        return True
-        
-    except ImportError as e:
-        logger.error(f"Environment check failed for {operation_type} operation: {str(e)}")
-        logger.error("Please ensure all required packages are installed.")
-        return False
-
-
 def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode: str = None, stage: str = None):
     """
     Run the specified data operation for a source.
@@ -176,10 +135,8 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     
     if operation_type == "assemble":
         # Handle assembly operations differently
-        assembly_config = {
-            'assemble': config.get('assemble', {}),
-            'assembly_name': source  # Use source as assembly name
-        }
+        assembly_config = config.copy()  # Pass full config instead of subset
+        assembly_config['assembly_name'] = source  
         
         # Import and run the assembly workflow
         try:
@@ -418,11 +375,6 @@ def main():
         setup_logging(args.log_level, log_file, args.debug)
         
         logger.info(f"Starting GNT {args.operation} system for {args.source}")
-        
-        # Check environment for requested operation
-        if not check_environment(args.operation):
-            logger.critical(f"Exiting due to environment check failure")
-            return 1
         
         # Load configuration
         config = load_config_with_env_vars(args.config)
