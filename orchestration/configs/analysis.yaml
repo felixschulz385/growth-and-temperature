@@ -24,7 +24,7 @@ analyses:
       
       modis_basic:
         description: "Basic MODIS temperature analysis"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_modis.parquet"
         target_col: "median"
         feature_cols: ["ntl_harm"]
         cluster1_col: "subdivisions"
@@ -39,6 +39,38 @@ analyses:
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median_twoway_demeaned"
         feature_cols: ["ntl_harm_twoway_demeaned"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 4
+          verbose: false
+
+  # Two-Stage Least Squares analysis
+  online_2sls:
+    description: "Online Two-Stage Least Squares with cluster-robust standard errors"
+    module: "gnt.analysis.models.online_RLS"
+    class: "Online2SLS"
+    
+    defaults:
+      add_intercept: true
+      alpha: 0.001
+      forget_factor: 1.0
+      chunk_size: 20000
+      show_progress: true
+      verbose: true
+      cluster_type: "one_way"
+      weak_instrument_threshold: 10.0  # Stock-Yogo critical value
+    
+    specifications:
+      
+      modis_demeaned_favoritism:
+        description: "2SLS: Growth effect on temperature using regional favoritism as intrument"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        target_col: "median_twoway_demeaned"
+        exogenous_cols: []  # Control variables
+        endogenous_cols: ["median"]  # Potentially endogenous
+        instrument_cols: ["regional_favoritism"]  # Instruments
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:

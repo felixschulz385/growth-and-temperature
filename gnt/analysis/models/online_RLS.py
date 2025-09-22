@@ -672,7 +672,7 @@ def process_partitioned_dataset_parallel(
             successful_partitions = 0
             empty_partitions = 0  # Track partitions with no valid data
             
-            for future in as_completed(future_to_partition, timeout=7200):  # 2 hour global timeout
+            for future in as_completed(future_to_partition, timeout=7200): # 2 hour global timeout
                 partition_file = future_to_partition[future]
                 
                 try:
@@ -828,36 +828,3 @@ def process_large_dataset(file_path: str, chunk_size: int = 10000,
     logger.info("Processing complete!")
     return rls
 
-
-# Example usage
-if __name__ == "__main__":
-    # Simple example with partitioned dataset
-    logger.info("Starting example with partitioned dataset")
-    
-    # For partitioned dataset
-    parquet_path = "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-    
-    try:
-        rls = process_partitioned_dataset_parallel(
-            parquet_path=parquet_path,
-            feature_cols=["ntl_harm"],
-            target_col='median',
-            cluster1_col='subdivisions',
-            cluster2_col='year',
-            add_intercept=True,
-            n_workers=2,
-            chunk_size=10000,
-            verbose=True
-        )
-        
-        logger.info("Analysis completed successfully!")
-        logger.info(f"Total observations: {rls.n_obs:,}")
-        logger.info("Cluster-robust summary:")
-        print(rls.summary(cluster_type='one_way'))
-        
-    except Exception as e:
-        logger.error(f"Example failed: {str(e)}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-    
-    logger.info("Example completed!")
