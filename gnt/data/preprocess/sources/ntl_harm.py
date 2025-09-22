@@ -586,6 +586,11 @@ class NTLHarmPreprocessor(AbstractPreprocessor):
             logger.info(f"Rechunking dataset for zarr storage: {chunks}")
             dataset = dataset.chunk(chunks)
             
+                    # Define output attributes for all statistics
+            dataset = dataset.assign_attrs(
+                _FillValue=65535, scale_factor=1, add_offset=0.0
+                ),
+            
             # Set up compression for Zarr output
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
             encoding = {var: {'compressors': (compressor,)} for var in dataset.data_vars}
