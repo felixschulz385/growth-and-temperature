@@ -1,0 +1,67 @@
+# Analysis configuration for GNT project
+
+# Analysis types and configurations
+analyses:
+  
+  # Online RLS regression analysis
+  online_rls:
+    description: "Online Recursive Least Squares with cluster-robust standard errors"
+    module: "gnt.analysis.models.online_RLS"
+    class: "OnlineRLS"
+    
+    # Default settings
+    defaults:
+      add_intercept: true
+      alpha: 0.001  # Use explicit numeric value instead of scientific notation
+      forget_factor: 1.0
+      chunk_size: 20000
+      show_progress: true
+      verbose: true  # Enable verbose progress output by default
+      cluster_type: "one_way"  # Options: classical, one_way, two_way
+    
+    # Predefined model specifications
+    specifications:
+      
+      modis_basic:
+        description: "Basic MODIS temperature analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        target_col: "median"
+        feature_cols: ["ntl_harm"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 4
+          verbose: false
+      
+      modis_demeaned:
+        description: "Demeaned MODIS temperature analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        target_col: "median_twoway_demeaned"
+        feature_cols: ["ntl_harm_twoway_demeaned"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 4
+          verbose: false
+
+# Output settings
+output:
+  base_path: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/analysis"
+  formats: ["json"]  # Use only standardized JSON format
+  save_models: true  # Whether to save fitted models
+  
+# HPC settings for analysis
+hpc:
+  # SLURM-aware defaults with fallback values
+  default_workers: 4  # Default fallback, will be overridden by environment expansion
+  memory_limit: "32GB"  # Default fallback
+  temp_dir: "/tmp"  # Default fallback
+  dashboard_port: 8788  # Different from data processing
+  
+# Logging settings
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/analysis.log"
