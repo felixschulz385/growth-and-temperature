@@ -672,11 +672,12 @@ def process_partitioned_dataset_parallel(
             successful_partitions = 0
             empty_partitions = 0  # Track partitions with no valid data
             
-            for future in as_completed(future_to_partition, timeout=7200): # 2 hour global timeout
+            # Remove timeout to prevent premature termination
+            for future in as_completed(future_to_partition):
                 partition_file = future_to_partition[future]
                 
                 try:
-                    result = future.result(timeout=600)  # 10 minute timeout per partition
+                    result = future.result(timeout=1200)  # 20 minute timeout per partition
                     XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
                     
                     if n_obs > 0:
@@ -736,6 +737,22 @@ def process_partitioned_dataset_parallel(
                     failed_partitions.append(str(partition_file))
                     completed_partitions += 1
                     logger.error(f"Failed to process partition {partition_file}: {str(e)}")
+                    
+                    # Update progress even for failed partitions
+                    if main_pbar:
+                        main_pbar.update(1)
+                        main_pbar.set_postfix({
+                            'completed': completed_partitions,
+                            'successful': successful_partitions,
+                            'empty': empty_partitions,
+                            'failed': len(failed_partitions),
+                            'total_obs': f"{main_rls.n_obs:,}",
+                            'RSS': f"{main_rls.rss:.2e}" if main_rls.rss > 0 else "0"
+                        })
+    
+    except Exception as e:
+        logger.error(f"Critical error in parallel processing: {str(e)}")
+        # Continue with whatever results we have
     
     finally:
         if main_pbar:
@@ -753,6 +770,12 @@ def process_partitioned_dataset_parallel(
         logger.error("This suggests a fundamental data quality issue.")
         logger.error("Check: 1) Column names are correct, 2) Data types are numeric, 3) Files contain valid data")
         raise ValueError("Failed to process any data. Check partition files and column names.")
+    
+    # Warn if we have very few successful partitions
+    success_rate = successful_partitions / total_partitions
+    if success_rate < 0.5:
+        logger.warning(f"Low success rate: {success_rate*100:.1f}% of partitions processed successfully")
+        logger.warning("Consider checking data quality or reducing parallelism")
     
     return main_rls
 

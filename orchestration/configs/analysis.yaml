@@ -17,14 +17,14 @@ analyses:
       chunk_size: 20000
       show_progress: true
       verbose: true  # Enable verbose progress output by default
-      cluster_type: "one_way"  # Options: classical, one_way, two_way
+      cluster_type: "two_way"  # Options: classical, one_way, two_way
     
     # Predefined model specifications
     specifications:
       
       modis_basic:
         description: "Basic MODIS temperature analysis"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_modis.parquet"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median"
         feature_cols: ["ntl_harm"]
         cluster1_col: "subdivisions"
@@ -34,6 +34,18 @@ analyses:
           n_workers: 4
           verbose: false
       
+      modis_basic_subset:
+        description: "Basic MODIS temperature analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        target_col: "median"
+        feature_cols: ["ntl_harm"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 2
+          verbose: true
+
       modis_demeaned:
         description: "Demeaned MODIS temperature analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
@@ -59,7 +71,7 @@ analyses:
       chunk_size: 20000
       show_progress: true
       verbose: true
-      cluster_type: "one_way"
+      cluster_type: "two_way"
       weak_instrument_threshold: 10.0  # Stock-Yogo critical value
     
     specifications:

@@ -111,39 +111,69 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     
     logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
     
-    # Run the analysis
-    rls = process_partitioned_dataset_parallel(
-        parquet_path=spec_config['data_source'],
-        feature_cols=spec_config.get('feature_cols'),
-        target_col=spec_config['target_col'],
-        cluster1_col=spec_config.get('cluster1_col'),
-        cluster2_col=spec_config.get('cluster2_col'),
-        add_intercept=settings['add_intercept'],
-        chunk_size=settings['chunk_size'],
-        n_workers=settings['n_workers'],
-        alpha=settings['alpha'],
-        forget_factor=settings['forget_factor'],
-        show_progress=settings['show_progress'],
-        verbose=settings['verbose']
-    )
-    
-    # Generate summary
-    cluster_type = settings.get('cluster_type', 'classical')
-    summary = rls.summary(cluster_type=cluster_type)
-    
-    logger.info(f"Analysis complete! Total observations: {rls.n_obs:,}")
-    logger.info(f"RSS: {rls.rss:.6f}")
-    logger.info("Regression Summary:")
-    print("\n" + "="*50)
-    print(f"Analysis: {spec_config['description']}")
-    print(f"Standard Errors: {cluster_type}")
-    print("="*50)
-    print(summary.to_string())
-    print("="*50)
-    
-    # Save results if output directory specified
-    if output_dir:
-        save_results(rls, summary, spec_name, spec_config, output_dir, config)
+    # Run the analysis with error handling
+    rls = None
+    try:
+        rls = process_partitioned_dataset_parallel(
+            parquet_path=spec_config['data_source'],
+            feature_cols=spec_config.get('feature_cols'),
+            target_col=spec_config['target_col'],
+            cluster1_col=spec_config.get('cluster1_col'),
+            cluster2_col=spec_config.get('cluster2_col'),
+            add_intercept=settings['add_intercept'],
+            chunk_size=settings['chunk_size'],
+            n_workers=settings['n_workers'],
+            alpha=settings['alpha'],
+            forget_factor=settings['forget_factor'],
+            show_progress=settings['show_progress'],
+            verbose=settings['verbose']
+        )
+        
+        # Generate summary
+        cluster_type = settings.get('cluster_type', 'classical')
+        summary = rls.summary(cluster_type=cluster_type)
+        
+        logger.info(f"Analysis complete! Total observations: {rls.n_obs:,}")
+        logger.info(f"RSS: {rls.rss:.6f}")
+        logger.info("Regression Summary:")
+        print("\n" + "="*50)
+        print(f"Analysis: {spec_config['description']}")
+        print(f"Standard Errors: {cluster_type}")
+        print("="*50)
+        print(summary.to_string())
+        print("="*50)
+        
+        # Save results if output directory specified
+        if output_dir:
+            save_results(rls, summary, spec_name, spec_config, output_dir, config)
+            
+    except Exception as e:
+        logger.error(f"Analysis failed with error: {str(e)}")
+        # If we have partial results, try to save them
+        if rls is not None and rls.n_obs > 0:
+            logger.warning("Attempting to save partial results...")
+            try:
+                cluster_type = settings.get('cluster_type', 'classical')
+                summary = rls.summary(cluster_type=cluster_type)
+                
+                logger.info(f"Partial analysis results - Total observations: {rls.n_obs:,}")
+                logger.info(f"RSS: {rls.rss:.6f}")
+                print("\n" + "="*50)
+                print(f"PARTIAL RESULTS - Analysis: {spec_config['description']}")
+                print(f"Standard Errors: {cluster_type}")
+                print("="*50)
+                print(summary.to_string())
+                print("="*50)
+                
+                if output_dir:
+                    save_results(rls, summary, f"{spec_name}_partial", spec_config, output_dir, config)
+                    logger.info("Partial results saved successfully")
+                    
+            except Exception as save_error:
+                logger.error(f"Failed to save partial results: {save_error}")
+        
+        # Re-raise the original error
+        raise e
     
     return rls
 
@@ -339,14 +369,6 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
             f.write(f"\nSignificance codes: *** p<0.01, ** p<0.05, * p<0.10\n")
         
         logger.info(f"Saved human-readable summary: {summary_file}")
-        
-        # Save model object if requested
-        if config.get('output', {}).get('save_models', False):
-            import pickle
-            model_file = run_dir / "model.pkl"
-            with open(model_file, 'wb') as f:
-                pickle.dump(rls, f)
-            logger.info(f"Saved model object: {model_file}")
         
     except Exception as e:
         logger.error(f"Failed to save results: {e}")
