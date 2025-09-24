@@ -536,17 +536,18 @@ class EOGPreprocessor(AbstractPreprocessor):
             logger.info(f"Rechunking dataset for zarr storage: {chunks}")
             dataset = dataset.chunk(chunks)
             
+            
             # Set up compression for Zarr output
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle=2)
-            encoding = {var: {'compressor': compressor} for var in dataset.data_vars}
+            compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
+            encoding = {var: {'compressors': (compressor,)} for var in dataset.data_vars}
             
             logger.info(f"Writing EOG dataset to zarr with Dask: {output_path}")
             dataset.to_zarr(
                 output_path, 
                 mode="w", 
                 encoding=encoding, 
-                zarr_version=2, 
-                consolidated=True
+                zarr_version=3, 
+                consolidated=False
             )
             
             logger.info(f"Created annual zarr file at {output_path}")

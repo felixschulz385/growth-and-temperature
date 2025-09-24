@@ -82,7 +82,7 @@ class SpatialProcessor:
             # Create data variables with fill values and band dimension
             data_vars = {}
             
-            default_attrs = {"_FillValue": 0}
+            default_attrs = {"_FillValue": 65535}
             packaging_attrs = {
                 "scale_factor": 0.01,
                 "add_offset": 0.0

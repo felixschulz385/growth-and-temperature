@@ -22,22 +22,26 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         The preprocessor class
     """
     try:
-        if "eog" in preprocessor_name.lower():
-            class_name = 'EOGPreprocessor'
-            module_path = f"gnt.data.preprocess.sources.eog"
-        elif "glass" in preprocessor_name.lower():
+        preprocessor_name = preprocessor_name.lower()
+        
+        if preprocessor_name == 'eog':
+            from gnt.data.preprocess.sources.eog import EOGPreprocessor
+            return EOGPreprocessor
+        elif preprocessor_name == 'glass':
             class_name = 'GlassPreprocessor'
             module_path = f"gnt.data.preprocess.sources.glass"
-        elif preprocessor_name.lower() in ['ntl_harm', 'ntlharm', 'harmonized_ntl']:
+        elif preprocessor_name in ['ntl_harm', 'ntlharm', 'harmonized_ntl']:
             class_name = 'NTLHarmPreprocessor'
             module_path = f"gnt.data.preprocess.sources.ntl_harm"
-        elif preprocessor_name.lower() in ['osm', 'gadm']:
-            class_name = 'MiscPreprocessor'
-            module_path = f"gnt.data.preprocess.sources.misc"
-        else:
-            # By convention, the class name is expected to be CamelCase
-            class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
-            module_path = f"gnt.data.preprocess.sources.{preprocessor_name.lower()}"
+        elif preprocessor_name == 'misc':
+            from gnt.data.preprocess.sources.misc import MiscPreprocessor
+            return MiscPreprocessor
+        elif preprocessor_name == 'plad':
+            from gnt.data.preprocess.sources.plad import PLADPreprocessor
+            return PLADPreprocessor
+        # By convention, the class name is expected to be CamelCase
+        class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
+        module_path = f"gnt.data.preprocess.sources.{preprocessor_name.lower()}"
 
         module = importlib.import_module(module_path)
         
@@ -104,59 +108,21 @@ def get_source_class(source_name: str) -> Type:
         logger.error(f"Failed to import data source {source_name}: {str(e)}")
         raise
 
-def create_source(source_name: str, config: Dict[str, Any]) -> Any:
-    """
-    Create a data source instance based on name and configuration.
+def create_source(source_name: str, config: Dict[str, Any]):
+    """Create a data source instance for the given source name and configuration."""
+    source_name_lower = source_name.lower()
     
-    Args:
-        source_name: Name of the data source to create
-        config: Configuration dictionary for the data source
-        
-    Returns:
-        An instance of the specified data source
-    """
-    SourceClass = get_source_class(source_name)
-    
-    # Extract relevant parameters for data source creation
-    source_config = {}
-
-    # Only pass parameters accepted by the data source class
-    # EOGDataSource expects: base_url, file_extensions, output_path
-    # MiscDataSource expects: files, output_path
-    # GLASSLSTDataSource expects: base_url, file_extensions, output_path
-    # NTLHarmDataSource expects: base_url, file_extensions, output_path
-
-    # EOGDataSource
-    if SourceClass.__name__ == "EOGDataSource":
-        if 'base_url' in config:
-            source_config['base_url'] = config['base_url']
-        # Use output_path if available, otherwise fall back to data_path
-        if 'output_path' in config:
-            source_config['output_path'] = config['output_path']
-        elif 'data_path' in config:
-            source_config['output_path'] = config['data_path']
-        if 'file_extensions' in config:
-            source_config['file_extensions'] = config['file_extensions']
-    # NTLHarmDataSource
-    elif SourceClass.__name__ == "NTLHarmDataSource":
-        if 'base_url' in config:
-            source_config['base_url'] = config['base_url']
-        if 'output_path' in config:
-            source_config['output_path'] = config['output_path']
-        elif 'data_path' in config:
-            source_config['output_path'] = config['data_path']
-        if 'file_extensions' in config:
-            source_config['file_extensions'] = config['file_extensions']
-    # MiscDataSource
-    elif SourceClass.__name__ == "MiscDataSource":
-        if 'files' in config:
-            source_config['files'] = config['files']
-        if 'output_path' in config:
-            source_config['output_path'] = config['output_path']
-        elif 'data_path' in config:
-            source_config['output_path'] = config['data_path']
+    if source_name_lower == 'eog':
+        from gnt.data.download.sources.eog import EOGDataSource
+        return EOGDataSource(**config)
+    elif source_name_lower == 'misc':
+        from gnt.data.download.sources.misc import MiscDataSource
+        return MiscDataSource(**config)
+    elif source_name_lower == 'plad':
+        # PLAD doesn't need a separate data source as it works with local files
+        return None
     # GLASSLSTDataSource
-    elif SourceClass.__name__ == "GLASSLSTDataSource":
+    elif source_name_lower == "glasslstdatasource":
         if 'base_url' in config:
             source_config['base_url'] = config['base_url']
         if 'output_path' in config:
@@ -166,11 +132,4 @@ def create_source(source_name: str, config: Dict[str, Any]) -> Any:
         if 'file_extensions' in config:
             source_config['file_extensions'] = config['file_extensions']
     else:
-        # Fallback: pass only keys that match the class __init__ signature
-        import inspect
-        sig = inspect.signature(SourceClass.__init__)
-        for k in config:
-            if k in sig.parameters and k != 'self':
-                source_config[k] = config[k]
-    
-    return SourceClass(**source_config)
+        raise ValueError(f"Unknown source: {source_name}")
