@@ -22,7 +22,7 @@ analyses:
     # Predefined model specifications
     specifications:
       
-      modis_basic:
+      modis_ntlharm_basic:
         description: "Basic MODIS temperature analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median"
@@ -34,11 +34,11 @@ analyses:
           n_workers: 4
           verbose: false
       
-      modis_basic_subset:
-        description: "Basic MODIS temperature analysis"
+      modis_ntlharm_basic_subset:
+        description: "DEUG MODIS temperature subset analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        target_col: "median"
-        feature_cols: ["ntl_harm"]
+        target_col: "median_twoway_demeaned"
+        feature_cols: ["ntl_harm_twoway_demeaned"]
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
@@ -46,11 +46,23 @@ analyses:
           n_workers: 2
           verbose: true
 
-      modis_demeaned:
+      modis_ntlharm_demeaned:
         description: "Demeaned MODIS temperature analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median_twoway_demeaned"
         feature_cols: ["ntl_harm_twoway_demeaned"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 4
+          verbose: false
+
+      modis_viirs_demeaned:
+        description: "Demeaned MODIS temperature analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        target_col: "median_twoway_demeaned"
+        feature_cols: ["viirs_annual_twoway_demeaned"]
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:

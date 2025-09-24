@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=analysis_modis_basic
+#SBATCH --job-name=analysis_modis
 #SBATCH --output=./log/slurm-%j.log
 #SBATCH --error=./log/slurm-%j.err
 #SBATCH --partition=scicore
@@ -10,9 +10,6 @@
 
 # Usage: sbatch analysis_modis_basic.sh <specification_name>
 SPECIFICATION=${1:-modis_basic}
-
-# Dynamically update job name to include specification
-scontrol update JobName="analysis_${SPECIFICATION}"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

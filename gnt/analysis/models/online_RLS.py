@@ -65,21 +65,24 @@ class OnlineRLS:
             'X_sum': np.zeros(n_features),
             'residual_sum': 0.0,
             'count': 0,
-            'XtX': np.zeros((n_features, n_features))
+            'XtX': np.zeros((n_features, n_features)),
+            'X_residual_sum': np.zeros(n_features)  # Add this new field
         })
         
         self.cluster2_stats = defaultdict(lambda: {
             'X_sum': np.zeros(n_features),
             'residual_sum': 0.0,
             'count': 0,
-            'XtX': np.zeros((n_features, n_features))
+            'XtX': np.zeros((n_features, n_features)),
+            'X_residual_sum': np.zeros(n_features)  # Add this new field
         })
         
         self.intersection_stats = defaultdict(lambda: {
             'X_sum': np.zeros(n_features),
             'residual_sum': 0.0,
             'count': 0,
-            'XtX': np.zeros((n_features, n_features))
+            'XtX': np.zeros((n_features, n_features)),
+            'X_residual_sum': np.zeros(n_features)  # Add this new field
         })
 
     def _validate_and_clean_data(self, X: np.ndarray, y: np.ndarray, 
@@ -212,6 +215,9 @@ class OnlineRLS:
             stats['residual_sum'] += np.sum(errors_cluster)
             stats['count'] += np.sum(mask)
             stats['XtX'] += X_cluster.T @ X_cluster
+            # Add the new statistic: sum of X_i * u_i for each observation
+            X_residual_products = X_cluster * errors_cluster.reshape(-1, 1)
+            stats['X_residual_sum'] += np.sum(X_residual_products, axis=0)
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Make predictions."""
@@ -246,9 +252,8 @@ class OnlineRLS:
         
         for cluster_id, stats in stats_dict.items():
             if stats['count'] > 0:
-                # Cluster-level score
-                cluster_score = stats['X_sum'] * stats['residual_sum'] / stats['count']
-                meat += np.outer(cluster_score, cluster_score)
+                # Use the correct sum of score vectors directly
+                meat += np.outer(stats['X_residual_sum'], stats['X_residual_sum'])
         
         # Sandwich estimator
         n_clusters = len(stats_dict)
@@ -319,12 +324,14 @@ class OnlineRLS:
                 target_stats[cluster_id]['residual_sum'] += stats['residual_sum']
                 target_stats[cluster_id]['count'] += stats['count']
                 target_stats[cluster_id]['XtX'] += stats['XtX']
+                target_stats[cluster_id]['X_residual_sum'] += stats['X_residual_sum']  # Include in merging
             else:
                 target_stats[cluster_id] = {
                     'X_sum': stats['X_sum'].copy(),
                     'residual_sum': stats['residual_sum'],
                     'count': stats['count'],
-                    'XtX': stats['XtX'].copy()
+                    'XtX': stats['XtX'].copy(),
+                    'X_residual_sum': stats['X_residual_sum'].copy()  # Include in new cluster creation
                 }
 
 
@@ -692,19 +699,22 @@ def process_partitioned_dataset_parallel(
                             'X_sum': np.zeros(n_features),
                             'residual_sum': 0.0,
                             'count': 0,
-                            'XtX': np.zeros((n_features, n_features))
+                            'XtX': np.zeros((n_features, n_features)),
+                            'X_residual_sum': np.zeros(n_features)  # Add to defaultdict template
                         }, cluster_stats)
                         temp_rls.cluster2_stats = defaultdict(lambda: {
                             'X_sum': np.zeros(n_features),
                             'residual_sum': 0.0,
                             'count': 0,
-                            'XtX': np.zeros((n_features, n_features))
+                            'XtX': np.zeros((n_features, n_features)),
+                            'X_residual_sum': np.zeros(n_features)  # Add to defaultdict template
                         }, cluster2_stats)
                         temp_rls.intersection_stats = defaultdict(lambda: {
                             'X_sum': np.zeros(n_features),
                             'residual_sum': 0.0,
                             'count': 0,
-                            'XtX': np.zeros((n_features, n_features))
+                            'XtX': np.zeros((n_features, n_features)),
+                            'X_residual_sum': np.zeros(n_features)  # Add to defaultdict template
                         }, intersection_stats)
                         
                         main_rls.merge_statistics(temp_rls)
