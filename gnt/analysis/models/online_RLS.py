@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 from collections import defaultdict
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Any
 import warnings
 import logging
 from pathlib import Path
@@ -60,13 +60,18 @@ class OnlineRLS:
         self.n_obs = 0
         self.rss = 0.0  # Residual sum of squares
         
+        # Add statistics for proper R-squared calculation
+        self.sum_y = 0.0       # Sum of y
+        self.sum_y_squared = 0.0  # Sum of y²
+        
         # For cluster-robust SE computation
         self.cluster_stats = defaultdict(lambda: {
             'X_sum': np.zeros(n_features),
             'residual_sum': 0.0,
             'count': 0,
             'XtX': np.zeros((n_features, n_features)),
-            'X_residual_sum': np.zeros(n_features)  # Add this new field
+            'X_residual_sum': np.zeros(n_features),
+            'Xy': np.zeros(n_features)  # NEW: store X_c' y_c
         })
         
         self.cluster2_stats = defaultdict(lambda: {
@@ -74,7 +79,8 @@ class OnlineRLS:
             'residual_sum': 0.0,
             'count': 0,
             'XtX': np.zeros((n_features, n_features)),
-            'X_residual_sum': np.zeros(n_features)  # Add this new field
+            'X_residual_sum': np.zeros(n_features),
+            'Xy': np.zeros(n_features)
         })
         
         self.intersection_stats = defaultdict(lambda: {
@@ -82,7 +88,8 @@ class OnlineRLS:
             'residual_sum': 0.0,
             'count': 0,
             'XtX': np.zeros((n_features, n_features)),
-            'X_residual_sum': np.zeros(n_features)  # Add this new field
+            'X_residual_sum': np.zeros(n_features),
+            'Xy': np.zeros(n_features)
         })
 
     def _validate_and_clean_data(self, X: np.ndarray, y: np.ndarray, 
@@ -159,6 +166,10 @@ class OnlineRLS:
         self.Xty += X.T @ y
         self.n_obs += n_batch
         
+        # Update statistics for R-squared calculation
+        self.sum_y += np.sum(y)
+        self.sum_y_squared += np.sum(y**2)
+        
         # Solve for parameters using accumulated sufficient statistics
         try:
             self.theta = np.linalg.solve(self.XtX, self.Xty)
@@ -179,45 +190,39 @@ class OnlineRLS:
         # Compute residuals and RSS
         predictions = X @ self.theta
         errors = y - predictions
-        self.rss = np.sum(errors**2)  # Recompute total RSS
-        
-        # Update cluster statistics
-        self._update_cluster_stats(X, errors, cluster1, self.cluster_stats)
-        self._update_cluster_stats(X, errors, cluster2, self.cluster2_stats)
-        
+        self.rss = np.sum(errors**2)
+        # UPDATED calls include y
+        self._update_cluster_stats(X, y, errors, cluster1, self.cluster_stats)
+        self._update_cluster_stats(X, y, errors, cluster2, self.cluster2_stats)
         if cluster1 is not None and cluster2 is not None:
             intersection_ids = [f"{cluster1[i]}_{cluster2[i]}" for i in range(len(cluster1))]
-            self._update_cluster_stats(X, errors, intersection_ids, self.intersection_stats)
+            self._update_cluster_stats(X, y, errors, intersection_ids, self.intersection_stats)
     
-    def _update_cluster_stats(self, X: np.ndarray, errors: np.ndarray,
-                             cluster_ids: Optional[np.ndarray],
-                             stats_dict: Dict) -> None:
-        """Update cluster statistics (unified method for scalar and vectorized)."""
+    def _update_cluster_stats(self, X: np.ndarray, y: np.ndarray, errors: np.ndarray,
+                              cluster_ids: Optional[np.ndarray],
+                              stats_dict: Dict) -> None:
+        """Update per-cluster sufficient statistics: XtX_c, X'u_c, X'y_c."""
         if cluster_ids is None:
             return
-            
-        # Handle both array and list inputs
         if isinstance(cluster_ids, list):
             cluster_ids = np.array(cluster_ids)
-        
         unique_clusters = np.unique(cluster_ids)
-        
         for cluster_id in unique_clusters:
             mask = cluster_ids == cluster_id
             if not np.any(mask):
                 continue
-                
-            X_cluster = X[mask]
-            errors_cluster = errors[mask]
-            
+            Xc = X[mask]
+            ec = errors[mask]
+            yc = y[mask]
             stats = stats_dict[cluster_id]
-            stats['X_sum'] += np.sum(X_cluster, axis=0)
-            stats['residual_sum'] += np.sum(errors_cluster)
-            stats['count'] += np.sum(mask)
-            stats['XtX'] += X_cluster.T @ X_cluster
-            # Add the new statistic: sum of X_i * u_i for each observation
-            X_residual_products = X_cluster * errors_cluster.reshape(-1, 1)
-            stats['X_residual_sum'] += np.sum(X_residual_products, axis=0)
+            stats['X_sum'] += np.sum(Xc, axis=0)
+            stats['residual_sum'] += np.sum(ec)
+            stats['count'] += Xc.shape[0]
+            stats['XtX'] += Xc.T @ Xc
+            # X'u_c
+            stats['X_residual_sum'] += (Xc * ec.reshape(-1, 1)).sum(axis=0)
+            # X'y_c
+            stats['Xy'] += Xc.T @ yc
 
     def predict(self, X: np.ndarray) -> np.ndarray:
         """Make predictions."""
@@ -275,8 +280,13 @@ class OnlineRLS:
         
         return np.sqrt(np.diag(cov_matrix))
     
-    def summary(self, cluster_type: str = 'classical') -> pd.DataFrame:
-        """Get regression summary."""
+    def summary(self, cluster_type: str = 'classical', 
+               bootstrap: bool = False, 
+               n_bootstrap: int = 999,
+               bootstrap_cluster_var: str = None,
+               n_workers: int = 1) -> pd.DataFrame:
+        """Get regression summary (bootstrapping removed)."""
+        # Get standard errors
         se = self.get_standard_errors(cluster_type)
         t_stats = self.theta / se
         
@@ -284,12 +294,39 @@ class OnlineRLS:
         from scipy import stats
         p_values = 2 * (1 - stats.norm.cdf(np.abs(t_stats)))
         
-        return pd.DataFrame({
+        # Create summary DataFrame
+        summary_df = pd.DataFrame({
             'coefficient': self.theta,
             'std_error': se,
             't_statistic': t_stats,
             'p_value': p_values
         })
+        
+        # Remove all bootstrap logic
+        return summary_df
+
+    def get_total_sum_squares(self) -> float:
+        """Compute the total sum of squares (TSS) properly."""
+        if self.n_obs <= 1:
+            return 0.0
+        
+        # TSS = sum(y²) - (sum(y)²/n)
+        y_mean = self.sum_y / self.n_obs
+        return self.sum_y_squared - (self.sum_y**2) / self.n_obs
+        
+    def get_r_squared(self) -> float:
+        """Calculate R-squared properly."""
+        tss = self.get_total_sum_squares()
+        if tss <= 0:
+            return 0.0
+        return 1.0 - (self.rss / tss)
+        
+    def get_adjusted_r_squared(self) -> float:
+        """Calculate adjusted R-squared."""
+        r_squared = self.get_r_squared()
+        if self.n_obs <= self.n_features:
+            return 0.0
+        return 1.0 - ((1.0 - r_squared) * (self.n_obs - 1) / (self.n_obs - self.n_features))
 
     def merge_statistics(self, other: 'OnlineRLS') -> None:
         """Merge statistics from another OnlineRLS instance."""
@@ -299,6 +336,10 @@ class OnlineRLS:
         self.Xty += other.Xty
         self.n_obs += other.n_obs
         self.rss += other.rss
+        
+        # Merge R-squared statistics
+        self.sum_y += other.sum_y
+        self.sum_y_squared += other.sum_y_squared
         
         # Recompute parameters from merged sufficient statistics
         try:
@@ -324,34 +365,17 @@ class OnlineRLS:
                 target_stats[cluster_id]['residual_sum'] += stats['residual_sum']
                 target_stats[cluster_id]['count'] += stats['count']
                 target_stats[cluster_id]['XtX'] += stats['XtX']
-                target_stats[cluster_id]['X_residual_sum'] += stats['X_residual_sum']  # Include in merging
+                target_stats[cluster_id]['X_residual_sum'] += stats['X_residual_sum']
+                target_stats[cluster_id]['Xy'] += stats['Xy']  # NEW
             else:
                 target_stats[cluster_id] = {
                     'X_sum': stats['X_sum'].copy(),
                     'residual_sum': stats['residual_sum'],
                     'count': stats['count'],
                     'XtX': stats['XtX'].copy(),
-                    'X_residual_sum': stats['X_residual_sum'].copy()  # Include in new cluster creation
+                    'X_residual_sum': stats['X_residual_sum'].copy(),
+                    'Xy': stats['Xy'].copy()  # NEW
                 }
-
-
-def discover_partitions(parquet_path: Union[str, Path]) -> List[Path]:
-    """Discover all partition files in a partitioned parquet dataset."""
-    parquet_path = Path(parquet_path)
-    logger.info(f"Discovering partitions in {parquet_path}")
-    
-    if not parquet_path.exists():
-        raise FileNotFoundError(f"Parquet path {parquet_path} does not exist")
-    
-    # Find all .parquet files recursively
-    partition_files = list(parquet_path.rglob("*.parquet"))
-    
-    if not partition_files:
-        raise ValueError(f"No parquet files found in {parquet_path}")
-    
-    logger.info(f"Found {len(partition_files)} partition files")
-    return sorted(partition_files)
-
 
 def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int, Dict, Dict, Dict]:
     """Worker function to process a single partition with better error handling and data validation."""
@@ -495,6 +519,22 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
         empty_theta = np.zeros(n_features)
         return (empty_XtX, empty_Xty, empty_theta, 0.0, 0, {}, {}, {})
 
+def discover_partitions(parquet_path: Union[str, Path]) -> List[Path]:
+    """Discover all partition files in a partitioned parquet dataset."""
+    parquet_path = Path(parquet_path)
+    logger.info(f"Discovering partitions in {parquet_path}")
+    
+    if not parquet_path.exists():
+        raise FileNotFoundError(f"Parquet path {parquet_path} does not exist")
+    
+    # Find all .parquet files recursively
+    partition_files = list(parquet_path.rglob("*.parquet"))
+    
+    if not partition_files:
+        raise ValueError(f"No parquet files found in {parquet_path}")
+    
+    logger.info(f"Found {len(partition_files)} partition files")
+    return sorted(partition_files)
 
 def get_optimal_workers() -> int:
     """Determine optimal number of workers from SLURM environment or system."""
@@ -526,278 +566,281 @@ def process_partitioned_dataset_parallel(
     show_progress: bool = True,
     verbose: bool = True,
     max_workers_override: Optional[int] = None
-) -> OnlineRLS:
-    """Process partitioned parquet dataset in parallel with improved error handling."""
-    start_time = time.time()
-    parquet_path = Path(parquet_path)
-    
-    if n_workers is None:
-        n_workers = get_optimal_workers()
-    
-    # Reduce workers for very large datasets to avoid memory pressure
-    if n_workers > 6:
-        n_workers = min(n_workers, 4)  # Cap at 4 workers for stability
-        logger.info(f"Reduced workers to {n_workers} for large dataset processing")
-    
-    logger.info(f"Starting parallel processing with {n_workers} workers")
-    logger.info(f"Dataset path: {parquet_path}")
-    logger.info(f"Verbosity: {'enabled' if verbose else 'disabled'}")
-    
-    # Log SLURM environment info if available
-    slurm_job_id = os.environ.get('SLURM_JOB_ID')
-    if slurm_job_id:
-        logger.info(f"Running in SLURM job {slurm_job_id}")
-        slurm_node = os.environ.get('SLURM_NODELIST', 'unknown')
-        logger.info(f"SLURM node(s): {slurm_node}")
-    
-    # Discover all partitions
-    partition_files = discover_partitions(parquet_path)
-    
-    # Add partition pre-filtering based on size/location
-    logger.info(f"Pre-filtering {len(partition_files)} partitions...")
-    
-    # Quick check for obviously problematic partitions
-    valid_partitions = []
-    skipped_partitions = []
-    
-    for partition_file in partition_files:
-        try:
-            # Check file size - skip very small files
-            file_size = partition_file.stat().st_size
-            if file_size < 1024:  # Less than 1KB
-                skipped_partitions.append(str(partition_file))
-                continue
-            
-            valid_partitions.append(partition_file)
-            
-        except Exception as e:
-            logger.warning(f"Cannot access partition {partition_file}: {e}")
-            skipped_partitions.append(str(partition_file))
-    
-    if skipped_partitions:
-        logger.info(f"Skipped {len(skipped_partitions)} problematic partitions")
-    
-    partition_files = valid_partitions
-    logger.info(f"Processing {len(partition_files)} valid partitions")
-    
-    # For very large datasets, process a sample first to determine structure
-    sample_size = min(5, len(partition_files))  # Use first 5 partitions as sample
-    sample_files = partition_files[:sample_size]
-    
-    logger.info(f"Using {sample_size} partitions to determine data structure")
-    
-    # Read first partition to determine feature structure
-    first_df = None
-    for partition_file in sample_files:
-        try:
-            # Read a small sample from the partition
-            import pyarrow.parquet as pq
-            parquet_file = pq.ParquetFile(partition_file)
-            
-            # Read just the first batch to get column structure
-            first_batch = next(parquet_file.iter_batches(batch_size=1000))
-            first_df = first_batch.to_pandas()
-            
-            break  # Successfully read structure
-            
-        except Exception as e:
-            logger.warning(f"Failed to read partition {partition_file} for structure detection: {e}")
-            continue
-    
-    if first_df is None:
-        raise ValueError("Could not read any partition to determine data structure")
-    
-    if feature_cols is None:
-        exclude_cols = [target_col, cluster1_col, cluster2_col]
-        feature_cols = [col for col in first_df.select_dtypes(include=[np.number]).columns 
-                       if col not in exclude_cols]
-    
-    n_features = len(feature_cols)
-    if add_intercept:
-        n_features += 1
-    
-    # Create feature names for display
-    display_feature_names = []
-    if add_intercept:
-        display_feature_names.append("intercept")
-    display_feature_names.extend(feature_cols)
-    
-    logger.info(f"Features: {feature_cols}")
-    logger.info(f"Target: {target_col}")
-    logger.info(f"Total features (with intercept): {n_features}")
-    logger.info(f"Chunk size: {chunk_size:,}")
-    
-    # Check if target and cluster columns exist
-    missing_cols = []
-    if target_col not in first_df.columns:
-        missing_cols.append(target_col)
-    if cluster1_col and cluster1_col not in first_df.columns:
-        missing_cols.append(cluster1_col)
-    if cluster2_col and cluster2_col not in first_df.columns:
-        missing_cols.append(cluster2_col)
-    
-    if missing_cols:
-        raise ValueError(f"Missing required columns in data: {missing_cols}")
-    
-    # Initialize simple progress tracking
-    total_partitions = len(partition_files)
-    completed_partitions = 0
-    
-    # Create main progress bar if requested
-    main_pbar = None
-    if show_progress:
-        main_pbar = tqdm(
-            total=total_partitions, 
-            desc="Processing partitions", 
-            unit="partitions",
-            disable=not verbose  # Control visibility based on verbosity
-        )
-    
-    # Prepare arguments for workers
-    worker_args = [
-        (partition_file, feature_cols, target_col, cluster1_col, cluster2_col,
-         add_intercept, n_features, alpha, forget_factor, chunk_size, verbose)
-        for partition_file in partition_files
-    ]
-    
-    # Initialize main RLS instance
-    main_rls = OnlineRLS(n_features=n_features, alpha=alpha, forget_factor=forget_factor)
-    
-    # Process partitions in parallel
-    logger.info(f"Processing {len(partition_files)} partitions in parallel...")
-    
-    try:
-        # Use ProcessPoolExecutor with reduced max_workers and timeout
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
-            # Submit all tasks
-            future_to_partition = {
-                executor.submit(process_partition_worker, args): args[0] 
-                for args in worker_args
-            }
-            
-            failed_partitions = []
-            successful_partitions = 0
-            empty_partitions = 0  # Track partitions with no valid data
-            
-            # Remove timeout to prevent premature termination
-            for future in as_completed(future_to_partition):
-                partition_file = future_to_partition[future]
+    # Remove all bootstrap arguments
+    ) -> OnlineRLS:
+        """Process partitioned parquet dataset in parallel (bootstrapping removed)."""
+        start_time = time.time()
+        parquet_path = Path(parquet_path)
+        
+        if n_workers is None:
+            n_workers = get_optimal_workers()
+        
+        # Reduce workers for very large datasets to avoid memory pressure
+        if n_workers > 6:
+            n_workers = min(n_workers, 4)  # Cap at 4 workers for stability
+            logger.info(f"Reduced workers to {n_workers} for large dataset processing")
+        
+        logger.info(f"Starting parallel processing with {n_workers} workers")
+        logger.info(f"Dataset path: {parquet_path}")
+        logger.info(f"Verbosity: {'enabled' if verbose else 'disabled'}")
+        
+        # Log SLURM environment info if available
+        slurm_job_id = os.environ.get('SLURM_JOB_ID')
+        if slurm_job_id:
+            logger.info(f"Running in SLURM job {slurm_job_id}")
+            slurm_node = os.environ.get('SLURM_NODELIST', 'unknown')
+            logger.info(f"SLURM node(s): {slurm_node}")
+        
+        # Discover all partitions
+        partition_files = discover_partitions(parquet_path)
+        
+        # Add partition pre-filtering based on size/location
+        logger.info(f"Pre-filtering {len(partition_files)} partitions...")
+        
+        # Quick check for obviously problematic partitions
+        valid_partitions = []
+        skipped_partitions = []
+        
+        for partition_file in partition_files:
+            try:
+                # Check file size - skip very small files
+                file_size = partition_file.stat().st_size
+                if file_size < 1024:  # Less than 1KB
+                    skipped_partitions.append(str(partition_file))
+                    continue
                 
-                try:
-                    result = future.result(timeout=1200)  # 20 minute timeout per partition
-                    XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
+                valid_partitions.append(partition_file)
+                
+            except Exception as e:
+                logger.warning(f"Cannot access partition {partition_file}: {e}")
+                skipped_partitions.append(str(partition_file))
+        
+        if skipped_partitions:
+            logger.info(f"Skipped {len(skipped_partitions)} problematic partitions")
+        
+        partition_files = valid_partitions
+        logger.info(f"Processing {len(partition_files)} valid partitions")
+        
+        # For very large datasets, process a sample first to determine structure
+        sample_size = min(5, len(partition_files))  # Use first 5 partitions as sample
+        sample_files = partition_files[:sample_size]
+        
+        logger.info(f"Using {sample_size} partitions to determine data structure")
+        
+        # Read first partition to determine feature structure
+        first_df = None
+        for partition_file in sample_files:
+            try:
+                # Read a small sample from the partition
+                import pyarrow.parquet as pq
+                parquet_file = pq.ParquetFile(partition_file)
+                
+                # Read just the first batch to get column structure
+                first_batch = next(parquet_file.iter_batches(batch_size=1000))
+                first_df = first_batch.to_pandas()
+                
+                break  # Successfully read structure
+                
+            except Exception as e:
+                logger.warning(f"Failed to read partition {partition_file} for structure detection: {e}")
+                continue
+        
+        if first_df is None:
+            raise ValueError("Could not read any partition to determine data structure")
+        
+        if feature_cols is None:
+            exclude_cols = [target_col, cluster1_col, cluster2_col]
+            feature_cols = [col for col in first_df.select_dtypes(include=[np.number]).columns 
+                        if col not in exclude_cols]
+        
+        n_features = len(feature_cols)
+        if add_intercept:
+            n_features += 1
+        
+        # Create feature names for display
+        display_feature_names = []
+        if add_intercept:
+            display_feature_names.append("intercept")
+        display_feature_names.extend(feature_cols)
+        
+        logger.info(f"Features: {feature_cols}")
+        logger.info(f"Target: {target_col}")
+        logger.info(f"Total features (with intercept): {n_features}")
+        logger.info(f"Chunk size: {chunk_size:,}")
+        
+        # Check if target and cluster columns exist
+        missing_cols = []
+        if target_col not in first_df.columns:
+            missing_cols.append(target_col)
+        if cluster1_col and cluster1_col not in first_df.columns:
+            missing_cols.append(cluster1_col)
+        if cluster2_col and cluster2_col not in first_df.columns:
+            missing_cols.append(cluster2_col)
+        
+        if missing_cols:
+            raise ValueError(f"Missing required columns in data: {missing_cols}")
+        
+        # Initialize simple progress tracking
+        total_partitions = len(partition_files)
+        completed_partitions = 0
+        
+        # Create main progress bar if requested
+        main_pbar = None
+        if show_progress:
+            main_pbar = tqdm(
+                total=total_partitions, 
+                desc="Processing partitions", 
+                unit="partitions",
+                disable=not verbose  # Control visibility based on verbosity
+            )
+        
+        # Prepare arguments for workers
+        worker_args = [
+            (partition_file, feature_cols, target_col, cluster1_col, cluster2_col,
+            add_intercept, n_features, alpha, forget_factor, chunk_size, verbose)
+            for partition_file in partition_files
+        ]
+        
+        # Initialize main RLS instance
+        main_rls = OnlineRLS(n_features=n_features, alpha=alpha, forget_factor=forget_factor)
+        
+        # Process partitions in parallel
+        logger.info(f"Processing {len(partition_files)} partitions in parallel...")
+        
+        try:
+            # Use ProcessPoolExecutor with reduced max_workers and timeout
+            with ProcessPoolExecutor(max_workers=n_workers) as executor:
+                # Submit all tasks
+                future_to_partition = {
+                    executor.submit(process_partition_worker, args): args[0] 
+                    for args in worker_args
+                }
+                
+                failed_partitions = []
+                successful_partitions = 0
+                empty_partitions = 0  # Track partitions with no valid data
+                
+                # Remove timeout to prevent premature termination
+                for future in as_completed(future_to_partition):
+                    partition_file = future_to_partition[future]
                     
-                    if n_obs > 0:
-                        # Merge results
-                        temp_rls = OnlineRLS(n_features=n_features, alpha=alpha)
-                        temp_rls.XtX = XtX_update
-                        temp_rls.Xty = Xty_update
-                        temp_rls.theta = theta_update
-                        temp_rls.rss = rss_update
-                        temp_rls.n_obs = n_obs
-                        temp_rls.cluster_stats = defaultdict(lambda: {
-                            'X_sum': np.zeros(n_features),
-                            'residual_sum': 0.0,
-                            'count': 0,
-                            'XtX': np.zeros((n_features, n_features)),
-                            'X_residual_sum': np.zeros(n_features)  # Add to defaultdict template
-                        }, cluster_stats)
-                        temp_rls.cluster2_stats = defaultdict(lambda: {
-                            'X_sum': np.zeros(n_features),
-                            'residual_sum': 0.0,
-                            'count': 0,
-                            'XtX': np.zeros((n_features, n_features)),
-                            'X_residual_sum': np.zeros(n_features)  # Add to defaultdict template
-                        }, cluster2_stats)
-                        temp_rls.intersection_stats = defaultdict(lambda: {
-                            'X_sum': np.zeros(n_features),
-                            'residual_sum': 0.0,
-                            'count': 0,
-                            'XtX': np.zeros((n_features, n_features)),
-                            'X_residual_sum': np.zeros(n_features)  # Add to defaultdict template
-                        }, intersection_stats)
+                    try:
+                        result = future.result(timeout=1200)  # 20 minute timeout per partition
+                        XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
                         
-                        main_rls.merge_statistics(temp_rls)
-                        successful_partitions += 1
-                    else:
-                        empty_partitions += 1
-                    
-                    completed_partitions += 1
-                    
-                    # Update progress with better statistics
-                    if main_pbar:
-                        main_pbar.update(1)
-                        main_pbar.set_postfix({
-                            'completed': completed_partitions,
-                            'successful': successful_partitions,
-                            'empty': empty_partitions,
-                            'failed': len(failed_partitions),
-                            'total_obs': f"{main_rls.n_obs:,}",
-                            'RSS': f"{main_rls.rss:.2e}" if main_rls.rss > 0 else "0"
-                        })
-                    
-                    # Log current coefficients periodically
-                    if verbose and (completed_partitions % 25 == 0 or completed_partitions == total_partitions):
-                        logger.info(f"Progress update - Partition {completed_partitions}/{total_partitions}")
-                        coeff_str = ", ".join([f"{name}={coeff:.4f}" for name, coeff in zip(display_feature_names, main_rls.theta)])
-                        logger.info(f"Current coefficients: {coeff_str}")
-                        logger.info(f"RSS: {main_rls.rss:.6f}, Observations: {main_rls.n_obs:,}")
-                    
-                except Exception as e:
-                    failed_partitions.append(str(partition_file))
-                    completed_partitions += 1
-                    logger.error(f"Failed to process partition {partition_file}: {str(e)}")
-                    
-                    # Update progress even for failed partitions
-                    if main_pbar:
-                        main_pbar.update(1)
-                        main_pbar.set_postfix({
-                            'completed': completed_partitions,
-                            'successful': successful_partitions,
-                            'empty': empty_partitions,
-                            'failed': len(failed_partitions),
-                            'total_obs': f"{main_rls.n_obs:,}",
-                            'RSS': f"{main_rls.rss:.2e}" if main_rls.rss > 0 else "0"
-                        })
-    
-    except Exception as e:
-        logger.error(f"Critical error in parallel processing: {str(e)}")
-        # Continue with whatever results we have
-    
-    finally:
-        if main_pbar:
-            main_pbar.close()
-    
-    # Enhanced reporting
-    logger.info(f"Processing completed in {time.time() - start_time:.2f} seconds")
-    logger.info(f"Successful partitions: {successful_partitions}/{total_partitions}")
-    logger.info(f"Empty partitions (no valid data): {empty_partitions}")
-    logger.info(f"Failed partitions: {len(failed_partitions)}")
-    logger.info(f"Total observations processed: {main_rls.n_obs:,}")
-    
-    if main_rls.n_obs == 0:
-        logger.error("No observations were successfully processed!")
-        logger.error("This suggests a fundamental data quality issue.")
-        logger.error("Check: 1) Column names are correct, 2) Data types are numeric, 3) Files contain valid data")
-        raise ValueError("Failed to process any data. Check partition files and column names.")
-    
-    # Warn if we have very few successful partitions
-    success_rate = successful_partitions / total_partitions
-    if success_rate < 0.5:
-        logger.warning(f"Low success rate: {success_rate*100:.1f}% of partitions processed successfully")
-        logger.warning("Consider checking data quality or reducing parallelism")
-    
-    return main_rls
+                        if n_obs > 0:
+                            # Merge results
+                            temp_rls = OnlineRLS(n_features=n_features, alpha=alpha)
+                            temp_rls.XtX = XtX_update
+                            temp_rls.Xty = Xty_update
+                            temp_rls.theta = theta_update
+                            temp_rls.rss = rss_update
+                            temp_rls.n_obs = n_obs
+                            temp_rls.cluster_stats = defaultdict(lambda: {
+                                'X_sum': np.zeros(n_features),
+                                'residual_sum': 0.0,
+                                'count': 0,
+                                'XtX': np.zeros((n_features, n_features)),
+                                'X_residual_sum': np.zeros(n_features),
+                                'Xy': np.zeros(n_features)
+                            }, cluster_stats)
+                            temp_rls.cluster2_stats = defaultdict(lambda: {
+                                'X_sum': np.zeros(n_features),
+                                'residual_sum': 0.0,
+                                'count': 0,
+                                'XtX': np.zeros((n_features, n_features)),
+                                'X_residual_sum': np.zeros(n_features),
+                                'Xy': np.zeros(n_features)
+                            }, cluster2_stats)
+                            temp_rls.intersection_stats = defaultdict(lambda: {
+                                'X_sum': np.zeros(n_features),
+                                'residual_sum': 0.0,
+                                'count': 0,
+                                'XtX': np.zeros((n_features, n_features)),
+                                'X_residual_sum': np.zeros(n_features),
+                                'Xy': np.zeros(n_features)
+                            }, intersection_stats)
+                            main_rls.merge_statistics(temp_rls)
+                            successful_partitions += 1
+                        else:
+                            empty_partitions += 1
+                        
+                        completed_partitions += 1
+                        
+                        # Update progress with better statistics
+                        if main_pbar:
+                            main_pbar.update(1)
+                            main_pbar.set_postfix({
+                                'completed': completed_partitions,
+                                'successful': successful_partitions,
+                                'empty': empty_partitions,
+                                'failed': len(failed_partitions),
+                                'total_obs': f"{main_rls.n_obs:,}",
+                                'RSS': f"{main_rls.rss:.2e}" if main_rls.rss > 0 else "0"
+                            })
+                        
+                        # Log current coefficients periodically
+                        if verbose and (completed_partitions % 25 == 0 or completed_partitions == total_partitions):
+                            logger.info(f"Progress update - Partition {completed_partitions}/{total_partitions}")
+                            coeff_str = ", ".join([f"{name}={coeff:.4f}" for name, coeff in zip(display_feature_names, main_rls.theta)])
+                            logger.info(f"Current coefficients: {coeff_str}")
+                            logger.info(f"RSS: {main_rls.rss:.6f}, Observations: {main_rls.n_obs:,}")
+                        
+                    except Exception as e:
+                        failed_partitions.append(str(partition_file))
+                        completed_partitions += 1
+                        logger.error(f"Failed to process partition {partition_file}: {str(e)}")
+                        
+                        # Update progress even for failed partitions
+                        if main_pbar:
+                            main_pbar.update(1)
+                            main_pbar.set_postfix({
+                                'completed': completed_partitions,
+                                'successful': successful_partitions,
+                                'empty': empty_partitions,
+                                'failed': len(failed_partitions),
+                                'total_obs': f"{main_rls.n_obs:,}",
+                                'RSS': f"{main_rls.rss:.2e}" if main_rls.rss > 0 else "0"
+                            })
+        
+        except Exception as e:
+            logger.error(f"Critical error in parallel processing: {str(e)}")
+            # Continue with whatever results we have
+        
+        finally:
+            if main_pbar:
+                main_pbar.close()
+        
+        # Enhanced reporting
+        logger.info(f"Processing completed in {time.time() - start_time:.2f} seconds")
+        logger.info(f"Successful partitions: {successful_partitions}/{total_partitions}")
+        logger.info(f"Empty partitions (no valid data): {empty_partitions}")
+        logger.info(f"Failed partitions: {len(failed_partitions)}")
+        logger.info(f"Total observations processed: {main_rls.n_obs:,}")
+        
+        if main_rls.n_obs == 0:
+            logger.error("No observations were successfully processed!")
+            logger.error("This suggests a fundamental data quality issue.")
+            logger.error("Check: 1) Column names are correct, 2) Data types are numeric, 3) Files contain valid data")
+            raise ValueError("Failed to process any data. Check partition files and column names.")
+        
+        # Warn if we have very few successful partitions
+        success_rate = successful_partitions / total_partitions
+        if success_rate < 0.5:
+            logger.warning(f"Low success rate: {success_rate*100:.1f}% of partitions processed successfully")
+            logger.warning("Consider checking data quality or reducing parallelism")
+        
+        return main_rls
 
 
 def process_large_dataset(file_path: str, chunk_size: int = 10000,
-                         feature_cols: List[str] = None,
-                         target_col: str = None,
-                         cluster1_col: str = None,
-                         cluster2_col: str = None,
-                         add_intercept: bool = True,
-                         alpha: float = 1e-3,
-                         verbose: bool = True) -> OnlineRLS:
+                        feature_cols: List[str] = None,
+                        target_col: str = None,
+                        cluster1_col: str = None,
+                        cluster2_col: str = None,
+                        add_intercept: bool = True,
+                        alpha: float = 1e-3,
+                        verbose: bool = True) -> OnlineRLS:
     """Process large parquet dataset with online RLS."""
     logger.info(f"Processing single parquet file: {file_path}")
     logger.info(f"Verbosity: {'enabled' if verbose else 'disabled'}")
@@ -828,7 +871,7 @@ def process_large_dataset(file_path: str, chunk_size: int = 10000,
             # Use all numeric columns except target and cluster columns
             exclude_cols = [target_col, cluster1_col, cluster2_col]
             feature_cols = [col for col in df.select_dtypes(include=[np.number]).columns 
-                          if col not in exclude_cols]
+                        if col not in exclude_cols]
         
         X = df[feature_cols].values
         y = df[target_col].values
@@ -860,4 +903,3 @@ def process_large_dataset(file_path: str, chunk_size: int = 10000,
     
     logger.info("Processing complete!")
     return rls
-

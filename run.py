@@ -363,7 +363,7 @@ def main():
     # Analysis-specific arguments
     parser.add_argument(
         "--analysis-type",
-        choices=['online_rls', 'list'],
+        choices=['online_rls', 'online_2sls', 'list'],
         help="Type of analysis to run (required for analysis operation)"
     )
     
@@ -474,7 +474,7 @@ def main():
             config = load_config_with_env_vars(args.config)
             
             # Import and run analysis
-            from gnt.analysis.entrypoint import run_online_rls, list_analyses, setup_logging as analysis_setup_logging
+            from gnt.analysis.entrypoint import run_online_rls, run_online_2sls, list_analyses, setup_logging as analysis_setup_logging
             
             # Setup analysis-specific logging
             if args.debug:
@@ -501,6 +501,19 @@ def main():
                     return 1
                 
                 run_online_rls(config, args.specification, output_dir, verbose)
+            elif args.analysis_type == 'online_2sls':
+                # Validate specification exists
+                if 'online_2sls' not in config.get('analyses', {}):
+                    logger.error("Online 2SLS analysis not configured in config file")
+                    return 1
+                
+                specs = config['analyses']['online_2sls']['specifications']
+                if args.specification not in specs:
+                    logger.error(f"Unknown 2SLS specification: {args.specification}")
+                    logger.info(f"Available 2SLS specifications: {list(specs.keys())}")
+                    return 1
+                
+                run_online_2sls(config, args.specification, output_dir, verbose)
             else:
                 logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")
                 return 1
@@ -591,4 +604,3 @@ def main():
 
 if __name__ == "__main__":
     exit_code = main()
-    sys.exit(exit_code)

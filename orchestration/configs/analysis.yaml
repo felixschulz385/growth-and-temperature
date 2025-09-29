@@ -22,32 +22,35 @@ analyses:
     # Predefined model specifications
     specifications:
       
-      modis_ntlharm_basic:
-        description: "Basic MODIS temperature analysis"
+      modis_ntlharm_pooled:
+        description: "Pooled MODIS NTLHARM analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median"
         feature_cols: ["ntl_harm"]
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
+          add_intercept: true
           chunk_size: 10000
           n_workers: 4
           verbose: false
       
-      modis_ntlharm_basic_subset:
+      modis_viirs_basic_subset:
         description: "DEUG MODIS temperature subset analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        target_col: "median_twoway_demeaned"
-        feature_cols: ["ntl_harm_twoway_demeaned"]
+        target_col: "median"
+        feature_cols: ["viirs_annual"]
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
           chunk_size: 10000
           n_workers: 2
           verbose: true
+          add_intercept: true  # FIXED: Always include intercept
+          alpha: 0.01  # ADDED: Increase regularization for numerical stability
 
-      modis_ntlharm_demeaned:
-        description: "Demeaned MODIS temperature analysis"
+      modis_ntlharm_twfe:
+        description: "TWFE MODIS NTLHARM analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median_twoway_demeaned"
         feature_cols: ["ntl_harm_twoway_demeaned"]
@@ -57,9 +60,10 @@ analyses:
           chunk_size: 10000
           n_workers: 4
           verbose: false
+          add_intercept: false
 
-      modis_viirs_demeaned:
-        description: "Demeaned MODIS temperature analysis"
+      modis_viirs_twfe:
+        description: "Demeaned MODIS VIIRS analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median_twoway_demeaned"
         feature_cols: ["viirs_annual_twoway_demeaned"]
@@ -69,6 +73,7 @@ analyses:
           chunk_size: 10000
           n_workers: 4
           verbose: false
+          add_intercept: false
 
   # Two-Stage Least Squares analysis
   online_2sls:
@@ -88,13 +93,27 @@ analyses:
     
     specifications:
       
-      modis_demeaned_favoritism:
+      modis_ntlharm_regfav_pooled_subset:
+        description: "2SLS: Growth effect on temperature using regional favoritism as intrument"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        target_col: "median"
+        exogenous_cols: []  # Control variables
+        endogenous_cols: ["ntl_harm"]  # Potentially endogenous
+        instrument_cols: ["reg_fav"]  # Instruments
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 4
+          verbose: true
+
+      modis_ntlharm_regfav_pooled:
         description: "2SLS: Growth effect on temperature using regional favoritism as intrument"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median_twoway_demeaned"
+        target_col: "median"
         exogenous_cols: []  # Control variables
         endogenous_cols: ["median"]  # Potentially endogenous
-        instrument_cols: ["regional_favoritism"]  # Instruments
+        instrument_cols: ["reg_fav"]  # Instruments
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
@@ -104,9 +123,8 @@ analyses:
 
 # Output settings
 output:
-  base_path: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/analysis"
+  base_path: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/output/analysis"
   formats: ["json"]  # Use only standardized JSON format
-  save_models: true  # Whether to save fitted models
   
 # HPC settings for analysis
 hpc:
@@ -115,9 +133,3 @@ hpc:
   memory_limit: "32GB"  # Default fallback
   temp_dir: "/tmp"  # Default fallback
   dashboard_port: 8788  # Different from data processing
-  
-# Logging settings
-logging:
-  level: "INFO"
-  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-  file: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/analysis.log"

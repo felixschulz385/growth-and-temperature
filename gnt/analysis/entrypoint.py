@@ -109,7 +109,13 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     settings['show_progress'] = bool(settings.get('show_progress', True))
     settings['verbose'] = bool(settings.get('verbose', verbose))  # Add verbose setting
     
+    # Get cluster type for standard errors - fix the logic
+    cluster_type = settings.get('cluster_type', 'classical')
+    
     logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
+    logger.info(f"Standard error type: {cluster_type}")
+    
+    # Remove bootstrap settings
     
     # Run the analysis with error handling
     rls = None
@@ -129,9 +135,10 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
             verbose=settings['verbose']
         )
         
-        # Generate summary
-        cluster_type = settings.get('cluster_type', 'classical')
-        summary = rls.summary(cluster_type=cluster_type)
+        # Generate summary with correct cluster type
+        summary = rls.summary(
+            cluster_type=cluster_type
+        )
         
         logger.info(f"Analysis complete! Total observations: {rls.n_obs:,}")
         logger.info(f"RSS: {rls.rss:.6f}")
@@ -153,7 +160,6 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         if rls is not None and rls.n_obs > 0:
             logger.warning("Attempting to save partial results...")
             try:
-                cluster_type = settings.get('cluster_type', 'classical')
                 summary = rls.summary(cluster_type=cluster_type)
                 
                 logger.info(f"Partial analysis results - Total observations: {rls.n_obs:,}")
@@ -193,9 +199,9 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
     
     logger.info(f"Saving results to: {run_dir}")
     
-    # Get cluster type and analysis settings
-    cluster_type = config['analyses']['online_rls']['specifications'][spec_name].get('settings', {}).get('cluster_type', 'one_way')
+    # Get cluster type and analysis settings - fix the logic here too
     settings = {**config['analyses']['online_rls']['defaults'], **spec_config.get('settings', {})}
+    cluster_type = settings.get('cluster_type', 'classical')
     
     # Create feature names
     feature_names = []
@@ -208,10 +214,9 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
     n_clusters_2 = len(rls.cluster2_stats) if rls.cluster2_stats else 0
     n_intersections = len(rls.intersection_stats) if rls.intersection_stats else 0
     
-    # Calculate R-squared and adjusted R-squared
-    total_sum_squares = np.var(rls.Xty / rls.n_obs if rls.n_obs > 0 else 0) * rls.n_obs
-    r_squared = 1 - (rls.rss / total_sum_squares) if total_sum_squares > 0 else 0
-    adj_r_squared = 1 - ((1 - r_squared) * (rls.n_obs - 1) / (rls.n_obs - rls.n_features)) if rls.n_obs > rls.n_features else 0
+    # Calculate R-squared and adjusted R-squared using proper methods
+    r_squared = rls.get_r_squared()
+    adj_r_squared = rls.get_adjusted_r_squared()
     
     # Create comprehensive results dictionary
     results = {
@@ -324,6 +329,7 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
         }
     }
     
+    # Remove bootstrap info from results
     # Save the comprehensive results as JSON
     try:
         results_file = run_dir / "analysis_results.json"
@@ -395,6 +401,7 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     defaults = twosls_config['defaults']
     
     logger.info(f"Running Online 2SLS analysis: {spec_config['description']}")
+    logger.info(f"Data source: {spec_config['data_source']}")
     
     # Validate instrument rank condition
     n_endogenous = len(spec_config['endogenous_cols'])
@@ -405,51 +412,116 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     
     logger.info(f"Identification: {n_instruments} instruments for {n_endogenous} endogenous variables")
     
-    # Merge settings
+    # Merge settings with proper type conversion
     settings = {**defaults, **spec_config.get('settings', {})}
     
-    # Run 2SLS analysis
-    twosls = process_partitioned_dataset_2sls(
-        parquet_path=spec_config['data_source'],
-        exogenous_cols=spec_config['exogenous_cols'],
-        endogenous_cols=spec_config['endogenous_cols'],
-        instrument_cols=spec_config['instrument_cols'],
-        target_col=spec_config['target_col'],
-        cluster1_col=spec_config.get('cluster1_col'),
-        cluster2_col=spec_config.get('cluster2_col'),
-        add_intercept=settings['add_intercept'],
-        chunk_size=settings['chunk_size'],
-        n_workers=settings.get('n_workers', 4),
-        alpha=settings['alpha'],
-        forget_factor=settings['forget_factor'],
-        show_progress=settings['show_progress'],
-        verbose=settings['verbose']
-    )
+    # Override with HPC defaults if not specified
+    hpc_config = config.get('hpc', {})
+    if 'n_workers' not in settings:
+        default_workers = hpc_config.get('default_workers', 4)
+        if isinstance(default_workers, str):
+            try:
+                settings['n_workers'] = int(default_workers)
+            except ValueError:
+                settings['n_workers'] = 4
+        else:
+            settings['n_workers'] = default_workers
     
-    # Generate summary with 2SLS-specific diagnostics
+    # Ensure critical parameters are proper types
+    settings['alpha'] = float(settings.get('alpha', 1e-3))
+    settings['forget_factor'] = float(settings.get('forget_factor', 1.0))
+    settings['chunk_size'] = int(settings.get('chunk_size', 20000))
+    settings['n_workers'] = int(settings.get('n_workers', 4))
+    settings['add_intercept'] = bool(settings.get('add_intercept', True))
+    settings['show_progress'] = bool(settings.get('show_progress', True))
+    settings['verbose'] = bool(settings.get('verbose', verbose))
+    
+    # Get cluster type for standard errors
     cluster_type = settings.get('cluster_type', 'classical')
-    summary = twosls.summary(cluster_type=cluster_type)
     
-    # Add first stage diagnostics
-    first_stage_stats = twosls.get_first_stage_statistics()
+    logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
+    logger.info(f"Standard error type: {cluster_type}")
     
-    logger.info("First Stage Diagnostics:")
-    for key, value in first_stage_stats.items():
-        if 'f_stat' in key:
-            logger.info(f"  {key}: {value:.3f}")
-        elif 'weak_instruments' in key:
-            logger.info(f"  {key}: {'Yes' if value else 'No'}")
-    
-    # Check for weak instruments
-    weak_instruments = any(v for k, v in first_stage_stats.items() if 'weak_instruments' in k)
-    if weak_instruments:
-        logger.warning("WARNING: Weak instruments detected. Results may be unreliable.")
-    
-    logger.info("2SLS Regression Summary:")
-    print(summary.to_string())
-    
-    if output_dir:
-        save_2sls_results(twosls, summary, first_stage_stats, spec_name, spec_config, output_dir, config)
+    # Run the analysis with error handling
+    twosls = None
+    try:
+        twosls = process_partitioned_dataset_2sls(
+            parquet_path=spec_config['data_source'],
+            exogenous_cols=spec_config['exogenous_cols'],
+            endogenous_cols=spec_config['endogenous_cols'],
+            instrument_cols=spec_config['instrument_cols'],
+            target_col=spec_config['target_col'],
+            cluster1_col=spec_config.get('cluster1_col'),
+            cluster2_col=spec_config.get('cluster2_col'),
+            add_intercept=settings['add_intercept'],
+            chunk_size=settings['chunk_size'],
+            n_workers=settings['n_workers'],
+            alpha=settings['alpha'],
+            forget_factor=settings['forget_factor'],
+            show_progress=settings['show_progress'],
+            verbose=settings['verbose']
+        )
+        
+        # Generate summary with 2SLS-specific diagnostics
+        summary = twosls.summary(cluster_type=cluster_type)
+        
+        # Add comprehensive first stage diagnostics
+        first_stage_stats = twosls.get_first_stage_statistics()
+        comprehensive_first_stage = twosls.get_comprehensive_first_stage_statistics()
+        
+        logger.info("First Stage Diagnostics:")
+        for key, value in first_stage_stats.items():
+            if 'f_stat' in key:
+                logger.info(f"  {key}: {value:.3f}")
+            elif 'weak_instruments' in key:
+                logger.info(f"  {key}: {'Yes' if value else 'No'}")
+        
+        # Check for weak instruments
+        weak_instruments = comprehensive_first_stage['summary']['any_weak_instruments']
+        if weak_instruments:
+            logger.warning("WARNING: Weak instruments detected. Results may be unreliable.")
+        
+        logger.info(f"Analysis complete! Total observations: {twosls.n_obs:,}")
+        logger.info(f"RSS: {twosls.rss:.6f}")
+        logger.info("2SLS Regression Summary:")
+        print("\n" + "="*50)
+        print(f"Analysis: {spec_config['description']}")
+        print(f"Standard Errors: {cluster_type}")
+        print("="*50)
+        print(summary.to_string())
+        print("="*50)
+        
+        # Save results if output directory specified
+        if output_dir:
+            save_2sls_results(twosls, summary, first_stage_stats, comprehensive_first_stage, spec_name, spec_config, output_dir, config)
+            
+    except Exception as e:
+        logger.error(f"2SLS analysis failed with error: {str(e)}")
+        # If we have partial results, try to save them
+        if twosls is not None and twosls.n_obs > 0:
+            logger.warning("Attempting to save partial 2SLS results...")
+            try:
+                summary = twosls.summary(cluster_type=cluster_type)
+                first_stage_stats = twosls.get_first_stage_statistics()
+                
+                logger.info(f"Partial 2SLS analysis results - Total observations: {twosls.n_obs:,}")
+                logger.info(f"RSS: {twosls.rss:.6f}")
+                print("\n" + "="*50)
+                print(f"PARTIAL RESULTS - Analysis: {spec_config['description']}")
+                print(f"Standard Errors: {cluster_type}")
+                print("="*50)
+                print(summary.to_string())
+                print("="*50)
+                
+                if output_dir:
+                    save_2sls_results(twosls, summary, first_stage_stats, comprehensive_first_stage, f"{spec_name}_partial", spec_config, output_dir, config)
+                    logger.info("Partial 2SLS results saved successfully")
+                    
+            except Exception as save_error:
+                logger.error(f"Failed to save partial 2SLS results: {save_error}")
+        
+        # Re-raise the original error
+        raise e
     
     return twosls
 
@@ -468,11 +540,11 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
     run_dir = output_path / f"{spec_name}_{timestamp}"
     run_dir.mkdir(exist_ok=True)
     
-    logger.info(f"Saving results to: {run_dir}")
+    logger.info(f"Saving 2SLS results to: {run_dir}")
     
     # Get cluster type and analysis settings
-    cluster_type = config['analyses']['online_2sls']['specifications'][spec_name].get('settings', {}).get('cluster_type', 'one_way')
     settings = {**config['analyses']['online_2sls']['defaults'], **spec_config.get('settings', {})}
+    cluster_type = settings.get('cluster_type', 'classical')
     
     # Create feature names
     feature_names = []
@@ -486,10 +558,12 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
     n_clusters_2 = len(twosls.cluster2_stats) if twosls.cluster2_stats else 0
     n_intersections = len(twosls.intersection_stats) if twosls.intersection_stats else 0
     
-    # Calculate R-squared and adjusted R-squared
-    total_sum_squares = np.var(twosls.Xty / twosls.n_obs if twosls.n_obs > 0 else 0) * twosls.n_obs
-    r_squared = 1 - (twosls.rss / total_sum_squares) if total_sum_squares > 0 else 0
-    adj_r_squared = 1 - ((1 - r_squared) * (twosls.n_obs - 1) / (twosls.n_obs - twosls.n_features)) if twosls.n_obs > twosls.n_features else 0
+    # Calculate R-squared and adjusted R-squared using proper methods
+    r_squared = twosls.get_r_squared()
+    adj_r_squared = twosls.get_adjusted_r_squared()
+    
+    # Get weak instrument threshold from config
+    weak_instrument_threshold = config['analyses']['online_2sls']['defaults'].get('weak_instrument_threshold', 10.0)
     
     # Create comprehensive results dictionary
     results = {
@@ -547,7 +621,7 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
                 }
                 for i in range(len(feature_names))
             },
-            "covariance_matrix": twosls.get_cluster_robust_covariance(cluster_type).tolist() if cluster_type != 'classical' else twosls.get_covariance_matrix().tolist()
+            "covariance_matrix": twosls.get_2sls_covariance_matrix().tolist()
         },
         
         "inference": {
@@ -556,7 +630,7 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             "hypothesis_tests": {
                 "joint_significance": {
                     "description": "F-test for joint significance of all coefficients (excluding intercept)",
-                    "test_statistic": None,  # Could be calculated if needed
+                    "test_statistic": None,
                     "p_value": None,
                     "critical_value_5pct": None
                 }
@@ -565,9 +639,9 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
         
         "diagnostics": {
             "convergence": {
-                "converged": True,  # Online 2SLS always converges
+                "converged": True,
                 "regularization_applied": bool(twosls.alpha > 0),
-                "numerical_issues": False  # Could be flagged during processing
+                "numerical_issues": twosls.rank_deficient
             },
             "data_quality": {
                 "missing_values_handled": True,
@@ -580,9 +654,9 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             "algorithm": "Online Two-Stage Least Squares",
             "implementation": "Vectorized batch processing with parallel partition handling",
             "memory_efficient": True,
-            "processing_time_seconds": None,  # Could be tracked
-            "partitions_processed": None,  # Could be tracked
-            "partitions_failed": None  # Could be tracked
+            "processing_time_seconds": None,
+            "partitions_processed": None,
+            "partitions_failed": None
         },
         
         "summary_table": {
@@ -615,12 +689,18 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
         
         "first_stage_diagnostics": first_stage_stats,
         
+        "comprehensive_first_stage": comprehensive_first_stage,
+        
         "iv_tests": {
             "weak_instruments": {
                 "description": "Stock-Yogo weak instrument test",
-                "critical_value": config['analyses']['online_2sls']['defaults']['weak_instrument_threshold'],
-                "weak_instruments_detected": any(v for k, v in first_stage_stats.items() if 'weak_instruments' in k)
-            }
+                "critical_value": weak_instrument_threshold,
+                "weak_instruments_detected": comprehensive_first_stage['summary']['any_weak_instruments'],
+                "min_f_statistic": comprehensive_first_stage['summary']['min_f_statistic'],
+                "mean_f_statistic": comprehensive_first_stage['summary']['mean_f_statistic']
+            },
+            "overidentification": twosls.sargan_test(),
+            "hansen_j": twosls.hansen_j_test()
         }
     }
     
@@ -630,7 +710,7 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
         with open(results_file, 'w') as f:
             import json
             json.dump(results, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved comprehensive results: {results_file}")
+        logger.info(f"Saved comprehensive 2SLS results: {results_file}")
         
         # Also save a human-readable summary
         summary_file = run_dir / "summary.txt"
@@ -643,6 +723,12 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             f.write(f"Timestamp: {timestamp}\n")
             f.write(f"Standard Errors: {cluster_type}\n\n")
             
+            f.write(f"Instrument Specification:\n")
+            f.write(f"  Exogenous variables: {spec_config.get('exogenous_cols', [])}\n")
+            f.write(f"  Endogenous variables: {spec_config.get('endogenous_cols', [])}\n")
+            f.write(f"  Instruments: {spec_config.get('instrument_cols', [])}\n")
+            f.write(f"  Identification: {'Over-identified' if len(spec_config['instrument_cols']) > len(spec_config['endogenous_cols']) else 'Just-identified'}\n\n")
+            
             f.write(f"Sample Information:\n")
             f.write(f"  Observations: {twosls.n_obs:,}\n")
             f.write(f"  Features: {twosls.n_features}\n")
@@ -654,6 +740,19 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             f.write(f"  Adj. R-squared: {adj_r_squared:.6f}\n")
             f.write(f"  RMSE: {np.sqrt(twosls.rss / twosls.n_obs) if twosls.n_obs > 0 else 0:.6f}\n")
             f.write(f"  RSS: {twosls.rss:.6f}\n\n")
+            
+            f.write(f"First Stage Diagnostics:\n")
+            for key, value in first_stage_stats.items():
+                if 'f_stat' in key:
+                    f.write(f"  {key}: {value:.3f}\n")
+                elif 'weak_instruments' in key:
+                    f.write(f"  {key}: {'Yes' if value else 'No'}\n")
+            # Add comprehensive first-stage summary
+            f.write(f"  Summary F-statistics: min={comprehensive_first_stage['summary']['min_f_statistic']:.3f}, ")
+            f.write(f"mean={comprehensive_first_stage['summary']['mean_f_statistic']:.3f}, ")
+            f.write(f"max={comprehensive_first_stage['summary']['max_f_statistic']:.3f}\n")
+            f.write(f"  Weak instruments detected: {'Yes' if comprehensive_first_stage['summary']['any_weak_instruments'] else 'No'}\n")
+            f.write(f"\n")
             
             f.write(f"Coefficient Estimates:\n")
             f.write(f"{'Variable':<20} {'Coeff':<12} {'Std Err':<12} {'t-stat':<10} {'P>|t|':<10} {'Sig':<5}\n")
@@ -668,7 +767,7 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             
             f.write(f"\nSignificance codes: *** p<0.01, ** p<0.05, * p<0.10\n")
         
-        logger.info(f"Saved human-readable summary: {summary_file}")
+        logger.info(f"Saved human-readable 2SLS summary: {summary_file}")
         
         # Save model object if requested
         if config.get('output', {}).get('save_models', False):
@@ -676,14 +775,14 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             model_file = run_dir / "model.pkl"
             with open(model_file, 'wb') as f:
                 pickle.dump(twosls, f)
-            logger.info(f"Saved model object: {model_file}")
+            logger.info(f"Saved 2SLS model object: {model_file}")
         
     except Exception as e:
-        logger.error(f"Failed to save results: {e}")
+        logger.error(f"Failed to save 2SLS results: {e}")
         import traceback
         logger.error(f"Traceback: {traceback.format_exc()}")
     
-    logger.info(f"Results successfully saved to: {run_dir}")
+    logger.info(f"2SLS results successfully saved to: {run_dir}")
     
     # Log summary of saved files
     saved_files = list(run_dir.glob("*"))
