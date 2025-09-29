@@ -137,7 +137,7 @@ class PLADPreprocessor(AbstractPreprocessor):
         """Generate spatial processing targets - one target for all years."""
         target = {
             'stage': 'spatial',
-            'output_path': f"{self.get_hpc_output_path('spatial')}/plad_adm{self.admin_level}_panel.zarr",
+            'output_path': f"{self.get_hpc_output_path('spatial')}/plad_adm{self.admin_level}_timeseries_reprojected.zarr",
             'dependencies': [],
             'metadata': {
                 'data_type': 'plad_spatial',
