@@ -112,7 +112,7 @@ analyses:
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         target_col: "median"
         exogenous_cols: []  # Control variables
-        endogenous_cols: ["median"]  # Potentially endogenous
+        endogenous_cols: ["ntl_harm"]  # Potentially endogenous
         instrument_cols: ["reg_fav"]  # Instruments
         cluster1_col: "subdivisions"
         cluster2_col: "year"

@@ -19,6 +19,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _default_cluster_stats(n_features):
+    """Create default cluster stats dictionary - needed for pickling."""
+    return {
+        'X_sum': np.zeros(n_features),
+        'residual_sum': 0.0,
+        'count': 0,
+        'XtX': np.zeros((n_features, n_features)),
+        'X_residual_sum': np.zeros(n_features),
+        'Xy': np.zeros(n_features)
+    }
+
 class OnlineRLS:
     """
     Online Recursive Least Squares with cluster-robust standard errors.
@@ -64,33 +75,10 @@ class OnlineRLS:
         self.sum_y = 0.0       # Sum of y
         self.sum_y_squared = 0.0  # Sum of y²
         
-        # For cluster-robust SE computation
-        self.cluster_stats = defaultdict(lambda: {
-            'X_sum': np.zeros(n_features),
-            'residual_sum': 0.0,
-            'count': 0,
-            'XtX': np.zeros((n_features, n_features)),
-            'X_residual_sum': np.zeros(n_features),
-            'Xy': np.zeros(n_features)  # NEW: store X_c' y_c
-        })
-        
-        self.cluster2_stats = defaultdict(lambda: {
-            'X_sum': np.zeros(n_features),
-            'residual_sum': 0.0,
-            'count': 0,
-            'XtX': np.zeros((n_features, n_features)),
-            'X_residual_sum': np.zeros(n_features),
-            'Xy': np.zeros(n_features)
-        })
-        
-        self.intersection_stats = defaultdict(lambda: {
-            'X_sum': np.zeros(n_features),
-            'residual_sum': 0.0,
-            'count': 0,
-            'XtX': np.zeros((n_features, n_features)),
-            'X_residual_sum': np.zeros(n_features),
-            'Xy': np.zeros(n_features)
-        })
+        # For cluster-robust SE computation - use regular dict to avoid pickling issues
+        self.cluster_stats = {}
+        self.cluster2_stats = {}
+        self.intersection_stats = {}
 
     def _validate_and_clean_data(self, X: np.ndarray, y: np.ndarray, 
                                 cluster1: Optional[np.ndarray] = None,
@@ -117,7 +105,7 @@ class OnlineRLS:
             if n_invalid == n_total:
                 logger.debug("No valid observations in chunk")
             elif n_invalid > n_total * 0.1:  # More than 10% invalid
-                logger.warning(f"Removed {n_invalid}/{n_total} ({n_invalid/n_total*100:.1f}%) invalid observations")
+                logger.debug(f"Removed {n_invalid}/{n_total} ({n_invalid/n_total*100:.1f}%) invalid observations")
         
             X = X[valid_mask]
             y = y[valid_mask]
@@ -214,6 +202,11 @@ class OnlineRLS:
             Xc = X[mask]
             ec = errors[mask]
             yc = y[mask]
+            
+            # Initialize stats if not exists
+            if cluster_id not in stats_dict:
+                stats_dict[cluster_id] = _default_cluster_stats(self.n_features)
+            
             stats = stats_dict[cluster_id]
             stats['X_sum'] += np.sum(Xc, axis=0)
             stats['residual_sum'] += np.sum(ec)
@@ -366,7 +359,7 @@ class OnlineRLS:
                 target_stats[cluster_id]['count'] += stats['count']
                 target_stats[cluster_id]['XtX'] += stats['XtX']
                 target_stats[cluster_id]['X_residual_sum'] += stats['X_residual_sum']
-                target_stats[cluster_id]['Xy'] += stats['Xy']  # NEW
+                target_stats[cluster_id]['Xy'] += stats['Xy']
             else:
                 target_stats[cluster_id] = {
                     'X_sum': stats['X_sum'].copy(),
@@ -374,7 +367,7 @@ class OnlineRLS:
                     'count': stats['count'],
                     'XtX': stats['XtX'].copy(),
                     'X_residual_sum': stats['X_residual_sum'].copy(),
-                    'Xy': stats['Xy'].copy()  # NEW
+                    'Xy': stats['Xy'].copy()
                 }
 
 def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.ndarray, float, int, Dict, Dict, Dict]:
@@ -397,44 +390,24 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
         total_rows = parquet_file.metadata.num_rows
         worker_logger.info(f"Partition has {total_rows:,} rows")
         
-        # Adaptive chunk sizing based on partition size
-        if total_rows > 50_000_000:  # Very large partitions
-            effective_chunk_size = min(chunk_size, 10000)
-        elif total_rows > 10_000_000:  # Large partitions
-            effective_chunk_size = min(chunk_size, 20000)
-        else:
-            effective_chunk_size = min(chunk_size, 50000)
+        # Adjust chunk size if partition is smaller
+        effective_chunk_size = min(chunk_size, total_rows)
         
-        worker_logger.info(f"Using chunk size: {effective_chunk_size:,}")
-        
-        # Early data validation - check first small batch
-        first_batch = next(parquet_file.iter_batches(batch_size=1000))
-        first_df = first_batch.to_pandas()
+        # Early data validation using metadata
+        schema = parquet_file.metadata.schema
+        available_columns = [field.name for field in schema]
         
         # Validate columns exist
         missing_cols = []
         for col in feature_cols:
-            if col not in first_df.columns:
+            if col not in available_columns:
                 missing_cols.append(col)
-        if target_col not in first_df.columns:
-            missing_cols.append(target_col)
+            if target_col not in available_columns:
+                missing_cols.append(target_col)
         
         if missing_cols:
             worker_logger.error(f"Missing required columns: {missing_cols}")
             return (alpha * np.eye(n_features), np.zeros(n_features), np.zeros(n_features), 0.0, 0, {}, {}, {})
-        
-        # Check data quality in first batch
-        y_sample = first_df[target_col].values
-        valid_y_ratio = np.isfinite(y_sample).mean()
-        
-        if valid_y_ratio < 0.01:  # Less than 1% valid data
-            worker_logger.warning(f"Partition has very low data quality ({valid_y_ratio*100:.1f}% valid). Skipping.")
-            return (alpha * np.eye(n_features), np.zeros(n_features), np.zeros(n_features), 0.0, 0, {}, {}, {})
-        
-        worker_logger.info(f"Data quality check: {valid_y_ratio*100:.1f}% valid observations in sample")
-        
-        # Reset file iterator
-        parquet_file = pq.ParquetFile(partition_file)
         
         chunks_processed = 0
         valid_chunks = 0
