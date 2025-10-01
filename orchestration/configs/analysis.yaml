@@ -11,6 +11,7 @@ analyses:
     
     # Default settings
     defaults:
+      n_workers: 8
       add_intercept: true
       alpha: 0.001  # Use explicit numeric value instead of scientific notation
       forget_factor: 1.0
@@ -58,9 +59,24 @@ analyses:
         cluster2_col: "year"
         settings:
           chunk_size: 10000
-          n_workers: 4
           verbose: false
           add_intercept: false
+
+      modis_ntlharm_twfe_quadratic:
+        description: "TWFE MODIS NTLHARM analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        target_col: "median_twoway_demeaned"
+        feature_cols: ["ntl_harm_twoway_demeaned"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          verbose: false
+          add_intercept: false
+        feature_engineering:
+          transformations:
+            - type: "quadratic"
+              features: ["ntl_harm_twoway_demeaned"]
 
       modis_viirs_twfe:
         description: "Demeaned MODIS VIIRS analysis"
@@ -71,9 +87,32 @@ analyses:
         cluster2_col: "year"
         settings:
           chunk_size: 10000
-          n_workers: 4
           verbose: false
           add_intercept: false
+
+      # Debug specification with feature engineering
+      debug_feature_engineering:
+        description: "DEBUG: Feature engineering test with quadratic and interaction terms"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        target_col: "median"
+        feature_cols: ["ntl_harm", "viirs_annual"]
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 5000
+          n_workers: 2
+          verbose: true
+          add_intercept: true
+          alpha: 0.01
+        feature_engineering:
+          transformations:
+            - type: "quadratic"
+              features: ["ntl_harm", "viirs_annual"]
+            - type: "interaction"
+              feature_pairs: [["ntl_harm", "viirs_annual"]]
+            - type: "polynomial"
+              features: ["ntl_harm"]
+              degree: 3
 
   # Two-Stage Least Squares analysis
   online_2sls:
@@ -107,18 +146,18 @@ analyses:
           n_workers: 4
           verbose: true
 
-      modis_ntlharm_regfav_pooled:
+      modis_ntlharm_regfav_twfe:
         description: "2SLS: Growth effect on temperature using regional favoritism as intrument"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median"
+        target_col: "median_twoway_demeaned"
         exogenous_cols: []  # Control variables
-        endogenous_cols: ["ntl_harm"]  # Potentially endogenous
-        instrument_cols: ["reg_fav"]  # Instruments
+        endogenous_cols: ["ntl_harm_twoway_demeaned"]  # Potentially endogenous
+        instrument_cols: ["reg_fav_twoway_demeaned"]  # Instruments
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
           chunk_size: 10000
-          n_workers: 4
+          n_workers: 8
           verbose: false
 
 # Output settings

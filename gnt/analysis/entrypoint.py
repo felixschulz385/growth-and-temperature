@@ -107,15 +107,23 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     settings['n_workers'] = int(settings.get('n_workers', 4))
     settings['add_intercept'] = bool(settings.get('add_intercept', True))
     settings['show_progress'] = bool(settings.get('show_progress', True))
-    settings['verbose'] = bool(settings.get('verbose', verbose))  # Add verbose setting
+    settings['verbose'] = bool(settings.get('verbose', verbose))
     
-    # Get cluster type for standard errors - fix the logic
+    # Get cluster type for standard errors
     cluster_type = settings.get('cluster_type', 'classical')
+    
+    # Extract feature engineering configuration
+    feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
+    
+    if feature_engineering:
+        logger.info(f"Feature engineering enabled with {len(feature_engineering.get('transformations', []))} transformations")
+        for i, transform in enumerate(feature_engineering.get('transformations', [])):
+            logger.info(f"  Transformation {i+1}: {transform.get('type', 'unknown')} - {transform}")
+    else:
+        logger.info("No feature engineering specified - using original features only")
     
     logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
     logger.info(f"Standard error type: {cluster_type}")
-    
-    # Remove bootstrap settings
     
     # Run the analysis with error handling
     rls = None
@@ -132,7 +140,8 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
             alpha=settings['alpha'],
             forget_factor=settings['forget_factor'],
             show_progress=settings['show_progress'],
-            verbose=settings['verbose']
+            verbose=settings['verbose'],
+            feature_engineering=feature_engineering  # Pass feature engineering config
         )
         
         # Generate summary with correct cluster type
@@ -146,6 +155,9 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         print("\n" + "="*50)
         print(f"Analysis: {spec_config['description']}")
         print(f"Standard Errors: {cluster_type}")
+        if feature_engineering:
+            print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
+            print(f"Total features: {len(rls.feature_names)}")
         print("="*50)
         print(summary.to_string())
         print("="*50)
@@ -167,6 +179,8 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
                 print("\n" + "="*50)
                 print(f"PARTIAL RESULTS - Analysis: {spec_config['description']}")
                 print(f"Standard Errors: {cluster_type}")
+                if feature_engineering:
+                    print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
                 print("="*50)
                 print(summary.to_string())
                 print("="*50)
@@ -199,15 +213,12 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
     
     logger.info(f"Saving results to: {run_dir}")
     
-    # Get cluster type and analysis settings - fix the logic here too
+    # Get cluster type and analysis settings
     settings = {**config['analyses']['online_rls']['defaults'], **spec_config.get('settings', {})}
     cluster_type = settings.get('cluster_type', 'classical')
     
-    # Create feature names
-    feature_names = []
-    if settings.get('add_intercept', True):
-        feature_names.append('intercept')
-    feature_names.extend(spec_config.get('feature_cols', []))
+    # Use the feature names from the model (already transformed)
+    feature_names = rls.get_feature_names()
     
     # Calculate additional statistics
     n_clusters_1 = len(rls.cluster_stats) if rls.cluster_stats else 0
@@ -229,6 +240,11 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
             "data_source": spec_config['data_source'],
             "target_variable": spec_config['target_col'],
             "feature_variables": spec_config.get('feature_cols', []),
+            "feature_engineering": {
+                "enabled": bool(spec_config.get('feature_engineering')),
+                "transformations": spec_config.get('feature_engineering', {}).get('transformations', []) if spec_config.get('feature_engineering') else [],
+                "transformed_feature_names": feature_names
+            },
             "cluster_variables": {
                 "cluster1": spec_config.get('cluster1_col'),
                 "cluster2": spec_config.get('cluster2_col')
@@ -439,6 +455,16 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     # Get cluster type for standard errors
     cluster_type = settings.get('cluster_type', 'classical')
     
+    # Extract feature engineering configuration
+    feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
+    
+    if feature_engineering:
+        logger.info(f"Feature engineering enabled with {len(feature_engineering.get('transformations', []))} transformations")
+        for i, transform in enumerate(feature_engineering.get('transformations', [])):
+            logger.info(f"  Transformation {i+1}: {transform.get('type', 'unknown')} - {transform}")
+    else:
+        logger.info("No feature engineering specified - using original features only")
+    
     logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
     logger.info(f"Standard error type: {cluster_type}")
     
@@ -459,7 +485,8 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
             alpha=settings['alpha'],
             forget_factor=settings['forget_factor'],
             show_progress=settings['show_progress'],
-            verbose=settings['verbose']
+            verbose=settings['verbose'],
+            feature_engineering=feature_engineering  # Pass feature engineering config
         )
         
         # Generate summary with correct cluster type
@@ -471,6 +498,8 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
         print("\n" + "="*50)
         print(f"Analysis: {spec_config['description']}")
         print(f"Standard Errors: {cluster_type}")
+        if feature_engineering:
+            print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
         print("="*50)
         
         # Print First Stage Results
@@ -531,6 +560,8 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
                 print("\n" + "="*50)
                 print(f"PARTIAL RESULTS - Analysis: {spec_config['description']}")
                 print(f"Standard Errors: {cluster_type}")
+                if feature_engineering:
+                    print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
                 print("="*50)
                 
                 # Print partial first stage results
@@ -582,14 +613,18 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
     settings = {**config['analyses']['online_2sls']['defaults'], **spec_config.get('settings', {})}
     cluster_type = settings.get('cluster_type', 'classical')
     
-    # Create feature names for second stage
-    feature_names = []
-    if settings.get('add_intercept', True):
-        feature_names.append('intercept')
-    # Add fitted endogenous variables first
-    feature_names.extend([f"{name}(fitted)" for name in spec_config.get('endogenous_cols', [])])
-    # Then add exogenous variables
-    feature_names.extend(spec_config.get('exogenous_cols', []))
+    # Use feature names from the model if available (second stage)
+    if hasattr(twosls.second_stage, 'feature_names'):
+        feature_names = twosls.second_stage.get_feature_names()
+    else:
+        # Fallback to constructing names manually
+        feature_names = []
+        if settings.get('add_intercept', True):
+            feature_names.append('intercept')
+        # Add fitted endogenous variables first
+        feature_names.extend([f"{name}(fitted)" for name in spec_config.get('endogenous_cols', [])])
+        # Then add exogenous variables
+        feature_names.extend(spec_config.get('exogenous_cols', []))
     
     # Create feature names for first stage
     first_stage_feature_names = []

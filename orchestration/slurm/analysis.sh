@@ -5,7 +5,7 @@
 #SBATCH --partition=scicore
 #SBATCH --time=0-04:00:00
 #SBATCH --qos=6hours
-#SBATCH --cpus-per-task=4
+#SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 
 # Usage: sbatch analysis_modis_basic.sh <specification_name>
@@ -27,3 +27,6 @@ python run.py analysis \
     --output output/analysis
 
 echo "Analysis completed. Results saved to ${DATA_NOBACKUP}/analysis"
+
+#SBATCH --time=1-00:00:00
+#SBATCH --qos=1day

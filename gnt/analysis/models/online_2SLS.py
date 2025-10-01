@@ -8,7 +8,7 @@ from pathlib import Path
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 import multiprocessing as mp
-from collections import defaultdict  # Add missing import
+from collections import defaultdict
 
 # Import functionality from OnlineRLS
 from gnt.analysis.models.online_RLS import (
@@ -16,7 +16,7 @@ from gnt.analysis.models.online_RLS import (
     process_partition_worker,
     discover_partitions,
     get_optimal_workers,
-    _default_cluster_stats  # Add this import
+    _default_cluster_stats
 )
 
 # Configure logging
@@ -95,8 +95,7 @@ class Online2SLS:
             batch_size=batch_size
         )
         
-        # For statistical inference
-        self.first_stage_residuals = []  # Store residuals from first stage
+        self.first_stage_residuals = []
         self.total_obs = 0
         
     def _calc_dimensions(self):
@@ -116,10 +115,10 @@ class Online2SLS:
     
     def partial_fit(
         self, 
-        X_endog: np.ndarray,  # Endogenous variables
-        X_exog: np.ndarray,   # Exogenous variables
-        Z: np.ndarray,        # Instruments
-        y: np.ndarray,        # Outcome variable
+        X_endog: np.ndarray,
+        X_exog: np.ndarray,
+        Z: np.ndarray,
+        y: np.ndarray,
         cluster1: Optional[np.ndarray] = None,
         cluster2: Optional[np.ndarray] = None
     ) -> 'Online2SLS':
@@ -144,11 +143,9 @@ class Online2SLS:
             X_endog, X_exog, Z, y, cluster1, cluster2
         )
         
-        # Skip if empty
         if len(y) == 0:
             return self
             
-        # Track total observations
         self.total_obs += len(y)
         
         # Create first stage features: [intercept], exogenous, instruments
@@ -161,18 +158,14 @@ class Online2SLS:
         X_endog_hat = np.zeros((X_endog.shape[0], self.n_endogenous))
         
         for i in range(self.n_endogenous):
-            # Update first stage model
             self.first_stage_models[i].partial_fit(
                 first_stage_features, X_endog[:, i], cluster1, cluster2
             )
-            
-            # Generate predicted values
             X_endog_hat[:, i] = self.first_stage_models[i].predict(first_stage_features)
         
         # Create second stage features: [intercept], fitted endogenous, exogenous
         second_stage_features = np.column_stack([X_endog_hat, X_exog])
         if self.add_intercept:
-            # Intercept already added to first_stage_features
             second_stage_features = np.column_stack([
                 np.ones((second_stage_features.shape[0], 1)), 
                 second_stage_features
@@ -195,7 +188,6 @@ class Online2SLS:
         cluster2: Optional[np.ndarray] = None
     ) -> Tuple:
         """Validate and clean input data."""
-        # Convert to numpy arrays
         X_endog = np.atleast_2d(X_endog)
         X_exog = np.atleast_2d(X_exog) if X_exog is not None else np.empty((len(y), 0))
         Z = np.atleast_2d(Z)
@@ -211,7 +203,7 @@ class Online2SLS:
         if Z.shape[1] != self.n_instruments:
             raise ValueError(f"Expected {self.n_instruments} instruments, got {Z.shape[1]}")
         
-        # Check for NaNs/Infs and filter rows
+        # Filter invalid observations
         valid_endog = np.isfinite(X_endog).all(axis=1)
         valid_exog = np.isfinite(X_exog).all(axis=1) if X_exog.size > 0 else np.ones_like(y, dtype=bool)
         valid_Z = np.isfinite(Z).all(axis=1)
@@ -280,7 +272,6 @@ class Online2SLS:
                 second_stage_features
             ])
         
-        # Make final predictions
         return self.second_stage.predict(second_stage_features)
     
     def get_first_stage_summary(self, feature_names: List[str] = None) -> List[pd.DataFrame]:
@@ -304,7 +295,6 @@ class Online2SLS:
             summary = model.summary(cluster_type='two_way')
             
             if feature_names is not None:
-                # Add feature names
                 full_names = []
                 if self.add_intercept:
                     full_names.append('intercept')
@@ -313,7 +303,6 @@ class Online2SLS:
                 if len(full_names) == len(summary):
                     summary['feature'] = full_names
             
-            # Add R-squared
             summary.loc['r_squared'] = ['', '', '', model.get_r_squared()]
             summary.loc['adj_r_squared'] = ['', '', '', model.get_adjusted_r_squared()]
             summary.loc['observations'] = ['', '', '', model.n_obs]
@@ -345,7 +334,6 @@ class Online2SLS:
         # Get basic summary from second stage
         summary = self.second_stage.summary(cluster_type='two_way')
         
-        # Add feature names
         if endog_names is not None or exog_names is not None:
             full_names = []
             if self.add_intercept:
@@ -364,7 +352,6 @@ class Online2SLS:
             if len(full_names) == len(summary):
                 summary['feature'] = full_names
         
-        # Add R-squared statistics
         summary.loc['r_squared'] = ['', '', '', self.second_stage.get_r_squared()]
         summary.loc['adj_r_squared'] = ['', '', '', self.second_stage.get_adjusted_r_squared()]
         summary.loc['observations'] = ['', '', '', self.second_stage.n_obs]
@@ -386,14 +373,10 @@ class Online2SLS:
             self.n_instruments != other.n_instruments):
             raise ValueError("Cannot merge incompatible Online2SLS instances")
         
-        # Merge first stage models
         for i in range(self.n_endogenous):
             self.first_stage_models[i].merge_statistics(other.first_stage_models[i])
         
-        # Merge second stage model
         self.second_stage.merge_statistics(other.second_stage)
-        
-        # Update total observations
         self.total_obs += other.total_obs
 
 
@@ -411,21 +394,16 @@ def process_partitioned_dataset_2sls(
     alpha: float = 1e-3,
     forget_factor: float = 1.0,
     show_progress: bool = True,
-    verbose: bool = True
+    verbose: bool = True,
+    feature_engineering: Optional[Dict[str, Any]] = None
 ) -> Online2SLS:
-    """
-    Process partitioned parquet dataset in parallel for 2SLS estimation using two passes.
-    
-    First pass: Estimate first stage regressions
-    Second pass: Use fitted values from first stage to estimate second stage
-    """
+    """Process partitioned parquet dataset in parallel for 2SLS estimation using two passes."""
     start_time = time.time()
     parquet_path = Path(parquet_path)
     
     if n_workers is None:
         n_workers = get_optimal_workers()
     
-    # Reduce workers for very large datasets to avoid memory pressure
     if n_workers > 6:
         n_workers = min(n_workers, 4)
         logger.info(f"Reduced workers to {n_workers} for large dataset processing")
@@ -437,17 +415,14 @@ def process_partitioned_dataset_2sls(
     logger.info(f"Instruments: {instr_cols}")
     logger.info(f"Target variable: {target_col}")
     
-    # Discover partitions
+    # Discover and validate partitions
     partition_files = discover_partitions(parquet_path)
-    
-    # Pre-filter partitions
     valid_partitions = []
     for partition_file in partition_files:
         try:
             file_size = partition_file.stat().st_size
-            if file_size < 1024:
-                continue
-            valid_partitions.append(partition_file)
+            if file_size >= 1024:
+                valid_partitions.append(partition_file)
         except Exception as e:
             logger.warning(f"Cannot access partition {partition_file}: {e}")
     
@@ -459,28 +434,41 @@ def process_partitioned_dataset_2sls(
     n_exogenous = len(exog_cols)
     n_instruments = len(instr_cols)
     
-    # Calculate dimensions for first and second stage
-    first_stage_dims = n_exogenous + n_instruments
-    if add_intercept:
-        first_stage_dims += 1
+    # First pass: Estimate first stage models
+    logger.info("FIRST PASS: Estimating first stage regressions...")
     
-    second_stage_dims = n_endogenous + n_exogenous
-    if add_intercept:
-        second_stage_dims += 1
+    first_stage_base_features = exog_cols + instr_cols
+    first_stage_fe_config = None
+    
+    if feature_engineering:
+        first_stage_fe_config = {
+            'transformations': [t for t in feature_engineering.get('transformations', []) 
+                              if t.get('type') != 'predicted_substitution']
+        }
+        if not first_stage_fe_config['transformations']:
+            first_stage_fe_config = None
+    
+    # Calculate first stage dimensions
+    from gnt.analysis.models.feature_engineering import FeatureTransformer
+    
+    if first_stage_fe_config or add_intercept:
+        fe_config = first_stage_fe_config or {'transformations': []}
+        temp_transformer = FeatureTransformer.from_config(fe_config, first_stage_base_features, add_intercept=add_intercept)
+        first_stage_dims = temp_transformer.get_n_features()
+        first_stage_feature_names = temp_transformer.get_feature_names()
+    else:
+        first_stage_dims = len(first_stage_base_features)
+        first_stage_feature_names = first_stage_base_features.copy()
+        if add_intercept:
+            first_stage_dims += 1
+            first_stage_feature_names = ['intercept'] + first_stage_feature_names
     
     logger.info(f"First stage dimensions: {first_stage_dims}")
-    logger.info(f"Second stage dimensions: {second_stage_dims}")
-    
-    # ===========================================
-    # FIRST PASS: Estimate first stage models
-    # ===========================================
-    logger.info("FIRST PASS: Estimating first stage regressions...")
     
     first_stage_models = []
     for i in range(n_endogenous):
         logger.info(f"Processing first stage for endogenous variable {i+1}/{n_endogenous}: {endog_cols[i]}")
         
-        # Create progress bar for this first stage model
         first_stage_pbar = None
         if show_progress:
             first_stage_pbar = tqdm(
@@ -490,14 +478,13 @@ def process_partitioned_dataset_2sls(
                 disable=not verbose
             )
         
-        # Prepare arguments for first stage workers
         worker_args = [
-            (partition_file, exog_cols + instr_cols, endog_cols[i], cluster1_col, cluster2_col,
-             add_intercept, first_stage_dims, alpha, forget_factor, chunk_size, verbose)
+            (partition_file, first_stage_base_features, endog_cols[i], cluster1_col, cluster2_col,
+             add_intercept, first_stage_dims, alpha, forget_factor, chunk_size, verbose, 
+             first_stage_fe_config)
             for partition_file in partition_files
         ]
         
-        # Process first stage for this endogenous variable
         first_stage_rls = OnlineRLS(n_features=first_stage_dims, alpha=alpha, forget_factor=forget_factor)
         
         try:
@@ -507,54 +494,23 @@ def process_partitioned_dataset_2sls(
                     for args in worker_args
                 }
                 
-                completed = 0
                 for future in as_completed(future_to_partition):
-                    partition_file = future_to_partition[future]
-                    
                     try:
                         result = future.result(timeout=1200)
                         XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
                         
                         if n_obs > 0:
-                            # Merge results into first stage model
                             temp_rls = OnlineRLS(n_features=first_stage_dims, alpha=alpha)
                             temp_rls.XtX = XtX_update
                             temp_rls.Xty = Xty_update
                             temp_rls.theta = theta_update
                             temp_rls.rss = rss_update
                             temp_rls.n_obs = n_obs
-                            temp_rls.cluster_stats = defaultdict(lambda: {
-                                'X_sum': np.zeros(first_stage_dims),
-                                'residual_sum': 0.0,
-                                'count': 0,
-                                'XtX': np.zeros((first_stage_dims, first_stage_dims)),
-                                'X_residual_sum': np.zeros(first_stage_dims),
-                                'Xy': np.zeros(first_stage_dims)
-                            }, cluster_stats)
-                            temp_rls.cluster2_stats = defaultdict(lambda: {
-                                'X_sum': np.zeros(first_stage_dims),
-                                'residual_sum': 0.0,
-                                'count': 0,
-                                'XtX': np.zeros((first_stage_dims, first_stage_dims)),
-                                'X_residual_sum': np.zeros(first_stage_dims),
-                                'Xy': np.zeros(first_stage_dims)
-                            }, cluster2_stats)
-                            temp_rls.intersection_stats = defaultdict(lambda: {
-                                'X_sum': np.zeros(first_stage_dims),
-                                'residual_sum': 0.0,
-                                'count': 0,
-                                'XtX': np.zeros((first_stage_dims, first_stage_dims)),
-                                'X_residual_sum': np.zeros(first_stage_dims),
-                                'Xy': np.zeros(first_stage_dims)
-                            }, intersection_stats)
-
                             temp_rls.cluster_stats = cluster_stats if cluster_stats else {}
                             temp_rls.cluster2_stats = cluster2_stats if cluster2_stats else {}
                             temp_rls.intersection_stats = intersection_stats if intersection_stats else {}
-
                             first_stage_rls.merge_statistics(temp_rls)
                         
-                        completed += 1
                         if first_stage_pbar:
                             first_stage_pbar.update(1)
                             first_stage_pbar.set_postfix({
@@ -563,8 +519,7 @@ def process_partitioned_dataset_2sls(
                             })
                         
                     except Exception as e:
-                        completed += 1
-                        logger.error(f"Failed to process partition {partition_file} in first stage: {e}")
+                        logger.error(f"Failed to process partition in first stage: {e}")
                         if first_stage_pbar:
                             first_stage_pbar.update(1)
             
@@ -574,15 +529,46 @@ def process_partitioned_dataset_2sls(
         
         first_stage_models.append(first_stage_rls)
         logger.info(f"First stage {i+1} complete: {first_stage_rls.n_obs:,} observations, R²={first_stage_rls.get_r_squared():.4f}")
-    
+    #
     logger.info("All first stage regressions complete!")
     
-    # ===========================================
-    # SECOND PASS: Estimate second stage model using fitted values
-    # ===========================================
+    # Second pass: Estimate second stage with existing worker
     logger.info("SECOND PASS: Estimating second stage regression...")
     
-    # Create progress bar for second stage
+    second_stage_base_features = endog_cols + exog_cols
+    second_stage_fe_config = {
+        'transformations': []
+    }
+    
+    # Add predicted substitution transformations for each endogenous variable
+    for i, endogen_var in enumerate(endog_cols):
+        fs_coefficients = first_stage_models[i].theta.tolist()
+        
+        second_stage_fe_config['transformations'].append({
+            'type': 'predicted_substitution',
+            'original': endogen_var,
+            'predicted': f"{endogen_var}_hat",
+            'first_stage_coefficients': fs_coefficients,
+            'first_stage_feature_config': first_stage_fe_config,
+            'first_stage_feature_names': first_stage_base_features,
+            'add_intercept_first_stage': add_intercept
+        })
+    
+    # Add any other feature engineering transformations
+    if feature_engineering:
+        for transform in feature_engineering.get('transformations', []):
+            if transform.get('type') != 'predicted_substitution':
+                second_stage_fe_config['transformations'].append(transform)
+    
+    temp_transformer = FeatureTransformer.from_config(
+        second_stage_fe_config, 
+        second_stage_base_features,
+        add_intercept=add_intercept
+    )
+    second_stage_dims = temp_transformer.get_n_features()
+    
+    logger.info(f"Second stage dimensions: {second_stage_dims}")
+    
     second_stage_pbar = None
     if show_progress:
         second_stage_pbar = tqdm(
@@ -592,46 +578,28 @@ def process_partitioned_dataset_2sls(
             disable=not verbose
         )
     
-    # Prepare arguments for second stage workers (modified to include first stage models)
-    worker_args = [
-        (partition_file, endog_cols, exog_cols, instr_cols, target_col,
-         cluster1_col, cluster2_col, add_intercept, n_endogenous, n_exogenous,
-         n_instruments, alpha, forget_factor, chunk_size, verbose, first_stage_models)
-        for partition_file in partition_files
-    ]
-
-# Replace with serializable arguments that don't include the models directly
-    # Extract first stage coefficients for serialization
-    first_stage_coefficients = []
-    for model in first_stage_models:
-        first_stage_coefficients.append({
-            'theta': model.theta.copy(),
-            'n_features': model.n_features
-        })
+    enhanced_fe_config = second_stage_fe_config.copy()
+    enhanced_fe_config['_extra_input_columns'] = instr_cols
+    enhanced_fe_config['_base_feature_count'] = len(second_stage_base_features)
     
     worker_args = [
-        (partition_file, endog_cols, exog_cols, instr_cols, target_col,
-         cluster1_col, cluster2_col, add_intercept, n_endogenous, n_exogenous,
-         n_instruments, alpha, forget_factor, chunk_size, verbose, first_stage_coefficients)
+        (partition_file, second_stage_base_features, target_col, cluster1_col, cluster2_col,
+         add_intercept, second_stage_dims, alpha, forget_factor, chunk_size, verbose, 
+         enhanced_fe_config)
         for partition_file in partition_files
     ]
     
-    # Initialize second stage model
     second_stage_rls = OnlineRLS(n_features=second_stage_dims, alpha=alpha, forget_factor=forget_factor)
     
     try:
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
             future_to_partition = {
-                executor.submit(process_partition_worker_2sls_second_stage, args): args[0]
+                executor.submit(process_partition_worker, args): args[0]
                 for args in worker_args
             }
             
-            completed = 0
             total_obs = 0
-            
             for future in as_completed(future_to_partition):
-                partition_file = future_to_partition[future]
-                
                 try:
                     result = future.result(timeout=1200)
                     
@@ -639,46 +607,18 @@ def process_partitioned_dataset_2sls(
                         XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
                         
                         if n_obs > 0:
-                            # Merge results into second stage model
                             temp_rls = OnlineRLS(n_features=second_stage_dims, alpha=alpha)
                             temp_rls.XtX = XtX_update
                             temp_rls.Xty = Xty_update
                             temp_rls.theta = theta_update
                             temp_rls.rss = rss_update
                             temp_rls.n_obs = n_obs
-                            temp_rls.cluster_stats = defaultdict(lambda: {
-                                'X_sum': np.zeros(second_stage_dims),
-                                'residual_sum': 0.0,
-                                'count': 0,
-                                'XtX': np.zeros((second_stage_dims, second_stage_dims)),
-                                'X_residual_sum': np.zeros(second_stage_dims),
-                                'Xy': np.zeros(second_stage_dims)
-                            }, cluster_stats)
-                            temp_rls.cluster2_stats = defaultdict(lambda: {
-                                'X_sum': np.zeros(second_stage_dims),
-                                'residual_sum': 0.0,
-                                'count': 0,
-                                'XtX': np.zeros((second_stage_dims, second_stage_dims)),
-                                'X_residual_sum': np.zeros(second_stage_dims),
-                                'Xy': np.zeros(second_stage_dims)
-                            }, cluster2_stats)
-                            temp_rls.intersection_stats = defaultdict(lambda: {
-                                'X_sum': np.zeros(second_stage_dims),
-                                'residual_sum': 0.0,
-                                'count': 0,
-                                'XtX': np.zeros((second_stage_dims, second_stage_dims)),
-                                'X_residual_sum': np.zeros(second_stage_dims),
-                                'Xy': np.zeros(second_stage_dims)
-                            }, intersection_stats)
-
                             temp_rls.cluster_stats = cluster_stats if cluster_stats else {}
                             temp_rls.cluster2_stats = cluster2_stats if cluster2_stats else {}
                             temp_rls.intersection_stats = intersection_stats if intersection_stats else {}
-
                             second_stage_rls.merge_statistics(temp_rls)
                             total_obs += n_obs
                     
-                    completed += 1
                     if second_stage_pbar:
                         second_stage_pbar.update(1)
                         second_stage_pbar.set_postfix({
@@ -687,8 +627,7 @@ def process_partitioned_dataset_2sls(
                         })
                     
                 except Exception as e:
-                    completed += 1
-                    logger.error(f"Failed to process partition {partition_file} in second stage: {e}")
+                    logger.error(f"Failed to process partition in second stage: {e}")
                     if second_stage_pbar:
                         second_stage_pbar.update(1)
         
@@ -706,135 +645,19 @@ def process_partitioned_dataset_2sls(
         forget_factor=forget_factor
     )
     
-    # Set the estimated models
     main_model.first_stage_models = first_stage_models
     main_model.second_stage = second_stage_rls
     main_model.total_obs = total_obs
     
-    # Report results
+    # Store feature engineering info
+    if feature_engineering:
+        main_model._feature_engineering_config = feature_engineering
+        main_model._first_stage_fe_config = first_stage_fe_config
+        main_model._second_stage_fe_config = second_stage_fe_config
+        main_model._first_stage_feature_names = first_stage_feature_names
+    
     logger.info(f"2SLS processing completed in {time.time() - start_time:.2f} seconds")
     logger.info(f"Total observations processed: {total_obs:,}")
     logger.info(f"Second stage R²: {second_stage_rls.get_r_squared():.4f}")
     
     return main_model
-
-
-def process_partition_worker_2sls_second_stage(args: Tuple) -> Tuple:
-    """
-    Worker function for second stage - uses fitted values from first stage models.
-    """
-    (partition_file, endog_cols, exog_cols, instr_cols, target_col,
-     cluster1_col, cluster2_col, add_intercept, n_endogenous, n_exogenous,
-     n_instruments, alpha, forget_factor, chunk_size, verbose, first_stage_coefficients) = args
-
-    worker_logger = logging.getLogger(f"worker_{mp.current_process().pid}")
-    worker_logger.info(f"Processing second stage for partition: {partition_file}")
-    
-    try:
-        # Calculate dimensions
-        second_stage_dims = n_endogenous + n_exogenous
-        if add_intercept:
-            second_stage_dims += 1
-        
-        first_stage_dims = n_exogenous + n_instruments
-        if add_intercept:
-            first_stage_dims += 1
-        
-        # Initialize local second stage model
-        local_rls = OnlineRLS(
-            n_features=second_stage_dims,
-            alpha=alpha,
-            forget_factor=forget_factor,
-            batch_size=min(chunk_size, 5000)
-        )
-        
-        # Function to predict using first stage coefficients
-        def predict_first_stage(X_first_stage, stage_idx):
-            """Predict using first stage coefficients."""
-            coeffs = first_stage_coefficients[stage_idx]
-            return X_first_stage @ coeffs['theta']
-
-        # Use PyArrow to read partition
-        import pyarrow.parquet as pq
-        
-        parquet_file = pq.ParquetFile(partition_file)
-        
-        # Validate columns exist
-        first_batch = next(parquet_file.iter_batches(batch_size=1000))
-        first_df = first_batch.to_pandas()
-        
-        all_cols = endog_cols + exog_cols + instr_cols + [target_col]
-        if cluster1_col:
-            all_cols.append(cluster1_col)
-        if cluster2_col:
-            all_cols.append(cluster2_col)
-        
-        missing_cols = [col for col in all_cols if col not in first_df.columns]
-        
-        if missing_cols:
-            worker_logger.error(f"Missing required columns: {missing_cols}")
-            return None
-        
-        # Reset file iterator
-        parquet_file = pq.ParquetFile(partition_file)
-        
-        # Process file in chunks
-        for batch in parquet_file.iter_batches(batch_size=chunk_size):
-            try:
-                chunk_df = batch.to_pandas()
-                
-                if chunk_df.empty:
-                    continue
-                
-                # Extract data
-                X_exog = chunk_df[exog_cols].values.astype(np.float32) if exog_cols else np.empty((len(chunk_df), 0))
-                Z = chunk_df[instr_cols].values.astype(np.float32)
-                y = chunk_df[target_col].values.astype(np.float32)
-                
-                # Create first stage features for prediction
-                first_stage_features = np.column_stack([X_exog, Z])
-                if add_intercept:
-                    intercept = np.ones((first_stage_features.shape[0], 1))
-                    first_stage_features = np.column_stack([intercept, first_stage_features])
-                
-                # Get fitted values from first stage models
-                X_endog_hat = np.zeros((len(chunk_df), n_endogenous))
-                for i in range(n_endogenous):
-                    X_endog_hat[:, i] = predict_first_stage(first_stage_features, i)
-
-                # Create second stage features
-                second_stage_features = np.column_stack([X_endog_hat, X_exog])
-                if add_intercept:
-                    second_stage_features = np.column_stack([
-                        np.ones((second_stage_features.shape[0], 1)),
-                        second_stage_features
-                    ])
-                
-                # Extract cluster variables
-                cluster1 = None
-                cluster2 = None
-                if cluster1_col and cluster1_col in chunk_df.columns:
-                    cluster1 = chunk_df[cluster1_col].values
-                if cluster2_col and cluster2_col in chunk_df.columns:
-                    cluster2 = chunk_df[cluster2_col].values
-                
-                # Update second stage model
-                local_rls.partial_fit(second_stage_features, y, cluster1, cluster2)
-                
-            except Exception as e:
-                worker_logger.error(f"Error processing chunk: {e}")
-                continue
-            
-            finally:
-                del chunk_df
-        
-        worker_logger.info(f"Completed second stage for partition: {partition_file.name}")
-        
-        # Return the same format as regular RLS worker
-        return (local_rls.XtX, local_rls.Xty, local_rls.theta, local_rls.rss, local_rls.n_obs,
-                dict(local_rls.cluster_stats), dict(local_rls.cluster2_stats), 
-                dict(local_rls.intersection_stats))
-        
-    except Exception as e:
-        worker_logger.error(f"Fatal error processing second stage partition {partition_file}: {str(e)}")
-        return None
