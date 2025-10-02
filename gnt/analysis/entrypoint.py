@@ -112,6 +112,11 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     # Get cluster type for standard errors
     cluster_type = settings.get('cluster_type', 'classical')
     
+    # Check if using formula syntax
+    formula = spec_config.get('formula')
+    if formula:
+        logger.info(f"Using formula specification: {formula}")
+    
     # Extract feature engineering configuration
     feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
     
@@ -131,7 +136,7 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         rls = process_partitioned_dataset_parallel(
             parquet_path=spec_config['data_source'],
             feature_cols=spec_config.get('feature_cols'),
-            target_col=spec_config['target_col'],
+            target_col=spec_config.get('target_col'),
             cluster1_col=spec_config.get('cluster1_col'),
             cluster2_col=spec_config.get('cluster2_col'),
             add_intercept=settings['add_intercept'],
@@ -141,7 +146,8 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
             forget_factor=settings['forget_factor'],
             show_progress=settings['show_progress'],
             verbose=settings['verbose'],
-            feature_engineering=feature_engineering  # Pass feature engineering config
+            feature_engineering=feature_engineering,
+            formula=formula  # Pass formula to parser
         )
         
         # Generate summary with correct cluster type
@@ -419,14 +425,54 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     logger.info(f"Running Online 2SLS analysis: {spec_config['description']}")
     logger.info(f"Data source: {spec_config['data_source']}")
     
-    # Validate instrument rank condition
-    n_endogenous = len(spec_config['endogenous_cols'])
-    n_instruments = len(spec_config['instrument_cols'])
+    # Parse formula to get variable lists
+    endog_cols = None
+    exog_cols = None
+    instr_cols = None
     
-    if n_instruments < n_endogenous:
-        raise ValueError(f"Under-identified model: {n_instruments} instruments for {n_endogenous} endogenous variables")
-    
-    logger.info(f"Identification: {n_instruments} instruments for {n_endogenous} endogenous variables")
+    # Check if using formula syntax
+    formula = spec_config.get('formula')
+    if formula:
+        from gnt.analysis.models.feature_engineering import FormulaParser
+        
+        logger.info(f"Using formula specification: {formula}")
+        formula_parser = FormulaParser.parse(formula)
+        
+        if not formula_parser.instruments:
+            raise ValueError(f"2SLS formula must contain instruments after '|': {formula}")
+        
+        # Get variables from formula
+        instr_cols = formula_parser.instruments
+        all_features = formula_parser.features
+        
+        # Extract feature engineering config
+        feature_engineering = spec_config.get('feature_engineering') or defaults.get('feature_engineering')
+        
+        # Determine endogenous vs exogenous
+        if feature_engineering and 'endogenous' in feature_engineering:
+            endog_cols = feature_engineering['endogenous']
+            exog_cols = [f for f in all_features if f not in endog_cols]
+        else:
+            # Default: all features are endogenous
+            endog_cols = all_features
+            exog_cols = []
+        
+        logger.info(f"Parsed from formula - Endogenous: {endog_cols}, Exogenous: {exog_cols}, Instruments: {instr_cols}")
+    else:
+        # Use explicit specification
+        endog_cols = spec_config.get('endogenous_cols')
+        exog_cols = spec_config.get('exogenous_cols')
+        instr_cols = spec_config.get('instrument_cols')
+        
+        # Validate instrument rank condition
+        n_endogenous = len(endog_cols) if endog_cols else 0
+        n_instruments = len(instr_cols) if instr_cols else 0
+        
+        if n_endogenous > 0 and n_instruments > 0 and n_instruments < n_endogenous:
+            raise ValueError(f"Under-identified model: {n_instruments} instruments for {n_endogenous} endogenous variables")
+        
+        if n_endogenous > 0 and n_instruments > 0:
+            logger.info(f"Identification: {n_instruments} instruments for {n_endogenous} endogenous variables")
     
     # Merge settings with proper type conversion
     settings = {**defaults, **spec_config.get('settings', {})}
@@ -473,10 +519,10 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     try:
         twosls = process_partitioned_dataset_2sls(
             parquet_path=spec_config['data_source'],
-            endog_cols=spec_config['endogenous_cols'],  # Fixed parameter name
-            exog_cols=spec_config['exogenous_cols'],    # Fixed parameter name
-            instr_cols=spec_config['instrument_cols'],  # Fixed parameter name
-            target_col=spec_config['target_col'],
+            endog_cols=endog_cols,
+            exog_cols=exog_cols,
+            instr_cols=instr_cols,
+            target_col=spec_config.get('target_col'),
             cluster1_col=spec_config.get('cluster1_col'),
             cluster2_col=spec_config.get('cluster2_col'),
             add_intercept=settings['add_intercept'],
@@ -486,7 +532,8 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
             forget_factor=settings['forget_factor'],
             show_progress=settings['show_progress'],
             verbose=settings['verbose'],
-            feature_engineering=feature_engineering  # Pass feature engineering config
+            feature_engineering=feature_engineering,
+            formula=formula  # Pass formula to parser
         )
         
         # Generate summary with correct cluster type
@@ -502,10 +549,10 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
             print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
         print("="*50)
         
-        # Print First Stage Results
+        # Print First Stage Results - use parsed endog_cols
         print("First Stage Results:")
         print("-" * 50)
-        for i, (endogen_var, summary) in enumerate(zip(spec_config['endogenous_cols'], first_stage_summaries)):
+        for i, (endogen_var, summary) in enumerate(zip(endog_cols, first_stage_summaries)):
             print(f"\nFirst Stage {i+1}: {endogen_var}")
             print("-" * 30)
             # Filter out the metadata rows (r_squared, adj_r_squared, observations)
@@ -545,7 +592,7 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
         
         # Save results if output directory specified
         if output_dir:
-            save_2sls_results(twosls, second_stage_summary, first_stage_summaries, spec_name, spec_config, output_dir, config)
+            save_2sls_results(twosls, second_stage_summary, first_stage_summaries, spec_name, spec_config, output_dir, config, endog_cols, exog_cols, instr_cols)
             
     except Exception as e:
         logger.error(f"2SLS analysis failed with error: {str(e)}")
@@ -564,10 +611,10 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
                     print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
                 print("="*50)
                 
-                # Print partial first stage results
+                # Print partial first stage results - use parsed endog_cols
                 print("First Stage Results (Partial):")
                 print("-" * 50)
-                for i, (endogen_var, summary) in enumerate(zip(spec_config['endogenous_cols'], first_stage_summaries)):
+                for i, (endogen_var, summary) in enumerate(zip(endog_cols, first_stage_summaries)):
                     print(f"\nFirst Stage {i+1}: {endogen_var}")
                     print("-" * 30)
                     coeff_summary = summary.iloc[:-3] if len(summary) > 3 else summary
@@ -581,7 +628,7 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
                 print("="*50)
                 
                 if output_dir:
-                    save_2sls_results(twosls, second_stage_summary, first_stage_summaries, f"{spec_name}_partial", spec_config, output_dir, config)
+                    save_2sls_results(twosls, second_stage_summary, first_stage_summaries, f"{spec_name}_partial", spec_config, output_dir, config, endog_cols, exog_cols, instr_cols)
                     logger.info("Partial 2SLS results saved successfully")
                     
             except Exception as save_error:
@@ -595,7 +642,10 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
 def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame, 
                       first_stage_summaries: List[pd.DataFrame], spec_name: str,
                       spec_config: Dict[str, Any], output_dir: str, 
-                      config: Dict[str, Any]) -> None:
+                      config: Dict[str, Any],
+                      endog_cols: List[str],
+                      exog_cols: List[str],
+                      instr_cols: List[str]) -> None:
     """Save 2SLS analysis results with IV-specific diagnostics."""
     logger = logging.getLogger(__name__)
     
@@ -622,16 +672,16 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
         if settings.get('add_intercept', True):
             feature_names.append('intercept')
         # Add fitted endogenous variables first
-        feature_names.extend([f"{name}(fitted)" for name in spec_config.get('endogenous_cols', [])])
+        feature_names.extend([f"{name}(fitted)" for name in endog_cols])
         # Then add exogenous variables
-        feature_names.extend(spec_config.get('exogenous_cols', []))
+        feature_names.extend(exog_cols)
     
     # Create feature names for first stage
     first_stage_feature_names = []
     if settings.get('add_intercept', True):
         first_stage_feature_names.append('intercept')
-    first_stage_feature_names.extend(spec_config.get('exogenous_cols', []))
-    first_stage_feature_names.extend(spec_config.get('instrument_cols', []))
+    first_stage_feature_names.extend(exog_cols)
+    first_stage_feature_names.extend(instr_cols)
     
     # Calculate additional statistics
     n_clusters_1 = len(twosls.second_stage.cluster_stats) if twosls.second_stage.cluster_stats else 0
@@ -646,7 +696,7 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
     first_stage_results = {}
     first_stage_stats = {}
     
-    for i, (fs_summary, endogen_name) in enumerate(zip(first_stage_summaries, spec_config['endogenous_cols'])):
+    for i, (fs_summary, endogen_name) in enumerate(zip(first_stage_summaries, endog_cols)):
         # Extract coefficient summary (exclude metadata rows)
         coeff_summary = fs_summary.iloc[:-3] if len(fs_summary) > 3 else fs_summary
         
@@ -696,8 +746,8 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             "timestamp": timestamp,
             "cluster_type": cluster_type,
             "data_source": spec_config['data_source'],
-            "target_variable": spec_config['target_col'],
-            "feature_variables": spec_config.get('exogenous_cols', []) + spec_config.get('endogenous_cols', []),
+            "target_variable": spec_config.get('target_col'),
+            "feature_variables": exog_cols + endog_cols,
             "cluster_variables": {
                 "cluster1": spec_config.get('cluster1_col'),
                 "cluster2": spec_config.get('cluster2_col')
@@ -798,13 +848,13 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
         },
         
         "iv_specification": {
-            "exogenous_variables": spec_config['exogenous_cols'],
-            "endogenous_variables": spec_config['endogenous_cols'],
-            "instrument_variables": spec_config['instrument_cols'],
+            "exogenous_variables": exog_cols,
+            "endogenous_variables": endog_cols,
+            "instrument_variables": instr_cols,
             "identification_status": {
-                "n_endogenous": len(spec_config['endogenous_cols']),
-                "n_instruments": len(spec_config['instrument_cols']),
-                "over_identified": len(spec_config['instrument_cols']) > len(spec_config['endogenous_cols']),
+                "n_endogenous": len(endog_cols),
+                "n_instruments": len(instr_cols),
+                "over_identified": len(instr_cols) > len(endog_cols),
                 "rank_condition_satisfied": True  # Assume satisfied for now
             }
         },
@@ -833,10 +883,10 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             f.write(f"Standard Errors: {cluster_type}\n\n")
             
             f.write(f"Instrument Specification:\n")
-            f.write(f"  Exogenous variables: {spec_config.get('exogenous_cols', [])}\n")
-            f.write(f"  Endogenous variables: {spec_config.get('endogenous_cols', [])}\n")
-            f.write(f"  Instruments: {spec_config.get('instrument_cols', [])}\n")
-            f.write(f"  Identification: {'Over-identified' if len(spec_config['instrument_cols']) > len(spec_config['endogenous_cols']) else 'Just-identified'}\n\n")
+            f.write(f"  Exogenous variables: {exog_cols}\n")
+            f.write(f"  Endogenous variables: {endog_cols}\n")
+            f.write(f"  Instruments: {instr_cols}\n")
+            f.write(f"  Identification: {'Over-identified' if len(instr_cols) > len(endog_cols) else 'Just-identified'}\n\n")
             
             f.write(f"Sample Information:\n")
             f.write(f"  Observations: {twosls.total_obs:,}\n")

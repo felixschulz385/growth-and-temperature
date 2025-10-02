@@ -614,11 +614,43 @@ def process_partitioned_dataset_parallel(
     show_progress: bool = True,
     verbose: bool = True,
     max_workers_override: Optional[int] = None,
-    feature_engineering: Optional[Dict[str, Any]] = None
+    feature_engineering: Optional[Dict[str, Any]] = None,
+    formula: Optional[str] = None
     ) -> OnlineRLS:
-    """Process partitioned parquet dataset in parallel (bootstrapping removed)."""
+    """
+    Process partitioned parquet dataset in parallel (bootstrapping removed).
+    
+    Parameters:
+    -----------
+    formula : str, optional
+        R-style formula string (e.g., "y ~ x1 + x2 + I(x1^2)")
+        If provided, overrides feature_cols, target_col, and feature_engineering
+    """
     start_time = time.time()
     parquet_path = Path(parquet_path)
+    
+    # Parse formula if provided
+    formula_parser = None
+    if formula is not None:
+        from gnt.analysis.models.feature_engineering import FormulaParser
+        
+        logger.info(f"Parsing formula: {formula}")
+        formula_parser = FormulaParser.parse(formula)
+        
+        # Override parameters from formula
+        target_col = formula_parser.target
+        feature_cols = formula_parser.features
+        add_intercept = formula_parser.has_intercept
+        
+        # Convert formula transformations to feature_engineering config
+        if formula_parser.transformations:
+            feature_engineering = {'transformations': formula_parser.transformations}
+        
+        logger.info(f"Formula parsed - Target: {target_col}, Features: {feature_cols}, Intercept: {add_intercept}")
+        
+        if formula_parser.instruments:
+            logger.warning(f"Formula contains instruments: {formula_parser.instruments}")
+            logger.warning("Instruments are only used in 2SLS models. Use online_2sls analysis type.")
     
     if n_workers is None:
         n_workers = get_optimal_workers()

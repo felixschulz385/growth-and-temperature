@@ -382,10 +382,10 @@ class Online2SLS:
 
 def process_partitioned_dataset_2sls(
     parquet_path: Union[str, Path],
-    endog_cols: List[str],
-    exog_cols: List[str],
-    instr_cols: List[str],
-    target_col: str,
+    endog_cols: List[str] = None,
+    exog_cols: List[str] = None,
+    instr_cols: List[str] = None,
+    target_col: str = None,
     cluster1_col: str = None,
     cluster2_col: str = None,
     add_intercept: bool = True,
@@ -395,18 +395,73 @@ def process_partitioned_dataset_2sls(
     forget_factor: float = 1.0,
     show_progress: bool = True,
     verbose: bool = True,
-    feature_engineering: Optional[Dict[str, Any]] = None
+    feature_engineering: Optional[Dict[str, Any]] = None,
+    formula: Optional[str] = None
 ) -> Online2SLS:
-    """Process partitioned parquet dataset in parallel for 2SLS estimation using two passes."""
+    """
+    Process partitioned parquet dataset in parallel for 2SLS estimation using two passes.
+    
+    Parameters:
+    -----------
+    formula : str, optional
+        R-style formula with instruments after | (e.g., "y ~ x1 + x2 | z1 + z2")
+        Format: target ~ endogenous + exogenous | instruments
+        If provided, overrides endog_cols, exog_cols, instr_cols, and target_col
+    """
     start_time = time.time()
     parquet_path = Path(parquet_path)
     
+    # Parse formula if provided
+    formula_parser = None
+    if formula is not None:
+        from gnt.analysis.models.feature_engineering import FormulaParser
+        
+        logger.info(f"Parsing 2SLS formula: {formula}")
+        formula_parser = FormulaParser.parse(formula)
+        
+        if not formula_parser.instruments:
+            raise ValueError(f"2SLS formula must contain instruments after '|': {formula}")
+        
+        # Override parameters from formula
+        target_col = formula_parser.target
+        instr_cols = formula_parser.instruments
+        add_intercept = formula_parser.has_intercept
+        
+        # For 2SLS, we need to determine which features are endogenous vs exogenous
+        # By default, treat all features as endogenous unless specified in config
+        all_features = formula_parser.features
+        
+        # Check if feature_engineering config specifies endogenous variables
+        if feature_engineering and 'endogenous' in feature_engineering:
+            endog_cols = feature_engineering['endogenous']
+            exog_cols = [f for f in all_features if f not in endog_cols]
+        else:
+            # Default: all features are endogenous
+            endog_cols = all_features
+            exog_cols = []
+        
+        # Convert formula transformations to feature_engineering config
+        if formula_parser.transformations:
+            if feature_engineering is None:
+                feature_engineering = {}
+            feature_engineering['transformations'] = formula_parser.transformations
+        
+        logger.info(f"Formula parsed - Target: {target_col}")
+        logger.info(f"  Endogenous: {endog_cols}")
+        logger.info(f"  Exogenous: {exog_cols}")
+        logger.info(f"  Instruments: {instr_cols}")
+        logger.info(f"  Intercept: {add_intercept}")
+    
+    # Validate required parameters
+    if target_col is None:
+        raise ValueError("target_col must be specified (or use formula)")
+    if not endog_cols:
+        raise ValueError("endog_cols must be specified (or use formula)")
+    if not instr_cols:
+        raise ValueError("instr_cols must be specified (or use formula with |)")
+    
     if n_workers is None:
         n_workers = get_optimal_workers()
-    
-    if n_workers > 6:
-        n_workers = min(n_workers, 4)
-        logger.info(f"Reduced workers to {n_workers} for large dataset processing")
     
     logger.info(f"Starting 2SLS two-pass processing with {n_workers} workers")
     logger.info(f"Dataset path: {parquet_path}")
@@ -448,7 +503,7 @@ def process_partitioned_dataset_2sls(
         if not first_stage_fe_config['transformations']:
             first_stage_fe_config = None
     
-    # Calculate first stage dimensions
+    # Calculate first stage dimensions and feature names
     from gnt.analysis.models.feature_engineering import FeatureTransformer
     
     if first_stage_fe_config or add_intercept:
@@ -464,6 +519,7 @@ def process_partitioned_dataset_2sls(
             first_stage_feature_names = ['intercept'] + first_stage_feature_names
     
     logger.info(f"First stage dimensions: {first_stage_dims}")
+    logger.info(f"First stage feature names: {first_stage_feature_names}")
     
     first_stage_models = []
     for i in range(n_endogenous):
@@ -485,7 +541,13 @@ def process_partitioned_dataset_2sls(
             for partition_file in partition_files
         ]
         
-        first_stage_rls = OnlineRLS(n_features=first_stage_dims, alpha=alpha, forget_factor=forget_factor)
+        # Initialize with proper feature names
+        first_stage_rls = OnlineRLS(
+            n_features=first_stage_dims, 
+            alpha=alpha, 
+            forget_factor=forget_factor,
+            feature_names=first_stage_feature_names
+        )
         
         try:
             with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -500,12 +562,18 @@ def process_partitioned_dataset_2sls(
                         XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
                         
                         if n_obs > 0:
-                            temp_rls = OnlineRLS(n_features=first_stage_dims, alpha=alpha)
+                            temp_rls = OnlineRLS(
+                                n_features=first_stage_dims, 
+                                alpha=alpha,
+                                feature_names=first_stage_feature_names
+                            )
                             temp_rls.XtX = XtX_update
                             temp_rls.Xty = Xty_update
                             temp_rls.theta = theta_update
                             temp_rls.rss = rss_update
                             temp_rls.n_obs = n_obs
+                            temp_rls.sum_y = 0.0  # These aren't tracked in worker
+                            temp_rls.sum_y_squared = 0.0
                             temp_rls.cluster_stats = cluster_stats if cluster_stats else {}
                             temp_rls.cluster2_stats = cluster2_stats if cluster2_stats else {}
                             temp_rls.intersection_stats = intersection_stats if intersection_stats else {}
@@ -529,7 +597,7 @@ def process_partitioned_dataset_2sls(
         
         first_stage_models.append(first_stage_rls)
         logger.info(f"First stage {i+1} complete: {first_stage_rls.n_obs:,} observations, R²={first_stage_rls.get_r_squared():.4f}")
-    #
+    
     logger.info("All first stage regressions complete!")
     
     # Second pass: Estimate second stage with existing worker
@@ -566,8 +634,10 @@ def process_partitioned_dataset_2sls(
         add_intercept=add_intercept
     )
     second_stage_dims = temp_transformer.get_n_features()
+    second_stage_feature_names = temp_transformer.get_feature_names()
     
     logger.info(f"Second stage dimensions: {second_stage_dims}")
+    logger.info(f"Second stage feature names: {second_stage_feature_names}")
     
     second_stage_pbar = None
     if show_progress:
@@ -589,7 +659,13 @@ def process_partitioned_dataset_2sls(
         for partition_file in partition_files
     ]
     
-    second_stage_rls = OnlineRLS(n_features=second_stage_dims, alpha=alpha, forget_factor=forget_factor)
+    # Initialize with proper feature names
+    second_stage_rls = OnlineRLS(
+        n_features=second_stage_dims, 
+        alpha=alpha, 
+        forget_factor=forget_factor,
+        feature_names=second_stage_feature_names
+    )
     
     try:
         with ProcessPoolExecutor(max_workers=n_workers) as executor:
@@ -607,12 +683,18 @@ def process_partitioned_dataset_2sls(
                         XtX_update, Xty_update, theta_update, rss_update, n_obs, cluster_stats, cluster2_stats, intersection_stats = result
                         
                         if n_obs > 0:
-                            temp_rls = OnlineRLS(n_features=second_stage_dims, alpha=alpha)
+                            temp_rls = OnlineRLS(
+                                n_features=second_stage_dims, 
+                                alpha=alpha,
+                                feature_names=second_stage_feature_names
+                            )
                             temp_rls.XtX = XtX_update
                             temp_rls.Xty = Xty_update
                             temp_rls.theta = theta_update
                             temp_rls.rss = rss_update
                             temp_rls.n_obs = n_obs
+                            temp_rls.sum_y = 0.0
+                            temp_rls.sum_y_squared = 0.0
                             temp_rls.cluster_stats = cluster_stats if cluster_stats else {}
                             temp_rls.cluster2_stats = cluster2_stats if cluster2_stats else {}
                             temp_rls.intersection_stats = intersection_stats if intersection_stats else {}
@@ -655,6 +737,7 @@ def process_partitioned_dataset_2sls(
         main_model._first_stage_fe_config = first_stage_fe_config
         main_model._second_stage_fe_config = second_stage_fe_config
         main_model._first_stage_feature_names = first_stage_feature_names
+        main_model._second_stage_feature_names = second_stage_feature_names
     
     logger.info(f"2SLS processing completed in {time.time() - start_time:.2f} seconds")
     logger.info(f"Total observations processed: {total_obs:,}")
