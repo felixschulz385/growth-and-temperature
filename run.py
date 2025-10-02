@@ -199,6 +199,23 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     # Get source-specific configuration
     source_config = config['sources'][source].copy()
     
+    # Filter misc files if specified via CLI
+    if source == 'misc' and cli_overrides and 'misc_files' in cli_overrides:
+        misc_files_filter = cli_overrides['misc_files']
+        if misc_files_filter:
+            logger.info(f"Filtering misc files to: {misc_files_filter}")
+            # Filter the sources dictionary to only include specified files
+            all_sources = source_config.get('sources', {})
+            filtered_sources = {k: v for k, v in all_sources.items() if k in misc_files_filter}
+            
+            if not filtered_sources:
+                logger.warning(f"No matching misc files found for filter: {misc_files_filter}")
+                logger.info(f"Available misc files: {list(all_sources.keys())}")
+                return
+            
+            source_config['sources'] = filtered_sources
+            logger.info(f"Will download {len(filtered_sources)} misc files: {list(filtered_sources.keys())}")
+    
     # Determine which module to use
     if operation_type in ["download", "index", "extract", "validate_download"]:
         # Build HPC workflow configuration structure
@@ -393,6 +410,12 @@ def main():
     )
     
     parser.add_argument(
+        "--misc-files",
+        nargs='+',
+        help="Specific misc file keys to download (e.g., 'osm', 'gadm', 'hdi')"
+    )
+    
+    parser.add_argument(
         "--mode",
         help="Override operation mode (for advanced usage)"
     )
@@ -525,6 +548,10 @@ def main():
 
             # Prepare CLI overrides dictionary
             cli_overrides = {}
+            
+            # Add misc files filter to CLI overrides
+            if hasattr(args, 'misc_files') and args.misc_files:
+                cli_overrides['misc_files'] = args.misc_files
             
             # Apply CLI overrides to configuration based on operation type
             if args.operation in ["preprocess", "assemble"]:

@@ -13,12 +13,12 @@ analyses:
     defaults:
       n_workers: 8
       add_intercept: true
-      alpha: 0.001  # Use explicit numeric value instead of scientific notation
+      alpha: 0.001
       forget_factor: 1.0
       chunk_size: 20000
       show_progress: true
-      verbose: true  # Enable verbose progress output by default
-      cluster_type: "two_way"  # Options: classical, one_way, two_way
+      verbose: true
+      cluster_type: "two_way"
     
     # Predefined model specifications
     specifications:
@@ -26,93 +26,89 @@ analyses:
       modis_ntlharm_pooled:
         description: "Pooled MODIS NTLHARM analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median"
-        feature_cols: ["ntl_harm"]
+        formula: "median ~ ntl_harm"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
-          add_intercept: true
           chunk_size: 10000
           n_workers: 4
           verbose: false
       
       modis_viirs_basic_subset:
-        description: "DEUG MODIS temperature subset analysis"
+        description: "DEBUG MODIS temperature subset analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        target_col: "median"
-        feature_cols: ["viirs_annual"]
+        formula: "median ~ viirs_annual"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
           chunk_size: 10000
           n_workers: 2
           verbose: true
-          add_intercept: true  # FIXED: Always include intercept
-          alpha: 0.01  # ADDED: Increase regularization for numerical stability
+          alpha: 0.01
 
       modis_ntlharm_twfe:
         description: "TWFE MODIS NTLHARM analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median_twoway_demeaned"
-        feature_cols: ["ntl_harm_twoway_demeaned"]
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
           chunk_size: 10000
           verbose: false
-          add_intercept: false
 
       modis_ntlharm_twfe_quadratic:
-        description: "TWFE MODIS NTLHARM analysis"
+        description: "TWFE MODIS NTLHARM with quadratic term"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median_twoway_demeaned"
-        feature_cols: ["ntl_harm_twoway_demeaned"]
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned + I(ntl_harm_twoway_demeaned^2) - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
           chunk_size: 10000
           verbose: false
-          add_intercept: false
-        feature_engineering:
-          transformations:
-            - type: "quadratic"
-              features: ["ntl_harm_twoway_demeaned"]
 
       modis_viirs_twfe:
         description: "Demeaned MODIS VIIRS analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median_twoway_demeaned"
-        feature_cols: ["viirs_annual_twoway_demeaned"]
+        formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
           chunk_size: 10000
           verbose: false
-          add_intercept: false
 
-      # Debug specification with feature engineering
-      debug_feature_engineering:
-        description: "DEBUG: Feature engineering test with quadratic and interaction terms"
+      # Formula-based specifications
+      modis_formula_interaction:
+        description: "Formula with interaction: y ~ x1 * x2 (includes main effects and interaction)"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        target_col: "median"
-        feature_cols: ["ntl_harm", "viirs_annual"]
+        formula: "median ~ ntl_harm * viirs_annual"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
-          chunk_size: 5000
+          chunk_size: 10000
           n_workers: 2
           verbose: true
-          add_intercept: true
-          alpha: 0.01
-        feature_engineering:
-          transformations:
-            - type: "quadratic"
-              features: ["ntl_harm", "viirs_annual"]
-            - type: "interaction"
-              feature_pairs: [["ntl_harm", "viirs_annual"]]
-            - type: "polynomial"
-              features: ["ntl_harm"]
-              degree: 3
+
+      modis_formula_polynomial:
+        description: "Formula with cubic polynomial: poly(x, 3)"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        formula: "median ~ poly(ntl_harm, 3)"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 2
+          verbose: true
+
+      modis_formula_complex:
+        description: "Complex formula with multiple transformations"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        formula: "median ~ ntl_harm + I(ntl_harm^2) + viirs_annual + ntl_harm:viirs_annual"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 2
+          verbose: true
 
   # Two-Stage Least Squares analysis
   online_2sls:
@@ -128,17 +124,14 @@ analyses:
       show_progress: true
       verbose: true
       cluster_type: "two_way"
-      weak_instrument_threshold: 10.0  # Stock-Yogo critical value
+      weak_instrument_threshold: 10.0
     
     specifications:
       
       modis_ntlharm_regfav_pooled_subset:
-        description: "2SLS: Growth effect on temperature using regional favoritism as intrument"
+        description: "2SLS: Growth effect on temperature using regional favoritism as instrument"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        target_col: "median"
-        exogenous_cols: []  # Control variables
-        endogenous_cols: ["ntl_harm"]  # Potentially endogenous
-        instrument_cols: ["reg_fav"]  # Instruments
+        formula: "median ~ ntl_harm | reg_fav"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
@@ -147,12 +140,9 @@ analyses:
           verbose: true
 
       modis_ntlharm_regfav_twfe:
-        description: "2SLS: Growth effect on temperature using regional favoritism as intrument"
+        description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        target_col: "median_twoway_demeaned"
-        exogenous_cols: []  # Control variables
-        endogenous_cols: ["ntl_harm_twoway_demeaned"]  # Potentially endogenous
-        instrument_cols: ["reg_fav_twoway_demeaned"]  # Instruments
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
@@ -163,12 +153,11 @@ analyses:
 # Output settings
 output:
   base_path: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/output/analysis"
-  formats: ["json"]  # Use only standardized JSON format
+  formats: ["json"]
   
 # HPC settings for analysis
 hpc:
-  # SLURM-aware defaults with fallback values
-  default_workers: 4  # Default fallback, will be overridden by environment expansion
-  memory_limit: "32GB"  # Default fallback
-  temp_dir: "/tmp"  # Default fallback
-  dashboard_port: 8788  # Different from data processing
+  default_workers: 4
+  memory_limit: "32GB"
+  temp_dir: "/tmp"
+  dashboard_port: 8788

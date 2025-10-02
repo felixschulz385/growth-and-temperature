@@ -60,14 +60,37 @@ def create_data_source(source_config):
     # Create data source based on dataset name
     if dataset_name.lower() == 'misc':
         logger.info(f"Creating Misc data source")
-        required_params = ["files"]
-        validate_required_params(config, required_params)
+        # Don't validate for 'files' - misc uses 'sources' instead
         from gnt.data.download.sources.misc import MiscDataSource
+        
+        # Handle both dict and list formats for sources
+        sources_config = config.get('sources', {})
+        
+        # Convert sources dict to list format with keys preserved
+        files = []
+        if isinstance(sources_config, dict):
+            for key, file_config in sources_config.items():
+                # Preserve the key for filtering
+                file_config_copy = file_config.copy()
+                file_config_copy['key'] = key
+                files.append(file_config_copy)
+        elif isinstance(sources_config, list):
+            files = sources_config
+        else:
+            logger.warning(f"Unexpected sources format: {type(sources_config)}")
+            files = []
+        
+        if not files:
+            raise ValueError("Misc data source requires 'sources' configuration with at least one file")
+        
+        # Check for file filter
+        file_filter = config.get('file_filter')
+        
         return MiscDataSource(
-            files=config.get("files", []),
-            output_path=config.get("output_path", "misc"),
-            timeout=config.get("timeout", 60),
-            chunk_size=config.get("chunk_size", 8192)
+            files=files,
+            output_path=config.get('data_path', 'misc'),
+            timeout=config.get('download', {}).get('timeout', 60),
+            file_filter=file_filter
         )
     elif dataset_name.lower() in ['glass_modis', 'glass_avhrr']:
         logger.info(f"Creating GLASS LST data source")

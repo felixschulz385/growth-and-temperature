@@ -24,7 +24,7 @@ class MiscDataSource(BaseDataSource):
     DATA_SOURCE_NAME = "misc"
     
     def __init__(self, files: List[Dict[str, str]], output_path: str = None, 
-                 timeout: int = 60, chunk_size: int = 8192):
+                 timeout: int = 60, chunk_size: int = 8192, file_filter: List[str] = None):
         """
         Initialize the miscellaneous data source.
         
@@ -39,12 +39,14 @@ class MiscDataSource(BaseDataSource):
             output_path: Custom output path in GCS (defaults to 'misc')
             timeout: Connection timeout in seconds
             chunk_size: Chunk size for streaming downloads
+            file_filter: Optional list of file keys to include (filters by key/name)
         """
         self.files = files
         self.data_path = output_path or "misc"
         self.timeout = timeout
         self.chunk_size = chunk_size
         self.has_entrypoints = False
+        self.file_filter = file_filter  # Store filter
         
         # Define schema types for Parquet consistency (same as other sources)
         self.schema_dtypes = {
@@ -56,8 +58,19 @@ class MiscDataSource(BaseDataSource):
             'status_category': 'string'  # Consistent string type
         }
         
+        # Supported file extensions for validation
+        self.supported_extensions = [
+            '.zip', '.gz', '.tar', '.tar.gz', '.tif', '.tiff', 
+            '.shp', '.geojson', '.json', '.csv', '.xlsx', '.xls',
+            '.pdf', '.txt', '.xml'
+        ]
+        
         # Validate and normalize file configurations
         self._normalize_file_configs()
+        
+        # Apply filter if provided
+        if self.file_filter:
+            self._apply_file_filter()
         
         logger.info(f"Initialized Misc data source with {len(self.files)} files")
         for file_info in self.files:
@@ -88,6 +101,11 @@ class MiscDataSource(BaseDataSource):
                 normalized['name'] = filename
             else:
                 normalized['name'] = file_info['name']
+            
+            # Store the original key if available (for filtering)
+            # The key is the dict key in the config, not in the file_info itself
+            # We'll set this during factory creation
+            normalized['key'] = file_info.get('key', normalized['name'])
                 
             # Copy optional fields
             normalized['description'] = file_info.get('description', f"File {normalized['name']}")
@@ -107,6 +125,31 @@ class MiscDataSource(BaseDataSource):
             normalized_files.append(normalized)
             
         self.files = normalized_files
+    
+    def _apply_file_filter(self):
+        """Apply file filter to only include specified files."""
+        if not self.file_filter:
+            return
+        
+        logger.info(f"Applying file filter: {self.file_filter}")
+        filtered_files = []
+        
+        for file_info in self.files:
+            # Check if file key or name matches any filter item
+            file_key = file_info.get('key', file_info['name'])
+            if file_key in self.file_filter or file_info['name'] in self.file_filter:
+                filtered_files.append(file_info)
+                logger.debug(f"Including file: {file_key}")
+            else:
+                logger.debug(f"Filtering out file: {file_key}")
+        
+        if not filtered_files:
+            logger.warning(f"File filter resulted in no files: {self.file_filter}")
+            logger.info(f"Available file keys: {[f.get('key', f['name']) for f in self.files]}")
+        else:
+            logger.info(f"Filtered to {len(filtered_files)} files")
+        
+        self.files = filtered_files
 
     def list_remote_files(self, entrypoint: dict = None) -> Generator[Tuple[str, str], None, None]:
         """
@@ -128,6 +171,79 @@ class MiscDataSource(BaseDataSource):
                 
             logger.debug(f"Yielding file: {relative_path} - {file_info['url']}")
             yield (relative_path, file_info['url'])
+
+    def _validate_file_hash(self, file_path: str, expected_md5: str) -> bool:
+        """
+        Validate a downloaded file against its expected MD5 hash.
+        
+        Args:
+            file_path: Path to the downloaded file
+            expected_md5: Expected MD5 hash
+            
+        Returns:
+            True if valid, raises exception if invalid
+        """
+        logger.info(f"Validating MD5 hash for {os.path.basename(file_path)}")
+        
+        # Calculate MD5 hash
+        md5 = hashlib.md5()
+        with open(file_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                md5.update(chunk)
+        calculated_md5 = md5.hexdigest()
+        
+        # Compare hashes
+        if calculated_md5.lower() != expected_md5.lower():
+            logger.error(f"MD5 hash validation failed for {file_path}")
+            logger.error(f"Expected: {expected_md5}")
+            logger.error(f"Got: {calculated_md5}")
+            os.remove(file_path)  # Remove invalid file
+            raise ValueError(f"MD5 hash validation failed for {file_path}")
+            
+        logger.info(f"MD5 hash validation successful")
+        return True
+    
+    def _validate_file_type(self, file_path: str, filename: str) -> bool:
+        """
+        Validate that the downloaded file has a supported extension.
+        
+        Args:
+            file_path: Path to the downloaded file
+            filename: Original filename
+            
+        Returns:
+            True if valid file type
+        """
+        file_ext = os.path.splitext(filename)[1].lower()
+        
+        if file_ext not in self.supported_extensions:
+            logger.warning(f"File extension '{file_ext}' not in supported extensions list")
+            logger.warning(f"File will still be downloaded but may require special handling")
+        
+        # Basic file integrity check - ensure file is not empty
+        if os.path.getsize(file_path) == 0:
+            logger.error(f"Downloaded file is empty: {file_path}")
+            os.remove(file_path)
+            raise ValueError(f"Downloaded file is empty: {file_path}")
+        
+        # For Excel files, perform basic validation
+        if file_ext in ['.xlsx', '.xls']:
+            try:
+                # Try to import openpyxl/xlrd for validation (optional)
+                if file_ext == '.xlsx':
+                    try:
+                        import openpyxl
+                        wb = openpyxl.load_workbook(file_path, read_only=True)
+                        wb.close()
+                        logger.info(f"Excel file validation successful: {filename}")
+                    except ImportError:
+                        logger.debug("openpyxl not available for Excel validation")
+                    except Exception as e:
+                        logger.warning(f"Excel file validation warning: {e}")
+            except Exception as e:
+                logger.debug(f"Could not perform detailed Excel validation: {e}")
+        
+        return True
 
     def download(self, file_url: str, output_path: str, session: requests.Session = None) -> None:
         """
@@ -171,6 +287,9 @@ class MiscDataSource(BaseDataSource):
                                 progress = (downloaded / total_size) * 100 if total_size > 0 else 0
                                 logger.info(f"Downloaded {downloaded/(1024*1024):.1f}MB of {total_size/(1024*1024):.1f}MB ({progress:.1f}%)")
             
+            # Validate file type
+            self._validate_file_type(output_path, filename)
+            
             # Validate download if MD5 hash is provided
             for file_info in self.files:
                 if file_info['url'] == file_url and file_info.get('md5'):
@@ -198,37 +317,6 @@ class MiscDataSource(BaseDataSource):
                 except:
                     pass
             raise
-
-    def _validate_file_hash(self, file_path: str, expected_md5: str) -> bool:
-        """
-        Validate a downloaded file against its expected MD5 hash.
-        
-        Args:
-            file_path: Path to the downloaded file
-            expected_md5: Expected MD5 hash
-            
-        Returns:
-            True if valid, raises exception if invalid
-        """
-        logger.info(f"Validating MD5 hash for {os.path.basename(file_path)}")
-        
-        # Calculate MD5 hash
-        md5 = hashlib.md5()
-        with open(file_path, 'rb') as f:
-            for chunk in iter(lambda: f.read(8192), b''):
-                md5.update(chunk)
-        calculated_md5 = md5.hexdigest()
-        
-        # Compare hashes
-        if calculated_md5.lower() != expected_md5.lower():
-            logger.error(f"MD5 hash validation failed for {file_path}")
-            logger.error(f"Expected: {expected_md5}")
-            logger.error(f"Got: {calculated_md5}")
-            os.remove(file_path)  # Remove invalid file
-            raise ValueError(f"MD5 hash validation failed for {file_path}")
-            
-        logger.info(f"MD5 hash validation successful")
-        return True
 
     def local_path(self, relative_path: str) -> str:
         """
@@ -379,6 +467,9 @@ class MiscDataSource(BaseDataSource):
                                 if total_size > 10*1024*1024 and downloaded % (5*1024*1024) < self.chunk_size:
                                     progress = (downloaded / total_size) * 100 if total_size > 0 else 0
                                     logger.info(f"Downloaded {downloaded/(1024*1024):.1f}MB of {total_size/(1024*1024):.1f}MB ({progress:.1f}%)")
+                        
+                        # Validate file type
+                        self._validate_file_type(output_path, filename)
                         
                         # Validate download if MD5 hash is provided
                         for file_info in self.files:
