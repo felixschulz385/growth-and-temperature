@@ -248,8 +248,6 @@ class MiscPreprocessor(AbstractPreprocessor):
                 return self._generate_vector_targets(file_paths)
             elif stage == 'spatial':
                 return self._generate_spatial_targets()
-            elif stage == 'tabular':
-                return self._generate_tabular_targets()
             else:
                 raise ValueError(f"Unknown stage: {stage}")
                 
@@ -360,118 +358,12 @@ class MiscPreprocessor(AbstractPreprocessor):
         
         return targets
     
-    def _generate_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets for misc data based on subsource."""
-        targets = []
-        
-        # If subsource is specified, only process that specific type
-        if self.subsource_filter:
-            if self.subsource_filter == 'osm':
-                targets.extend(self._generate_osm_tabular_targets())
-            elif self.subsource_filter == 'gadm':
-                targets.extend(self._generate_gadm_tabular_targets())
-            else:
-                logger.warning(f"Unknown subsource for tabular processing: {self.subsource_filter}")
-        else:
-            # Process all available subsources
-            targets.extend(self._generate_osm_tabular_targets())
-            targets.extend(self._generate_gadm_tabular_targets())
-        
-        return targets
-    
-    def _generate_osm_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets specifically for OSM data."""
-        targets = []
-        
-        osm_spatial_dir = os.path.join(self.get_hpc_output_path('spatial'), 'osm')
-        if not os.path.exists(osm_spatial_dir):
-            logger.debug(f"OSM spatial directory not found: {osm_spatial_dir}")
-            return targets
-        
-        # Look for OSM zarr files
-        for file_name in os.listdir(osm_spatial_dir):
-            if file_name.endswith('.zarr'):
-                zarr_file = os.path.join(osm_spatial_dir, file_name)
-                file_basename = os.path.splitext(file_name)[0]
-                
-                target = {
-                    'data_type': 'osm_tabular',
-                    'stage': 'tabular',
-                    'source_files': [zarr_file],
-                    'output_path': f"{self.get_hpc_output_path('tabular')}/osm_{file_basename}_tabular.parquet",
-                    'metadata': {
-                        'source_type': 'misc',
-                        'data_type': 'osm_tabular',
-                        'processing_type': 'osm_zarr_to_parquet',
-                        'source_file': zarr_file,
-                        'subsource': 'osm',
-                        'file_type': 'land_mask'
-                    }
-                }
-                targets.append(target)
-                logger.info(f"Created OSM tabular target: {file_basename}")
-        
-        return targets
-    
-    def _generate_gadm_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets specifically for GADM data."""
-        targets = []
-        
-        gadm_spatial_dir = os.path.join(self.get_hpc_output_path('spatial'), 'gadm')
-        if not os.path.exists(gadm_spatial_dir):
-            logger.debug(f"GADM spatial directory not found: {gadm_spatial_dir}")
-            return targets
-        
-        # Look for GADM zarr files
-        for file_name in os.listdir(gadm_spatial_dir):
-            if file_name.endswith('.zarr'):
-                zarr_file = os.path.join(gadm_spatial_dir, file_name)
-                file_basename = os.path.splitext(file_name)[0]
-                
-                target = {
-                    'data_type': 'gadm_tabular',
-                    'stage': 'tabular',
-                    'source_files': [zarr_file],
-                    'output_path': f"{self.get_hpc_output_path('tabular')}/gadm_{file_basename}_tabular.parquet",
-                    'metadata': {
-                        'source_type': 'misc',
-                        'data_type': 'gadm_tabular',
-                        'processing_type': 'gadm_zarr_to_parquet',
-                        'source_file': zarr_file,
-                        'subsource': 'gadm',
-                        'file_type': 'countries_grid'
-                    }
-                }
-                targets.append(target)
-                logger.info(f"Created GADM tabular target: {file_basename}")
-        
-        return targets
-
-    def _get_all_spatial_files(self) -> List[Dict]:
-        """
-        Return all available spatial zarr files in the spatial output directory.
-        """
-        spatial_dir = self.get_hpc_output_path('spatial')
-        if not os.path.exists(spatial_dir):
-            return []
-        
-        files = []
-        
-        for source_dir in os.listdir(spatial_dir):
-            for output_blob in os.listdir(os.path.join(spatial_dir, source_dir)):
-                if output_blob.endswith(".zarr"):
-                    files.append(os.path.join(spatial_dir, source_dir, output_blob))
-        
-        return files
-    
     def get_hpc_output_path(self, stage: str) -> str:
         """Get output path for a given stage, relative to the HPC root."""
         if stage == "vector":
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_1")
         elif stage == "spatial":
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_2")
-        elif stage == "tabular":
-            base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_3")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -497,8 +389,6 @@ class MiscPreprocessor(AbstractPreprocessor):
                     return self._rasterize_osm_target(target)
                 elif data_type == 'gadm' and processing_type == 'rasterize_countries':
                     return self._rasterize_gadm_target(target)
-            elif stage == 'tabular':
-                return self._process_tabular_target(target)
             else:
                 logger.error(f"Unknown target type: {data_type} - {processing_type} - {stage}")
                 return False
@@ -749,7 +639,7 @@ class MiscPreprocessor(AbstractPreprocessor):
                     logger.info(f"Using geobox with shape: {geobox.shape}")
 
                     # Create tiles for processing
-                    #size = 2048  # Adjust based on memory constraints
+                    tile_size = 2048  # Adjust based on memory constraints
                     tiles = GeoboxTiles(geobox, (tile_size, tile_size))
                     logger.info(f"Created {tiles.shape[0]}x{tiles.shape[1]} tiles of size {tile_size}")
 
@@ -1036,52 +926,3 @@ class MiscPreprocessor(AbstractPreprocessor):
     def from_config(cls, config: Dict[str, Any]) -> 'MiscPreprocessor':
         """Create an instance from configuration dictionary."""
         return cls(**config)
-
-    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
-        """Process tabular target using enhanced tabularization."""
-        try:
-            from gnt.data.preprocess.common.tabularization import process_zarr_to_parquet
-            
-            source_file = self._strip_remote_prefix(target['source_files'][0])
-            output_path = self._strip_remote_prefix(target['output_path'])
-            
-            # Check if output already exists
-            if not self.overwrite and os.path.exists(output_path):
-                logger.info(f"Skipping tabular processing, output already exists: {output_path}")
-                return True
-            
-            # Load source zarr dataset
-            logger.info(f"Loading zarr dataset: {source_file}")
-            ds = xr.open_zarr(source_file)
-            
-            # Determine if we should apply land mask based on data type
-            metadata = target.get('metadata', {})
-            subsource = metadata.get('subsource', '')
-            apply_land_mask = subsource not in ['osm']  # Don't apply land mask to OSM data itself
-            
-            # Configure NA dropping based on data type
-            drop_na = True
-            na_columns = None  # Check all data columns by default
-            
-            # Call enhanced tabularization function
-            success = process_zarr_to_parquet(
-                ds=ds,
-                output_path=output_path,
-                hpc_root=self.hpc_root,
-                tile_size=2048,
-                apply_land_mask=apply_land_mask,
-                land_mask_path=None,  # Auto-detect
-                drop_na=drop_na,
-                na_columns=na_columns,
-            )
-            
-            if success:
-                logger.info(f"Successfully processed tabular target: {output_path}")
-            else:
-                logger.error(f"Failed to process tabular target: {output_path}")
-            
-            return success
-            
-        except Exception as e:
-            logger.exception(f"Error processing tabular target: {e}")
-            return False

@@ -127,7 +127,6 @@ def process_task(task_config: Dict[str, Any]) -> None:
             
             targets = preprocessor.get_preprocessing_targets(stage, year_range)
             
-            # Skip cache validation - use direct file existence checks instead
             logger.info(f"Processing {len(targets)} targets (bypassing cache validation)")
             
             # Process each ready target
