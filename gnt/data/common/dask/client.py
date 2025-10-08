@@ -266,32 +266,38 @@ class DaskClientContextManager:
             return self.client
         
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Ensure the client and cluster are closed with improved error handling."""
-        shutdown_start_time = time.time()
+        """Clean up Dask resources on context exit."""
+        logger.debug("Exiting Dask client context")
         
         try:
-            # Step 1: Close the client first to stop new task submissions
-            if self.client is not None:
-                logger.info("Closing Dask client...")
-                close_client(self.client)
+            if self.client and not self.client.closed:
+                # Try to retire workers gracefully before closing
+                try:
+                    logger.debug("Retiring workers gracefully...")
+                    # Use the scheduler's retire_workers method through the client
+                    if hasattr(self.client, 'retire_workers'):
+                        self.client.retire_workers()
+                    elif self.cluster and hasattr(self.cluster.scheduler, 'retire_workers'):
+                        # Alternative: call through scheduler
+                        self.cluster.scheduler.retire_workers()
+                    else:
+                        logger.debug("Retire workers not available, skipping")
+                except Exception as e:
+                    logger.debug(f"Error retiring workers: {e}")
                 
-            # Step 2: Give workers a moment to finish current tasks
-            time.sleep(1)
-            
-            # Step 3: Close the cluster (this will shut down workers)
-            if self.cluster is not None:
-                logger.info("Shutting down Dask cluster...")
-                close_cluster(self.cluster)
+                # Close client
+                logger.debug("Closing Dask client...")
+                self.client.close()
+                
+            if self.cluster and not self.cluster.closed:
+                logger.debug("Closing Dask cluster...")
+                self.cluster.close()
                 
         except Exception as e:
-            logger.error(f"Error during Dask cleanup: {e}")
+            logger.warning(f"Error during Dask cleanup: {e}")
         finally:
             # Ensure references are cleared
             self.client = None
             self.cluster = None
             
-            shutdown_time = time.time() - shutdown_start_time
-            logger.debug(f"Dask shutdown completed in {shutdown_time:.1f} seconds")
-            
-            # Final cleanup step - small delay to let system settle
-            time.sleep(0.5)
+        logger.debug("Dask context cleanup completed")
