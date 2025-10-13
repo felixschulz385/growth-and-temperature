@@ -56,7 +56,7 @@ class MiscPreprocessor(AbstractPreprocessor):
         
         Args:
             **kwargs: Configuration parameters including:
-                subsource (str): Optional - Subsource name (e.g., 'osm', 'gadm') to process specific subsource only
+                subsource (str): Optional - Subsource name (e.g., 'osm', 'gadm', 'country_classifications') to process specific subsource only
                 sources (Dict): Required - Sources configuration from data.yaml
                 output_path (str): Required - Path for processed outputs
                 hpc_target (str): Required - Base path for HPC outputs
@@ -72,8 +72,8 @@ class MiscPreprocessor(AbstractPreprocessor):
         super().__init__(**kwargs)
         
         # Extract source information
-        source_name = kwargs.get('name', kwargs.get('preprocessor', 'misc'))  # Get from name or preprocessor
-        subsource_name = kwargs.get('subsource')  # Optional specific subsource
+        source_name = kwargs.get('name', kwargs.get('preprocessor', 'misc'))
+        subsource_name = kwargs.get('subsource')
         sources_config = kwargs.get('sources', {})
         
         if source_name not in sources_config:
@@ -89,32 +89,51 @@ class MiscPreprocessor(AbstractPreprocessor):
         files_config = []
         available_subsources = source_config.get('sources', {})
         
-        # If subsource is specified, only process that one
+        # Define subsource groups - HDI and WB are always processed together
+        subsource_groups = {
+            'osm': ['osm'],
+            'gadm': ['gadm'],
+            'country_classifications': ['hdi', 'wb']  # Always process together
+        }
+        
+        # Map individual source keys to their group
+        source_to_group = {}
+        for group, sources in subsource_groups.items():
+            for src in sources:
+                source_to_group[src] = group
+        
+        # If subsource is specified, resolve to its group
+        target_group = None
         if subsource_name:
-            if subsource_name not in available_subsources:
-                raise ValueError(f"Subsource '{subsource_name}' not found in source '{source_name}'. Available: {list(available_subsources.keys())}")
+            # Handle both individual names and group names
+            if subsource_name in subsource_groups:
+                target_group = subsource_name
+            elif subsource_name in source_to_group:
+                target_group = source_to_group[subsource_name]
+            else:
+                raise ValueError(f"Subsource '{subsource_name}' not found. Available: {list(subsource_groups.keys())} or {list(source_to_group.keys())}")
             
-            source_info = available_subsources[subsource_name]
-            files_config.append({
-                'url': source_info['url'],
-                'name': source_info['name'],
-                'description': source_info.get('description', ''),
-                'subfolder': source_info.get('subfolder', subsource_name)
-            })
-            logger.info(f"Processing only subsource '{subsource_name}' for {source_name}")
+            # Get all sources in the target group
+            sources_to_process = subsource_groups[target_group]
+            logger.info(f"Processing subsource group '{target_group}' which includes: {sources_to_process}")
         else:
             # Process all subsources
-            for source_key, source_info in available_subsources.items():
+            sources_to_process = list(available_subsources.keys())
+            logger.info(f"Processing all subsources: {sources_to_process}")
+        
+        # Build files_config for the selected sources
+        for source_key in sources_to_process:
+            if source_key in available_subsources:
+                source_info = available_subsources[source_key]
                 files_config.append({
                     'url': source_info['url'],
                     'name': source_info['name'],
                     'description': source_info.get('description', ''),
                     'subfolder': source_info.get('subfolder', source_key)
                 })
-            logger.info(f"Processing all subsources for {source_name}: {list(available_subsources.keys())}")
         
-        # Store subsource for filtering targets
-        self.subsource_filter = subsource_name
+        # Store subsource filter as the group name
+        self.subsource_filter = target_group if subsource_name else None
         
         # Required parameters
         self.data_path = source_config.get('data_path') or kwargs.get('output_path') or "misc"
@@ -248,8 +267,6 @@ class MiscPreprocessor(AbstractPreprocessor):
                 return self._generate_vector_targets(file_paths)
             elif stage == 'spatial':
                 return self._generate_spatial_targets()
-            elif stage == 'tabular':
-                return self._generate_tabular_targets()
             else:
                 raise ValueError(f"Unknown stage: {stage}")
                 
@@ -266,6 +283,8 @@ class MiscPreprocessor(AbstractPreprocessor):
         # Group files by data type
         osm_files = []
         gadm_files = []
+        hdi_files = []
+        wb_files = []
         
         for file_path in files:
             # Strip remote prefix from file paths
@@ -276,8 +295,12 @@ class MiscPreprocessor(AbstractPreprocessor):
                 osm_files.append(clean_file_path)
             elif 'gadm' in filename.lower():
                 gadm_files.append(clean_file_path)
+            elif 'hdi' in filename.lower() or 'hdr' in filename.lower():
+                hdi_files.append(clean_file_path)
+            elif 'dr0095334' in filename.lower() or 'world_bank' in filename.lower():
+                wb_files.append(clean_file_path)
         
-        logger.info(f"Categorized files: {len(osm_files)} OSM, {len(gadm_files)} GADM")
+        logger.info(f"Categorized files: {len(osm_files)} OSM, {len(gadm_files)} GADM, {len(hdi_files)} HDI, {len(wb_files)} WB")
         
         # OSM land polygons target (only if not filtered or if filtering for osm)
         if osm_files and (not self.subsource_filter or self.subsource_filter == 'osm'):
@@ -314,6 +337,32 @@ class MiscPreprocessor(AbstractPreprocessor):
                 }
             }
             targets.append(target)
+        
+        # Country classifications target (HDI + World Bank income groups)
+        # Always process HDI and WB together
+        if (hdi_files or wb_files) and (not self.subsource_filter or self.subsource_filter == 'country_classifications'):
+            source_files = []
+            if hdi_files:
+                source_files.append(hdi_files[0])
+            if wb_files:
+                source_files.append(wb_files[0])
+            
+            if source_files:
+                target = {
+                    'data_type': 'country_classifications',
+                    'stage': 'vector',
+                    'source_files': source_files,
+                    'output_path': f"{self.get_hpc_output_path('vector')}/country_classifications/classifications.parquet",
+                    'dependencies': [],
+                    'metadata': {
+                        'data_type': 'country_classifications',
+                        'processing_type': 'classify_countries',
+                        'source_count': len(source_files),
+                        'has_hdi': len(hdi_files) > 0,
+                        'has_wb': len(wb_files) > 0
+                    }
+                }
+                targets.append(target)
         
         return targets
     
@@ -358,111 +407,26 @@ class MiscPreprocessor(AbstractPreprocessor):
                 }
                 targets.append(target)
         
-        return targets
-    
-    def _generate_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets for misc data based on subsource."""
-        targets = []
-        
-        # If subsource is specified, only process that specific type
-        if self.subsource_filter:
-            if self.subsource_filter == 'osm':
-                targets.extend(self._generate_osm_tabular_targets())
-            elif self.subsource_filter == 'gadm':
-                targets.extend(self._generate_gadm_tabular_targets())
-            else:
-                logger.warning(f"Unknown subsource for tabular processing: {self.subsource_filter}")
-        else:
-            # Process all available subsources
-            targets.extend(self._generate_osm_tabular_targets())
-            targets.extend(self._generate_gadm_tabular_targets())
-        
-        return targets
-    
-    def _generate_osm_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets specifically for OSM data."""
-        targets = []
-        
-        osm_spatial_dir = os.path.join(self.get_hpc_output_path('spatial'), 'osm')
-        if not os.path.exists(osm_spatial_dir):
-            logger.debug(f"OSM spatial directory not found: {osm_spatial_dir}")
-            return targets
-        
-        # Look for OSM zarr files
-        for file_name in os.listdir(osm_spatial_dir):
-            if file_name.endswith('.zarr'):
-                zarr_file = os.path.join(osm_spatial_dir, file_name)
-                file_basename = os.path.splitext(file_name)[0]
-                
+        # Country classifications grid rasterization (only if not filtered or if filtering for hdi)
+        if not self.subsource_filter or self.subsource_filter == 'country_classifications':
+            classifications_parquet = f"{self.get_hpc_output_path('vector')}/country_classifications/classifications.parquet"
+            gadm_zarr = f"{self.get_hpc_output_path('spatial')}/gadm/countries_grid.zarr"
+            
+            if os.path.exists(classifications_parquet) and os.path.exists(gadm_zarr):
                 target = {
-                    'data_type': 'osm_tabular',
-                    'stage': 'tabular',
-                    'source_files': [zarr_file],
-                    'output_path': f"{self.get_hpc_output_path('tabular')}/osm_{file_basename}_tabular.parquet",
+                    'data_type': 'country_classifications',
+                    'stage': 'spatial',
+                    'source_files': [classifications_parquet, gadm_zarr],
+                    'output_path': f"{self.get_hpc_output_path('spatial')}/country_classifications/classifications_grid.zarr",
+                    'dependencies': [classifications_parquet, gadm_zarr],
                     'metadata': {
-                        'source_type': 'misc',
-                        'data_type': 'osm_tabular',
-                        'processing_type': 'osm_zarr_to_parquet',
-                        'source_file': zarr_file,
-                        'subsource': 'osm',
-                        'file_type': 'land_mask'
+                        'data_type': 'country_classifications',
+                        'processing_type': 'rasterize_classifications'
                     }
                 }
                 targets.append(target)
-                logger.info(f"Created OSM tabular target: {file_basename}")
         
         return targets
-    
-    def _generate_gadm_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets specifically for GADM data."""
-        targets = []
-        
-        gadm_spatial_dir = os.path.join(self.get_hpc_output_path('spatial'), 'gadm')
-        if not os.path.exists(gadm_spatial_dir):
-            logger.debug(f"GADM spatial directory not found: {gadm_spatial_dir}")
-            return targets
-        
-        # Look for GADM zarr files
-        for file_name in os.listdir(gadm_spatial_dir):
-            if file_name.endswith('.zarr'):
-                zarr_file = os.path.join(gadm_spatial_dir, file_name)
-                file_basename = os.path.splitext(file_name)[0]
-                
-                target = {
-                    'data_type': 'gadm_tabular',
-                    'stage': 'tabular',
-                    'source_files': [zarr_file],
-                    'output_path': f"{self.get_hpc_output_path('tabular')}/gadm_{file_basename}_tabular.parquet",
-                    'metadata': {
-                        'source_type': 'misc',
-                        'data_type': 'gadm_tabular',
-                        'processing_type': 'gadm_zarr_to_parquet',
-                        'source_file': zarr_file,
-                        'subsource': 'gadm',
-                        'file_type': 'countries_grid'
-                    }
-                }
-                targets.append(target)
-                logger.info(f"Created GADM tabular target: {file_basename}")
-        
-        return targets
-
-    def _get_all_spatial_files(self) -> List[Dict]:
-        """
-        Return all available spatial zarr files in the spatial output directory.
-        """
-        spatial_dir = self.get_hpc_output_path('spatial')
-        if not os.path.exists(spatial_dir):
-            return []
-        
-        files = []
-        
-        for source_dir in os.listdir(spatial_dir):
-            for output_blob in os.listdir(os.path.join(spatial_dir, source_dir)):
-                if output_blob.endswith(".zarr"):
-                    files.append(os.path.join(spatial_dir, source_dir, output_blob))
-        
-        return files
     
     def get_hpc_output_path(self, stage: str) -> str:
         """Get output path for a given stage, relative to the HPC root."""
@@ -470,8 +434,6 @@ class MiscPreprocessor(AbstractPreprocessor):
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_1")
         elif stage == "spatial":
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_2")
-        elif stage == "tabular":
-            base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_3")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -492,13 +454,15 @@ class MiscPreprocessor(AbstractPreprocessor):
                     return self._process_osm_target(target)
                 elif data_type == 'gadm' and processing_type == 'simplify_boundaries':
                     return self._process_gadm_target(target)
+                elif data_type == 'country_classifications' and processing_type == 'classify_countries':
+                    return self._process_country_classifications_target(target)
             elif stage == 'spatial':
                 if data_type == 'osm' and processing_type == 'rasterize_land_mask':
                     return self._rasterize_osm_target(target)
                 elif data_type == 'gadm' and processing_type == 'rasterize_countries':
                     return self._rasterize_gadm_target(target)
-            elif stage == 'tabular':
-                return self._process_tabular_target(target)
+                elif data_type == 'country_classifications' and processing_type == 'rasterize_classifications':
+                    return self._rasterize_country_classifications_target(target)
             else:
                 logger.error(f"Unknown target type: {data_type} - {processing_type} - {stage}")
                 return False
@@ -633,6 +597,164 @@ class MiscPreprocessor(AbstractPreprocessor):
         except Exception as e:
             logger.exception(f"Error processing GADM target: {e}")
             return False
+        
+    def _process_country_classifications_target(self, target: Dict[str, Any]) -> bool:
+        """Process country classifications (HDI + World Bank income groups) target."""
+        output_path = self._strip_remote_prefix(target['output_path'])
+
+        # Check for existence unless overwrite is True
+        if not self.overwrite and os.path.exists(output_path):
+            logger.info(f"Skipping country classifications processing, output already exists: {output_path}")
+            return True
+
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+        try:
+            has_hdi = target['metadata'].get('has_hdi', False)
+            has_wb = target['metadata'].get('has_wb', False)
+            
+            result_df = None
+            
+            # Process HDI data if available
+            if has_hdi:
+                hdi_file = None
+                for source_file in target['source_files']:
+                    clean_path = self._strip_remote_prefix(source_file)
+                    if 'hdi' in os.path.basename(clean_path).lower() or 'hdr' in os.path.basename(clean_path).lower():
+                        hdi_file = self._resolve_source_file_path(os.path.basename(clean_path), subfolder="hdi")
+                        break
+                
+                if hdi_file:
+                    logger.info(f"Processing HDI data from {hdi_file}")
+                    
+                    # Define HDI columns for years 1990-2023
+                    hdi_cols = [f"hdi_{y}" for y in range(1990, 2024)]
+                    
+                    # Read HDI data
+                    hdi = pd.read_csv(
+                        hdi_file,
+                        encoding="latin1",
+                        usecols=["iso3"] + hdi_cols,
+                    )
+                    
+                    # Turn into long format
+                    hdi = hdi.melt(id_vars=["iso3"], var_name="year", value_name="hdi")
+                    
+                    # Make year integer
+                    hdi.loc[:, "year"] = hdi["year"].str[4:].astype(int)
+                    
+                    # Classify HDI values into UNDP categories
+                    def assign_group(x) -> str:
+                        """Classify a single HDI value into UNDP categories."""
+                        if pd.isna(x):
+                            return None
+                        elif x < 0.550:
+                            return "Low"
+                        elif x < 0.700:
+                            return "Medium"
+                        elif x < 0.800:
+                            return "High"
+                        else:
+                            return "Very High"
+                    
+                    logger.info("Classifying HDI values into groups")
+                    hdi["hdi_group"] = hdi["hdi"].apply(assign_group)
+                    
+                    # Get modal value from 1990-2023
+                    logger.info("Aggregating to modal HDI group per country")
+                    hdi = (
+                        hdi.groupby("iso3")["hdi_group"]
+                        .agg(lambda x: pd.Series.mode(x)[0] if not pd.Series.mode(x).empty else None)
+                        .reset_index()
+                    )
+                    
+                    # Convert to boolean dummy variables
+                    logger.info("Creating HDI class dummy variables")
+                    hdi["HDI_ME"] = hdi.hdi_group.isin(["Medium"])
+                    hdi["HDI_HI"] = hdi.hdi_group.isin(["High"])
+                    hdi["HDI_VH"] = hdi.hdi_group.isin(["Very High"])
+                    
+                    # Drop string classification
+                    hdi.drop(columns=["hdi_group"], inplace=True)
+                    
+                    result_df = hdi
+                    logger.info(f"HDI processing complete: {len(hdi)} countries classified")
+            
+            # Process World Bank income group data if available
+            if has_wb:
+                wb_file = None
+                for source_file in target['source_files']:
+                    clean_path = self._strip_remote_prefix(source_file)
+                    if 'dr0095334' in os.path.basename(clean_path).lower() or 'world_bank' in os.path.basename(clean_path).lower():
+                        wb_file = self._resolve_source_file_path(os.path.basename(clean_path), subfolder="hdi")
+                        break
+                
+                if wb_file:
+                    logger.info(f"Processing World Bank income groups from {wb_file}")
+                    
+                    # Read World Bank data
+                    wb = pd.read_excel(
+                        wb_file, 
+                        sheet_name="Country Analytical History", 
+                        header=4
+                    )
+                    
+                    # Rename country code column
+                    wb.rename({wb.columns[0]: "iso3"}, axis=1, inplace=True)
+                    
+                    # Drop full country names
+                    wb.drop(columns=[wb.columns[1]], inplace=True)
+                    
+                    # Cut head and tail
+                    wb = wb.iloc[6:-2,]
+                    
+                    # Melt to long format
+                    wb = wb.melt(id_vars=["iso3"], var_name="year", value_name="classification")
+                    
+                    # Mutate year to int
+                    wb.loc[:, "year"] = wb.year.str[2:].apply(
+                        lambda x: int("19" + x) if int(x) > 50 else int("20" + x)
+                    )
+                    
+                    # Drop NAs
+                    wb = wb.query("classification!='..'").dropna()
+                    
+                    # Get modal classification
+                    wb = wb.dropna().groupby("iso3").classification.agg(pd.Series.mode).reset_index()
+                    
+                    # Convert to booleans
+                    logger.info("Creating World Bank income group dummy variables")
+                    wb["WB_LM"] = wb.classification.isin(["LM", "LM*"])
+                    wb["WB_UM"] = wb.classification.isin(["UM"])
+                    wb["WB_HI"] = wb.classification.isin(["H"])
+                    
+                    # Drop string classification
+                    wb.drop(columns=["classification"], inplace=True)
+                    
+                    logger.info(f"World Bank processing complete: {len(wb)} countries classified")
+                    
+                    # Merge with HDI if both available
+                    if result_df is not None:
+                        result_df = result_df.merge(wb, on="iso3", how="outer")
+                        logger.info("Merged HDI and World Bank classifications")
+                    else:
+                        result_df = wb
+            
+            if result_df is None:
+                logger.error("No data to process")
+                return False
+            
+            # Save to parquet
+            logger.info(f"Saving country classifications to {output_path}")
+            result_df.to_parquet(output_path, index=False)
+            
+            logger.info(f"Country classifications processing complete: {len(result_df)} countries")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error processing country classifications target: {e}")
+            return False
 
     def _rasterize_osm_target(self, target: Dict[str, Any]) -> bool:
         """Rasterize OSM land polygons target."""
@@ -749,7 +871,7 @@ class MiscPreprocessor(AbstractPreprocessor):
                     logger.info(f"Using geobox with shape: {geobox.shape}")
 
                     # Create tiles for processing
-                    #size = 2048  # Adjust based on memory constraints
+                    tile_size = 2048  # Adjust based on memory constraints
                     tiles = GeoboxTiles(geobox, (tile_size, tile_size))
                     logger.info(f"Created {tiles.shape[0]}x{tiles.shape[1]} tiles of size {tile_size}")
 
@@ -988,23 +1110,6 @@ class MiscPreprocessor(AbstractPreprocessor):
         except Exception as e:
             logger.exception(f"Error processing GADM tiles: {e}")
             return False
-        
-            # Save mapping files in output directory
-            country_mapping_file = os.path.join(output_dir, "country_code_mapping.json")
-            with open(country_mapping_file, 'w') as f:
-                json.dump(country_code_to_id, f, indent=2)
-                
-            if subdivision_code_to_id:
-                subdivision_mapping_file = os.path.join(output_dir, "subdivision_code_mapping.json")
-                with open(subdivision_mapping_file, 'w') as f:
-                    json.dump(subdivision_code_to_id, f, indent=2)
-
-            logger.info("GADM rasterization complete")
-            return True
-
-        except Exception as e:
-            logger.exception(f"Error in GADM rasterization: {e}")
-            return False
 
     def _initialize_dask_client(self):
         """Initialize Dask client for parallel processing using the context manager."""
@@ -1037,51 +1142,118 @@ class MiscPreprocessor(AbstractPreprocessor):
         """Create an instance from configuration dictionary."""
         return cls(**config)
 
-    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
-        """Process tabular target using enhanced tabularization."""
+    def _rasterize_country_classifications_target(self, target: Dict[str, Any]) -> bool:
+        """Rasterize country classifications by mapping to GADM country grid."""
         try:
-            from gnt.data.preprocess.common.tabularization import process_zarr_to_parquet
-            
-            source_file = self._strip_remote_prefix(target['source_files'][0])
+            import xarray as xr
+            import numpy as np
+            from zarr.codecs import BloscCodec
+
+            # Get input paths
+            classifications_parquet = self._strip_remote_prefix(target['source_files'][0])
+            gadm_zarr = self._strip_remote_prefix(target['source_files'][1])
             output_path = self._strip_remote_prefix(target['output_path'])
-            
-            # Check if output already exists
+
+            # Check for existence unless overwrite is True
             if not self.overwrite and os.path.exists(output_path):
-                logger.info(f"Skipping tabular processing, output already exists: {output_path}")
+                logger.info(f"Skipping country classifications rasterization, output already exists: {output_path}")
                 return True
+
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            # Load the country classifications table
+            logger.info(f"Loading country classifications from {classifications_parquet}")
+            classifications_df = pd.read_parquet(classifications_parquet)
             
-            # Load source zarr dataset
-            logger.info(f"Loading zarr dataset: {source_file}")
-            ds = xr.open_zarr(source_file)
+            # Load the GADM countries grid
+            logger.info(f"Loading GADM countries grid from {gadm_zarr}")
+            countries_grid = xr.open_zarr(gadm_zarr, chunks="auto", consolidated=False)
+            countries_grid = countries_grid.countries.astype("int16").compute()
             
-            # Determine if we should apply land mask based on data type
-            metadata = target.get('metadata', {})
-            subsource = metadata.get('subsource', '')
-            apply_land_mask = subsource not in ['osm']  # Don't apply land mask to OSM data itself
+            # Load the country code mapping
+            gadm_dir = os.path.dirname(gadm_zarr)
+            country_mapping_file = os.path.join(gadm_dir, "country_code_mapping.json")
             
-            # Configure NA dropping based on data type
-            drop_na = True
-            na_columns = None  # Check all data columns by default
+            if not os.path.exists(country_mapping_file):
+                logger.error(f"Country mapping file not found: {country_mapping_file}")
+                return False
             
-            # Call enhanced tabularization function
-            success = process_zarr_to_parquet(
-                ds=ds,
-                output_path=output_path,
-                hpc_root=self.hpc_root,
-                tile_size=2048,
-                apply_land_mask=apply_land_mask,
-                land_mask_path=None,  # Auto-detect
-                drop_na=drop_na,
-                na_columns=na_columns,
+            with open(country_mapping_file, 'r') as f:
+                country_code_to_id = json.load(f)
+            
+            # Merge classifications with country codes
+            logger.info("Merging classifications with country IDs")
+            classifications_df['country_id'] = classifications_df['iso3'].map(
+                lambda x: country_code_to_id.get(x, 0)
             )
             
-            if success:
-                logger.info(f"Successfully processed tabular target: {output_path}")
-            else:
-                logger.error(f"Failed to process tabular target: {output_path}")
+            # Get classification columns (all except iso3 and country_id)
+            classification_cols = [col for col in classifications_df.columns 
+                                  if col not in ['iso3', 'country_id']]
             
-            return success
+            logger.info(f"Creating grids for {len(classification_cols)} classification variables")
+            
+            # Create grids for each classification variable using efficient isin() method
+            classification_arrays = {}
+            for col in classification_cols:
+                logger.info(f"Processing classification variable: {col}")
+                
+                # Get country IDs where this classification is True
+                country_ids_with_classification = classifications_df.loc[
+                    ((classifications_df[col] == True) & classifications_df["country_id"] != 0), 
+                    "country_id"
+                ].unique()
+                
+                # Use isin to create boolean mask efficiently
+                classification_array = countries_grid.isin(country_ids_with_classification)
+                
+                # Add attributes
+                classification_array.attrs = {
+                    'description': f'{col} classification grid (True/False)',
+                    '_FillValue': -1
+                }
+                
+                classification_arrays[col] = classification_array
+            
+            # Create dataset
+            logger.info("Creating output dataset")
+            ds = xr.Dataset(
+                classification_arrays,
+                attrs={
+                    'description': 'Country classifications grid (HDI and World Bank income groups)',
+                    'source': 'UNDP HDI and World Bank income classifications',
+                    'date_created': datetime.now().isoformat(),
+                    'crs': str(countries_grid.attrs.get('crs', 'EPSG:4326')),
+                    'note': 'Boolean values: True where classification applies, False otherwise'
+                }
+            )
+            
+            # Add CRS
+            if 'crs' in countries_grid.attrs:
+                ds = ds.rio.write_crs(countries_grid.attrs['crs'])
+            
+            # Setup encoding - use bool dtype for minimal storage
+            compressor = BloscCodec(cname="lz4", clevel=5, shuffle='bitshuffle', blocksize=0)
+            encoding = {}
+            for var_name in classification_arrays.keys():
+                encoding[var_name] = {
+                    "chunks": (512, 512),
+                    "compressors": compressor,
+                    "dtype": "bool"
+                }
+            
+            # Write to zarr
+            logger.info(f"Writing country classifications grid to {output_path}")
+            ds.to_zarr(output_path, zarr_format=3, consolidated=False, encoding=encoding, mode="w")
+            
+            logger.info("Country classifications rasterization complete")
+            
+            # Close datasets
+            countries_grid.close()
+            
+            return True
             
         except Exception as e:
-            logger.exception(f"Error processing tabular target: {e}")
+            logger.exception(f"Error in country classifications rasterization: {e}")
             return False

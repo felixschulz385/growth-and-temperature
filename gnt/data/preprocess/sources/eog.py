@@ -90,8 +90,8 @@ class EOGPreprocessor(AbstractPreprocessor):
         
         # Set processing stage
         self.stage = kwargs.get('stage', 'annual')
-        if self.stage not in ['annual', 'spatial', 'tabular']:
-            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual', 'spatial', or 'tabular'.")
+        if self.stage not in ['annual', 'spatial']:
+            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual' or 'spatial'.")
             
         # Set year or year range
         self.year = kwargs.get('year')
@@ -151,9 +151,6 @@ class EOGPreprocessor(AbstractPreprocessor):
         # Dask configuration
         self.dask_threads = kwargs.get('dask_threads', None)
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)
-        
-        # Tabular processing configuration - optimized defaults
-        self.tabular_batch_size = kwargs.get('tabular_batch_size', 32)  # Increased default batch size
         
         # Create the download data source
         self.data_source = EOGDataSource(
@@ -271,8 +268,6 @@ class EOGPreprocessor(AbstractPreprocessor):
                 return self._generate_annual_targets(file_paths, year_range)
             elif stage == 'spatial':
                 return self._generate_spatial_targets(file_paths, year_range)
-            elif stage == 'tabular':
-                return self._generate_tabular_targets(file_paths, year_range)
             else:
                 raise ValueError(f"Unknown stage: {stage}")
                 
@@ -349,37 +344,6 @@ class EOGPreprocessor(AbstractPreprocessor):
         
         return targets
 
-    def _generate_tabular_targets(self, files: List[str], year_range: Tuple[int, int] = None) -> List[Dict]:
-        """Generate tabular processing targets."""
-        targets = []
-        
-        # Check if spatial zarr files are available
-        spatial_files = self._get_all_spatial_files()
-        
-        if not spatial_files:
-            logger.warning("No spatial files available for tabular processing")
-            return targets
-        
-        # Create target for each spatial file
-        for spatial_file in spatial_files:
-            target = {
-                'grid_cell': spatial_file.get('grid_cell', 'global'),
-                'data_type': f'{self.source_type}_tabular',
-                'stage': 'tabular',
-                'source_files': [spatial_file['zarr_path']],
-                'output_path': f"{self.get_hpc_output_path('tabular')}/{self.source_type}_tabular.parquet",
-                'dependencies': [spatial_file['zarr_path']],
-                'metadata': {
-                    'source_type': self.source_type,
-                    'data_type': f'{self.source_type}_tabular',
-                    'processing_type': 'zarr_to_parquet',
-                    'source_file': spatial_file['zarr_path']
-                }
-            }
-            targets.append(target)
-        
-        return targets
-
     def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
         """Process tabular stage using the common implementation."""
         # Use the base class implementation with enhanced tabularization
@@ -435,8 +399,6 @@ class EOGPreprocessor(AbstractPreprocessor):
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_1")
         elif stage == "spatial":
             base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_2")
-        elif stage == "tabular":
-            base_path = os.path.join(self.hpc_root, self.data_path, "processed", "stage_3")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -455,8 +417,6 @@ class EOGPreprocessor(AbstractPreprocessor):
                 return self._process_annual_target(target)
             elif stage == 'spatial':
                 return self._process_spatial_target(target)
-            elif stage == 'tabular':
-                return self._process_tabular_target(target)
             else:
                 logger.error(f"Unknown stage: {stage}")
                 return False

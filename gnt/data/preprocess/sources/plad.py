@@ -59,8 +59,8 @@ class PLADPreprocessor(AbstractPreprocessor):
         
         # Set processing stage
         self.stage = kwargs.get('stage', 'spatial')
-        if self.stage not in ['spatial', 'tabular']:
-            raise ValueError(f"Unsupported stage: {self.stage}. Use 'spatial' or 'tabular'.")
+        if self.stage not in ['spatial']:
+            raise ValueError(f"Unsupported stage: {self.stage}. Use 'spatial'.")
         
         # Set year range - default to 1980-2022 based on notebook
         self.year_range = kwargs.get('year_range', [1980, 2022])
@@ -128,8 +128,6 @@ class PLADPreprocessor(AbstractPreprocessor):
         """Generate list of preprocessing targets by reading from parquet index when available."""
         if stage == 'spatial':
             return self._generate_spatial_targets()
-        elif stage == 'tabular':
-            return self._generate_tabular_targets()
         else:
             raise ValueError(f"Unknown stage: {stage}")
     
@@ -147,54 +145,6 @@ class PLADPreprocessor(AbstractPreprocessor):
         }
         return [target]
     
-    def _generate_tabular_targets(self) -> List[Dict]:
-        """Generate tabular processing targets."""
-        spatial_files = self._get_all_spatial_files()
-        
-        if not spatial_files:
-            logger.warning("No spatial files available for tabular processing")
-            return []
-        
-        target = {
-            'stage': 'tabular',
-            'source_files': [f['zarr_path'] for f in spatial_files],
-            'output_path': f"{self.get_hpc_output_path('tabular')}/plad_adm{self.admin_level}_tabular.parquet",
-            'dependencies': [f['zarr_path'] for f in spatial_files],
-            'metadata': {
-                'data_type': 'plad_tabular',
-                'admin_level': self.admin_level,
-                'processing_type': 'zarr_to_parquet'
-            }
-        }
-        return [target]
-    
-    def _get_all_spatial_files(self) -> List[Dict]:
-        """Return all available spatial zarr files."""
-        spatial_dir = self.get_hpc_output_path('spatial')
-        if not os.path.exists(spatial_dir):
-            return []
-        
-        files = []
-        for fname in os.listdir(spatial_dir):
-            if fname.endswith('.zarr') and 'panel' in fname:
-                files.append({
-                    'admin_level': self.admin_level,
-                    'zarr_path': os.path.join(spatial_dir, fname)
-                })
-        
-        return files
-    
-    def get_hpc_output_path(self, stage: str) -> str:
-        """Get HPC output path for a given stage."""
-        if stage == "spatial":
-            base_path = os.path.join(self.hpc_root, "plad", "processed", "stage_2")
-        elif stage == "tabular":
-            base_path = os.path.join(self.hpc_root, "plad", "processed", "stage_3")
-        else:
-            raise ValueError(f"Unknown stage: {stage}")
-        
-        return self._strip_remote_prefix(base_path)
-    
     def process_target(self, target: Dict[str, Any]) -> bool:
         """Process a single preprocessing target."""
         stage = target.get('stage')
@@ -204,8 +154,6 @@ class PLADPreprocessor(AbstractPreprocessor):
         try:
             if stage == 'spatial':
                 return self._process_spatial_target(target)
-            elif stage == 'tabular':
-                return self._process_tabular_target(target)
             else:
                 logger.error(f"Unknown stage: {stage}")
                 return False
@@ -635,10 +583,6 @@ class PLADPreprocessor(AbstractPreprocessor):
             return False
         
         return True
-    
-    def _process_tabular_target(self, target: Dict[str, Any]) -> bool:
-        """Process tabular stage using the common implementation."""
-        return super()._process_tabular_target(target)
     
     @classmethod
     def from_config(cls, config: Dict[str, Any]) -> 'PLADPreprocessor':

@@ -90,8 +90,8 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         # Set processing stage
         self.stage = kwargs.get('stage', 'annual')
-        if self.stage not in ['annual', 'spatial', 'tabular']:
-            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual', 'spatial', or 'tabular'.")
+        if self.stage not in ['annual', 'spatial']:
+            raise ValueError(f"Unsupported stage: {self.stage}. Use 'annual' or 'spatial'.")
             
         # Set year or year range
         self.year = kwargs.get('year')
@@ -177,9 +177,6 @@ class GlassPreprocessor(AbstractPreprocessor):
         self.dask_memory_limit = kwargs.get('dask_memory_limit', None)
         self.chunk_size = kwargs.get('chunk_size', {"band": 1, "x": 500, "y": 500})
         self.dashboard_port = kwargs.get('dashboard_port', 8787)
-        
-        # Tabular processing configuration - optimized defaults
-        self.tabular_batch_size = kwargs.get('tabular_batch_size', 32)  # Increased default batch size
         
         # Initialize parquet index path
         self._init_parquet_index_path()
@@ -267,8 +264,6 @@ class GlassPreprocessor(AbstractPreprocessor):
                 return self._generate_annual_targets(file_paths, year_range)
             elif stage == 'spatial':
                 return self._generate_spatial_targets(file_paths, year_range)
-            elif stage == 'tabular':
-                return self._generate_tabular_targets(file_paths, year_range)
             else:
                 raise ValueError(f"Unknown stage: {stage}")
                 
@@ -394,38 +389,6 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         return targets
     
-    def _generate_tabular_targets(self, files: List[str], year_range: Tuple[int, int] = None) -> List[Dict]:
-        """Generate tabular processing targets for assembly workflow integration."""
-        targets = []
-        
-        # Check if spatial zarr files are available
-        spatial_files = self._get_all_spatial_files()
-        
-        if not spatial_files:
-            logger.warning("No spatial files available for tabular processing")
-            return targets
-        
-        # Create target for each spatial file
-        for spatial_file in spatial_files:
-            target = {
-                'grid_cell': spatial_file['grid_cell'],
-                'data_type': f'{self.data_source.lower()}_tabular',
-                'stage': 'tabular',
-                'source_files': [spatial_file['zarr_path']],
-                'output_path': f"{self.get_hpc_output_path('tabular')}/{self.data_source.lower()}_assembly_ready.zarr",
-                'dependencies': [spatial_file['zarr_path']],
-                'metadata': {
-                    'source_type': self.data_source.lower(),
-                    'data_type': f'{self.data_source.lower()}_tabular',
-                    'processing_type': 'zarr_assembly_optimization',
-                    'source_file': spatial_file['zarr_path'],
-                    'assembly_ready': True
-                }
-            }
-            targets.append(target)
-        
-        return targets
-
     def _parse_filenames(self, filenames: List[str]) -> pd.DataFrame:
         """Parse filenames to extract metadata for both MODIS and AVHRR."""
         if self.data_source == 'MODIS':
@@ -596,8 +559,6 @@ class GlassPreprocessor(AbstractPreprocessor):
             base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_1")
         elif stage == "spatial":
             base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_2")
-        elif stage == "tabular":
-            base_path = os.path.join(self.hpc_root, self.path_prefix, "processed", "stage_3")
         else:
             raise ValueError(f"Unknown stage: {stage}")
         
@@ -616,8 +577,6 @@ class GlassPreprocessor(AbstractPreprocessor):
                 return self._process_annual_target(target)
             elif stage == 'spatial':
                 return self._process_spatial_target(target)
-            elif stage == 'tabular':
-                return self._process_tabular_target(target)
             else:
                 logger.error(f"Unknown stage: {stage}")
                 return False

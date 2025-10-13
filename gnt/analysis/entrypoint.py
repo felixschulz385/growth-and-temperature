@@ -226,6 +226,21 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
     # Use the feature names from the model (already transformed)
     feature_names = rls.get_feature_names()
     
+    # Determine target variable - handle both formula and explicit specification
+    target_variable = None
+    feature_variables = []
+    
+    if 'formula' in spec_config:
+        # Parse formula to extract target and features
+        from gnt.analysis.models.feature_engineering import FormulaParser
+        formula_parser = FormulaParser.parse(spec_config['formula'])
+        target_variable = formula_parser.target
+        feature_variables = formula_parser.features
+    else:
+        # Use explicit specification
+        target_variable = spec_config.get('target_col')
+        feature_variables = spec_config.get('feature_cols', [])
+    
     # Calculate additional statistics
     n_clusters_1 = len(rls.cluster_stats) if rls.cluster_stats else 0
     n_clusters_2 = len(rls.cluster2_stats) if rls.cluster2_stats else 0
@@ -244,8 +259,9 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
             "timestamp": timestamp,
             "cluster_type": cluster_type,
             "data_source": spec_config['data_source'],
-            "target_variable": spec_config['target_col'],
-            "feature_variables": spec_config.get('feature_cols', []),
+            "target_variable": target_variable,
+            "feature_variables": feature_variables,
+            "formula": spec_config.get('formula'),  # Include formula if present
             "feature_engineering": {
                 "enabled": bool(spec_config.get('feature_engineering')),
                 "transformations": spec_config.get('feature_engineering', {}).get('transformations', []) if spec_config.get('feature_engineering') else [],
@@ -737,6 +753,18 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
         first_stage_stats[f"{endogen_name}_adj_r_squared"] = float(adj_r_sq)
         first_stage_stats[f"{endogen_name}_observations"] = int(n_obs_fs)
     
+    # Determine target variable - handle both formula and explicit specification
+    target_variable = None
+    
+    if 'formula' in spec_config:
+        # Parse formula to extract target
+        from gnt.analysis.models.feature_engineering import FormulaParser
+        formula_parser = FormulaParser.parse(spec_config['formula'])
+        target_variable = formula_parser.target
+    else:
+        # Use explicit specification
+        target_variable = spec_config.get('target_col')
+    
     # Create comprehensive results dictionary
     results = {
         "metadata": {
@@ -746,8 +774,9 @@ def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame,
             "timestamp": timestamp,
             "cluster_type": cluster_type,
             "data_source": spec_config['data_source'],
-            "target_variable": spec_config.get('target_col'),
+            "target_variable": target_variable,
             "feature_variables": exog_cols + endog_cols,
+            "formula": spec_config.get('formula'),  # Include formula if present
             "cluster_variables": {
                 "cluster1": spec_config.get('cluster1_col'),
                 "cluster2": spec_config.get('cluster2_col')

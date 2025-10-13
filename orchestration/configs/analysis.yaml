@@ -33,23 +33,41 @@ analyses:
           chunk_size: 10000
           n_workers: 4
           verbose: false
-      
-      modis_viirs_basic_subset:
-        description: "DEBUG MODIS temperature subset analysis"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        formula: "median ~ viirs_annual"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 2
-          verbose: true
-          alpha: 0.01
 
       modis_ntlharm_twfe:
         description: "TWFE MODIS NTLHARM analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned - 1"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          verbose: false
+
+      modis_ntlharm_ufe:
+        description: "UFE MODIS NTLHARM analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_unit_demeaned ~ ntl_harm_unit_demeaned - 1"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          verbose: false
+
+      modis_ntlharm_twfe_hdi:
+        description: "TWFE MODIS NTLHARM analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH - 1"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          verbose: false
+
+      ntlharm_regfav_twfe_hdi:
+        description: "TWFE MODIS NTLHARM analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
@@ -75,40 +93,6 @@ analyses:
         settings:
           chunk_size: 10000
           verbose: false
-
-      # Formula-based specifications
-      modis_formula_interaction:
-        description: "Formula with interaction: y ~ x1 * x2 (includes main effects and interaction)"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        formula: "median ~ ntl_harm * viirs_annual"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 2
-          verbose: true
-
-      modis_formula_polynomial:
-        description: "Formula with cubic polynomial: poly(x, 3)"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        formula: "median ~ poly(ntl_harm, 3)"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 2
-          verbose: true
-
-      modis_formula_complex:
-        description: "Complex formula with multiple transformations"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        formula: "median ~ ntl_harm + I(ntl_harm^2) + viirs_annual + ntl_harm:viirs_annual"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 2
-          verbose: true
 
   # Two-Stage Least Squares analysis
   online_2sls:

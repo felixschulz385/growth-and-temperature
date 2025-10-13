@@ -65,6 +65,8 @@ def create_preprocessor(preprocessor_name: str, config: Dict[str, Any]) -> Any:
         An instance of the specified preprocessor
     """
     PreprocessorClass = get_preprocessor_class(preprocessor_name)
+    # Remove any tabular config before passing to preprocessor
+    config.pop('tabular_batch_size', None)
     return PreprocessorClass.from_config(config)
 
 def get_source_class(source_name: str) -> Type:
