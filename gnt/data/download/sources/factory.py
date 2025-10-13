@@ -128,5 +128,11 @@ def create_data_source(source_config):
             output_path=output_path,
             doi=config.get('doi', base_url)
         )
+    elif dataset_name.lower() in ['berman_mining', 'berman', 'mining_conflict']:
+        logger.info(f"Creating Berman Mining data source")
+        from gnt.data.download.sources.manual import BermanMiningDataSource
+        return BermanMiningDataSource(
+            output_path=output_path or 'berman_mining'
+        )
     else:
         raise ValueError(f"Unknown data source: {dataset_name}")
