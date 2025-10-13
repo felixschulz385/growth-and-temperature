@@ -655,11 +655,6 @@ def process_partitioned_dataset_parallel(
     if n_workers is None:
         n_workers = get_optimal_workers()
     
-    # Reduce workers for very large datasets to avoid memory pressure
-    if n_workers > 6:
-        n_workers = min(n_workers, 4)  # Cap at 4 workers for stability
-        logger.info(f"Reduced workers to {n_workers} for large dataset processing")
-    
     logger.info(f"Starting parallel processing with {n_workers} workers")
     logger.info(f"Dataset path: {parquet_path}")
     logger.info(f"Verbosity: {'enabled' if verbose else 'disabled'}")

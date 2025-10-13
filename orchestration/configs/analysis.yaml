@@ -65,7 +65,7 @@ analyses:
           verbose: false
 
       ntlharm_regfav_twfe_hdi:
-        description: "TWFE MODIS NTLHARM analysis"
+        description: "TWFE MODIS NTLHARM analysis in HDI groups"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         formula: "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH - 1"
         cluster1_col: "subdivisions"
@@ -88,6 +88,16 @@ analyses:
         description: "Demeaned MODIS VIIRS analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned - 1"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          verbose: false
+
+      modis_viirs_twfe_hdi:
+        description: "Demeaned MODIS VIIRS analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
@@ -127,6 +137,17 @@ analyses:
         description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
         formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        settings:
+          chunk_size: 10000
+          n_workers: 8
+          verbose: false
+
+      modis_viirs_regfav_twfe:
+        description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned | reg_fav_twoway_demeaned"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
         settings:
