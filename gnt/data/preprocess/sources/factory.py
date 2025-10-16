@@ -39,6 +39,9 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif preprocessor_name == 'plad':
             from gnt.data.preprocess.sources.plad import PLADPreprocessor
             return PLADPreprocessor
+        elif preprocessor_name == 'berman_mining':
+            from gnt.data.preprocess.sources.berman_mining import BermanMiningPreprocessor
+            return BermanMiningPreprocessor
         # By convention, the class name is expected to be CamelCase
         class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
         module_path = f"gnt.data.preprocess.sources.{preprocessor_name.lower()}"
@@ -122,6 +125,9 @@ def create_source(source_name: str, config: Dict[str, Any]):
         return MiscDataSource(**config)
     elif source_name_lower == 'plad':
         # PLAD doesn't need a separate data source as it works with local files
+        return None
+    elif source_name_lower == 'berman_mining':
+        # Berman mining doesn't need a separate data source as it works with local files
         return None
     # GLASSLSTDataSource
     elif source_name_lower == "glasslstdatasource":
