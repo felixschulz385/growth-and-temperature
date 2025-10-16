@@ -14,9 +14,6 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from gnt.analysis.models.online_RLS import process_partitioned_dataset_parallel, OnlineRLS
-from gnt.analysis.models.online_2SLS import process_partitioned_dataset_2sls, Online2SLS
-
 # Configure logging
 def setup_logging(config: Dict[str, Any]) -> logging.Logger:
     """Setup logging configuration."""
@@ -72,7 +69,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return expand_env_vars(config)
 
 def run_online_rls(config: Dict[str, Any], spec_name: str, 
-                   output_dir: Optional[str] = None, verbose: bool = True) -> OnlineRLS:
+                   output_dir: Optional[str] = None, verbose: bool = True) -> Any:
     """Run Online RLS analysis with specified configuration."""
     logger = logging.getLogger(__name__)
     
@@ -84,129 +81,136 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     logger.info(f"Running Online RLS analysis: {spec_config['description']}")
     logger.info(f"Data source: {spec_config['data_source']}")
     
-    # Merge settings with proper type conversion
+    # Merge settings
     settings = {**defaults, **spec_config.get('settings', {})}
     
-    # Override with HPC defaults if not specified
-    hpc_config = config.get('hpc', {})
-    if 'n_workers' not in settings:
-        default_workers = hpc_config.get('default_workers', 4)
-        # Ensure n_workers is an integer
-        if isinstance(default_workers, str):
-            try:
-                settings['n_workers'] = int(default_workers)
-            except ValueError:
-                settings['n_workers'] = 4
-        else:
-            settings['n_workers'] = default_workers
+    # Import new API
+    from gnt.analysis.streamreg.api import OLS
     
-    # Ensure critical parameters are proper types
-    settings['alpha'] = float(settings.get('alpha', 1e-3))
-    settings['forget_factor'] = float(settings.get('forget_factor', 1.0))
-    settings['chunk_size'] = int(settings.get('chunk_size', 20000))
-    settings['n_workers'] = int(settings.get('n_workers', 4))
-    settings['add_intercept'] = bool(settings.get('add_intercept', True))
-    settings['show_progress'] = bool(settings.get('show_progress', True))
-    settings['verbose'] = bool(settings.get('verbose', verbose))
+    # Setup cluster variable
+    cluster = None
+    if settings.get('cluster_type') == 'one_way':
+        cluster = spec_config.get('cluster1_col')
+    elif settings.get('cluster_type') == 'two_way':
+        cluster = [spec_config.get('cluster1_col'), spec_config.get('cluster2_col')]
     
-    # Get cluster type for standard errors
-    cluster_type = settings.get('cluster_type', 'classical')
-    
-    # Check if using formula syntax
+    # Get formula
     formula = spec_config.get('formula')
-    if formula:
-        logger.info(f"Using formula specification: {formula}")
+    if not formula:
+        # Build formula from explicit specification
+        features = spec_config.get('feature_cols', [])
+        target = spec_config.get('target_col')
+        formula = f"{target} ~ {' + '.join(features)}"
     
-    # Extract feature engineering configuration
-    feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
+    # Create and fit model
+    model = OLS(
+        formula=formula,
+        alpha=settings.get('alpha', 1e-3),
+        forget_factor=settings.get('forget_factor', 1.0),
+        chunk_size=settings.get('chunk_size', 10000),
+        n_workers=settings.get('n_workers'),
+        show_progress=settings.get('show_progress', True)
+    )
     
-    if feature_engineering:
-        logger.info(f"Feature engineering enabled with {len(feature_engineering.get('transformations', []))} transformations")
-        for i, transform in enumerate(feature_engineering.get('transformations', [])):
-            logger.info(f"  Transformation {i+1}: {transform.get('type', 'unknown')} - {transform}")
-    else:
-        logger.info("No feature engineering specified - using original features only")
+    model.fit(spec_config['data_source'], cluster=cluster)
     
-    logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
-    logger.info(f"Standard error type: {cluster_type}")
+    # Print results
+    logger.info(f"Analysis complete! Total observations: {model.n_obs_:,}")
+    logger.info(f"R-squared: {model.r_squared_:.4f}")
     
-    # Run the analysis with error handling
-    rls = None
-    try:
-        rls = process_partitioned_dataset_parallel(
-            parquet_path=spec_config['data_source'],
-            feature_cols=spec_config.get('feature_cols'),
-            target_col=spec_config.get('target_col'),
-            cluster1_col=spec_config.get('cluster1_col'),
-            cluster2_col=spec_config.get('cluster2_col'),
-            add_intercept=settings['add_intercept'],
-            chunk_size=settings['chunk_size'],
-            n_workers=settings['n_workers'],
-            alpha=settings['alpha'],
-            forget_factor=settings['forget_factor'],
-            show_progress=settings['show_progress'],
-            verbose=settings['verbose'],
-            feature_engineering=feature_engineering,
-            formula=formula  # Pass formula to parser
-        )
-        
-        # Generate summary with correct cluster type
-        summary = rls.summary(
-            cluster_type=cluster_type
-        )
-        
-        logger.info(f"Analysis complete! Total observations: {rls.n_obs:,}")
-        logger.info(f"RSS: {rls.rss:.6f}")
-        logger.info("Regression Summary:")
-        print("\n" + "="*50)
-        print(f"Analysis: {spec_config['description']}")
-        print(f"Standard Errors: {cluster_type}")
-        if feature_engineering:
-            print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
-            print(f"Total features: {len(rls.feature_names)}")
-        print("="*50)
-        print(summary.to_string())
-        print("="*50)
-        
-        # Save results if output directory specified
-        if output_dir:
-            save_results(rls, summary, spec_name, spec_config, output_dir, config)
-            
-    except Exception as e:
-        logger.error(f"Analysis failed with error: {str(e)}")
-        # If we have partial results, try to save them
-        if rls is not None and rls.n_obs > 0:
-            logger.warning("Attempting to save partial results...")
-            try:
-                summary = rls.summary(cluster_type=cluster_type)
-                
-                logger.info(f"Partial analysis results - Total observations: {rls.n_obs:,}")
-                logger.info(f"RSS: {rls.rss:.6f}")
-                print("\n" + "="*50)
-                print(f"PARTIAL RESULTS - Analysis: {spec_config['description']}")
-                print(f"Standard Errors: {cluster_type}")
-                if feature_engineering:
-                    print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
-                print("="*50)
-                print(summary.to_string())
-                print("="*50)
-                
-                if output_dir:
-                    save_results(rls, summary, f"{spec_name}_partial", spec_config, output_dir, config)
-                    logger.info("Partial results saved successfully")
-                    
-            except Exception as save_error:
-                logger.error(f"Failed to save partial results: {save_error}")
-        
-        # Re-raise the original error
-        raise e
+    print("\n" + "="*80)
+    print(f"Analysis: {spec_config['description']}")
+    print(f"Standard Errors: {model._cluster_type}")
+    print("="*80)
+    print(model.summary().to_string())
+    print(f"\nR²: {model.r_squared_:.4f} | Adj. R²: {model.results_.adj_r_squared:.4f} | N: {model.n_obs_:,}")
+    print("="*80)
     
-    return rls
+    # Save results
+    if output_dir:
+        save_results(model.results_, spec_name, spec_config, output_dir, config)
+    
+    return model
 
-def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
-                spec_config: Dict[str, Any], output_dir: str, 
-                config: Dict[str, Any]) -> None:
-    """Save analysis results to a single standardized JSON format."""
+
+def run_online_2sls(config: Dict[str, Any], spec_name: str, 
+                    output_dir: Optional[str] = None, verbose: bool = True) -> Any:
+    """Run Online 2SLS analysis with specified configuration."""
+    logger = logging.getLogger(__name__)
+    
+    # Get analysis configuration
+    twosls_config = config['analyses']['online_2sls']
+    spec_config = twosls_config['specifications'][spec_name]
+    defaults = twosls_config['defaults']
+    
+    logger.info(f"Running Online 2SLS analysis: {spec_config['description']}")
+    
+    # Merge settings
+    settings = {**defaults, **spec_config.get('settings', {})}
+    
+    # Import new API
+    from gnt.analysis.streamreg.api import TwoSLS
+    
+    # Setup cluster variable
+    cluster = None
+    if settings.get('cluster_type') == 'one_way':
+        cluster = spec_config.get('cluster1_col')
+    elif settings.get('cluster_type') == 'two_way':
+        cluster = [spec_config.get('cluster1_col'), spec_config.get('cluster2_col')]
+    
+    # Get formula and endogenous
+    formula = spec_config.get('formula')
+    if not formula:
+        raise ValueError("2SLS requires formula specification")
+    
+    feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
+    endogenous = None
+    if feature_engineering and 'endogenous' in feature_engineering:
+        endogenous = feature_engineering['endogenous']
+    
+    # Create and fit model
+    model = TwoSLS(
+        formula=formula,
+        endogenous=endogenous,
+        alpha=settings.get('alpha', 1e-3),
+        forget_factor=settings.get('forget_factor', 1.0),
+        chunk_size=settings.get('chunk_size', 10000),
+        n_workers=settings.get('n_workers'),
+        show_progress=settings.get('show_progress', True)
+    )
+    
+    model.fit(spec_config['data_source'], cluster=cluster)
+    
+    # Print results
+    logger.info(f"Analysis complete! Total observations: {model.results_.n_obs:,}")
+    
+    print("\n" + "="*80)
+    print(f"Analysis: {spec_config['description']}")
+    print("="*80)
+    
+    # Print first stage
+    first_stage_summaries = model.summary(stage='first')
+    print("\nFIRST STAGE RESULTS:")
+    for stage_name, summary_df in first_stage_summaries.items():
+        print(f"\n{stage_name}:")
+        print(summary_df.to_string())
+    
+    # Print second stage
+    print("\nSECOND STAGE RESULTS:")
+    print(model.summary(stage='second').to_string())
+    print(f"\nR²: {model.results_.r_squared:.4f} | N: {model.results_.n_obs:,}")
+    print("="*80)
+    
+    # Save results
+    if output_dir:
+        save_results(model.results_, spec_name, spec_config, output_dir, config)
+    
+    return model
+
+
+def save_results(results: Any, spec_name: str, spec_config: Dict[str, Any],
+                output_dir: str, config: Dict[str, Any]) -> None:  # Fixed closing parenthesis
+    """Save comprehensive results to disk."""
     logger = logging.getLogger(__name__)
     
     output_path = Path(output_dir)
@@ -219,776 +223,334 @@ def save_results(rls: OnlineRLS, summary: pd.DataFrame, spec_name: str,
     
     logger.info(f"Saving results to: {run_dir}")
     
-    # Get cluster type and analysis settings
-    settings = {**config['analyses']['online_rls']['defaults'], **spec_config.get('settings', {})}
-    cluster_type = settings.get('cluster_type', 'classical')
+    # 1. Save full JSON results
+    results_file = run_dir / "results.json"
+    with open(results_file, 'w') as f:
+        import json
+        json.dump(results.to_dict(), f, indent=2, ensure_ascii=False)
+    logger.info(f"✓ Saved JSON results: {results_file.name}")
     
-    # Use the feature names from the model (already transformed)
-    feature_names = rls.get_feature_names()
+    # 2. Save formatted summary
+    _save_summary_report(results, run_dir, spec_config)
     
-    # Determine target variable - handle both formula and explicit specification
-    target_variable = None
-    feature_variables = []
+    # 3. Save coefficient table (CSV)
+    _save_coefficient_table(results, run_dir)
     
-    if 'formula' in spec_config:
-        # Parse formula to extract target and features
-        from gnt.analysis.models.feature_engineering import FormulaParser
-        formula_parser = FormulaParser.parse(spec_config['formula'])
-        target_variable = formula_parser.target
-        feature_variables = formula_parser.features
-    else:
-        # Use explicit specification
-        target_variable = spec_config.get('target_col')
-        feature_variables = spec_config.get('feature_cols', [])
+    # 4. Save diagnostics
+    _save_diagnostics(results, run_dir, spec_config)
     
-    # Calculate additional statistics
-    n_clusters_1 = len(rls.cluster_stats) if rls.cluster_stats else 0
-    n_clusters_2 = len(rls.cluster2_stats) if rls.cluster2_stats else 0
-    n_intersections = len(rls.intersection_stats) if rls.intersection_stats else 0
+    # 5. Save configuration snapshot
+    _save_config_snapshot(spec_config, config, run_dir)
     
-    # Calculate R-squared and adjusted R-squared using proper methods
-    r_squared = rls.get_r_squared()
-    adj_r_squared = rls.get_adjusted_r_squared()
+    # 6. Save LaTeX table
+    _save_latex_table(results, run_dir)
     
-    # Create comprehensive results dictionary
-    results = {
-        "metadata": {
-            "analysis_type": "online_rls",
-            "specification": spec_name,
-            "description": spec_config['description'],
-            "timestamp": timestamp,
-            "cluster_type": cluster_type,
-            "data_source": spec_config['data_source'],
-            "target_variable": target_variable,
-            "feature_variables": feature_variables,
-            "formula": spec_config.get('formula'),  # Include formula if present
-            "feature_engineering": {
-                "enabled": bool(spec_config.get('feature_engineering')),
-                "transformations": spec_config.get('feature_engineering', {}).get('transformations', []) if spec_config.get('feature_engineering') else [],
-                "transformed_feature_names": feature_names
-            },
-            "cluster_variables": {
-                "cluster1": spec_config.get('cluster1_col'),
-                "cluster2": spec_config.get('cluster2_col')
-            }
-        },
+    # 7. Create README
+    _create_readme(results, run_dir, spec_config, timestamp)
+    
+    logger.info(f"✓ All results saved to: {run_dir}")
+
+
+def _save_summary_report(results: Any, run_dir: Path, spec_config: Dict) -> None:
+    """Save formatted summary report."""
+    logger = logging.getLogger(__name__)
+    summary_file = run_dir / "summary.txt"
+    
+    with open(summary_file, 'w') as f:
+        # Header
+        f.write("=" * 80 + "\n")
+        f.write("REGRESSION ANALYSIS RESULTS\n")
+        f.write("=" * 80 + "\n\n")
         
-        "model_specification": {
-            "add_intercept": settings.get('add_intercept', True),
-            "alpha": float(settings.get('alpha', 1e-3)),
-            "forget_factor": float(settings.get('forget_factor', 1.0)),
-            "chunk_size": int(settings.get('chunk_size', 20000)),
-            "n_workers": int(settings.get('n_workers', 4))
-        },
+        # Specification info
+        f.write(f"Analysis: {spec_config['description']}\n")
+        f.write(f"Model Type: {results.model_type.upper()}\n")
+        f.write(f"Data Source: {spec_config.get('data_source', 'N/A')}\n")
+        f.write(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write("\n" + "-" * 80 + "\n\n")
         
-        "sample_statistics": {
-            "n_observations": int(rls.n_obs),
-            "n_features": int(rls.n_features),
-            "n_clusters_1": n_clusters_1,
-            "n_clusters_2": n_clusters_2,
-            "n_cluster_intersections": n_intersections,
-            "feature_names": feature_names
-        },
+        # Model statistics
+        f.write("MODEL STATISTICS\n")
+        f.write("-" * 80 + "\n")
+        f.write(f"Observations:           {results.n_obs:>15,}\n")
+        f.write(f"Features:               {results.n_features:>15}\n")
+        f.write(f"R-squared:              {results.r_squared:>15.6f}\n")
+        f.write(f"Adjusted R-squared:     {results.adj_r_squared:>15.6f}\n")
+        f.write(f"Residual Sum of Squares:{results.rss:>15.2f}\n")
+        f.write(f"Root MSE:               {np.sqrt(results.rss/results.n_obs):>15.6f}\n")
         
-        "model_fit": {
-            "residual_sum_squares": float(rls.rss),
-            "r_squared": float(r_squared),
-            "adjusted_r_squared": float(adj_r_squared),
-            "root_mean_squared_error": float(np.sqrt(rls.rss / rls.n_obs)) if rls.n_obs > 0 else 0,
-            "degrees_of_freedom": int(rls.n_obs - rls.n_features) if rls.n_obs > rls.n_features else 0
-        },
+        # Add F-statistic if available
+        if results.f_statistic is not None:
+            f.write(f"F-statistic:            {results.f_statistic:>15.4f}\n")
+            if results.f_pvalue is not None:
+                f.write(f"F-test p-value:         {results.f_pvalue:>15.6f}\n")
+            if results.df_model is not None and results.df_resid is not None:
+                f.write(f"Degrees of freedom:     {results.df_model:>7,} (model), {results.df_resid:>7,} (resid)\n")
         
-        "coefficients": {
-            "estimates": {
-                feature_names[i]: {
-                    "coefficient": float(rls.theta[i]),
-                    "std_error": float(summary.iloc[i]['std_error']),
-                    "t_statistic": float(summary.iloc[i]['t_statistic']),
-                    "p_value": float(summary.iloc[i]['p_value']),
-                    "ci_lower_95": float(rls.theta[i] - 1.96 * summary.iloc[i]['std_error']),
-                    "ci_upper_95": float(rls.theta[i] + 1.96 * summary.iloc[i]['std_error']),
-                    "significant_5pct": bool(summary.iloc[i]['p_value'] < 0.05),
-                    "significant_1pct": bool(summary.iloc[i]['p_value'] < 0.01)
-                }
-                for i in range(len(feature_names))
-            },
-            "covariance_matrix": rls.get_cluster_robust_covariance(cluster_type).tolist() if cluster_type != 'classical' else rls.get_covariance_matrix().tolist()
-        },
+        f.write(f"Standard Error Type:    {results.cluster_type:>15}\n")
+        f.write("\n" + "-" * 80 + "\n\n")
         
-        "inference": {
-            "standard_error_type": cluster_type,
-            "cluster_robust": cluster_type != 'classical',
-            "hypothesis_tests": {
-                "joint_significance": {
-                    "description": "F-test for joint significance of all coefficients (excluding intercept)",
-                    "test_statistic": None,  # Could be calculated if needed
-                    "p_value": None,
-                    "critical_value_5pct": None
-                }
-            }
-        },
+        # Coefficient table
+        f.write("COEFFICIENT ESTIMATES\n")
+        f.write("-" * 80 + "\n")
+        summary_df = results.summary()
+        f.write(summary_df.to_string())
+        f.write("\n\n")
         
-        "diagnostics": {
-            "convergence": {
-                "converged": True,  # Online RLS always converges
-                "regularization_applied": bool(rls.alpha > 0),
-                "numerical_issues": False  # Could be flagged during processing
-            },
-            "data_quality": {
-                "missing_values_handled": True,
-                "infinite_values_handled": True,
-                "outlier_detection": False
-            }
-        },
+        # Significance legend
+        f.write("Significance levels: *** p<0.01, ** p<0.05, * p<0.10\n")
+        f.write("\n" + "-" * 80 + "\n\n")
         
-        "computational_details": {
-            "algorithm": "Online Recursive Least Squares",
-            "implementation": "Vectorized batch processing with parallel partition handling",
-            "memory_efficient": True,
-            "processing_time_seconds": None,  # Could be tracked
-            "partitions_processed": None,  # Could be tracked
-            "partitions_failed": None  # Could be tracked
-        },
+        # Cluster diagnostics if available
+        if results.cluster_diagnostics:
+            f.write("CLUSTER DIAGNOSTICS\n")
+            f.write("-" * 80 + "\n")
+            for dim_name, diag in results.cluster_diagnostics.items():
+                f.write(f"\n{dim_name.upper()}:\n")
+                f.write(f"  Number of clusters:  {diag['n_clusters']:>10,}\n")
+                f.write(f"  Min cluster size:    {diag['min_size']:>10,}\n")
+                f.write(f"  Max cluster size:    {diag['max_size']:>10,}\n")
+                f.write(f"  Mean cluster size:   {diag['mean_size']:>10.1f}\n")
+                f.write(f"  Median cluster size: {diag['median_size']:>10.1f}\n")
+                
+                if diag.get('warnings'):
+                    f.write("\n  Warnings:\n")
+                    for warning in diag['warnings']:
+                        f.write(f"    ⚠  {warning}\n")
+            f.write("\n" + "-" * 80 + "\n\n")
         
-        "summary_table": {
-            "coefficient_table": [
-                {
-                    "variable": feature_names[i],
-                    "coefficient": float(rls.theta[i]),
-                    "std_error": float(summary.iloc[i]['std_error']),
-                    "t_statistic": float(summary.iloc[i]['t_statistic']),
-                    "p_value": float(summary.iloc[i]['p_value']),
-                    "significance": "***" if summary.iloc[i]['p_value'] < 0.01 else 
-                                   "**" if summary.iloc[i]['p_value'] < 0.05 else 
-                                   "*" if summary.iloc[i]['p_value'] < 0.10 else ""
-                }
-                for i in range(len(feature_names))
-            ]
-        }
+        # First stage results for 2SLS
+        if results.first_stage_results:
+            f.write("FIRST STAGE RESULTS\n")
+            f.write("=" * 80 + "\n\n")
+            for i, fs in enumerate(results.first_stage_results):
+                endog_var = results.metadata.get('endogenous_variables', [f"endog_{i}"])[i]
+                f.write(f"First Stage {i+1}: {endog_var}\n")
+                f.write("-" * 80 + "\n")
+                f.write(fs.summary().to_string())
+                f.write(f"\n\nR-squared: {fs.r_squared:.6f}\n")
+                f.write(f"Adjusted R-squared: {fs.adj_r_squared:.6f}\n")
+                
+                # Add F-statistic for first stage
+                if fs.f_statistic is not None:
+                    f.write(f"F-statistic (overall model): {fs.f_statistic:.4f}")
+                    if fs.f_pvalue is not None:
+                        f.write(f" (p-value: {fs.f_pvalue:.6f})")
+                    if fs.df_model is not None and fs.df_resid is not None:
+                        f.write(f" [df_model={fs.df_model}, df_resid={fs.df_resid}]")
+                    f.write("\n")
+                
+                # Add IV-specific F-statistic if available
+                if fs.metadata.get('iv_f_statistic') is not None:
+                    iv_f_stat = fs.metadata['iv_f_statistic']
+                    iv_f_df = fs.metadata['iv_f_df']
+                    f.write(f"F-statistic (instruments only): {iv_f_stat:.4f}")
+                    if iv_f_df is not None:
+                        f.write(f" [df_instr={iv_f_df[0]}, df_resid={iv_f_df[1]}]")
+                    f.write("\n")
+                
+                f.write("\n" + "=" * 80 + "\n\n")
+        
+        # Footer
+        f.write("=" * 80 + "\n")
+        f.write("End of Report\n")
+        f.write("=" * 80 + "\n")
+    
+    logger.info(f"✓ Saved summary report: summary.txt")
+
+
+def _save_coefficient_table(results: Any, run_dir: Path) -> None:
+    """Save coefficient table as CSV."""
+    logger = logging.getLogger(__name__)  # Add this line
+    csv_file = run_dir / "coefficients.csv"
+    summary_df = results.summary()
+    
+    # Add additional columns
+    summary_df['feature'] = summary_df.index
+    summary_df['n_obs'] = results.n_obs
+    summary_df['r_squared'] = results.r_squared
+    
+    # Reorder columns
+    cols = ['feature', 'coefficient', 'std_error', 't_statistic', 'p_value', 'sig', 
+            'n_obs', 'r_squared']
+    summary_df[cols].to_csv(csv_file, index=False)
+    
+    logger.info(f"✓ Saved coefficient table: coefficients.csv")
+
+
+def _save_diagnostics(results: Any, run_dir: Path, spec_config: Dict) -> None:
+    """Save detailed diagnostics."""
+    logger = logging.getLogger(__name__)  # Add this line
+    diag_file = run_dir / "diagnostics.txt"
+    
+    with open(diag_file, 'w') as f:
+        f.write("DIAGNOSTIC INFORMATION\n")
+        f.write("=" * 80 + "\n\n")
+        
+        # Model specification
+        f.write("SPECIFICATION\n")
+        f.write("-" * 80 + "\n")
+        if 'formula' in spec_config:
+            f.write(f"Formula: {spec_config['formula']}\n")
+        f.write(f"Features: {', '.join(results.feature_names)}\n")
+        f.write(f"Target: {spec_config.get('target_col', 'N/A')}\n")
+        f.write("\n")
+        
+        # Cluster information
+        if spec_config.get('cluster1_col') or spec_config.get('cluster2_col'):
+            f.write("CLUSTERING\n")
+            f.write("-" * 80 + "\n")
+            if spec_config.get('cluster1_col'):
+                f.write(f"Cluster Dim 1: {spec_config['cluster1_col']}\n")
+            if spec_config.get('cluster2_col'):
+                f.write(f"Cluster Dim 2: {spec_config['cluster2_col']}\n")
+            f.write("\n")
+        
+        # Feature engineering
+        if 'feature_engineering' in spec_config:
+            f.write("FEATURE ENGINEERING\n")
+            f.write("-" * 80 + "\n")
+            import json
+            f.write(json.dumps(spec_config['feature_engineering'], indent=2))
+            f.write("\n\n")
+        
+        # Settings
+        f.write("ESTIMATION SETTINGS\n")
+        f.write("-" * 80 + "\n")
+        settings = spec_config.get('settings', {})
+        for key, value in sorted(settings.items()):
+            f.write(f"{key:.<30} {value}\n")
+        f.write("\n")
+        
+        # Coefficient details with confidence intervals
+        f.write("COEFFICIENT DETAILS\n")
+        f.write("-" * 80 + "\n")
+        for i, feat_name in enumerate(results.feature_names):
+            coef_info = results.get_coefficient(feat_name)
+            ci_lower, ci_upper = results.get_confidence_interval(feat_name, alpha=0.05)
+            
+            f.write(f"\n{feat_name}:\n")
+            f.write(f"  Estimate:     {coef_info['coefficient']:>12.6f}\n")
+            f.write(f"  Std Error:    {coef_info['std_error']:>12.6f}\n")
+            f.write(f"  t-statistic:  {coef_info['t_statistic']:>12.4f}\n")
+            f.write(f"  p-value:      {coef_info['p_value']:>12.6f}\n")
+            f.write(f"  95% CI:       [{ci_lower:>11.6f}, {ci_upper:>11.6f}]\n")
+        
+        f.write("\n" + "=" * 80 + "\n")
+    
+    logger.info(f"✓ Saved diagnostics: diagnostics.txt")
+
+
+def _save_config_snapshot(spec_config: Dict, full_config: Dict, run_dir: Path) -> None:
+    """Save configuration snapshot."""
+    logger = logging.getLogger(__name__)  # Add this line
+    import json
+    
+    config_file = run_dir / "config_snapshot.json"
+    snapshot = {
+        'specification': spec_config,
+        'timestamp': datetime.now().isoformat(),
+        'full_config': full_config
     }
     
-    # Remove bootstrap info from results
-    # Save the comprehensive results as JSON
-    try:
-        results_file = run_dir / "analysis_results.json"
-        with open(results_file, 'w') as f:
-            import json
-            json.dump(results, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved comprehensive results: {results_file}")
-        
-        # Also save a human-readable summary
-        summary_file = run_dir / "summary.txt"
-        with open(summary_file, 'w') as f:
-            f.write(f"{'='*80}\n")
-            f.write(f"GNT Analysis Results: {spec_config['description']}\n")
-            f.write(f"{'='*80}\n\n")
-            f.write(f"Analysis Type: Online RLS Regression\n")
-            f.write(f"Specification: {spec_name}\n")
-            f.write(f"Timestamp: {timestamp}\n")
-            f.write(f"Standard Errors: {cluster_type}\n\n")
-            
-            f.write(f"Sample Information:\n")
-            f.write(f"  Observations: {rls.n_obs:,}\n")
-            f.write(f"  Features: {rls.n_features}\n")
-            f.write(f"  Clusters (Dim 1): {n_clusters_1}\n")
-            f.write(f"  Clusters (Dim 2): {n_clusters_2}\n\n")
-            
-            f.write(f"Model Fit:\n")
-            f.write(f"  R-squared: {r_squared:.6f}\n")
-            f.write(f"  Adj. R-squared: {adj_r_squared:.6f}\n")
-            f.write(f"  RMSE: {np.sqrt(rls.rss / rls.n_obs) if rls.n_obs > 0 else 0:.6f}\n")
-            f.write(f"  RSS: {rls.rss:.6f}\n\n")
-            
-            f.write(f"Coefficient Estimates:\n")
-            f.write(f"{'Variable':<20} {'Coeff':<12} {'Std Err':<12} {'t-stat':<10} {'P>|t|':<10} {'Sig':<5}\n")
-            f.write(f"{'-'*75}\n")
-            for i, var in enumerate(feature_names):
-                coef = rls.theta[i]
-                se = summary.iloc[i]['std_error']
-                t_stat = summary.iloc[i]['t_statistic']
-                p_val = summary.iloc[i]['p_value']
-                sig = "***" if p_val < 0.01 else "**" if p_val < 0.05 else "*" if p_val < 0.10 else ""
-                f.write(f"{var:<20} {coef:<12.6f} {se:<12.6f} {t_stat:<10.3f} {p_val:<10.6f} {sig:<5}\n")
-            
-            f.write(f"\nSignificance codes: *** p<0.01, ** p<0.05, * p<0.10\n")
-        
-        logger.info(f"Saved human-readable summary: {summary_file}")
-        
-    except Exception as e:
-        logger.error(f"Failed to save results: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
+    with open(config_file, 'w') as f:
+        json.dump(snapshot, f, indent=2, ensure_ascii=False)
     
-    logger.info(f"Results successfully saved to: {run_dir}")
-    
-    # Log summary of saved files
-    saved_files = list(run_dir.glob("*"))
-    logger.info(f"Total files saved: {len(saved_files)}")
-    for file_path in saved_files:
-        file_size = file_path.stat().st_size
-        logger.info(f"  - {file_path.name}: {file_size:,} bytes")
+    logger.info(f"✓ Saved config snapshot: config_snapshot.json")
 
-def run_online_2sls(config: Dict[str, Any], spec_name: str, 
-                    output_dir: Optional[str] = None, verbose: bool = True) -> Online2SLS:
-    """Run Online 2SLS analysis with specified configuration."""
-    logger = logging.getLogger(__name__)
-    
-    # Get analysis configuration
-    twosls_config = config['analyses']['online_2sls']
-    spec_config = twosls_config['specifications'][spec_name]
-    defaults = twosls_config['defaults']
-    
-    logger.info(f"Running Online 2SLS analysis: {spec_config['description']}")
-    logger.info(f"Data source: {spec_config['data_source']}")
-    
-    # Parse formula to get variable lists
-    endog_cols = None
-    exog_cols = None
-    instr_cols = None
-    
-    # Check if using formula syntax
-    formula = spec_config.get('formula')
-    if formula:
-        from gnt.analysis.models.feature_engineering import FormulaParser
-        
-        logger.info(f"Using formula specification: {formula}")
-        formula_parser = FormulaParser.parse(formula)
-        
-        if not formula_parser.instruments:
-            raise ValueError(f"2SLS formula must contain instruments after '|': {formula}")
-        
-        # Get variables from formula
-        instr_cols = formula_parser.instruments
-        all_features = formula_parser.features
-        
-        # Extract feature engineering config
-        feature_engineering = spec_config.get('feature_engineering') or defaults.get('feature_engineering')
-        
-        # Determine endogenous vs exogenous
-        if feature_engineering and 'endogenous' in feature_engineering:
-            endog_cols = feature_engineering['endogenous']
-            exog_cols = [f for f in all_features if f not in endog_cols]
-        else:
-            # Default: all features are endogenous
-            endog_cols = all_features
-            exog_cols = []
-        
-        logger.info(f"Parsed from formula - Endogenous: {endog_cols}, Exogenous: {exog_cols}, Instruments: {instr_cols}")
-    else:
-        # Use explicit specification
-        endog_cols = spec_config.get('endogenous_cols')
-        exog_cols = spec_config.get('exogenous_cols')
-        instr_cols = spec_config.get('instrument_cols')
-        
-        # Validate instrument rank condition
-        n_endogenous = len(endog_cols) if endog_cols else 0
-        n_instruments = len(instr_cols) if instr_cols else 0
-        
-        if n_endogenous > 0 and n_instruments > 0 and n_instruments < n_endogenous:
-            raise ValueError(f"Under-identified model: {n_instruments} instruments for {n_endogenous} endogenous variables")
-        
-        if n_endogenous > 0 and n_instruments > 0:
-            logger.info(f"Identification: {n_instruments} instruments for {n_endogenous} endogenous variables")
-    
-    # Merge settings with proper type conversion
-    settings = {**defaults, **spec_config.get('settings', {})}
-    
-    # Override with HPC defaults if not specified
-    hpc_config = config.get('hpc', {})
-    if 'n_workers' not in settings:
-        default_workers = hpc_config.get('default_workers', 4)
-        if isinstance(default_workers, str):
-            try:
-                settings['n_workers'] = int(default_workers)
-            except ValueError:
-                settings['n_workers'] = 4
-        else:
-            settings['n_workers'] = default_workers
-    
-    # Ensure critical parameters are proper types
-    settings['alpha'] = float(settings.get('alpha', 1e-3))
-    settings['forget_factor'] = float(settings.get('forget_factor', 1.0))
-    settings['chunk_size'] = int(settings.get('chunk_size', 20000))
-    settings['n_workers'] = int(settings.get('n_workers', 4))
-    settings['add_intercept'] = bool(settings.get('add_intercept', True))
-    settings['show_progress'] = bool(settings.get('show_progress', True))
-    settings['verbose'] = bool(settings.get('verbose', verbose))
-    
-    # Get cluster type for standard errors
-    cluster_type = settings.get('cluster_type', 'classical')
-    
-    # Extract feature engineering configuration
-    feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
-    
-    if feature_engineering:
-        logger.info(f"Feature engineering enabled with {len(feature_engineering.get('transformations', []))} transformations")
-        for i, transform in enumerate(feature_engineering.get('transformations', [])):
-            logger.info(f"  Transformation {i+1}: {transform.get('type', 'unknown')} - {transform}")
-    else:
-        logger.info("No feature engineering specified - using original features only")
-    
-    logger.info(f"Analysis settings: alpha={settings['alpha']}, chunk_size={settings['chunk_size']}, n_workers={settings['n_workers']}, verbose={settings['verbose']}")
-    logger.info(f"Standard error type: {cluster_type}")
-    
-    # Run the analysis with error handling
-    twosls = None
-    try:
-        twosls = process_partitioned_dataset_2sls(
-            parquet_path=spec_config['data_source'],
-            endog_cols=endog_cols,
-            exog_cols=exog_cols,
-            instr_cols=instr_cols,
-            target_col=spec_config.get('target_col'),
-            cluster1_col=spec_config.get('cluster1_col'),
-            cluster2_col=spec_config.get('cluster2_col'),
-            add_intercept=settings['add_intercept'],
-            chunk_size=settings['chunk_size'],
-            n_workers=settings['n_workers'],
-            alpha=settings['alpha'],
-            forget_factor=settings['forget_factor'],
-            show_progress=settings['show_progress'],
-            verbose=settings['verbose'],
-            feature_engineering=feature_engineering,
-            formula=formula  # Pass formula to parser
-        )
-        
-        # Generate summary with correct cluster type
-        first_stage_summaries = twosls.get_first_stage_summary()
-        second_stage_summary = twosls.get_second_stage_summary()
-        
-        logger.info(f"Analysis complete! Total observations: {twosls.total_obs:,}")
-        logger.info("2SLS Regression Summary:")
-        print("\n" + "="*50)
-        print(f"Analysis: {spec_config['description']}")
-        print(f"Standard Errors: {cluster_type}")
-        if feature_engineering:
-            print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
-        print("="*50)
-        
-        # Print First Stage Results - use parsed endog_cols
-        print("First Stage Results:")
-        print("-" * 50)
-        for i, (endogen_var, summary) in enumerate(zip(endog_cols, first_stage_summaries)):
-            print(f"\nFirst Stage {i+1}: {endogen_var}")
-            print("-" * 30)
-            # Filter out the metadata rows (r_squared, adj_r_squared, observations)
-            coeff_summary = summary.iloc[:-3] if len(summary) > 3 else summary
-            print(coeff_summary.to_string())
-            
-            # Print R-squared statistics if available
-            if 'r_squared' in summary.index:
-                r_sq = summary.loc['r_squared'].iloc[-1] if hasattr(summary.loc['r_squared'], 'iloc') else summary.loc['r_squared']
-                print(f"R-squared: {float(r_sq):.6f}")
-            if 'adj_r_squared' in summary.index:
-                adj_r_sq = summary.loc['adj_r_squared'].iloc[-1] if hasattr(summary.loc['adj_r_squared'], 'iloc') else summary.loc['adj_r_squared']
-                print(f"Adjusted R-squared: {float(adj_r_sq):.6f}")
-            if 'observations' in summary.index:
-                n_obs = summary.loc['observations'].iloc[-1] if hasattr(summary.loc['observations'], 'iloc') else summary.loc['observations']
-                print(f"Observations: {int(n_obs):,}")
-        
-        print("\n" + "="*50)
-        print("Second Stage Results:")
-        print("-" * 50)
-        # Filter out metadata rows for second stage too
-        second_stage_coeff = second_stage_summary.iloc[:-3] if len(second_stage_summary) > 3 else second_stage_summary
-        print(second_stage_coeff.to_string())
-        
-        # Print second stage R-squared statistics
-        if 'r_squared' in second_stage_summary.index:
-            r_sq = second_stage_summary.loc['r_squared'].iloc[-1] if hasattr(second_stage_summary.loc['r_squared'], 'iloc') else second_stage_summary.loc['r_squared']
-            print(f"R-squared: {float(r_sq):.6f}")
-        if 'adj_r_squared' in second_stage_summary.index:
-            adj_r_sq = second_stage_summary.loc['adj_r_squared'].iloc[-1] if hasattr(second_stage_summary.loc['adj_r_squared'], 'iloc') else second_stage_summary.loc['adj_r_squared']
-            print(f"Adjusted R-squared: {float(adj_r_sq):.6f}")
-        if 'observations' in second_stage_summary.index:
-            n_obs = second_stage_summary.loc['observations'].iloc[-1] if hasattr(second_stage_summary.loc['observations'], 'iloc') else second_stage_summary.loc['observations']
-            print(f"Observations: {int(n_obs):,}")
-        
-        print("="*50)
-        
-        # Save results if output directory specified
-        if output_dir:
-            save_2sls_results(twosls, second_stage_summary, first_stage_summaries, spec_name, spec_config, output_dir, config, endog_cols, exog_cols, instr_cols)
-            
-    except Exception as e:
-        logger.error(f"2SLS analysis failed with error: {str(e)}")
-        # If we have partial results, try to save them
-        if twosls is not None and twosls.total_obs > 0:
-            logger.warning("Attempting to save partial 2SLS results...")
-            try:
-                first_stage_summaries = twosls.get_first_stage_summary()
-                second_stage_summary = twosls.get_second_stage_summary()
-                
-                logger.info(f"Partial 2SLS analysis results - Total observations: {twosls.total_obs:,}")
-                print("\n" + "="*50)
-                print(f"PARTIAL RESULTS - Analysis: {spec_config['description']}")
-                print(f"Standard Errors: {cluster_type}")
-                if feature_engineering:
-                    print(f"Feature Engineering: {len(feature_engineering.get('transformations', []))} transformations")
-                print("="*50)
-                
-                # Print partial first stage results - use parsed endog_cols
-                print("First Stage Results (Partial):")
-                print("-" * 50)
-                for i, (endogen_var, summary) in enumerate(zip(endog_cols, first_stage_summaries)):
-                    print(f"\nFirst Stage {i+1}: {endogen_var}")
-                    print("-" * 30)
-                    coeff_summary = summary.iloc[:-3] if len(summary) > 3 else summary
-                    print(coeff_summary.to_string())
-                
-                print("\n" + "="*50)
-                print("Second Stage Results (Partial):")
-                print("-" * 50)
-                second_stage_coeff = second_stage_summary.iloc[:-3] if len(second_stage_summary) > 3 else second_stage_summary
-                print(second_stage_coeff.to_string())
-                print("="*50)
-                
-                if output_dir:
-                    save_2sls_results(twosls, second_stage_summary, first_stage_summaries, f"{spec_name}_partial", spec_config, output_dir, config, endog_cols, exog_cols, instr_cols)
-                    logger.info("Partial 2SLS results saved successfully")
-                    
-            except Exception as save_error:
-                logger.error(f"Failed to save partial 2SLS results: {save_error}")
-        
-        # Re-raise the original error
-        raise e
-    
-    return twosls
 
-def save_2sls_results(twosls: Online2SLS, summary: pd.DataFrame, 
-                      first_stage_summaries: List[pd.DataFrame], spec_name: str,
-                      spec_config: Dict[str, Any], output_dir: str, 
-                      config: Dict[str, Any],
-                      endog_cols: List[str],
-                      exog_cols: List[str],
-                      instr_cols: List[str]) -> None:
-    """Save 2SLS analysis results with IV-specific diagnostics."""
-    logger = logging.getLogger(__name__)
+def _save_latex_table(results: Any, run_dir: Path) -> None:
+    """Save LaTeX-formatted table."""
+    logger = logging.getLogger(__name__)  # Add this line
+    latex_file = run_dir / "table.tex"
+    summary_df = results.summary()
     
-    output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    with open(latex_file, 'w') as f:
+        f.write("% Regression Results Table\n")
+        f.write("% Generated: " + datetime.now().strftime('%Y-%m-%d %H:%M:%S') + "\n\n")
+        f.write("\\begin{table}[htbp]\n")
+        f.write("\\centering\n")
+        f.write("\\caption{Regression Results}\n")
+        f.write("\\begin{tabular}{lcccc}\n")
+        f.write("\\hline\\hline\n")
+        f.write("Variable & Coefficient & Std. Error & t-stat & p-value \\\\\n")
+        f.write("\\hline\n")
+        
+        for idx, row in summary_df.iterrows():
+            sig_marker = row.get('sig', '')
+            f.write(f"{idx} & {row['coefficient']:.4f}{sig_marker} & "
+                   f"({row['std_error']:.4f}) & {row['t_statistic']:.2f} & "
+                   f"{row['p_value']:.3f} \\\\\n")
+        
+        f.write("\\hline\n")
+        f.write(f"Observations & \\multicolumn{{4}}{{c}}{{{results.n_obs:,}}} \\\\\n")
+        f.write(f"R-squared & \\multicolumn{{4}}{{c}}{{{results.r_squared:.4f}}} \\\\\n")
+        f.write("\\hline\\hline\n")
+        f.write("\\end{tabular}\n")
+        f.write("\\begin{minipage}{\\textwidth}\n")
+        f.write("\\small\n")
+        f.write("\\textit{Notes:} Standard errors in parentheses. ")
+        f.write(f"Standard errors are {results.cluster_type}. ")
+        f.write("$^{***}$p$<$0.01, $^{**}$p$<$0.05, $^{*}$p$<$0.10.\n")
+        f.write("\\end{minipage}\n")
+        f.write("\\end{table}\n")
     
-    # Create timestamped subdirectory
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_dir = output_path / f"{spec_name}_{timestamp}"
-    run_dir.mkdir(exist_ok=True)
+    logger.info(f"✓ Saved LaTeX table: table.tex")
+
+
+def _create_readme(results: Any, run_dir: Path, spec_config: Dict, timestamp: str) -> None:
+    """Create README file with analysis overview."""
+    logger = logging.getLogger(__name__)  # Add this line
+    readme_file = run_dir / "README.md"
     
-    logger.info(f"Saving 2SLS results to: {run_dir}")
+    with open(readme_file, 'w') as f:
+        f.write(f"# Analysis Results: {spec_config['description']}\n\n")
+        f.write(f"**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+        
+        f.write("## Overview\n\n")
+        f.write(f"- **Model Type:** {results.model_type.upper()}\n")
+        f.write(f"- **Observations:** {results.n_obs:,}\n")
+        f.write(f"- **Features:** {results.n_features}\n")
+        f.write(f"- **R²:** {results.r_squared:.4f}\n")
+        f.write(f"- **Standard Errors:** {results.cluster_type}\n\n")
+        
+        f.write("## Files\n\n")
+        f.write("| File | Description |\n")
+        f.write("|------|-------------|\n")
+        f.write("| `summary.txt` | Full formatted analysis report |\n")
+        f.write("| `results.json` | Complete results in JSON format |\n")
+        f.write("| `coefficients.csv` | Coefficient table (CSV) |\n")
+        f.write("| `diagnostics.txt` | Detailed diagnostics and confidence intervals |\n")
+        f.write("| `table.tex` | LaTeX-formatted results table |\n")
+        f.write("| `config_snapshot.json` | Configuration used for this run |\n\n")
+        
+        if spec_config.get('formula'):
+            f.write("## Specification\n\n")
+            f.write(f"```\n{spec_config['formula']}\n```\n\n")
+        
+        f.write("## Quick Results\n\n")
+        f.write("### Top 5 Coefficients by Magnitude\n\n")
+        summary_df = results.summary()
+        top_5 = summary_df.nlargest(5, 'coefficient', keep='all')
+        f.write("| Variable | Coefficient | p-value |\n")
+        f.write("|----------|-------------|----------|\n")
+        for idx, row in top_5.iterrows():
+            sig = row.get('sig', '')
+            f.write(f"| {idx} | {row['coefficient']:.4f}{sig} | {row['p_value']:.4f} |\n")
+        f.write("\n")
+        
+        if results.cluster_diagnostics:
+            f.write("## Cluster Information\n\n")
+            for dim_name, diag in results.cluster_diagnostics.items():
+                f.write(f"### {dim_name}\n\n")
+                f.write(f"- Clusters: {diag['n_clusters']:,}\n")
+                f.write(f"- Cluster size: {diag['min_size']:,} - {diag['max_size']:,} "
+                       f"(mean: {diag['mean_size']:.1f})\n\n")
+        
+        f.write("---\n")
+        f.write(f"*Analysis ID: {timestamp}*\n")
     
-    # Get cluster type and analysis settings
-    settings = {**config['analyses']['online_2sls']['defaults'], **spec_config.get('settings', {})}
-    cluster_type = settings.get('cluster_type', 'classical')
-    
-    # Use feature names from the model if available (second stage)
-    if hasattr(twosls.second_stage, 'feature_names'):
-        feature_names = twosls.second_stage.get_feature_names()
-    else:
-        # Fallback to constructing names manually
-        feature_names = []
-        if settings.get('add_intercept', True):
-            feature_names.append('intercept')
-        # Add fitted endogenous variables first
-        feature_names.extend([f"{name}(fitted)" for name in endog_cols])
-        # Then add exogenous variables
-        feature_names.extend(exog_cols)
-    
-    # Create feature names for first stage
-    first_stage_feature_names = []
-    if settings.get('add_intercept', True):
-        first_stage_feature_names.append('intercept')
-    first_stage_feature_names.extend(exog_cols)
-    first_stage_feature_names.extend(instr_cols)
-    
-    # Calculate additional statistics
-    n_clusters_1 = len(twosls.second_stage.cluster_stats) if twosls.second_stage.cluster_stats else 0
-    n_clusters_2 = len(twosls.second_stage.cluster2_stats) if twosls.second_stage.cluster2_stats else 0
-    n_intersections = len(twosls.second_stage.intersection_stats) if twosls.second_stage.intersection_stats else 0
-    
-    # Calculate R-squared and adjusted R-squared using proper methods
-    r_squared = twosls.second_stage.get_r_squared()
-    adj_r_squared = twosls.second_stage.get_adjusted_r_squared()
-    
-    # Create comprehensive first stage results
-    first_stage_results = {}
-    first_stage_stats = {}
-    
-    for i, (fs_summary, endogen_name) in enumerate(zip(first_stage_summaries, endog_cols)):
-        # Extract coefficient summary (exclude metadata rows)
-        coeff_summary = fs_summary.iloc[:-3] if len(fs_summary) > 3 else fs_summary
-        
-        # Create first stage coefficient table
-        first_stage_coefficients = []
-        for j, feature_name in enumerate(first_stage_feature_names):
-            if j < len(coeff_summary):
-                row = coeff_summary.iloc[j]
-                first_stage_coefficients.append({
-                    "variable": feature_name,
-                    "coefficient": float(row['coefficient']) if 'coefficient' in row else float(twosls.first_stage_models[i].theta[j]),
-                    "std_error": float(row['std_error']) if 'std_error' in row else 0.0,
-                    "t_statistic": float(row['t_statistic']) if 't_statistic' in row else 0.0,
-                    "p_value": float(row['p_value']) if 'p_value' in row else 1.0,
-                    "significance": "***" if ('p_value' in row and row['p_value'] < 0.01) else 
-                                   "**" if ('p_value' in row and row['p_value'] < 0.05) else 
-                                   "*" if ('p_value' in row and row['p_value'] < 0.10) else ""
-                })
-        
-        # Extract R-squared statistics
-        r_sq = fs_summary.loc['r_squared', fs_summary.columns[-1]] if 'r_squared' in fs_summary.index else 0.0
-        adj_r_sq = fs_summary.loc['adj_r_squared', fs_summary.columns[-1]] if 'adj_r_squared' in fs_summary.index else 0.0
-        n_obs_fs = fs_summary.loc['observations', fs_summary.columns[-1]] if 'observations' in fs_summary.index else 0
-        
-        first_stage_results[endogen_name] = {
-            "dependent_variable": endogen_name,
-            "r_squared": float(r_sq),
-            "adjusted_r_squared": float(adj_r_sq),
-            "observations": int(n_obs_fs),
-            "rss": float(twosls.first_stage_models[i].rss),
-            "rmse": float(np.sqrt(twosls.first_stage_models[i].rss / n_obs_fs)) if n_obs_fs > 0 else 0.0,
-            "coefficients": first_stage_coefficients,
-            "covariance_matrix": twosls.first_stage_models[i].get_cluster_robust_covariance(cluster_type).tolist() if cluster_type != 'classical' else twosls.first_stage_models[i].get_covariance_matrix().tolist()
-        }
-        
-        # Also keep the simple stats for backward compatibility
-        first_stage_stats[f"{endogen_name}_r_squared"] = float(r_sq)
-        first_stage_stats[f"{endogen_name}_adj_r_squared"] = float(adj_r_sq)
-        first_stage_stats[f"{endogen_name}_observations"] = int(n_obs_fs)
-    
-    # Determine target variable - handle both formula and explicit specification
-    target_variable = None
-    
-    if 'formula' in spec_config:
-        # Parse formula to extract target
-        from gnt.analysis.models.feature_engineering import FormulaParser
-        formula_parser = FormulaParser.parse(spec_config['formula'])
-        target_variable = formula_parser.target
-    else:
-        # Use explicit specification
-        target_variable = spec_config.get('target_col')
-    
-    # Create comprehensive results dictionary
-    results = {
-        "metadata": {
-            "analysis_type": "online_2sls",
-            "specification": spec_name,
-            "description": spec_config['description'],
-            "timestamp": timestamp,
-            "cluster_type": cluster_type,
-            "data_source": spec_config['data_source'],
-            "target_variable": target_variable,
-            "feature_variables": exog_cols + endog_cols,
-            "formula": spec_config.get('formula'),  # Include formula if present
-            "cluster_variables": {
-                "cluster1": spec_config.get('cluster1_col'),
-                "cluster2": spec_config.get('cluster2_col')
-            }
-        },
-        
-        "model_specification": {
-            "add_intercept": settings.get('add_intercept', True),
-            "alpha": float(settings.get('alpha', 1e-3)),
-            "forget_factor": float(settings.get('forget_factor', 1.0)),
-            "chunk_size": int(settings.get('chunk_size', 20000)),
-            "n_workers": int(settings.get('n_workers', 4))
-        },
-        
-        "sample_statistics": {
-            "n_observations": int(twosls.total_obs),
-            "n_features": int(twosls.second_stage.n_features),
-            "n_clusters_1": n_clusters_1,
-            "n_clusters_2": n_clusters_2,
-            "n_cluster_intersections": n_intersections,
-            "feature_names": feature_names
-        },
-        
-        "model_fit": {
-            "residual_sum_squares": float(twosls.second_stage.rss),
-            "r_squared": float(r_squared),
-            "adjusted_r_squared": float(adj_r_squared),
-            "root_mean_squared_error": float(np.sqrt(twosls.second_stage.rss / twosls.total_obs)) if twosls.total_obs > 0 else 0,
-            "degrees_of_freedom": int(twosls.total_obs - twosls.second_stage.n_features) if twosls.total_obs > twosls.second_stage.n_features else 0
-        },
-        
-        "coefficients": {
-            "estimates": {
-                feature_names[i]: {
-                    "coefficient": float(twosls.second_stage.theta[i]),
-                    "std_error": float(summary.iloc[i]['std_error']),
-                    "t_statistic": float(summary.iloc[i]['t_statistic']),
-                    "p_value": float(summary.iloc[i]['p_value']),
-                    "ci_lower_95": float(twosls.second_stage.theta[i] - 1.96 * summary.iloc[i]['std_error']),
-                    "ci_upper_95": float(twosls.second_stage.theta[i] + 1.96 * summary.iloc[i]['std_error']),
-                    "significant_5pct": bool(summary.iloc[i]['p_value'] < 0.05),
-                    "significant_1pct": bool(summary.iloc[i]['p_value'] < 0.01)
-                }
-                for i in range(len(feature_names))
-            },
-            "covariance_matrix": twosls.second_stage.get_cluster_robust_covariance(cluster_type).tolist() if cluster_type != 'classical' else twosls.second_stage.get_covariance_matrix().tolist()
-        },
-        
-        "inference": {
-            "standard_error_type": cluster_type,
-            "cluster_robust": cluster_type != 'classical',
-            "hypothesis_tests": {
-                "joint_significance": {
-                    "description": "F-test for joint significance of all coefficients (excluding intercept)",
-                    "test_statistic": None,
-                    "p_value": None,
-                    "critical_value_5pct": None
-                }
-            }
-        },
-        
-        "diagnostics": {
-            "convergence": {
-                "converged": True,
-                "regularization_applied": bool(twosls.alpha > 0),
-                "numerical_issues": False
-            },
-            "data_quality": {
-                "missing_values_handled": True,
-                "infinite_values_handled": True,
-                "outlier_detection": False
-            }
-        },
-        
-        "computational_details": {
-            "algorithm": "Online Two-Stage Least Squares",
-            "implementation": "Vectorized batch processing with parallel partition handling",
-            "memory_efficient": True,
-            "processing_time_seconds": None,
-            "partitions_processed": None,
-            "partitions_failed": None
-        },
-        
-        "summary_table": {
-            "coefficient_table": [
-                {
-                    "variable": feature_names[i],
-                    "coefficient": float(twosls.second_stage.theta[i]),
-                    "std_error": float(summary.iloc[i]['std_error']),
-                    "t_statistic": float(summary.iloc[i]['t_statistic']),
-                    "p_value": float(summary.iloc[i]['p_value']),
-                    "significance": "***" if summary.iloc[i]['p_value'] < 0.01 else 
-                                   "**" if summary.iloc[i]['p_value'] < 0.05 else 
-                                   "*" if summary.iloc[i]['p_value'] < 0.10 else ""
-                }
-                for i in range(len(feature_names))
-            ]
-        },
-        
-        "iv_specification": {
-            "exogenous_variables": exog_cols,
-            "endogenous_variables": endog_cols,
-            "instrument_variables": instr_cols,
-            "identification_status": {
-                "n_endogenous": len(endog_cols),
-                "n_instruments": len(instr_cols),
-                "over_identified": len(instr_cols) > len(endog_cols),
-                "rank_condition_satisfied": True  # Assume satisfied for now
-            }
-        },
-        
-        "first_stage_results": first_stage_results,
-        "first_stage_diagnostics": first_stage_stats
-    }
-    
-    # Save the comprehensive results as JSON
-    try:
-        results_file = run_dir / "analysis_results.json"
-        with open(results_file, 'w') as f:
-            import json
-            json.dump(results, f, indent=2, ensure_ascii=False)
-        logger.info(f"Saved comprehensive 2SLS results: {results_file}")
-        
-        # Also save a human-readable summary
-        summary_file = run_dir / "summary.txt"
-        with open(summary_file, 'w') as f:
-            f.write(f"{'='*80}\n")
-            f.write(f"GNT Analysis Results: {spec_config['description']}\n")
-            f.write(f"{'='*80}\n\n")
-            f.write(f"Analysis Type: Online 2SLS Regression\n")
-            f.write(f"Specification: {spec_name}\n")
-            f.write(f"Timestamp: {timestamp}\n")
-            f.write(f"Standard Errors: {cluster_type}\n\n")
-            
-            f.write(f"Instrument Specification:\n")
-            f.write(f"  Exogenous variables: {exog_cols}\n")
-            f.write(f"  Endogenous variables: {endog_cols}\n")
-            f.write(f"  Instruments: {instr_cols}\n")
-            f.write(f"  Identification: {'Over-identified' if len(instr_cols) > len(endog_cols) else 'Just-identified'}\n\n")
-            
-            f.write(f"Sample Information:\n")
-            f.write(f"  Observations: {twosls.total_obs:,}\n")
-            f.write(f"  Features: {twosls.second_stage.n_features}\n")
-            f.write(f"  Clusters (Dim 1): {n_clusters_1}\n")
-            f.write(f"  Clusters (Dim 2): {n_clusters_2}\n\n")
-            
-            # Write full first stage results
-            f.write(f"FIRST STAGE RESULTS\n")
-            f.write(f"{'='*80}\n\n")
-            
-            for i, (endogen_name, fs_results) in enumerate(first_stage_results.items()):
-                f.write(f"First Stage {i+1}: {endogen_name}\n")
-                f.write(f"{'-'*50}\n")
-                f.write(f"Dependent Variable: {endogen_name}\n")
-                f.write(f"R-squared: {fs_results['r_squared']:.6f}\n")
-                f.write(f"Adjusted R-squared: {fs_results['adjusted_r_squared']:.6f}\n")
-                f.write(f"Observations: {fs_results['observations']:,}\n")
-                f.write(f"RMSE: {fs_results['rmse']:.6f}\n")
-                f.write(f"RSS: {fs_results['rss']:.6f}\n\n")
-                
-                f.write(f"Coefficient Estimates:\n")
-                f.write(f"{'Variable':<25} {'Coeff':<12} {'Std Err':<12} {'t-stat':<10} {'P>|t|':<10} {'Sig':<5}\n")
-                f.write(f"{'-'*80}\n")
-                
-                for coeff_info in fs_results['coefficients']:
-                    var = coeff_info['variable']
-                    coef = coeff_info['coefficient']
-                    se = coeff_info['std_error']
-                    t_stat = coeff_info['t_statistic']
-                    p_val = coeff_info['p_value']
-                    sig = coeff_info['significance']
-                    f.write(f"{var:<25} {coef:<12.6f} {se:<12.6f} {t_stat:<10.3f} {p_val:<10.6f} {sig:<5}\n")
-                
-                f.write(f"\n")
-            
-            f.write(f"SECOND STAGE RESULTS\n")
-            f.write(f"{'='*80}\n\n")
-            
-            f.write(f"Model Fit:\n")
-            f.write(f"  R-squared: {r_squared:.6f}\n")
-            f.write(f"  Adj. R-squared: {adj_r_squared:.6f}\n")
-            f.write(f"  RMSE: {np.sqrt(twosls.second_stage.rss / twosls.total_obs) if twosls.total_obs > 0 else 0:.6f}\n")
-            f.write(f"  RSS: {twosls.second_stage.rss:.6f}\n\n")
-            
-            f.write(f"Coefficient Estimates:\n")
-            f.write(f"{'Variable':<25} {'Coeff':<12} {'Std Err':<12} {'t-stat':<10} {'P>|t|':<10} {'Sig':<5}\n")
-            f.write(f"{'-'*80}\n")
-            for i, var in enumerate(feature_names):
-                coef = twosls.second_stage.theta[i]
-                se = summary.iloc[i]['std_error']
-                t_stat = summary.iloc[i]['t_statistic']
-                p_val = summary.iloc[i]['p_value']
-                sig = "***" if p_val < 0.01 else "**" if p_val < 0.05 else "*" if p_val < 0.10 else ""
-                f.write(f"{var:<25} {coef:<12.6f} {se:<12.6f} {t_stat:<10.3f} {p_val:<10.6f} {sig:<5}\n")
-            
-            f.write(f"\nSignificance codes: *** p<0.01, ** p<0.05, * p<0.10\n")
-        
-        logger.info(f"Saved human-readable 2SLS summary: {summary_file}")
-        
-    except Exception as e:
-        logger.error(f"Failed to save 2SLS results: {e}")
-        import traceback
-        logger.error(f"Traceback: {traceback.format_exc()}")
-    
-    logger.info(f"2SLS results successfully saved to: {run_dir}")
-    
-    # Log summary of saved files
-    saved_files = list(run_dir.glob("*"))
-    logger.info(f"Total files saved: {len(saved_files)}")
-    for file_path in saved_files:
-        file_size = file_path.stat().st_size
-        logger.info(f"  - {file_path.name}: {file_size:,} bytes")
+    logger.info(f"✓ Created README: README.md")
 
 def list_analyses(config: Dict[str, Any]) -> None:
     """List available analyses and specifications."""

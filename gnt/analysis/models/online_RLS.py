@@ -250,24 +250,91 @@ class OnlineRLS:
         # Bread (X'X)^{-1}
         XtX_inv = self.P
         
-        # Meat: sum over clusters of (X_c' * residual_c)' * (X_c' * residual_c)
+        ### DIAGNOSTIC I: Check for sufficient clusters
+        n_clusters = len([s for s in stats_dict.values() if s['count'] > 0])
+        if n_clusters <= 1:
+            warnings.warn("Insufficient clusters for robust standard errors, using classical")
+            return self.get_covariance_matrix()
+        
+        ### DIAGNOSTIC II: Check for problematic clusters before computing meat
+        min_cluster_size = max(5, self.n_features)  # Need at least n_features observations
+        
+        for cluster_id, stats in stats_dict.items():
+            if stats['count'] < min_cluster_size:
+                logger.debug(f"Detected small cluster {cluster_id} with {stats['count']} obs")
+                continue
+            
+            # Check if cluster's XtX is well-conditioned
+            try:
+                cluster_eigvals = np.linalg.eigvalsh(stats['XtX'])
+                condition_number = cluster_eigvals.max() / max(cluster_eigvals.min(), 1e-10)
+                
+                if condition_number > 1e12:  # Very ill-conditioned
+                    logger.debug(f"Detected ill-conditioned cluster {cluster_id} (cond={condition_number:.2e})")
+                    continue
+                
+            except np.linalg.LinAlgError:
+                logger.debug(f"Skipping cluster {cluster_id} with singular XtX")
+                continue
+        
+        # Meat: sum over valid clusters of score_c' * score_c
         meat = np.zeros((self.n_features, self.n_features))
         
         for cluster_id, stats in stats_dict.items():
-            if stats['count'] > 0:
-                # Use the correct sum of score vectors directly
-                meat += np.outer(stats['X_residual_sum'], stats['X_residual_sum'])
+            # Recompute score vector with final theta
+            score_vector = stats['Xy'] - stats['XtX'] @ self.theta
+            
+            # Add small ridge regularization to individual cluster contribution
+            # This stabilizes contribution from clusters with extreme scores
+            cluster_contrib = np.outer(score_vector, score_vector)
+            
+            ### DIAGNOSTIC III: Check magnitude
+            contrib_norm = np.linalg.norm(cluster_contrib, 'fro')
+            if contrib_norm > 1e15:  # Extremely large contribution
+                logger.debug(f"Detected high contribution from cluster {cluster_id} (norm={contrib_norm:.2e})")
+            
+            meat += cluster_contrib
         
-        # Sandwich estimator
-        n_clusters = len(stats_dict)
-        if n_clusters <= 1:
-            warnings.warn("Insufficient clusters for robust standard errors")
-            return self.get_covariance_matrix()
+        # # Ensure meat is symmetric
+        # meat = (meat + meat.T) / 2
         
-        # Small sample correction
-        correction = n_clusters / (n_clusters - 1) * (self.n_obs - 1) / (self.n_obs - self.n_features)
+        ### DIAGNOSTIC IV: Check meat condition number
+        meat_eigvals = np.linalg.eigvalsh(meat)
+        meat_condition = meat_eigvals.max() / max(meat_eigvals.min(), 1e-10)
         
-        return correction * XtX_inv @ meat @ XtX_inv
+        if meat_condition > 1e12:
+            logger.warning(f"Meat matrix is ill-conditioned (cond={meat_condition:.2e})")
+            logger.warning("Applying eigenvalue regularization")
+            
+            # Regularize meat: set small eigenvalues to a floor
+            eigval_floor = meat_eigvals.max() * 1e-10
+            meat_eigvals_reg = np.maximum(meat_eigvals, eigval_floor)
+            
+            # Reconstruct meat
+            eigvecs = np.linalg.eigh(meat)[1]
+            meat = eigvecs @ np.diag(meat_eigvals_reg) @ eigvecs.T
+        
+        # Small sample correction with valid cluster count
+        correction = n_clusters / (n_clusters - 1)
+        
+        # Apply degrees of freedom correction
+        if self.n_obs > self.n_features:
+            dof_correction = (self.n_obs - 1) / (self.n_obs - self.n_features)
+            correction *= dof_correction
+        
+        # Sandwich: V = c * (X'X)^{-1} * Meat * (X'X)^{-1}
+        V = correction * XtX_inv @ meat @ XtX_inv
+        
+        # Ensure final covariance is symmetric
+        V = (V + V.T) / 2
+        
+        # Check for negative diagonal elements (should not happen with valid meat)
+        diag_V = np.diag(V)
+        if np.any(diag_V < 0):
+            logger.error("Negative variances detected after all corrections!")
+            logger.error(f"Negative elements: {(diag_V < 0).sum()}/{len(diag_V)}")
+        
+        return V
     
     def get_standard_errors(self, cluster_type: str = 'classical') -> np.ndarray:
         """Get standard errors."""
@@ -278,12 +345,110 @@ class OnlineRLS:
         
         return np.sqrt(np.diag(cov_matrix))
     
+    def diagnose_cluster_structure(self, cluster_stats: Dict, cluster_name: str = "Cluster") -> Dict[str, Any]:
+        """
+        Diagnose cluster structure and return diagnostic statistics.
+        
+        Parameters:
+        -----------
+        cluster_stats : Dict
+            Dictionary of cluster statistics
+        cluster_name : str
+            Name of the cluster variable for reporting
+            
+        Returns:
+        --------
+        Dict containing diagnostic statistics
+        """
+        if not cluster_stats:
+            return {
+                "n_clusters": 0,
+                "min_size": 0,
+                "max_size": 0,
+                "mean_size": 0,
+                "median_size": 0,
+                "warnings": ["No clusters found"]
+            }
+        
+        cluster_sizes = [stats['count'] for stats in cluster_stats.values()]
+        n_clusters = len(cluster_sizes)
+        
+        diagnostics = {
+            "n_clusters": n_clusters,
+            "min_size": int(np.min(cluster_sizes)),
+            "max_size": int(np.max(cluster_sizes)),
+            "mean_size": float(np.mean(cluster_sizes)),
+            "median_size": float(np.median(cluster_sizes)),
+            "total_obs": sum(cluster_sizes),
+            "warnings": []
+        }
+        
+        # Check for potential issues
+        if n_clusters < 10:
+            diagnostics["warnings"].append(
+                f"Very few clusters ({n_clusters}). Cluster-robust SEs may be unreliable with <10 clusters."
+            )
+        
+        if diagnostics["min_size"] < 5:
+            diagnostics["warnings"].append(
+                f"Some clusters are very small (min={diagnostics['min_size']}). "
+                f"Small clusters may lead to imprecise variance estimates."
+            )
+        
+        # Check for highly unbalanced clusters
+        if diagnostics["max_size"] > 10 * diagnostics["mean_size"]:
+            diagnostics["warnings"].append(
+                f"Highly unbalanced clusters (max/mean ratio = {diagnostics['max_size']/diagnostics['mean_size']:.1f}). "
+                f"Consider alternative variance estimators."
+            )
+        
+        return diagnostics
+
     def summary(self, cluster_type: str = 'classical', 
                bootstrap: bool = False, 
                n_bootstrap: int = 999,
                bootstrap_cluster_var: str = None,
                n_workers: int = 1) -> pd.DataFrame:
         """Get regression summary (bootstrapping removed)."""
+        # Diagnose cluster structure if using cluster-robust SEs
+        if cluster_type != 'classical':
+            logger.info(f"Computing {cluster_type} cluster-robust standard errors")
+            
+            if cluster_type == 'one_way':
+                diagnostics = self.diagnose_cluster_structure(self.cluster_stats, "Cluster1")
+                logger.info(f"Cluster diagnostics (Dimension 1):")
+                logger.info(f"  Number of clusters: {diagnostics['n_clusters']}")
+                logger.info(f"  Cluster size - Min: {diagnostics['min_size']}, "
+                           f"Max: {diagnostics['max_size']}, "
+                           f"Mean: {diagnostics['mean_size']:.1f}, "
+                           f"Median: {diagnostics['median_size']:.1f}")
+                
+                for warning in diagnostics['warnings']:
+                    logger.warning(f"  {warning}")
+            
+            elif cluster_type == 'two_way':
+                diagnostics1 = self.diagnose_cluster_structure(self.cluster_stats, "Cluster1")
+                diagnostics2 = self.diagnose_cluster_structure(self.cluster2_stats, "Cluster2")
+                diagnostics_int = self.diagnose_cluster_structure(self.intersection_stats, "Intersection")
+                
+                logger.info(f"Cluster diagnostics (Dimension 1):")
+                logger.info(f"  Number of clusters: {diagnostics1['n_clusters']}")
+                logger.info(f"  Cluster size - Min: {diagnostics1['min_size']}, "
+                           f"Max: {diagnostics1['max_size']}, "
+                           f"Mean: {diagnostics1['mean_size']:.1f}")
+                
+                logger.info(f"Cluster diagnostics (Dimension 2):")
+                logger.info(f"  Number of clusters: {diagnostics2['n_clusters']}")
+                logger.info(f"  Cluster size - Min: {diagnostics2['min_size']}, "
+                           f"Max: {diagnostics2['max_size']}, "
+                           f"Mean: {diagnostics2['mean_size']:.1f}")
+                
+                logger.info(f"Cluster diagnostics (Intersection):")
+                logger.info(f"  Number of clusters: {diagnostics_int['n_clusters']}")
+                
+                for warning in diagnostics1['warnings'] + diagnostics2['warnings']:
+                    logger.warning(f"  {warning}")
+        
         # Get standard errors
         se = self.get_standard_errors(cluster_type)
         t_stats = self.theta / se
@@ -300,7 +465,6 @@ class OnlineRLS:
             'p_value': p_values
         }, index=self.feature_names)
         
-        # Remove all bootstrap logic
         return summary_df
 
     def get_total_sum_squares(self) -> float:
@@ -390,13 +554,13 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
     # Check if we need to read extra columns beyond base features (for 2SLS)
     extra_input_columns = []
     actual_feature_cols = feature_cols.copy()
+    all_required_columns = feature_cols.copy()
     
     if feature_engineering_config and '_extra_input_columns' in feature_engineering_config:
         extra_input_columns = feature_engineering_config['_extra_input_columns']
         all_input_columns = feature_cols + extra_input_columns
+        all_required_columns = all_input_columns
         worker_logger.info(f"2SLS mode: reading {len(all_input_columns)} columns, transforming {len(feature_cols)} base features")
-    else:
-        all_input_columns = feature_cols
     
     # Initialize feature transformer
     feature_transformer = None
@@ -413,12 +577,18 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
         feature_transformer = FeatureTransformer.from_config(fe_config, actual_feature_cols, add_intercept=add_intercept)
         transformed_feature_names = feature_transformer.get_feature_names()
         
+        # Get all required columns (including those only needed for interactions)
+        all_required_columns = list(feature_transformer.required_columns)
+        if extra_input_columns:
+            all_required_columns.extend(extra_input_columns)
+        
         expected_n_features = feature_transformer.get_n_features()
         if n_features != expected_n_features:
             worker_logger.warning(f"Feature count mismatch: expected {n_features}, transformer produces {expected_n_features}")
             n_features = expected_n_features
         
         worker_logger.info(f"Feature transformer enabled: {n_features} total features")
+        worker_logger.info(f"Required columns: {all_required_columns}")
     
     try:
         local_rls = OnlineRLS(
@@ -442,7 +612,7 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
         available_columns = [field.name for field in schema]
         
         missing_cols = []
-        for col in all_input_columns:
+        for col in all_required_columns:
             if col not in available_columns:
                 missing_cols.append(col)
         if target_col not in available_columns:
@@ -464,14 +634,8 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
                 if chunk_df.empty:
                     continue
                 
-                # Extract data
-                if extra_input_columns:
-                    X_base = chunk_df[actual_feature_cols].values.astype(np.float32)
-                    X_extra = chunk_df[extra_input_columns].values.astype(np.float32)
-                    X = np.column_stack([X_base, X_extra])
-                else:
-                    X = chunk_df[actual_feature_cols].values.astype(np.float32)
-                
+                # Extract ALL required columns
+                X = chunk_df[all_required_columns].values.astype(np.float32)
                 y = chunk_df[target_col].values.astype(np.float32)
                 
                 # Validity check
@@ -494,9 +658,12 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
                         if extra_input_columns:
                             X_base_clean = X[:, :len(actual_feature_cols)]
                             Z_instruments = X[:, len(actual_feature_cols):]
-                            X_transformed = feature_transformer.transform_with_instruments(X_base_clean, Z_instruments, actual_feature_cols)
+                            # Pass all required column names
+                            X_transformed = feature_transformer.transform_with_instruments(
+                                X_base_clean, Z_instruments, all_required_columns[:len(actual_feature_cols)])
                         else:
-                            X_transformed = feature_transformer.transform(X, actual_feature_cols)
+                            # Pass column names for interaction lookup
+                            X_transformed = feature_transformer.transform(X, all_required_columns)
                         
                         if X_transformed.shape[1] != n_features:
                             worker_logger.error(
@@ -508,11 +675,13 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
                         X = X_transformed
                     except Exception as e:
                         worker_logger.error(f"Feature transformation failed: {e}")
+                        import traceback
+                        worker_logger.error(traceback.format_exc())
                         continue
                 else:
+                    # No feature engineering - just use base features with optional intercept
+                    X = X[:, :len(actual_feature_cols)]
                     if add_intercept:
-                        if extra_input_columns:
-                            X = X[:, :len(actual_feature_cols)]
                         intercept = np.ones((X.shape[0], 1), dtype=np.float32)
                         X = np.column_stack([intercept, X])
                 
@@ -540,6 +709,8 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
                 
             except Exception as e:
                 worker_logger.error(f"Error processing chunk {chunks_processed}: {e}")
+                import traceback
+                worker_logger.error(traceback.format_exc())
                 continue
             
             finally:
@@ -562,6 +733,8 @@ def process_partition_worker(args: Tuple) -> Tuple[np.ndarray, np.ndarray, np.nd
                 
     except Exception as e:
         worker_logger.error(f"Fatal error processing partition {partition_file}: {str(e)}")
+        import traceback
+        worker_logger.error(traceback.format_exc())
         empty_XtX = alpha * np.eye(n_features)
         empty_Xty = np.zeros(n_features)
         empty_theta = np.zeros(n_features)

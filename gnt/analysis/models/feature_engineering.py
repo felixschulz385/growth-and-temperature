@@ -178,15 +178,14 @@ class FormulaParser:
         """Parse interaction with : (no main effects): x1:x2."""
         vars_in_interaction = [v.strip() for v in term.split(':')]
         
-        # Add variables to base features (needed for computation)
-        for var in vars_in_interaction:
-            base_features.add(var)
-        
-        # Add interaction term only
+        # For interaction-only terms, don't add to base_features
+        # but track them as required columns
         if len(vars_in_interaction) == 2:
             self.transformations.append({
                 'type': 'interaction',
-                'feature_pairs': [vars_in_interaction]
+                'feature_pairs': [vars_in_interaction],
+                'interaction_only': True,
+                'required_columns': vars_in_interaction
             })
     
     def _parse_term_list(self, term_list: str) -> List[str]:
@@ -264,7 +263,7 @@ class FeatureTransformer:
         transformations : list of dict
             List of transformation specifications from YAML config or formula
         base_features : list of str
-            Original feature column names
+            Original feature column names (will be included as main effects)
         add_intercept : bool
             Whether to add intercept term as first feature
         context : dict, optional
@@ -275,7 +274,13 @@ class FeatureTransformer:
         self.add_intercept = add_intercept
         self.context = context or {}
         
-        # Initialize feature names
+        # Collect all required columns (including those only needed for interactions)
+        self.required_columns = set(base_features)
+        for transform in self.transformations:
+            if 'required_columns' in transform:
+                self.required_columns.update(transform['required_columns'])
+        
+        # Initialize feature names (only main effects)
         self.feature_names = []
         if self.add_intercept:
             self.feature_names.append("intercept")
@@ -287,11 +292,6 @@ class FeatureTransformer:
         self._predicted_substitutions = {}
         
         self._parse_transformations()
-        
-        # logger.info(f"FeatureTransformer initialized:")
-        # logger.info(f"  Add intercept: {self.add_intercept}")
-        # logger.info(f"  Base features: {self.n_base_features}")
-        # logger.info(f"  Total features after transformations: {self.n_total_features}")
     
     def _parse_transformations(self):
         """Parse transformation specifications and update feature names."""
@@ -331,12 +331,13 @@ class FeatureTransformer:
             quad_name = f"{feature}_squared"
             self.feature_names.append(quad_name)
             self.n_total_features += 1
-            
-        logger.info(f"Added {len(features)} quadratic features")
+        
+        logger.debug(f"Added {len(features)} quadratic features")
     
     def _add_interaction_features(self, transform: Dict[str, Any]):
         """Add interaction terms between specified feature pairs."""
         feature_pairs = transform.get('feature_pairs', [])
+        interaction_only = transform.get('interaction_only', False)
         
         if not feature_pairs:
             features = transform.get('features', [])
@@ -347,20 +348,23 @@ class FeatureTransformer:
             logger.warning("Interaction transformation specified but no feature pairs provided")
             return
         
-        all_features = set()
-        for pair in feature_pairs:
-            all_features.update(pair)
-        
-        missing_features = [f for f in all_features if f not in self.base_features]
-        if missing_features:
-            raise ValueError(f"Interaction features not found in base features: {missing_features}")
+        # For interaction_only terms, we don't require features to be in base_features
+        # They'll be read from data directly
+        if not interaction_only:
+            all_features = set()
+            for pair in feature_pairs:
+                all_features.update(pair)
+            
+            missing_features = [f for f in all_features if f not in self.base_features]
+            if missing_features:
+                raise ValueError(f"Interaction features not found in base features: {missing_features}")
         
         for feat1, feat2 in feature_pairs:
             interaction_name = f"{feat1}_x_{feat2}"
             self.feature_names.append(interaction_name)
             self.n_total_features += 1
-            
-        logger.info(f"Added {len(feature_pairs)} interaction features")
+        
+        logger.debug(f"Added {len(feature_pairs)} interaction features")
     
     def _add_polynomial_features(self, transform: Dict[str, Any]):
         """Add polynomial terms for specified features."""
@@ -384,8 +388,8 @@ class FeatureTransformer:
                 poly_name = f"{feature}_pow{d}"
                 self.feature_names.append(poly_name)
                 self.n_total_features += 1
-                
-        logger.info(f"Added polynomial features up to degree {degree} for {len(features)} features")
+        
+        logger.debug(f"Added polynomial features up to degree {degree} for {len(features)} features")
     
     def _add_predicted_substitution(self, transform: Dict[str, Any]):
         """Handle predicted value substitution for 2SLS."""
@@ -404,7 +408,7 @@ class FeatureTransformer:
             'first_stage_feature_config': transform.get('first_stage_feature_config')
         }
         
-        logger.info(f"Registered predicted substitution: {original} -> {predicted}")
+        logger.debug(f"Registered predicted substitution: {original} -> {predicted}")
     
     def _add_custom_transformation(self, transform: Dict[str, Any]):
         """Add custom transformation."""
@@ -419,7 +423,7 @@ class FeatureTransformer:
         self.feature_names.append(custom_name)
         self.n_total_features += 1
         
-        logger.info(f"Added custom transformation: {custom_name}")
+        logger.debug(f"Added custom transformation: {custom_name}")
     
     def transform(self, X: np.ndarray, feature_names: Optional[List[str]] = None) -> np.ndarray:
         """
@@ -429,10 +433,10 @@ class FeatureTransformer:
         -----------
         X : np.ndarray
             Input data, shape (n_samples, n_features)
-            May include extra columns (instruments) beyond base_features
+            Should contain all required_columns (e.g., instruments for 2SLS)
         feature_names : list of str, optional
-            Names of columns in X (for validation)
-            
+            Names of columns in X (for validation and lookup)
+        
         Returns:
         --------
         X_transformed : np.ndarray
@@ -444,30 +448,28 @@ class FeatureTransformer:
             Z_instruments = X[:, self.n_base_features:]
             return self.transform_with_instruments(X_base, Z_instruments, feature_names)
         
-        if X.shape[1] != self.n_base_features:
-            raise ValueError(f"Input data has {X.shape[1]} features, expected {self.n_base_features}")
+        # Create column name mapping if provided
+        col_to_idx = {}
+        if feature_names:
+            col_to_idx = {name: idx for idx, name in enumerate(feature_names)}
         
-        if feature_names and len(feature_names) > self.n_base_features:
-            feature_names = feature_names[:self.n_base_features]
-        elif feature_names and len(feature_names) != self.n_base_features:
-            raise ValueError(f"Feature names length {len(feature_names)} doesn't match base features {self.n_base_features}")
-        
+        # Start with intercept and base features
         if self.add_intercept:
             intercept = np.ones((X.shape[0], 1), dtype=X.dtype)
-            X_transformed = np.column_stack([intercept, X])
+            X_transformed = np.column_stack([intercept, X[:, :self.n_base_features]])
         else:
-            X_transformed = X.copy()
+            X_transformed = X[:, :self.n_base_features].copy()
         
         for transform in self.transformations:
             try:
                 transform_type = transform.get('type', '').lower()
                 
                 if transform_type == 'quadratic':
-                    X_transformed = self._apply_quadratic(X_transformed, X, transform, feature_names)
+                    X_transformed = self._apply_quadratic(X_transformed, X, transform, feature_names, col_to_idx)
                 elif transform_type == 'interaction':
-                    X_transformed = self._apply_interaction(X_transformed, X, transform, feature_names)
+                    X_transformed = self._apply_interaction(X_transformed, X, transform, feature_names, col_to_idx)
                 elif transform_type == 'polynomial':
-                    X_transformed = self._apply_polynomial(X_transformed, X, transform, feature_names)
+                    X_transformed = self._apply_polynomial(X_transformed, X, transform, feature_names, col_to_idx)
                 elif transform_type == 'predicted_substitution':
                     logger.warning(f"Predicted substitution requires explicit instruments, skipping transformation")
                     continue
@@ -493,7 +495,7 @@ class FeatureTransformer:
             Instrument variables, shape (n_samples, n_instruments)
         feature_names : list of str, optional
             Names of columns in X (for validation)
-            
+        
         Returns:
         --------
         X_transformed : np.ndarray
@@ -534,7 +536,8 @@ class FeatureTransformer:
         return X_transformed
     
     def _apply_quadratic(self, X_current: np.ndarray, X_original: np.ndarray, 
-                        transform: Dict[str, Any], feature_names: Optional[List[str]]) -> np.ndarray:
+                        transform: Dict[str, Any], feature_names: Optional[List[str]] = None,
+                        col_to_idx: Dict[str, int] = None) -> np.ndarray:
         """Apply quadratic transformation."""
         features = transform.get('features', [])
         
@@ -546,9 +549,11 @@ class FeatureTransformer:
         return X_current
     
     def _apply_interaction(self, X_current: np.ndarray, X_original: np.ndarray,
-                          transform: Dict[str, Any], feature_names: Optional[List[str]]) -> np.ndarray:
+                          transform: Dict[str, Any], feature_names: Optional[List[str]] = None,
+                          col_to_idx: Dict[str, int] = None) -> np.ndarray:
         """Apply interaction transformation."""
         feature_pairs = transform.get('feature_pairs', [])
+        interaction_only = transform.get('interaction_only', False)
         
         if not feature_pairs:
             features = transform.get('features', [])
@@ -556,15 +561,26 @@ class FeatureTransformer:
                 feature_pairs = list(combinations(features, 2))
         
         for feat1, feat2 in feature_pairs:
-            idx1 = self.base_features.index(feat1)
-            idx2 = self.base_features.index(feat2)
+            # Get indices from either base_features or col_to_idx
+            if interaction_only and col_to_idx:
+                # For interaction-only terms, look up in original data columns
+                if feat1 not in col_to_idx or feat2 not in col_to_idx:
+                    raise ValueError(f"Required columns for interaction not found: {feat1}, {feat2}")
+                idx1 = col_to_idx[feat1]
+                idx2 = col_to_idx[feat2]
+            else:
+                # For regular interactions, use base_features
+                idx1 = self.base_features.index(feat1)
+                idx2 = self.base_features.index(feat2)
+            
             interaction_values = X_original[:, idx1] * X_original[:, idx2]
             X_current = np.column_stack([X_current, interaction_values])
         
         return X_current
     
     def _apply_polynomial(self, X_current: np.ndarray, X_original: np.ndarray,
-                         transform: Dict[str, Any], feature_names: Optional[List[str]]) -> np.ndarray:
+                         transform: Dict[str, Any], feature_names: Optional[List[str]] = None,
+                         col_to_idx: Dict[str, int] = None) -> np.ndarray:
         """Apply polynomial transformation."""
         features = transform.get('features', [])
         degree = transform.get('degree', 2)
@@ -579,7 +595,7 @@ class FeatureTransformer:
     
     def _apply_predicted_substitution_with_instruments(self, X_current: np.ndarray, X_original: np.ndarray,
                                                      Z: Optional[np.ndarray], transform: Dict[str, Any], 
-                                                     feature_names: Optional[List[str]]) -> np.ndarray:
+                                                     feature_names: Optional[List[str]] = None) -> np.ndarray:
         """Apply predicted substitution transformation for 2SLS with explicit instruments."""
         original = transform.get('original')
         first_stage_coefficients = transform.get('first_stage_coefficients')
@@ -628,7 +644,7 @@ class FeatureTransformer:
                 first_stage_input_features = first_stage_transformer.transform(first_stage_input_features)
                 
             except Exception as e:
-                logger.warning(f"First stage feature engineering failed for {original}: {e}")
+                logger.debug(f"First stage feature engineering failed for {original}: {e}")
         
         # Handle intercept for first stage prediction
         expected_dims = len(first_stage_coefficients)
@@ -644,7 +660,7 @@ class FeatureTransformer:
                 f"Feature dimension mismatch for {original}: "
                 f"have {current_dims} features, need {expected_dims} coefficients"
             )
-                
+        
         # Compute predicted values
         coefficients_array = np.array(first_stage_coefficients)
         if coefficients_array.ndim == 1:
@@ -661,7 +677,7 @@ class FeatureTransformer:
         return X_current
     
     def _apply_custom(self, X_current: np.ndarray, X_original: np.ndarray,
-                     transform: Dict[str, Any], feature_names: Optional[List[str]]) -> np.ndarray:
+                     transform: Dict[str, Any], feature_names: Optional[List[str]] = None) -> np.ndarray:
         """Apply custom transformation."""
         custom_values = np.ones((X_original.shape[0], 1))
         return np.column_stack([X_current, custom_values])
@@ -711,7 +727,7 @@ class FeatureTransformer:
             Override intercept from formula
         context : dict, optional
             Additional context for transformations
-            
+        
         Returns:
         --------
         transformer : FeatureTransformer
@@ -726,8 +742,8 @@ class FeatureTransformer:
         
         config = parser.get_feature_config()
         transformer = FeatureTransformer.from_config(
-            config, 
-            parser.features, 
+            config,
+            parser.features,
             add_intercept=use_intercept,
             context=context
         )
