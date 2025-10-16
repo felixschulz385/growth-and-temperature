@@ -17,11 +17,29 @@ analyses:
       forget_factor: 1.0
       chunk_size: 20000
       show_progress: true
-      verbose: true
+      verbose: false
       cluster_type: "two_way"
     
     # Predefined model specifications
     specifications:
+
+      ### First stage testing:
+
+      ntlharm_regfav_twfe_hdi:
+        description: "TWFE MODIS NTLHARM analysis in HDI groups"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+
+      viirs_regfav_twfe_hdi:
+        description: "TWFE MODIS NTLHARM analysis in HDI groups"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "viirs_annual_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+
+      ### Pooled Models:
       
       modis_ntlharm_pooled:
         description: "Pooled MODIS NTLHARM analysis"
@@ -29,20 +47,15 @@ analyses:
         formula: "median ~ ntl_harm"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 4
-          verbose: false
 
-      modis_ntlharm_twfe:
-        description: "TWFE MODIS NTLHARM analysis"
+      modis_ntlharm_pooled:
+        description: "Pooled MODIS VIIRS analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned - 1"
+        formula: "median ~ viirs_annual"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
+
+      ### UFE Models:
 
       modis_ntlharm_ufe:
         description: "UFE MODIS NTLHARM analysis"
@@ -50,39 +63,22 @@ analyses:
         formula: "median_unit_demeaned ~ ntl_harm_unit_demeaned - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
 
-      modis_ntlharm_twfe_hdi:
+      modis_viirs_ufe:
+        description: "UFE MODIS VIIRS analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_unit_demeaned ~ viirs_annual_unit_demeaned - 1"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+
+      ### TWFE Models:
+
+      modis_ntlharm_twfe:
         description: "TWFE MODIS NTLHARM analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH - 1"
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
-
-      ntlharm_regfav_twfe_hdi:
-        description: "TWFE MODIS NTLHARM analysis in HDI groups"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        formula: "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH - 1"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
-
-      modis_ntlharm_twfe_quadratic:
-        description: "TWFE MODIS NTLHARM with quadratic term"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned + I(ntl_harm_twoway_demeaned^2) - 1"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
 
       modis_viirs_twfe:
         description: "Demeaned MODIS VIIRS analysis"
@@ -90,19 +86,42 @@ analyses:
         formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned - 1"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
+
+      ## HDI split
+
+      modis_ntlharm_twfe_hdi:
+        description: "TWFE MODIS NTLHARM analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
 
       modis_viirs_twfe_hdi:
         description: "Demeaned MODIS VIIRS analysis"
         data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
-        formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH - 1"
+        formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          verbose: false
+
+      ## Experimental
+
+      modis_ntlharm_twfe_quadratic:
+        description: "TWFE MODIS NTLHARM with quadratic term"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned + I(ntl_harm_twoway_demeaned^2) - 1"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+
+      ## DEBUG
+
+      debug_modis_viirs_twfe_hdi:
+        description: "Demeaned MODIS VIIRS analysis"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        module: "gnt.analysis.streamreg"
+        class: "ols"
 
   # Two-Stage Least Squares analysis
   online_2sls:
@@ -111,27 +130,19 @@ analyses:
     class: "Online2SLS"
     
     defaults:
+      n_workers: 8
       add_intercept: true
       alpha: 0.001
       forget_factor: 1.0
       chunk_size: 20000
       show_progress: true
-      verbose: true
+      verbose: false
       cluster_type: "two_way"
       weak_instrument_threshold: 10.0
     
     specifications:
       
-      modis_ntlharm_regfav_pooled_subset:
-        description: "2SLS: Growth effect on temperature using regional favoritism as instrument"
-        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
-        formula: "median ~ ntl_harm | reg_fav"
-        cluster1_col: "subdivisions"
-        cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 4
-          verbose: true
+      ### TWFE Models:
 
       modis_ntlharm_regfav_twfe:
         description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
@@ -139,10 +150,6 @@ analyses:
         formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
-        settings:
-          chunk_size: 10000
-          n_workers: 8
-          verbose: false
 
       modis_viirs_regfav_twfe:
         description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
@@ -150,10 +157,28 @@ analyses:
         formula: "median_twoway_demeaned ~ viirs_annual_twoway_demeaned | reg_fav_twoway_demeaned"
         cluster1_col: "subdivisions"
         cluster2_col: "year"
+
+      ## HDI split
+
+      modis_ntlharm_regfav_pooled_hdi:
+        description: "2SLS: Growth effect on temperature interacted with HDI classes using regional favoritism as instrument"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet"
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+
+      ## DEBUG
+
+      debug_modis_ntlharm_regfav:
+        description: "2SLS: Growth effect on temperature using regional favoritism as instrument"
+        data_source: "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet"
+        formula: "median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
+        cluster1_col: "subdivisions"
+        cluster2_col: "year"
+        module: "gnt.analysis.streamreg"
+        class: "iv"
         settings:
-          chunk_size: 10000
-          n_workers: 8
-          verbose: false
+          verbose: true
 
 # Output settings
 output:
