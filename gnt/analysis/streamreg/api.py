@@ -8,7 +8,7 @@ from gnt.analysis.streamreg.data import StreamData
 from gnt.analysis.streamreg.results import RegressionResults
 from gnt.analysis.streamreg.formula import FormulaParser
 from gnt.analysis.streamreg.transforms import FeatureTransformer
-from gnt.analysis.streamreg.estimators.ols import OnlineRLS, ParallelOLSOrchestrator  # Fixed import
+from gnt.analysis.streamreg.estimators.ols import OnlineRLS, ParallelOLSOrchestrator
 
 logger = logging.getLogger(__name__)
 
@@ -243,6 +243,47 @@ class OLS:
         X_transformed = transformer.transform(X, self._parser.features)
         
         return self._rls_model.predict(X_transformed)
+    
+    def save_results(
+        self,
+        output_dir: str,
+        spec_name: Optional[str] = None,
+        spec_config: Optional[Dict[str, Any]] = None,
+        full_config: Optional[Dict[str, Any]] = None,
+        formats: Optional[List[str]] = None
+    ) -> Path:
+        """
+        Save regression results to disk.
+        
+        Parameters:
+        -----------
+        output_dir : str
+            Directory to save results
+        spec_name : str, optional
+            Name for this specification (used in subdirectory)
+        spec_config : dict, optional
+            Specification configuration (for documentation)
+        full_config : dict, optional
+            Full configuration snapshot
+        formats : list of str, optional
+            Formats to save. Options: 'summary', 'csv', 'json', 'latex', 'readme', 'diagnostics'
+            Default: all formats
+        
+        Returns:
+        --------
+        run_dir : Path
+            Directory where results were saved
+        """
+        if self._results is None:
+            raise ValueError("Model must be fitted before saving results")
+        
+        return self._results.save(
+            output_dir=output_dir,
+            spec_name=spec_name,
+            spec_config=spec_config,
+            full_config=full_config,
+            formats=formats
+        )
     
     # Scikit-learn style properties
     @property
@@ -530,6 +571,47 @@ class TwoSLS:
             }
         else:
             raise ValueError("stage must be 'first', 'second', or 'all'")
+    
+    def save_results(
+        self,
+        output_dir: str,
+        spec_name: Optional[str] = None,
+        spec_config: Optional[Dict[str, Any]] = None,
+        full_config: Optional[Dict[str, Any]] = None,
+        formats: Optional[List[str]] = None
+    ) -> Path:
+        """
+        Save regression results to disk.
+        
+        Parameters:
+        -----------
+        output_dir : str
+            Directory to save results
+        spec_name : str, optional
+            Name for this specification (used in subdirectory)
+        spec_config : dict, optional
+            Specification configuration (for documentation)
+        full_config : dict, optional
+            Full configuration snapshot
+        formats : list of str, optional
+            Formats to save. Options: 'summary', 'csv', 'json', 'latex', 'readme', 'diagnostics'
+            Default: all formats
+        
+        Returns:
+        --------
+        run_dir : Path
+            Directory where results were saved
+        """
+        if self._results is None:
+            raise ValueError("Model must be fitted before saving results")
+        
+        return self._results.save(
+            output_dir=output_dir,
+            spec_name=spec_name,
+            spec_config=spec_config,
+            full_config=full_config,
+            formats=formats
+        )
     
     @property
     def coef_(self) -> np.ndarray:
