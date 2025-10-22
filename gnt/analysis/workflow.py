@@ -14,6 +14,11 @@ from datetime import datetime
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
+# Add streamreg package to path if it's a separate project
+streamreg_path = project_root.parent / "streamreg" / "src"
+if streamreg_path.exists():
+    sys.path.insert(0, str(streamreg_path))
+
 # Configure logging
 def setup_logging(config: Dict[str, Any]) -> logging.Logger:
     """Setup logging configuration."""
@@ -84,8 +89,8 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     # Merge settings
     settings = {**defaults, **spec_config.get('settings', {})}
     
-    # Import new API
-    from gnt.analysis.streamreg.api import OLS
+    # Import new API - updated import path
+    from streamreg.api import OLS
     
     # Setup cluster variable
     cluster = None
@@ -153,8 +158,8 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     # Merge settings
     settings = {**defaults, **spec_config.get('settings', {})}
     
-    # Import new API
-    from gnt.analysis.streamreg.api import TwoSLS
+    # Import new API - updated import path
+    from streamreg.api import TwoSLS
     
     # Setup cluster variable
     cluster = None

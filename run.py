@@ -497,7 +497,7 @@ def main():
             config = load_config_with_env_vars(args.config)
             
             # Import and run analysis
-            from gnt.analysis.entrypoint import run_online_rls, run_online_2sls, list_analyses, setup_logging as analysis_setup_logging
+            from gnt.analysis.workflow import run_online_rls, run_online_2sls, list_analyses, setup_logging as analysis_setup_logging
             
             # Setup analysis-specific logging
             if args.debug:
