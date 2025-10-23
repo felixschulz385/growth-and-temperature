@@ -1,6 +1,7 @@
 import os
 import sys
 import yaml
+import json  # Add missing import
 import logging
 import argparse
 import importlib
@@ -73,6 +74,161 @@ def load_config(config_path: str) -> Dict[str, Any]:
     
     return expand_env_vars(config)
 
+def load_continent_mapping() -> Dict[str, List[int]]:
+    """
+    Load continent to country ID mapping.
+    
+    Returns:
+    --------
+    dict mapping continent codes to lists of country IDs
+    """
+    logger = logging.getLogger(__name__)
+    
+    # Paths relative to project root
+    continents_path = project_root / "data_nobackup" / "misc" / "raw" / "continents" / "continents.csv"
+    ids_path = project_root / "data_nobackup" / "misc" / "processed" / "stage_2" / "gadm" / "country_code_mapping.json"
+    
+    if not continents_path.exists() or not ids_path.exists():
+        logger.warning("Continent mapping files not found. Geographic filtering unavailable.")
+        return {}
+    
+    try:
+        # Load continent table
+        continents = pd.read_csv(continents_path)
+        
+        # Load country ID mapping
+        import json
+        with open(ids_path, "r") as f:
+            country_to_id = json.load(f)
+        
+        # Build continent -> country IDs mapping
+        continent_map = {}
+        for continent_code in continents['Continent_Code'].unique():
+            country_codes = continents.query(
+                f"Continent_Code == '{continent_code}'"
+            )['Three_Letter_Country_Code'].tolist()
+            
+            # Map country codes to IDs, filtering out missing ones
+            country_ids = [
+                country_to_id[code] 
+                for code in country_codes 
+                if code in country_to_id
+            ]
+            
+            continent_map[continent_code] = country_ids
+        
+        logger.debug(f"Loaded continent mapping: {len(continent_map)} continents")
+        return continent_map
+        
+    except Exception as e:
+        logger.warning(f"Failed to load continent mapping: {e}")
+        return {}
+
+
+def load_subset(subset_name: str) -> List[int]:
+    """
+    Load country IDs from a subset file.
+    
+    Parameters:
+    -----------
+    subset_name : str
+        Name of the subset (e.g., 'AF', 'asia', 'custom_developed')
+        Can be:
+        - Continent code: 'AF', 'EU', 'AS', 'NA', 'SA', 'OC'
+        - Full subset filename: 'continent_af.json'
+        - Custom subset: 'custom_mysubset'
+    
+    Returns:
+    --------
+    list of int
+        Country IDs in the subset
+    """
+    logger = logging.getLogger(__name__)
+    
+    # Path to subsets directory
+    subsets_dir = project_root / "data_nobackup" / "subsets"
+    
+    if not subsets_dir.exists():
+        logger.error(f"Subsets directory not found: {subsets_dir}")
+        logger.info("Run 'python -m gnt.analysis.subsets' to generate subset files")
+        raise FileNotFoundError(f"Subsets directory not found: {subsets_dir}")
+    
+    # Determine subset file path
+    subset_file = None
+    
+    # Try as continent code (e.g., 'AF' -> 'continent_af.json')
+    if len(subset_name) == 2 and subset_name.isupper():
+        subset_file = subsets_dir / f"continent_{subset_name.lower()}.json"
+    
+    # Try as full filename
+    elif subset_name.endswith('.json'):
+        subset_file = subsets_dir / subset_name
+    
+    # Try with .json extension
+    else:
+        subset_file = subsets_dir / f"{subset_name}.json"
+    
+    if not subset_file.exists():
+        # List available subsets
+        available = [f.stem for f in subsets_dir.glob("*.json")]
+        logger.error(f"Subset file not found: {subset_file}")
+        logger.info(f"Available subsets: {available}")
+        raise FileNotFoundError(f"Subset '{subset_name}' not found. Available: {available}")
+    
+    # Load subset
+    try:
+        with open(subset_file, 'r') as f:
+            data = json.load(f)
+        
+        country_ids = data['country_ids']
+        logger.info(f"Loaded subset '{data.get('name', subset_name)}': {len(country_ids)} countries")
+        return country_ids
+        
+    except Exception as e:
+        logger.error(f"Failed to load subset from {subset_file}: {e}")
+        raise
+
+
+def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
+    """
+    Build query string for geographic filtering using subset files.
+    
+    Parameters:
+    -----------
+    spec_config : dict
+        Specification configuration
+    
+    Returns:
+    --------
+    query : str or None
+        Query string for filtering, or None if no geographic filter
+    """
+    # Check for subset-based filter
+    subset_name = spec_config.get('subset')
+    country_filter = spec_config.get('countries')
+    country_col = spec_config.get('country_col', 'countries')  # Changed default from 'country' to 'countries'
+    
+    queries = []
+    
+    if subset_name:
+        # Load country IDs from subset file
+        country_ids = load_subset(subset_name)
+        if country_ids:
+            queries.append(f"{country_col}.isin({country_ids})")
+    
+    if country_filter:
+        # country_filter should be a list of country IDs or codes
+        if isinstance(country_filter, list):
+            queries.append(f"{country_col}.isin({country_filter})")
+        else:
+            queries.append(f"{country_col} == {country_filter}")
+    
+    if queries:
+        return " & ".join(f"({q})" for q in queries)
+    
+    return None
+
+
 def run_online_rls(config: Dict[str, Any], spec_name: str, 
                    output_dir: Optional[str] = None, verbose: bool = True) -> Any:
     """Run Online RLS analysis with specified configuration."""
@@ -107,6 +263,19 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         target = spec_config.get('target_col')
         formula = f"{target} ~ {' + '.join(features)}"
     
+    # Build query string for geographic/other filtering
+    geo_query = build_geographic_query(spec_config)
+    
+    # Combine with any user-specified query
+    user_query = spec_config.get('query')
+    if geo_query and user_query:
+        query = f"({geo_query}) & ({user_query})"
+    else:
+        query = geo_query or user_query
+    
+    if query:
+        logger.info(f"Applying data filter: {query}")
+    
     # Create and fit model
     model = OLS(
         formula=formula,
@@ -114,10 +283,11 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         forget_factor=settings.get('forget_factor', 1.0),
         chunk_size=settings.get('chunk_size', 10000),
         n_workers=settings.get('n_workers'),
-        show_progress=settings.get('show_progress', True)
+        show_progress=settings.get('show_progress', True),
+        se_type=settings.get('se_type', 'stata')
     )
     
-    model.fit(spec_config['data_source'], cluster=cluster)
+    model.fit(spec_config['data_source'], cluster=cluster, query=query)
     
     # Print results
     logger.info(f"Analysis complete! Total observations: {model.n_obs_:,}")
@@ -178,6 +348,19 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     if feature_engineering and 'endogenous' in feature_engineering:
         endogenous = feature_engineering['endogenous']
     
+    # Build query string for geographic/other filtering
+    geo_query = build_geographic_query(spec_config)
+    
+    # Combine with any user-specified query
+    user_query = spec_config.get('query')
+    if geo_query and user_query:
+        query = f"({geo_query}) & ({user_query})"
+    else:
+        query = geo_query or user_query
+    
+    if query:
+        logger.info(f"Applying data filter: {query}")
+    
     # Create and fit model
     model = TwoSLS(
         formula=formula,
@@ -186,10 +369,11 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
         forget_factor=settings.get('forget_factor', 1.0),
         chunk_size=settings.get('chunk_size', 10000),
         n_workers=settings.get('n_workers'),
-        show_progress=settings.get('show_progress', True)
+        show_progress=settings.get('show_progress', True),
+        se_type=settings.get('se_type', 'stata')
     )
     
-    model.fit(spec_config['data_source'], cluster=cluster)
+    model.fit(spec_config['data_source'], cluster=cluster, query=query)
     
     # Print results
     logger.info(f"Analysis complete! Total observations: {model.results_.n_obs:,}")
