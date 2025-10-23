@@ -928,7 +928,7 @@ class MiscPreprocessor(AbstractPreprocessor):
             data_vars = {}
             
             # Countries variable (ADM_0)
-            data_vars['countries'] = xr.DataArray(
+            data_vars['country'] = xr.DataArray(
                 da.zeros((ny, nx), dtype=np.uint16, chunks=(512, 512)),
                 dims=['latitude', 'longitude'],
                 coords={
@@ -943,7 +943,7 @@ class MiscPreprocessor(AbstractPreprocessor):
             
             # Subdivisions variable (ADM_1) if available
             if include_subdivisions:
-                data_vars['subdivisions'] = xr.DataArray(
+                data_vars['subdivision'] = xr.DataArray(
                     da.zeros((ny, nx), dtype=np.uint16, chunks=(512, 512)),
                     dims=['latitude', 'longitude'],
                     coords={
@@ -1040,8 +1040,8 @@ class MiscPreprocessor(AbstractPreprocessor):
 
                         # Create empty arrays for this tile
                         tile_shape = tile_geobox.shape
-                        countries_tile = np.zeros(tile_shape, dtype=np.uint16)
-                        subdivisions_tile = np.zeros(tile_shape, dtype=np.uint16) if gdf_adm1 is not None else None
+                        country_tile = np.zeros(tile_shape, dtype=np.uint16)
+                        subdivision_tile = np.zeros(tile_shape, dtype=np.uint16) if gdf_adm1 is not None else None
 
                         # Rasterize overlapping countries
                         for _, row in overlapping_countries.iterrows():
@@ -1050,7 +1050,7 @@ class MiscPreprocessor(AbstractPreprocessor):
                             
                             geom = Geometry(row.geometry, crs=str(gdf_adm0.crs))
                             country_mask = rasterize(geom, tile_geobox)
-                            countries_tile = np.where(country_mask, value, countries_tile)
+                            country_tile = np.where(country_mask, value, country_tile)
 
                         # Rasterize overlapping subdivisions if available
                         if overlapping_subdivisions is not None and len(overlapping_subdivisions) > 0:
@@ -1060,13 +1060,13 @@ class MiscPreprocessor(AbstractPreprocessor):
                                 
                                 geom = Geometry(row.geometry, crs=str(gdf_adm1.crs))
                                 subdivision_mask = rasterize(geom, tile_geobox)
-                                subdivisions_tile = np.where(subdivision_mask, value, subdivisions_tile)
+                                subdivision_tile = np.where(subdivision_mask, value, subdivision_tile)
 
                         # Create dataset for this tile
                         tile_data_vars = {}
                         
-                        tile_data_vars['countries'] = xr.DataArray(
-                            countries_tile,
+                        tile_data_vars['country'] = xr.DataArray(
+                            country_tile,
                             dims=['latitude', 'longitude'],
                             coords={
                                 'latitude': tile_geobox.coords['latitude'].values.round(5),
@@ -1074,9 +1074,9 @@ class MiscPreprocessor(AbstractPreprocessor):
                             }
                         )
                         
-                        if subdivisions_tile is not None:
-                            tile_data_vars['subdivisions'] = xr.DataArray(
-                                subdivisions_tile,
+                        if subdivision_tile is not None:
+                            tile_data_vars['subdivision'] = xr.DataArray(
+                                subdivision_tile,
                                 dims=['latitude', 'longitude'],
                                 coords={
                                     'latitude': tile_geobox.coords['latitude'].values.round(5),
@@ -1168,8 +1168,8 @@ class MiscPreprocessor(AbstractPreprocessor):
             
             # Load the GADM countries grid
             logger.info(f"Loading GADM countries grid from {gadm_zarr}")
-            countries_grid = xr.open_zarr(gadm_zarr, chunks="auto", consolidated=False)
-            countries_grid = countries_grid.countries.astype("int16").compute()
+            gadm_grid = xr.open_zarr(gadm_zarr, chunks="auto", consolidated=False)
+            country_grid = gadm_grid.country.astype("int16").compute()
             
             # Load the country code mapping
             gadm_dir = os.path.dirname(gadm_zarr)
@@ -1206,7 +1206,7 @@ class MiscPreprocessor(AbstractPreprocessor):
                 ].unique()
                 
                 # Use isin to create boolean mask efficiently
-                classification_array = countries_grid.isin(country_ids_with_classification)
+                classification_array = country_grid.isin(country_ids_with_classification)
                 
                 # Add attributes
                 classification_array.attrs = {
@@ -1224,14 +1224,14 @@ class MiscPreprocessor(AbstractPreprocessor):
                     'description': 'Country classifications grid (HDI and World Bank income groups)',
                     'source': 'UNDP HDI and World Bank income classifications',
                     'date_created': datetime.now().isoformat(),
-                    'crs': str(countries_grid.attrs.get('crs', 'EPSG:4326')),
+                    'crs': str(country_grid.attrs.get('crs', 'EPSG:4326')),
                     'note': 'Boolean values: True where classification applies, False otherwise'
                 }
             )
             
             # Add CRS
-            if 'crs' in countries_grid.attrs:
-                ds = ds.rio.write_crs(countries_grid.attrs['crs'])
+            if 'crs' in country_grid.attrs:
+                ds = ds.rio.write_crs(country_grid.attrs['crs'])
             
             # Setup encoding - use bool dtype for minimal storage
             compressor = BloscCodec(cname="lz4", clevel=5, shuffle='bitshuffle', blocksize=0)
@@ -1250,7 +1250,7 @@ class MiscPreprocessor(AbstractPreprocessor):
             logger.info("Country classifications rasterization complete")
             
             # Close datasets
-            countries_grid.close()
+            gadm_grid.close()
             
             return True
             
