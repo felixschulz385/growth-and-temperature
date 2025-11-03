@@ -121,6 +121,15 @@ def _load_and_merge_datasets(
                     ds = ds[vars_to_keep]
                     logger.debug(f"Dataset {dataset_name}: keeping all variables {vars_to_keep}")
             
+            # Apply column prefix if specified
+            column_prefix = dataset_config.get('column_prefix')
+            if column_prefix:
+                logger.info(f"Applying prefix '{column_prefix}' to dataset {dataset_name}")
+                # Rename all data variables with prefix
+                rename_dict = {var: f"{column_prefix}{var}" for var in ds.data_vars}
+                ds = ds.rename(rename_dict)
+                logger.debug(f"Renamed variables: {list(ds.data_vars.keys())}")
+            
             # Add dataset identifier for provenance
             ds.attrs['dataset_name'] = dataset_name
             merged_datasets.append(ds)
@@ -212,325 +221,9 @@ def get_available_tiles(assembly_config: Dict[str, Any], target_geobox) -> List[
     logger.info(f"Generated {len(all_tiles)} tiles from geobox ({tiles.shape[0]}x{tiles.shape[1]})")
     return all_tiles
 
-def _get_annual_means_path(output_path: str) -> str:
-    """Get the path for the annual means YAML file."""
-    return os.path.join(output_path, '_annual_means.yaml')
-
-def _save_annual_means(output_path: str, annual_means: Dict[str, Dict[int, float]]):
-    """Save annual means to YAML file."""
-    annual_means_path = _get_annual_means_path(output_path)
-    logger.info(f"Saving annual means to {annual_means_path}")
-    
-    with open(annual_means_path, 'w') as f:
-        yaml.dump(annual_means, f, default_flow_style=False)
-    
-    logger.info("Successfully saved annual means")
-
-def _load_annual_means(output_path: str) -> Optional[Dict[str, Dict[int, float]]]:
-    """Load annual means from YAML file if it exists."""
-    annual_means_path = _get_annual_means_path(output_path)
-    
-    if os.path.exists(annual_means_path):
-        logger.info(f"Loading existing annual means from {annual_means_path}")
-        try:
-            with open(annual_means_path, 'r') as f:
-                return yaml.safe_load(f)
-        except Exception as e:
-            logger.warning(f"Failed to load annual means: {e}")
-    
-    return None
-
-
-def _parse_demean_columns_config(demean_config) -> Tuple[List[str], Dict[str, List[str]]]:
-    """
-    Parse demean_columns configuration into column names and per-column demeaning types.
-    
-    Supports two formats:
-    1. Legacy: ["col1", "col2"] - applies all types to all columns
-    2. New: [["col1", ["type1", "type2"]], ["col2", ["type3"]]] - per-column types
-    
-    Args:
-        demean_config: demean_columns configuration from assembly config
-        
-    Returns:
-        Tuple of (column_names_list, column_to_types_dict)
-    """
-    if not demean_config:
-        return [], {}
-    
-    # Check if using new format (list of lists)
-    if demean_config and isinstance(demean_config[0], list):
-        # New format: [["col1", ["type1", "type2"]], ...]
-        columns = []
-        column_types = {}
-        
-        for item in demean_config:
-            if not isinstance(item, list) or len(item) != 2:
-                logger.warning(f"Invalid demean_columns entry: {item}, expected [column_name, [types]]")
-                continue
-            
-            col_name, types = item
-            if not isinstance(types, list):
-                logger.warning(f"Invalid types for column {col_name}: {types}, expected list")
-                continue
-            
-            columns.append(col_name)
-            column_types[col_name] = types
-        
-        return columns, column_types
-    else:
-        # Legacy format: ["col1", "col2", ...]
-        # Returns empty dict to indicate "use global settings"
-        return list(demean_config), {}
-
-def _apply_demeaning_to_dataframe(
-    df: pd.DataFrame,
-    columns_to_demean: List[str],
-    annual_means: Dict[str, Dict[int, float]],
-    column_demeaning_types: Dict[str, List[str]] = None
-) -> pd.DataFrame:
-    """
-    Apply demeaning operations to pandas DataFrame.
-    
-    Args:
-        df: Input pandas DataFrame with 'year' column
-        columns_to_demean: List of columns to demean
-        annual_means: Pre-computed annual means
-        column_demeaning_types: Per-column demeaning types dict {column: [types]}
-        
-    Returns:
-        DataFrame with additional demeaned columns
-    """
-    df_demeaned = df.copy()
-    
-    # Determine which columns need which types
-    column_types_map = {}
-    
-    if column_demeaning_types:
-        # Use per-column specifications
-        for col in columns_to_demean:
-            if col in column_demeaning_types:
-                column_types_map[col] = column_demeaning_types[col]
-            else:
-                logger.warning(f"No demeaning types specified for column {col}, skipping")
-    else:
-        logger.warning("No column_demeaning_types provided, skipping demeaning")
-        return df_demeaned
-    
-    # Validate all types
-    valid_types = {'time_demeaned', 'unit_demeaned', 'twoway_demeaned'}
-    for col, types in column_types_map.items():
-        invalid_types = set(types) - valid_types
-        if invalid_types:
-            logger.warning(f"Invalid demeaning types for column {col}: {invalid_types}. Valid types: {valid_types}")
-            column_types_map[col] = [t for t in types if t in valid_types]
-    
-    # Check if we have required columns
-    missing_cols = [col for col in columns_to_demean if col not in df.columns]
-    if missing_cols:
-        logger.warning(f"Missing columns for demeaning: {missing_cols}")
-        columns_to_demean = [col for col in columns_to_demean if col in df.columns]
-    
-    if not columns_to_demean or 'year' not in df.columns:
-        return df_demeaned
-    
-    # Determine which operations we need globally
-    need_time_demeaned = any('time_demeaned' in types or 'twoway_demeaned' in types 
-                             for types in column_types_map.values())
-    need_unit_demeaned = any('unit_demeaned' in types for types in column_types_map.values())
-    need_twoway_demeaned = any('twoway_demeaned' in types for types in column_types_map.values())
-    
-    # Compute time-demeaned values for all columns that need them
-    time_demeaned_temps = {}
-    if need_time_demeaned:
-        for col in columns_to_demean:
-            col_types = column_types_map.get(col, [])
-            if 'time_demeaned' in col_types or 'twoway_demeaned' in col_types:
-                if col in annual_means:
-                    year_to_mean = annual_means[col]
-                    time_demeaned_temps[col] = df_demeaned[col] - df_demeaned['year'].map(year_to_mean)
-    
-    # Store time-demeaned columns if requested
-    for col in columns_to_demean:
-        col_types = column_types_map.get(col, [])
-        if 'time_demeaned' in col_types and col in time_demeaned_temps:
-            df_demeaned[f"{col}_time_demeaned"] = time_demeaned_temps[col]
-    
-    # Unit and two-way demeaning require pixel grouping
-    pixel_group_cols = ['latitude', 'longitude', 'pixel_id']
-    available_group_cols = [col for col in pixel_group_cols if col in df.columns]
-    
-    if available_group_cols:
-        # Unit demeaning: subtract pixel means
-        if need_unit_demeaned:
-            cols_for_unit = [col for col in columns_to_demean 
-                           if 'unit_demeaned' in column_types_map.get(col, [])]
-            if cols_for_unit:
-                pixel_means = df_demeaned.groupby(available_group_cols)[cols_for_unit].transform('mean')
-                for col in cols_for_unit:
-                    df_demeaned[f"{col}_unit_demeaned"] = df_demeaned[col] - pixel_means[col]
-        
-        # Two-way demeaning: subtract both annual means and pixel means
-        if need_twoway_demeaned:
-            cols_for_twoway = [col for col in columns_to_demean 
-                              if 'twoway_demeaned' in column_types_map.get(col, [])]
-            
-            if cols_for_twoway:
-                # Collect time-demeaned columns (either stored or temporary)
-                time_cols_to_use = {}
-                for col in cols_for_twoway:
-                    if f"{col}_time_demeaned" in df_demeaned.columns:
-                        time_cols_to_use[col] = f"{col}_time_demeaned"
-                    elif col in time_demeaned_temps:
-                        # Use temporary value
-                        temp_col = f"_temp_{col}_time_demeaned"
-                        df_demeaned[temp_col] = time_demeaned_temps[col]
-                        time_cols_to_use[col] = temp_col
-                    else:
-                        logger.warning(f"Missing time-demeaned values for {col}, skipping twoway demeaning")
-                
-                if time_cols_to_use:
-                    time_col_names = list(time_cols_to_use.values())
-                    pixel_means = df_demeaned.groupby(available_group_cols)[time_col_names].transform('mean')
-                    
-                    for col, time_col in time_cols_to_use.items():
-                        df_demeaned[f"{col}_twoway_demeaned"] = df_demeaned[time_col] - pixel_means[time_col]
-                
-                # Clean up temporary columns
-                temp_cols = [c for c in df_demeaned.columns if c.startswith('_temp_')]
-                if temp_cols:
-                    df_demeaned = df_demeaned.drop(columns=temp_cols)
-    else:
-        logger.warning("No pixel grouping columns found, skipping unit and twoway demeaning")
-    
-    return df_demeaned
-
-def _aggregate_tile_stats(
-    tile_stats: Dict[str, Dict[int, Dict[str, float]]],
-    annual_sums: Dict[str, Dict[int, float]],
-    annual_counts: Dict[str, Dict[int, int]]
-):
-    """
-    Aggregate tile statistics into global accumulators.
-    
-    Args:
-        tile_stats: Statistics from a single tile
-        annual_sums: Global sum accumulator
-        annual_counts: Global count accumulator
-    """
-    for col, col_stats in tile_stats.items():
-        for year, year_stats in col_stats.items():
-            annual_sums[col][year] += year_stats['sum'].compute()
-            annual_counts[col][year] += year_stats['count'].compute()
-            
-def _extract_tile_stats(
-    merged_ds: xr.Dataset,
-    ix: int,
-    iy: int,
-    tile_geobox,
-    columns_to_demean: List[str],
-    land_mask_ds: Optional[xr.Dataset] = None
-) -> Optional[Dict[str, Dict[int, Dict[str, float]]]]:
-    """
-    Extract a single tile from merged dataset and compute its contribution to annual means.
-    """
-    if not columns_to_demean:
-        return None
-
-    try:
-        logger.debug(f"Extracting tile [{ix}, {iy}] stats from merged dataset (dask)")
-
-        # Extract tile bounds
-        bbox = tile_geobox.boundingbox
-
-        # Slice dataset to tile bounds
-        if 'latitude' in merged_ds.coords and 'longitude' in merged_ds.coords:
-            tile_ds = merged_ds[columns_to_demean].sel(
-                latitude=slice(bbox.top, bbox.bottom),
-                longitude=slice(bbox.left, bbox.right)
-            ).compute()
-        else:
-            logger.warning(f"Unknown coordinate system in merged dataset")
-            return None
-
-        # Check if tile has data
-        if tile_ds.sizes.get('latitude', 0) == 0 or tile_ds.sizes.get('longitude', 0) == 0:
-            logger.debug(f"No spatial data in tile [{ix}, {iy}]")
-            return None
-
-        # Check if we have time dimension for annual aggregation
-        if 'time' not in tile_ds.sizes:
-            logger.debug(f"No time dimension in tile [{ix}, {iy}]")
-            return None
-        
-        annual_sum = tile_ds.resample(time='1YE').sum(dim=['latitude', 'longitude'], skipna=True)
-        annual_count = tile_ds.resample(time='1YE').count(dim=['latitude', 'longitude'])
-
-        return annual_sum, annual_count
-
-    except Exception as e:
-        logger.warning(f"Failed to extract tile [{ix}, {iy}] stats from merged dataset: {e}")
-        return None
-
-def _compute_annual_means(
-    merged_ds: xr.Dataset,
-    all_tiles: List[Tuple[int, int]],
-    tiles,
-    columns_to_demean: List[str],
-    land_mask_ds: Optional[xr.Dataset] = None,
-    client=None
-) -> Dict[str, Dict[int, float]]:
-    """
-    Compute global annual means from merged dataset using tile-based processing.
-    
-    Args:
-        merged_ds: Large merged xarray dataset
-        all_tiles: List of (ix, iy) tile coordinates
-        tiles: GeoboxTiles object for tile coordinate mapping
-        columns_to_demean: List of columns to compute annual means for
-        land_mask_ds: Optional land mask dataset
-        client: Dask client for parallel processing
-        
-    Returns:
-        Dictionary mapping column names to annual means (year -> mean)
-    """
-    
-    logger.info("Computing annual means from merged dataset using sequential tile processing with Dask delayed...")
-    
-    if not columns_to_demean:
-        logger.info("No columns specified for demeaning, skipping annual means computation")
-        return {}
-    
-    logger.info(f"Processing {len(all_tiles)} tiles sequentially for annual means computation")
-    
-    # Sequentially process each tile and collect statistics
-    tile_sum = xr.DataArray(0); tile_count = xr.DataArray(0)
-    for ix, iy in all_tiles:
-        tile_geobox = tiles[ix, iy]
-        ctile_sum, ctile_count = _extract_tile_stats(
-            merged_ds, ix, iy, tile_geobox, columns_to_demean, land_mask_ds
-        )
-        tile_sum = tile_sum + ctile_sum; tile_count = tile_count + ctile_count
-    
-    years = pd.Series(merged_ds.coords["time"].values).dt.year
-    
-    # Compute global annual means from aggregated stats
-    global_annual_means = {}
-    for col in columns_to_demean:
-        col_means = {}
-        for idx, year in enumerate(years):
-            if tile_sum[col].isel(time=idx) > 0:
-                col_means[year] = tile_sum[col].isel(time=idx).item() / tile_count[col].isel(time=idx).item()
-        global_annual_means[col] = col_means
-        logger.info(f"Computed annual means for {col}: {len(col_means)} years")
-    
-    return global_annual_means
-
 def create_assembly_metadata(
     output_path: str,
-    assembly_config: Dict[str, Any],
-    annual_means: Optional[Dict[str, Dict[int, float]]] = None,
-    column_demeaning_types: Dict[str, List[str]] = None
+    assembly_config: Dict[str, Any]
 ) -> bool:
     """Create metadata YAML file for assembled parquet output."""
     try:
@@ -544,30 +237,6 @@ def create_assembly_metadata(
             'scaling': 'Applied during zarr read with mask_and_scale=True',
             'description': 'Assembled dataset in tile-partitioned parquet format with automatic scaling'
         }
-        
-        # Add demeaning information if applicable
-        processing_config = assembly_config.get('processing', {})
-        demean_config = processing_config.get('demean_columns', [])
-        
-        if demean_config and annual_means:
-            # Parse to get column names
-            columns, parsed_col_types = _parse_demean_columns_config(demean_config)
-            
-            # Use parsed column types or provided column types
-            effective_col_types = column_demeaning_types or parsed_col_types
-            
-            if effective_col_types:
-                metadata_dict['demeaning'] = {
-                    'demeaned_columns': columns,
-                    'per_column_demeaning_types': effective_col_types,
-                    'demeaning_types_description': {
-                        'unit_demeaned': 'Subtracts pixel-level means within tiles (across years)',
-                        'time_demeaned': 'Subtracts global annual means (across all pixels)',
-                        'twoway_demeaned': 'Applies both time and unit demeaning sequentially'
-                    },
-                    'description': 'Per-column demeaning specifications define which transformations are stored for each variable.',
-                    'annual_means_file': '_annual_means.yaml'
-                }
         
         with open(metadata_path, 'w') as f:
             yaml.dump(metadata_dict, f, default_flow_style=False)
@@ -584,11 +253,7 @@ def _extract_and_process_tile(
     ix: int,
     iy: int, 
     tile_geobox,
-    assembly_config: Dict[str, Any],
-    apply_demeaning: bool = False,
-    columns_to_demean: List[str] = None,
-    annual_means: Optional[Dict[str, Dict[int, float]]] = None,
-    column_demeaning_types: Dict[str, List[str]] = None
+    assembly_config: Dict[str, Any]
 ) -> Optional[pd.DataFrame]:
     """
     Extract and process a single tile from the large merged dataset.
@@ -598,10 +263,6 @@ def _extract_and_process_tile(
         ix, iy: Tile coordinates
         tile_geobox: Tile geobox for spatial bounds
         assembly_config: Assembly configuration
-        apply_demeaning: Whether to apply demeaning operations
-        columns_to_demean: List of columns to demean
-        annual_means: Pre-computed annual means
-        column_demeaning_types: Per-column demeaning types dict
         
     Returns:
         Processed DataFrame for the tile
@@ -627,13 +288,20 @@ def _extract_and_process_tile(
             logger.debug(f"No spatial data in tile [{ix}, {iy}]")
             return None
 
-        # Add pixel ID information for tile
+        # Create bit-packed pixel ID: combines ix (16 bits), iy (16 bits), and local pixel index (32 bits)
+        # Format: [ix: 16 bits | iy: 16 bits | local_pixel: 32 bits] = 64-bit integer
         tile_size_actual = (tile_ds.sizes['latitude'], tile_ds.sizes['longitude'])
-        pixel_id_matrix = np.arange(tile_size_actual[0] * tile_size_actual[1], dtype="int32").reshape(tile_size_actual)
+        local_pixel_ids = np.arange(tile_size_actual[0] * tile_size_actual[1], dtype="uint32").reshape(tile_size_actual)
+        
+        # Bit-pack: (ix << 48) | (iy << 32) | local_pixel_id
+        pixel_id_matrix = (
+            (np.uint64(ix) << 48) | 
+            (np.uint64(iy) << 32) | 
+            local_pixel_ids.astype(np.uint64)
+        )
+        
         tile_ds = tile_ds.assign({
-            'pixel_id': (['latitude', 'longitude'], pixel_id_matrix),
-            'tile_ix': ix,
-            'tile_iy': iy
+            'pixel_id': (['latitude', 'longitude'], pixel_id_matrix)
         })
                 
         # Convert to DataFrame
@@ -652,15 +320,6 @@ def _extract_and_process_tile(
             logger.debug(f"No data remaining in tile [{ix}, {iy}]")
             return None
         
-        # Apply demeaning operations on DataFrame after tabularization
-        if apply_demeaning and columns_to_demean and annual_means:
-            relevant_cols = [col for col in columns_to_demean if col in df.columns]
-            if relevant_cols:
-                logger.debug(f"Applying demeaning to {relevant_cols} in tile [{ix}, {iy}]")
-                df = _apply_demeaning_to_dataframe(
-                    df, relevant_cols, annual_means, column_demeaning_types
-                )
-        
         return df
         
     except Exception as e:
@@ -673,9 +332,7 @@ def process_tile(
     iy: int, 
     tile_geobox,
     assembly_config: Dict[str, Any], 
-    output_base_path: str,
-    annual_means: Optional[Dict[str, Dict[int, float]]] = None,
-    column_demeaning_types: Dict[str, List[str]] = None
+    output_base_path: str
 ) -> bool:
     """Process a single tile from the merged dataset and write to parquet."""
     logger.debug(f"Processing tile ix={ix}, iy={iy} from merged dataset")
@@ -699,17 +356,10 @@ def process_tile(
             logger.warning(f"Tile ix={ix}, iy={iy} exists but appears corrupted ({e}), will reprocess")
     
     processing_config = assembly_config.get('processing', {})
-    demean_config = processing_config.get('demean_columns', [])
-    columns, _ = _parse_demean_columns_config(demean_config)
     
     # Extract and process tile data from merged dataset
-    apply_demeaning = bool(columns and annual_means)
     merged = _extract_and_process_tile(
-        merged_ds, ix, iy, tile_geobox, assembly_config,
-        apply_demeaning=apply_demeaning,
-        columns_to_demean=columns,
-        annual_means=annual_means,
-        column_demeaning_types=column_demeaning_types
+        merged_ds, ix, iy, tile_geobox, assembly_config
     )
     
     if merged is None or merged.empty:
@@ -733,20 +383,6 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
     # Get output path - now expecting parquet directory output
     output_path = assembly_config['output_path']
     processing_config = assembly_config.get('processing', {})
-    demean_config = processing_config.get('demean_columns', [])
-    
-    # Parse demean columns configuration
-    demean_cols, column_demeaning_types = _parse_demean_columns_config(demean_config)
-    
-    # Log which demeaning will be applied
-    if demean_cols:
-        logger.info(f"Demeaning columns: {demean_cols}")
-        if column_demeaning_types:
-            logger.info("Using per-column demeaning specifications:")
-            for col, types in column_demeaning_types.items():
-                logger.info(f"  {col}: {types}")
-        else:
-            logger.info("No per-column demeaning types specified")
     
     # Create output directory
     os.makedirs(output_path, exist_ok=True)
@@ -812,42 +448,8 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
             logger.error(f"Failed to create merged dataset: {e}")
             return
         
-        # Step 2: Compute annual means from merged dataset using tile-based approach if demeaning is requested
-        annual_means = None
-        if demean_cols:
-            logger.info("Step 2: Computing annual means from merged dataset using tile-based approach...")
-            
-            # Try to load existing annual means first
-            annual_means = _load_annual_means(output_path)
-            
-            # Check if we need to recompute
-            force_recompute = processing_config.get('force_recompute_annual_means', False)
-            if annual_means is None or force_recompute:
-                logger.info("Computing annual means from merged dataset using tile processing...")
-                annual_means = _compute_annual_means(
-                    merged_ds, all_tiles, tiles, demean_cols, land_mask_ds, client
-                )
-                
-                if annual_means:
-                    _save_annual_means(output_path, annual_means)
-                else:
-                    logger.warning("Failed to compute annual means, demeaning will be skipped")
-                    demean_cols = []
-            else:
-                logger.info("Using existing annual means")
-                
-                # Verify all required columns are present
-                missing_cols = [col for col in demean_cols if col not in annual_means]
-                if missing_cols:
-                    logger.warning(f"Missing annual means for columns {missing_cols}, will recompute")
-                    annual_means = _compute_annual_means(
-                        merged_ds, all_tiles, tiles, demean_cols, land_mask_ds, client
-                    )
-                    if annual_means:
-                        _save_annual_means(output_path, annual_means)
-        
-        # Step 2.5: Convert time coordinate to integer years
-        logger.info("Step 2.5: Converting time coordinate to integer years...")
+        # Convert time coordinate to integer years
+        logger.info("Step 2: Converting time coordinate to integer years...")
         if "time" in merged_ds.coords:
             merged_ds = merged_ds.rename(time='year')
             merged_ds.coords["year"] = pd.Series(merged_ds.coords["year"]).dt.year.astype("int16")
@@ -856,7 +458,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
             logger.info("No time coordinate found in merged dataset")
         
         # Create assembly metadata file
-        if not create_assembly_metadata(output_path, assembly_config, annual_means, column_demeaning_types):
+        if not create_assembly_metadata(output_path, assembly_config):
             logger.warning("Failed to create assembly metadata")
         
         # Step 3: Process tiles from merged dataset
@@ -885,7 +487,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
             try:
                 success = process_tile(
                     merged_ds, ix, iy, tile_geobox,
-                    assembly_config, output_path, annual_means, column_demeaning_types
+                    assembly_config, output_path
                 )
                 if success:
                     processed_count += 1
