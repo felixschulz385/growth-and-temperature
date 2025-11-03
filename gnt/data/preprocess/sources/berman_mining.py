@@ -172,6 +172,8 @@ class BermanMiningPreprocessor(AbstractPreprocessor):
             
             # Get the standard geobox
             geobox = self._get_or_create_geobox()
+            # from odc.geo import GeoboxTiles
+            # geobox = GeoboxTiles(geobox, (512, 512))[10,10]
             logger.info(f"Using geobox with shape: {geobox.shape}")
             
             # Convert all variables to uint8 
@@ -203,14 +205,18 @@ class BermanMiningPreprocessor(AbstractPreprocessor):
             # Drop spatial_ref if present
             reprojected_ds = reprojected_ds.drop_vars(['spatial_ref'], errors='ignore')
             
+            # Rechunk
+            reprojected_ds = reprojected_ds.chunk({'time': 1, 'band': 1, 'latitude': 512, 'longitude': 512})
+            
             # Set up compression
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
             encoding = {}
             for var in reprojected_ds.data_vars:
                 encoding[var] = {
-                    'chunks': (1, 512, 512),
+                    'chunks': (1, 512, 512, 1),
                     'compressors': (compressor,),
-                    'dtype': 'uint8'
+                    'dtype': 'uint8',
+                    'fill_value': 255
                 }
             
             # Write to zarr
@@ -284,74 +290,6 @@ class BermanMiningPreprocessor(AbstractPreprocessor):
         """Create an instance from configuration dictionary."""
         return cls(**config)
 
-    def _rasterize_mining_data(self, mines_ds: xr.Dataset, output_path: str, geobox, years: List[int]) -> bool:
-        """Rasterize the mining data by reprojecting to geobox."""
-        try:
-            logger.info("Reprojecting mining data to target geobox...")
-            
-            # Process each year
-            for year in years:
-                logger.debug(f"Reprojecting year {year}")
-                year_data = mines_ds.sel(year=year)
-                
-                if len(year_data.latitude) == 0:
-                    logger.warning(f"No data for year {year}, skipping")
-                    continue
-                
-                # Reproject to target geobox using nearest neighbor
-                # This will map the point data to the nearest grid cells
-                reprojected = xr_reproject(year_data, geobox, resampling="nearest")
-                
-                # Add time and band dimensions
-                reprojected = reprojected.expand_dims('time').assign_coords(
-                    time=[pd.Timestamp(f"{year}-12-31")]
-                )
-                reprojected = reprojected.expand_dims('band').assign_coords(band=[1])
-                
-                # Round spatial coordinates
-                reprojected = reprojected.assign_coords({
-                    'latitude': geobox.coords['latitude'].values.round(5),
-                    'longitude': geobox.coords['longitude'].values.round(5)
-                })
-                
-                # Drop spatial_ref if present
-                reprojected = reprojected.drop_vars(['spatial_ref'], errors='ignore')
-                
-                # Convert all variables to uint8 for storage
-                for var in reprojected.data_vars:
-                    reprojected[var] = reprojected[var].astype(np.uint8)
-                
-                # Set up compression
-                compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
-                encoding = {}
-                for var in reprojected.data_vars:
-                    encoding[var] = {
-                        'compressors': (compressor,),
-                        'dtype': 'uint8',
-                        'fill_value': 255, 
-                    }
-                
-                # Write to zarr using region parameter
-                try:
-                    reprojected.to_zarr(
-                        output_path,
-                        region="auto",
-                        consolidated=False
-                    )
-                    
-                    logger.info(f"Successfully wrote year {year} data to zarr")
-                    
-                except Exception as e:
-                    logger.exception(f"Error writing year {year} to zarr: {e}")
-                    return False
-            
-            logger.info("Mining data reprojection complete")
-            return True
-            
-        except Exception as e:
-            logger.exception(f"Error reprojecting mining data: {e}")
-            return False
-    
     def get_hpc_output_path(self, stage: str) -> str:
         """Get output path for a given stage."""
         if stage == "spatial":
