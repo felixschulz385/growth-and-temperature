@@ -445,9 +445,10 @@ def main():
 
     # Dask configuration arguments (for preprocess and assemble operations)
     parser.add_argument('--dask-threads', type=int, help='Number of Dask threads (overrides config)')
-    parser.add_argument('--dask-memory-limit', help='Dask memory limit (overrides config)')
+    parser.add_argument('--dask-memory-limit', help='Dask memory limit per worker (overrides config, e.g., "4GB", "32GiB")')
     parser.add_argument('--temp-dir', help='Temporary directory (overrides config)')
     parser.add_argument('--dashboard-port', type=int, default=8787, help='Dask dashboard port')
+    parser.add_argument('--local-directory', help='Directory for Dask worker spilling (overrides config)')
 
     # Additional arguments for preprocessing and assembly
     parser.add_argument('--year', type=int, help='Specific year to process')
@@ -510,6 +511,22 @@ def main():
                 output_dir = config.get('output', {}).get('base_path', 
                                                           f"{project_root}/data_nobackup/analysis")
             
+            # Apply local_directory override if provided
+            if args.local_directory:
+                # Override in both analysis type defaults
+                for analysis_type in config.get('analyses', {}).values():
+                    if 'defaults' in analysis_type:
+                        analysis_type['defaults']['local_directory'] = args.local_directory
+                logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
+            
+            # Apply memory_limit override if provided
+            if args.dask_memory_limit:
+                # Override in both analysis type defaults
+                for analysis_type in config.get('analyses', {}).values():
+                    if 'defaults' in analysis_type:
+                        analysis_type['defaults']['memory_limit'] = args.dask_memory_limit
+                logger.info(f"Overriding memory_limit from CLI: {args.dask_memory_limit}")
+            
             # Determine verbosity
             verbose = args.verbose and not args.quiet
             
@@ -570,14 +587,17 @@ def main():
                         preprocess_config['dask_threads'] = args.dask_threads
                         logger.info(f"Overriding dask_threads from CLI: {args.dask_threads}")
                     if args.dask_memory_limit is not None:
-                        preprocess_config['dask_memory_limit'] = args.dask_memory_limit
-                        logger.info(f"Overriding dask_memory_limit from CLI: {args.dask_memory_limit}")
+                        preprocess_config['memory_limit'] = args.dask_memory_limit
+                        logger.info(f"Overriding memory_limit from CLI: {args.dask_memory_limit}")
                     if args.temp_dir is not None:
                         preprocess_config['temp_dir'] = args.temp_dir
                         logger.info(f"Overriding temp_dir from CLI: {args.temp_dir}")
                     if args.dashboard_port != 8787:
                         preprocess_config['dashboard_port'] = args.dashboard_port
                         logger.info(f"Overriding dashboard_port from CLI: {args.dashboard_port}")
+                    if args.local_directory is not None:
+                        preprocess_config['local_directory'] = args.local_directory
+                        logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
                     
                     # Apply preprocessing-specific overrides to source configuration
                     if args.year is not None:
@@ -604,19 +624,15 @@ def main():
                     if args.dask_threads is not None:
                         cli_overrides['dask_threads'] = args.dask_threads
                     if args.dask_memory_limit is not None:
-                        cli_overrides['dask_memory_limit'] = args.dask_memory_limit
+                        cli_overrides['memory_limit'] = args.dask_memory_limit
+                        logger.info(f"Overriding memory_limit from CLI: {args.dask_memory_limit}")
                     if args.temp_dir is not None:
                         cli_overrides['temp_dir'] = args.temp_dir
                     if args.dashboard_port != 8787:
                         cli_overrides['dashboard_port'] = args.dashboard_port
-                    
-                    # Collect assembly-specific overrides
-                    if args.tile_size is not None:
-                        cli_overrides['tile_size'] = args.tile_size
-                        logger.info(f"Overriding tile_size from CLI: {args.tile_size}")
-                    if args.compression is not None:
-                        cli_overrides['compression'] = args.compression
-                        logger.info(f"Overriding compression from CLI: {args.compression}")
+                    if args.local_directory is not None:
+                        cli_overrides['local_directory'] = args.local_directory
+                        logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
 
             # Run the operation
             run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None), args.override_level, cli_overrides)

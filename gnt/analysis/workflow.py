@@ -206,7 +206,7 @@ def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
     # Check for subset-based filter
     subset_name = spec_config.get('subset')
     country_filter = spec_config.get('countries')
-    country_col = spec_config.get('country_col', 'countries')  # Changed default from 'country' to 'countries'
+    country_col = spec_config.get('country_col', 'countries') 
     
     queries = []
     
@@ -284,7 +284,9 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         chunk_size=settings.get('chunk_size', 10000),
         n_workers=settings.get('n_workers'),
         show_progress=settings.get('show_progress', True),
-        se_type=settings.get('se_type', 'stata')
+        se_type=settings.get('se_type', 'stata'),
+        local_directory=settings.get('local_directory'),
+        memory_limit=settings.get('memory_limit')
     )
     
     model.fit(spec_config['data_source'], cluster=cluster, query=query)
@@ -370,7 +372,9 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
         chunk_size=settings.get('chunk_size', 10000),
         n_workers=settings.get('n_workers'),
         show_progress=settings.get('show_progress', True),
-        se_type=settings.get('se_type', 'stata')
+        se_type=settings.get('se_type', 'stata'),
+        local_directory=settings.get('local_directory'),
+        memory_limit=settings.get('memory_limit')
     )
     
     model.fit(spec_config['data_source'], cluster=cluster, query=query)

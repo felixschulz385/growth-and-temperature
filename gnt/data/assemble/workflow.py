@@ -369,10 +369,10 @@ def process_tile(
     # Write tile to output parquet partition
     os.makedirs(tile_output_path, exist_ok=True)
     
-    compression = processing_config.get('compression', 'zstd')
+    compression = processing_config.get('compression', 'snappy')
     
     logger.debug(f"Writing tile ix={ix}, iy={iy} to {output_file}")
-    merged.to_parquet(output_file, compression=compression, engine='pyarrow')
+    merged.to_parquet(output_file, index = False, compression=compression, engine='pyarrow')
     
     return True
 
