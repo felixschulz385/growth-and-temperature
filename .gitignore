@@ -1,5 +1,6 @@
 /data
 /data_nobackup
+/scratch_nobackup
 /output/analysis
 /misc
 .DS_Store

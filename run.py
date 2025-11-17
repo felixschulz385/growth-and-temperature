@@ -104,7 +104,7 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
 
 
 def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = False):
-    """Configure logging with the specified level and output file."""
+    """Configure logging with the specified level (SLURM handles file output)."""
     numeric_level = getattr(logging, level.upper(), None)
     if not isinstance(numeric_level, int):
         raise ValueError(f"Invalid log level: {level}")
@@ -121,19 +121,10 @@ def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = Fals
     for handler in root_logger.handlers[:]:
         root_logger.removeHandler(handler)
     
-    # Add stdout handler
+    # Add stdout handler only (SLURM handles file output)
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     root_logger.addHandler(stdout_handler)
-    
-    # Add file handler if specified
-    if log_file:
-        log_dir = Path(os.path.dirname(log_file))
-        if log_dir and str(log_dir) != ".":
-            log_dir.mkdir(exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
-        root_logger.addHandler(file_handler)
     
     logger.debug("Logging configured successfully")
 
@@ -380,7 +371,7 @@ def main():
     # Analysis-specific arguments
     parser.add_argument(
         "--analysis-type",
-        choices=['online_rls', 'online_2sls', 'list'],
+        choices=['online_rls', 'online_2sls', 'duckreg', 'list'],
         help="Type of analysis to run (required for analysis operation)"
     )
     
@@ -487,9 +478,8 @@ def main():
             parser.error(f"{args.operation} operation requires --source")
     
     try:
-        # Set up logging
-        log_file = args.log_file or f"{args.operation}-{args.source or 'analysis'}.log"
-        setup_logging(args.log_level, log_file, args.debug)
+        # Set up logging (SLURM handles file output automatically)
+        setup_logging(args.log_level, debug=args.debug)
         
         if args.operation == "analysis":
             logger.info(f"Starting GNT analysis system: {args.analysis_type}")
@@ -498,7 +488,7 @@ def main():
             config = load_config_with_env_vars(args.config)
             
             # Import and run analysis
-            from gnt.analysis.workflow import run_online_rls, run_online_2sls, list_analyses, setup_logging as analysis_setup_logging
+            from gnt.analysis.workflow import run_online_rls, run_online_2sls, run_duckreg, list_analyses, setup_logging as analysis_setup_logging
             
             # Setup analysis-specific logging
             if args.debug:
@@ -554,6 +544,19 @@ def main():
                     return 1
                 
                 run_online_2sls(config, args.specification, output_dir, verbose)
+            elif args.analysis_type == 'duckreg':
+                # Validate specification exists
+                if 'duckreg' not in config.get('analyses', {}):
+                    logger.error("DuckReg analysis not configured in config file")
+                    return 1
+                
+                specs = config['analyses']['duckreg']['specifications']
+                if args.specification not in specs:
+                    logger.error(f"Unknown DuckReg specification: {args.specification}")
+                    logger.info(f"Available specifications: {list(specs.keys())}")
+                    return 1
+                
+                run_duckreg(config, args.specification, output_dir, verbose)
             else:
                 logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")
                 return 1

@@ -206,7 +206,7 @@ def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
     # Check for subset-based filter
     subset_name = spec_config.get('subset')
     country_filter = spec_config.get('countries')
-    country_col = spec_config.get('country_col', 'countries') 
+    country_col = spec_config.get('country_col', 'country') 
     
     queries = []
     
@@ -303,14 +303,62 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     print(f"\nR²: {model.r_squared_:.4f} | Adj. R²: {model.results_.adj_r_squared:.4f} | N: {model.n_obs_:,}")
     print("="*80)
     
-    # Save results using object-oriented interface
+    # Save comprehensive results
     if output_dir:
-        model.results_.save(
-            output_dir=output_dir,
-            spec_name=spec_name,
-            spec_config=spec_config,
-            full_config=config
-        )
+        output_path = Path(output_dir) / 'online_rls' / spec_name
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Save coefficients table
+        summary_df = model.summary()
+        summary_df.to_csv(output_path / 'coefficients.csv')
+        
+        # Build comprehensive results container
+        results_container = {
+            'metadata': {
+                'analysis_type': 'online_rls',
+                'spec_name': spec_name,
+                'description': spec_config['description'],
+                'timestamp': datetime.now().isoformat(),
+                'formula': formula,
+                'data_source': spec_config['data_source'],
+                'query': query
+            },
+            'specification': {
+                'settings': settings,
+                'cluster_type': model._cluster_type,
+                'se_type': settings.get('se_type', 'stata'),
+                'cluster_vars': cluster if isinstance(cluster, list) else [cluster] if cluster else None
+            },
+            'model_statistics': {
+                'n_obs': int(model.n_obs_),
+                'n_features': len(model.coef_),
+                'r_squared': float(model.r_squared_),
+                'adj_r_squared': float(model.results_.adj_r_squared),
+                'rss': float(model.results_.rss) if hasattr(model.results_, 'rss') else None,
+                'tss': float(model.results_.tss) if hasattr(model.results_, 'tss') else None,
+                'df_model': int(model.results_.df_model) if hasattr(model.results_, 'df_model') else None,
+                'df_resid': int(model.results_.df_resid) if hasattr(model.results_, 'df_resid') else None
+            },
+            'coefficients': {
+                'names': summary_df.index.tolist(),
+                'estimates': summary_df['coef'].tolist(),
+                'std_errors': summary_df['std err'].tolist(),
+                't_statistics': summary_df['t'].tolist(),
+                'p_values': summary_df['P>|t|'].tolist(),
+                'conf_int_lower': summary_df['[0.025'].tolist(),
+                'conf_int_upper': summary_df['0.975]'].tolist()
+            }
+        }
+        
+        # Create timestamp for results
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Save comprehensive JSON with timestamp
+        json_filename = f'results_{timestamp}.json'
+        with open(output_path / json_filename, 'w') as f:
+            json.dump(results_container, f, indent=2)
+        
+        logger.info(f"Results saved to: {output_path / json_filename}")
     
     return model
 
@@ -394,19 +442,306 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
         print(summary_df.to_string())
     
     # Print second stage
+    second_stage_summary = model.summary(stage='second')
     print("\nSECOND STAGE RESULTS:")
-    print(model.summary(stage='second').to_string())
+    print(second_stage_summary.to_string())
     print(f"\nR²: {model.results_.r_squared:.4f} | N: {model.results_.n_obs:,}")
     print("="*80)
     
-    # Save results using object-oriented interface
+    # Save comprehensive results
     if output_dir:
-        model.results_.save(
-            output_dir=output_dir,
-            spec_name=spec_name,
-            spec_config=spec_config,
-            full_config=config
-        )
+        output_path = Path(output_dir) / 'online_2sls' / spec_name
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Save second stage coefficients
+        second_stage_summary.to_csv(output_path / 'second_stage_coefficients.csv')
+        
+        # Save first stage coefficients
+        for stage_name, summary_df in first_stage_summaries.items():
+            filename = f'first_stage_{stage_name.replace(" ", "_").lower()}.csv'
+            summary_df.to_csv(output_path / filename)
+        
+        # Build comprehensive results container
+        results_container = {
+            'metadata': {
+                'analysis_type': 'online_2sls',
+                'spec_name': spec_name,
+                'description': spec_config['description'],
+                'timestamp': datetime.now().isoformat(),
+                'formula': formula,
+                'endogenous': endogenous,
+                'data_source': spec_config['data_source'],
+                'query': query
+            },
+            'specification': {
+                'settings': settings,
+                'cluster_type': model._cluster_type if hasattr(model, '_cluster_type') else None,
+                'se_type': settings.get('se_type', 'stata'),
+                'cluster_vars': cluster if isinstance(cluster, list) else [cluster] if cluster else None
+            },
+            'second_stage': {
+                'model_statistics': {
+                    'n_obs': int(model.results_.n_obs),
+                    'n_features': len(model.results_.params),
+                    'r_squared': float(model.results_.r_squared),
+                    'adj_r_squared': float(model.results_.adj_r_squared) if hasattr(model.results_, 'adj_r_squared') else None,
+                    'df_model': int(model.results_.df_model) if hasattr(model.results_, 'df_model') else None,
+                    'df_resid': int(model.results_.df_resid) if hasattr(model.results_, 'df_resid') else None
+                },
+                'coefficients': {
+                    'names': second_stage_summary.index.tolist(),
+                    'estimates': second_stage_summary['coef'].tolist(),
+                    'std_errors': second_stage_summary['std err'].tolist(),
+                    't_statistics': second_stage_summary['t'].tolist(),
+                    'p_values': second_stage_summary['P>|t|'].tolist(),
+                    'conf_int_lower': second_stage_summary['[0.025'].tolist(),
+                    'conf_int_upper': second_stage_summary['0.975]'].tolist()
+                }
+            },
+            'first_stage': {}
+        }
+        
+        # Add first stage results
+        for stage_name, summary_df in first_stage_summaries.items():
+            results_container['first_stage'][stage_name] = {
+                'coefficients': {
+                    'names': summary_df.index.tolist(),
+                    'estimates': summary_df['coef'].tolist(),
+                    'std_errors': summary_df['std err'].tolist(),
+                    't_statistics': summary_df['t'].tolist(),
+                    'p_values': summary_df['P>|t|'].tolist(),
+                    'conf_int_lower': summary_df['[0.025'].tolist(),
+                    'conf_int_upper': summary_df['0.975]'].tolist()
+                }
+            }
+        
+        # Create timestamp for results
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Save comprehensive JSON with timestamp
+        json_filename = f'results_{timestamp}.json'
+        with open(output_path / json_filename, 'w') as f:
+            json.dump(results_container, f, indent=2)
+        
+        logger.info(f"Results saved to: {output_path / json_filename}")
+    
+    return model
+
+
+def run_duckreg(config: Dict[str, Any], spec_name: str, 
+                output_dir: Optional[str] = None, verbose: bool = True) -> Any:
+    """Run DuckReg compressed OLS analysis with specified configuration."""
+    logger = logging.getLogger(__name__)
+    
+    # Get analysis configuration
+    duckreg_config = config['analyses']['duckreg']
+    spec_config = duckreg_config['specifications'][spec_name]
+    defaults = duckreg_config['defaults']
+    
+    logger.info(f"Running DuckReg analysis: {spec_config['description']}")
+    logger.info(f"Data source: {spec_config['data_source']}")
+    
+    # Merge settings
+    settings = {**defaults, **spec_config.get('settings', {})}
+    
+    # Import compressed_ols API
+    from duckreg import compressed_ols
+    
+    # Get formula
+    formula = spec_config.get('formula')
+    if not formula:
+        raise ValueError("DuckReg requires formula specification in format 'y ~ x1 + x2 | fe1 + fe2 | 0 | cluster'")
+    
+    # Build SQL WHERE clause for filtering
+    geo_query = build_geographic_query(spec_config)
+    user_query = spec_config.get('query')
+    
+    # Convert pandas query to SQL WHERE clause if needed
+    sql_where = None
+    if geo_query or user_query:
+        # For DuckReg, we need SQL WHERE clause, not pandas query
+        # If user provided pandas-style query, convert to SQL
+        if user_query:
+            # Simple conversion: replace & with AND, | with OR
+            sql_where = user_query.replace(' & ', ' AND ').replace(' | ', ' OR ')
+        
+        # For geographic filtering via subset, build SQL IN clause
+        if geo_query:
+            # Extract country column and IDs from the pandas query
+            subset_name = spec_config.get('subset')
+            if subset_name:
+                country_col = spec_config.get('country_col', 'country')
+                country_ids = load_subset(subset_name)
+                geo_sql = f"{country_col} IN ({','.join(map(str, country_ids))})"
+                
+                if sql_where:
+                    sql_where = f"({geo_sql}) AND ({sql_where})"
+                else:
+                    sql_where = geo_sql
+    
+    if sql_where:
+        logger.info(f"Applying data filter: {sql_where}")
+    
+    # Prepare DuckDB configuration
+    duckdb_kwargs = settings.get('duckdb_kwargs', {})
+    
+    # Compute scratch directory for database
+    # Use ${WD}/scratch_nobackup/${SLURM_JOB_ID} if available
+    wd = os.environ.get('WD', project_root)
+    slurm_job_id = os.environ.get('SLURM_JOB_ID', 'local')
+    scratch_path = Path(wd) / 'scratch_nobackup' / slurm_job_id / 'duckreg' / f'analysis_{spec_name}'
+    scratch_path.mkdir(exist_ok=True, parents=True)
+    
+    # Create unique database name with timestamp
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    db_name = str(scratch_path / f'duckreg_{spec_name}_{timestamp}.db')
+    
+    logger.info(f"Using scratch database at: {db_name}")
+    logger.info(f"SLURM_JOB_ID: {slurm_job_id}")
+    logger.info(f"WD: {wd}")
+    
+    # Create and fit model
+    model = compressed_ols(
+        formula=formula,
+        data=spec_config['data_source'],
+        subset=sql_where,
+        n_bootstraps=settings.get('n_bootstraps', 100),
+        round_strata=settings.get('round_strata'),
+        seed=settings.get('seed', 42),
+        fe_method=settings.get('fe_method', 'mundlak'),
+        cache_dir=settings.get('cache_dir'),
+        duckdb_kwargs=duckdb_kwargs,
+        db_name=db_name  # Pass explicit db_name to write to scratch
+    )
+    
+    # Print results
+    logger.info(f"Analysis complete!")
+    
+    print("\n" + "="*80)
+    print(f"Analysis: {spec_config['description']}")
+    print(f"Method: {settings.get('fe_method', 'mundlak')}")
+    print(f"Bootstraps: {settings.get('n_bootstraps', 100)}")
+    print("="*80)
+    
+    # Read parameters directly from model object
+    point_estimate = model.point_estimate.flatten()
+    has_vcov = hasattr(model, 'vcov') and model.vcov is not None
+    
+    # Get coefficient names
+    if hasattr(model, 'coef_names_'):
+        coef_names = model.coef_names_
+    else:
+        coef_names = [f'coef_{i}' for i in range(len(point_estimate))]
+    
+    # Build results DataFrame
+    if has_vcov:
+        std_err = np.sqrt(np.diag(model.vcov))
+        
+        results_df = pd.DataFrame({
+            'Coefficient': point_estimate,
+            'Std. Error': std_err,
+            't-stat': point_estimate / std_err
+        }, index=coef_names)
+        
+        # Add p-values and confidence intervals
+        from scipy import stats
+        t_stats = point_estimate / std_err
+        p_values = 2 * (1 - stats.norm.cdf(np.abs(t_stats)))
+        ci_lower = point_estimate - 1.96 * std_err
+        ci_upper = point_estimate + 1.96 * std_err
+        
+        results_df['P>|t|'] = p_values
+        results_df['[0.025'] = ci_lower
+        results_df['0.975]'] = ci_upper
+    else:
+        results_df = pd.DataFrame({
+            'Coefficient': point_estimate
+        }, index=coef_names)
+    
+    print("\n", results_df.to_string())
+    print("="*80)
+    
+    # Save comprehensive results
+    if output_dir:
+        output_path = Path(output_dir) / 'duckreg' / spec_name
+        output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Get compression statistics from model
+        compression_stats = {}
+        if hasattr(model, 'df_compressed'):
+            compression_stats['n_compressed_rows'] = len(model.df_compressed)
+            compression_stats['n_observations'] = int(model.df_compressed['count'].sum()) if 'count' in model.df_compressed.columns else None
+            compression_stats['compression_ratio'] = compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
+        
+        # Build comprehensive results container
+        results_container = {
+            'metadata': {
+                'analysis_type': 'duckreg',
+                'spec_name': spec_name,
+                'description': spec_config['description'],
+                'timestamp': datetime.now().isoformat(),
+                'formula': formula,
+                'data_source': spec_config['data_source'],
+                'query': sql_where
+            },
+            'specification': {
+                'settings': settings,
+                'fe_method': settings.get('fe_method', 'mundlak'),
+                'n_bootstraps': settings.get('n_bootstraps', 100),
+                'round_strata': settings.get('round_strata'),
+                'seed': settings.get('seed', 42),
+                'duckdb_kwargs': duckdb_kwargs,
+                'outcome_vars': model.outcome_vars if hasattr(model, 'outcome_vars') else None,
+                'covariates': model.covariates if hasattr(model, 'covariates') else None,
+                'fe_cols': model.fe_cols if hasattr(model, 'fe_cols') else None,
+                'cluster_col': model.cluster_col if hasattr(model, 'cluster_col') else None
+            },
+            'model_statistics': {
+                'n_bootstraps': settings.get('n_bootstraps', 100),
+                'compression_method': settings.get('fe_method', 'mundlak'),
+                'has_standard_errors': has_vcov,
+                'vcov_available': has_vcov,
+                'n_coefficients': len(coef_names),
+                'estimator_type': type(model).__name__,
+                **compression_stats
+            },
+            'coefficients': {
+                'names': coef_names,
+                'estimates': results_df['Coefficient'].tolist(),
+            }
+        }
+        
+        # Add standard errors and inference if available
+        if has_vcov:
+            results_container['coefficients'].update({
+                'std_errors': results_df['Std. Error'].tolist(),
+                't_statistics': results_df['t-stat'].tolist(),
+                'p_values': results_df['P>|t|'].tolist(),
+                'conf_int_lower': results_df['[0.025'].tolist(),
+                'conf_int_upper': results_df['0.975]'].tolist()
+            })
+            
+            # Add variance-covariance matrix
+            vcov_array = model.vcov if hasattr(model.vcov, 'tolist') else np.asarray(model.vcov)
+            results_container['vcov_matrix'] = vcov_array.tolist()
+        
+        # Add SQL queries if available
+        if hasattr(model, 'agg_query'):
+            results_container['sql_queries'] = {
+                'aggregation_query': model.agg_query
+            }
+            if hasattr(model, 'design_matrix_query'):
+                results_container['sql_queries']['design_matrix_query'] = model.design_matrix_query
+            if hasattr(model, 'bootstrap_query'):
+                results_container['sql_queries']['bootstrap_query'] = model.bootstrap_query
+        
+        # Save comprehensive JSON with timestamp
+        json_filename = f'results_{timestamp}.json'
+        with open(output_path / json_filename, 'w') as f:
+            json.dump(results_container, f, indent=2)
+        
+        logger.info(f"Results saved to: {output_path / json_filename}")
+        logger.info(f"Database location: {db_name}")
     
     return model
 
@@ -429,7 +764,7 @@ def list_analyses(config: Dict[str, Any]) -> None:
 def main():
     """Main entrypoint for analysis."""
     parser = argparse.ArgumentParser(description="GNT Analysis Pipeline")
-    parser.add_argument("analysis_type", choices=['online_rls', 'online_2sls', 'list'], 
+    parser.add_argument("analysis_type", choices=['online_rls', 'online_2sls', 'duckreg', 'list'], 
                        help="Type of analysis to run or 'list' to show available analyses")
     parser.add_argument("--config", default="orchestration/configs/analysis.yaml",
                        help="Path to analysis configuration file")
@@ -519,6 +854,24 @@ def main():
                 sys.exit(1)
             
             run_online_2sls(config, args.specification, output_dir, verbose)
+        
+        elif args.analysis_type == 'duckreg':
+            if not args.specification:
+                logger.error("DuckReg analysis requires a specification. Use --specification/-s")
+                logger.info("Available specifications:")
+                specs = config['analyses']['duckreg']['specifications']
+                for spec_name, spec_config in specs.items():
+                    logger.info(f"  - {spec_name}: {spec_config['description']}")
+                sys.exit(1)
+            
+            # Validate specification
+            specs = config['analyses']['duckreg']['specifications']
+            if args.specification not in specs:
+                logger.error(f"Unknown specification: {args.specification}")
+                logger.info(f"Available specifications: {list(specs.keys())}")
+                sys.exit(1)
+            
+            run_duckreg(config, args.specification, output_dir, verbose)
         
         else:
             logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")
