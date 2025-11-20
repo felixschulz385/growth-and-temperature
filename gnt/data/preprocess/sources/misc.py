@@ -661,11 +661,11 @@ class MiscPreprocessor(AbstractPreprocessor):
                     logger.info("Classifying HDI values into groups")
                     hdi["hdi_group"] = hdi["hdi"].apply(assign_group)
                     
-                    # Get modal value from 1990-2023
+                    # Get first value from 1990-2023
                     logger.info("Aggregating to modal HDI group per country")
                     hdi = (
                         hdi.groupby("iso3")["hdi_group"]
-                        .agg(lambda x: pd.Series.mode(x)[0] if not pd.Series.mode(x).empty else None)
+                        .agg("first")
                         .reset_index()
                     )
                     
@@ -720,8 +720,8 @@ class MiscPreprocessor(AbstractPreprocessor):
                     # Drop NAs
                     wb = wb.query("classification!='..'").dropna()
                     
-                    # Get modal classification
-                    wb = wb.dropna().groupby("iso3").classification.agg(pd.Series.mode).reset_index()
+                    # Get first classification
+                    wb = wb.dropna().groupby("iso3").classification.agg("first").reset_index()
                     
                     # Convert to booleans
                     logger.info("Creating World Bank income group dummy variables")
