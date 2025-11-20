@@ -3,10 +3,10 @@
 #SBATCH --output=./log/slurm-%j.log
 #SBATCH --error=./log/slurm-%j.err
 #SBATCH --partition=scicore
-#SBATCH --time=06:00:00
-#SBATCH --qos=6hours
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --time=1-00:00:00
+#SBATCH --qos=1day
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=64G
 
 # Accept assemble config name as first argument, default to "modis"
 SOURCE=${1:-modis}

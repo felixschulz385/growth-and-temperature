@@ -17,6 +17,8 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 from odc.geo import GeoboxTiles
+from odc.geo.geobox import GeoBox
+from odc.geo.xr import ODCExtensionDa
 
 # Import common utilities
 from gnt.data.common.geobox import get_or_create_geobox
@@ -56,7 +58,7 @@ def _load_land_mask(hpc_root: str, land_mask_path: str = None) -> Optional[xr.Da
     except Exception as e:
         logger.warning(f"Error loading land mask: {e}")
         return None
-    
+
 def _load_and_merge_datasets(
     assembly_config: Dict[str, Any],
     land_mask_ds: Optional[xr.Dataset] = None
@@ -74,17 +76,28 @@ def _load_and_merge_datasets(
     logger.info("Loading and merging all zarr datasets...")
     
     datasets_config = assembly_config['datasets']
-    merged_datasets = []
+    processing_config = assembly_config.get('processing', {})
+    target_resolution = processing_config.get('resolution')
+    year_range = processing_config.get('year_range')
     
-    # Add land mask as the first dataset if provided
+    if target_resolution:
+        logger.info(f"Target resolution for assembly: {target_resolution}° (will be applied during tile extraction)")
+    
+    if year_range:
+        logger.info(f"Year range filter: {year_range[0]} to {year_range[1]}")
+    
+    merged_datasets = []
+    land_mask_for_inner_join = None
+    
+    # Process land mask separately for inner join
     if land_mask_ds is not None:
-        logger.info("Adding land mask as first dataset")
+        logger.info("Preparing land mask for inner join")
         # Transform time to year if present in land mask
         if "time" in land_mask_ds.coords:
             land_mask_ds.coords["time"] = pd.Series(land_mask_ds.coords["time"]).dt.year.astype("int16")
         
         land_mask_ds.attrs['dataset_name'] = 'land_mask'
-        merged_datasets.append(land_mask_ds)
+        land_mask_for_inner_join = land_mask_ds
     
     for dataset_name, dataset_config in datasets_config.items():
         zarr_path = dataset_config['path']
@@ -98,6 +111,17 @@ def _load_and_merge_datasets(
         try:
             # Open zarr dataset with automatic scaling and masking
             ds = xr.open_zarr(zarr_path, mask_and_scale=True, consolidated=False, chunks='auto')
+            
+            # Apply year range filter if time/year dimension exists
+            if year_range:
+                if 'time' in ds.coords:
+                    # Convert time to year for filtering
+                    years = pd.Series(ds.coords['time']).dt.year
+                    ds = ds[dict(time=years.between(year_range[0], year_range[1]))]
+                    logger.info(f"Filtered {dataset_name} to year range {year_range[0]}-{year_range[1]}")
+                elif 'year' in ds.coords:
+                    ds = ds.sel(year=slice(year_range[0], year_range[1]))
+                    logger.info(f"Filtered {dataset_name} to year range {year_range[0]}-{year_range[1]}")
             
             # Check and subset columns if specified
             columns = dataset_config.get('columns')
@@ -129,6 +153,16 @@ def _load_and_merge_datasets(
                 rename_dict = {var: f"{column_prefix}{var}" for var in ds.data_vars}
                 ds = ds.rename(rename_dict)
                 logger.debug(f"Renamed variables: {list(ds.data_vars.keys())}")
+                
+            # Transform BOOL to float32
+            boolean_vars = [x for x, y in ds.dtypes.items() if y == np.dtype("bool")]
+            if boolean_vars:
+                ds[boolean_vars] = ds[boolean_vars].astype("float32")
+            
+            # Transform INT to float32
+            int_vars = [x for x, y in ds.dtypes.items() if y == np.issubdtype(y, np.integer)]
+            if int_vars:
+                ds[int_vars] = ds[int_vars].astype("float32")
             
             # Add dataset identifier for provenance
             ds.attrs['dataset_name'] = dataset_name
@@ -143,26 +177,30 @@ def _load_and_merge_datasets(
     if not merged_datasets:
         raise ValueError("No datasets could be loaded successfully")
     
-    # Merge all datasets using default join behavior
-    logger.info("Merging datasets...")
+    # Merge all datasets using outer join
+    logger.info("Merging datasets with outer join...")
     try:
         if len(merged_datasets) == 1:
             merged_ds = merged_datasets[0]
         else:
-            # Start with the first dataset as base
-            merged_ds = merged_datasets[0]
-            logger.info(f"Base dataset: {merged_ds.attrs.get('dataset_name', 'unknown')}")
-            
-            # Merge remaining datasets using default xarray merge behavior
-            for ds in merged_datasets[1:]:
-                dataset_name = ds.attrs.get('dataset_name', 'unknown')
-                
-                logger.info(f"Merging {dataset_name}")
-                merged_ds = xr.merge([merged_ds, ds], compat='override', join="left")
+            # Merge remaining datasets using outer join
+            merged_ds = xr.merge(merged_datasets, compat='override', join="outer")
         
-        logger.info(f"Successfully merged {len(merged_datasets)} datasets")
+        logger.info(f"Successfully outer merged {len(merged_datasets)} datasets")
+        logger.info(f"Dataset variables after outer merge: {list(merged_ds.data_vars.keys())}")
+        logger.info(f"Dataset dimensions after outer merge: {dict(merged_ds.sizes)}")
+        
+        # Now apply inner join with land mask if provided
+        if land_mask_for_inner_join is not None:
+            logger.info("Applying inner join with land mask")
+            merged_ds = xr.merge([merged_ds, land_mask_for_inner_join], compat='override', join="inner")
+            logger.info(f"Dataset dimensions after inner join with land mask: {dict(merged_ds.sizes)}")
+            
+        # Add Spatial Reference
+        merged_ds = merged_ds.rio.write_crs(4326)
+        
         logger.info(f"Final dataset variables: {list(merged_ds.data_vars.keys())}")
-        logger.info(f"Dataset dimensions: {dict(merged_ds.sizes)}")
+        logger.info(f"Final dataset dimensions: {dict(merged_ds.sizes)}")
         
         return merged_ds
         
@@ -270,10 +308,13 @@ def _extract_and_process_tile(
     try:
         logger.debug(f"Extracting tile [{ix}, {iy}] from merged dataset")
         
-        # Extract tile bounds
-        bbox = tile_geobox.boundingbox
+        # Pad the tile geobox by 64 pixels to handle edge effects during reprojection
+        padded_tile_geobox = tile_geobox.pad(64, 64)
         
-        # Slice dataset to tile bounds
+        # Extract tile bounds with padding
+        bbox = padded_tile_geobox.boundingbox
+        
+        # Slice dataset to padded tile bounds
         if 'latitude' in merged_ds.coords and 'longitude' in merged_ds.coords:
             tile_ds = merged_ds.sel(
                 latitude=slice(bbox.top, bbox.bottom),
@@ -287,6 +328,32 @@ def _extract_and_process_tile(
         if tile_ds.sizes.get('latitude', 0) == 0 or tile_ds.sizes.get('longitude', 0) == 0:
             logger.debug(f"No spatial data in tile [{ix}, {iy}]")
             return None
+        
+        # Apply reprojection if target resolution is specified
+        processing_config = assembly_config.get('processing', {})
+        target_resolution = processing_config.get('resolution')
+        
+        if target_resolution is not None and hasattr(tile_ds, 'odc'):
+            native_geobox = tile_ds.odc.geobox
+            native_res = abs(native_geobox.resolution.x)
+            
+            # Check if reprojection is needed
+            if abs(native_res - target_resolution) >= 1e-10:
+                logger.debug(f"Reprojecting tile [{ix}, {iy}] from {native_res}° to {target_resolution}°")
+                
+                # Create target geobox with new resolution
+                target_geobox_zoomed = native_geobox.zoom_to(resolution=target_resolution)
+                
+                # Reproject using ODC
+                tile_ds = tile_ds.odc.reproject(
+                    target_geobox_zoomed,
+                    resampling="bilinear",
+                    dst_nodata=np.nan
+                )
+                
+                logger.debug(f"Reprojection complete for tile [{ix}, {iy}]: shape {tile_ds.dims}")
+            else:
+                logger.debug(f"Tile [{ix}, {iy}] already at target resolution {target_resolution}°")
 
         # Create bit-packed pixel ID: combines ix (16 bits), iy (16 bits), and local pixel index (32 bits)
         # Format: [ix: 16 bits | iy: 16 bits | local_pixel: 32 bits] = 64-bit integer
@@ -433,13 +500,14 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
     with DaskClientContextManager(**dask_kwargs) as client:
         logger.info(f"Dask client initialized: {client.dashboard_link}")
         
-        # Load land mask if requested - will be merged as regular variable
+        # Load land mask if requested - will be inner joined with other datasets
         land_mask_ds = None
         if processing_config.get('apply_land_mask', False):
             land_mask_path = processing_config.get('land_mask_path')
             land_mask_ds = _load_land_mask(hpc_root, land_mask_path)
         
-        # Load and merge all datasets into one large xarray dataset (including land mask)
+        # Load and merge all datasets into one large xarray dataset
+        # Outer merge for all datasets, then inner join with land mask
         logger.info("Step 1: Loading and merging all zarr datasets...")
         try:
             merged_ds = _load_and_merge_datasets(assembly_config, land_mask_ds)
