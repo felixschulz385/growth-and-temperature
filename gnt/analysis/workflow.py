@@ -617,12 +617,6 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     # Print results
     logger.info(f"Analysis complete!")
     
-    print("\n" + "="*80)
-    print(f"Analysis: {spec_config['description']}")
-    print(f"Method: {settings.get('fe_method', 'mundlak')}")
-    print(f"Bootstraps: {settings.get('n_bootstraps', 100)}")
-    print("="*80)
-    
     # Read parameters directly from model object
     point_estimate = model.point_estimate.flatten()
     has_vcov = hasattr(model, 'vcov') and model.vcov is not None
@@ -672,6 +666,13 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
             compression_stats['n_compressed_rows'] = len(model.df_compressed)
             compression_stats['n_observations'] = int(model.df_compressed['count'].sum()) if 'count' in model.df_compressed.columns else None
             compression_stats['compression_ratio'] = compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
+            compression_stats['has_standard_errors'] = has_vcov
+        
+        # Generate human-readable summary
+        text_summary = format_duckreg_summary(spec_config, settings, results_df, model, compression_stats)
+        
+        # Print to console
+        print("\n" + text_summary)
         
         # Build comprehensive results container
         results_container = {
@@ -735,15 +736,99 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
             if hasattr(model, 'bootstrap_query'):
                 results_container['sql_queries']['bootstrap_query'] = model.bootstrap_query
         
+        # Create timestamp for results
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        
+        # Save text summary with timestamp
+        txt_filename = f'results_{timestamp}.txt'
+        with open(output_path / txt_filename, 'w') as f:
+            f.write(text_summary)
+        
+        logger.info(f"Text summary saved to: {output_path / txt_filename}")
+        
         # Save comprehensive JSON with timestamp
         json_filename = f'results_{timestamp}.json'
         with open(output_path / json_filename, 'w') as f:
             json.dump(results_container, f, indent=2)
         
-        logger.info(f"Results saved to: {output_path / json_filename}")
+        logger.info(f"JSON results saved to: {output_path / json_filename}")
         logger.info(f"Database location: {db_name}")
+    else:
+        # If no output_dir, still generate and print summary for feedback
+        compression_stats = {}
+        if hasattr(model, 'df_compressed'):
+            compression_stats['n_compressed_rows'] = len(model.df_compressed)
+            compression_stats['n_observations'] = int(model.df_compressed['count'].sum()) if 'count' in model.df_compressed.columns else None
+            compression_stats['compression_ratio'] = compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
+            compression_stats['has_standard_errors'] = has_vcov
+        
+        text_summary = format_duckreg_summary(spec_config, settings, results_df, model, compression_stats)
+        print("\n" + text_summary)
     
     return model
+
+
+def format_duckreg_summary(spec_config: Dict[str, Any], settings: Dict[str, Any], 
+                           results_df: pd.DataFrame, model: Any, 
+                           compression_stats: Dict[str, Any]) -> str:
+    """Format DuckReg results as human-readable text summary."""
+    summary_lines = []
+    
+    summary_lines.append("=" * 80)
+    summary_lines.append("DUCKREG REGRESSION ANALYSIS RESULTS")
+    summary_lines.append("=" * 80)
+    summary_lines.append("")
+    
+    # Specification info
+    summary_lines.append("SPECIFICATION")
+    summary_lines.append("-" * 80)
+    summary_lines.append(f"Name:        {spec_config.get('description', 'N/A')}")
+    summary_lines.append(f"Formula:     {spec_config.get('formula', 'N/A')}")
+    summary_lines.append(f"Data Source: {spec_config.get('data_source', 'N/A')}")
+    summary_lines.append(f"Timestamp:   {datetime.now().isoformat()}")
+    summary_lines.append("")
+    
+    # Analysis settings
+    summary_lines.append("ANALYSIS SETTINGS")
+    summary_lines.append("-" * 80)
+    summary_lines.append(f"Fixed Effects Method: {settings.get('fe_method', 'N/A')}")
+    summary_lines.append(f"Bootstrap Iterations: {settings.get('n_bootstraps', 0)}")
+    summary_lines.append(f"Random Seed:          {settings.get('seed', 'N/A')}")
+    summary_lines.append(f"Round Strata Decimals: {settings.get('round_strata', 'None')}")
+    summary_lines.append("")
+    
+    # Data compression statistics
+    summary_lines.append("DATA COMPRESSION STATISTICS")
+    summary_lines.append("-" * 80)
+    if compression_stats.get('n_observations'):
+        n_obs = compression_stats['n_observations']
+        n_compressed = compression_stats['n_compressed_rows']
+        ratio = compression_stats['compression_ratio']
+        summary_lines.append(f"Total Observations:    {n_obs:,}")
+        summary_lines.append(f"Compressed Rows:       {n_compressed:,}")
+        if ratio:
+            summary_lines.append(f"Compression Ratio:     {ratio:.4f} ({ratio*100:.2f}%)")
+    summary_lines.append("")
+    
+    # Model statistics
+    summary_lines.append("MODEL STATISTICS")
+    summary_lines.append("-" * 80)
+    summary_lines.append(f"Number of Coefficients: {len(results_df)}")
+    summary_lines.append(f"Standard Errors:        {'Available (Bootstrap)' if compression_stats.get('has_standard_errors') else 'Not Available'}")
+    summary_lines.append("")
+    
+    # Regression results table
+    summary_lines.append("REGRESSION RESULTS")
+    summary_lines.append("-" * 80)
+    summary_lines.append(results_df.to_string())
+    summary_lines.append("")
+    
+    # Summary statistics
+    summary_lines.append("=" * 80)
+    summary_lines.append("ANALYSIS COMPLETE")
+    summary_lines.append("=" * 80)
+    
+    return "\n".join(summary_lines)
 
 
 def list_analyses(config: Dict[str, Any]) -> None:
@@ -778,6 +863,10 @@ def main():
                        help="Enable verbose progress output (default: True)")
     parser.add_argument("--quiet", "-q", action="store_true",
                        help="Disable verbose progress output")
+    parser.add_argument("--local_directory",
+                       help="Override local directory for model output")
+    parser.add_argument("--dask_memory_limit",
+                       help="Override Dask memory limit per worker (e.g., '4GB', '32GB')")
     
     args = parser.parse_args()
     
@@ -801,6 +890,22 @@ def main():
         config.setdefault('logging', {})['level'] = 'DEBUG'
     
     logger = setup_logging(config)
+    
+    # Apply local_directory override if provided
+    if args.local_directory:
+        # Override in both analysis type defaults
+        for analysis_type in config.get('analyses', {}).values():
+            if 'defaults' in analysis_type:
+                analysis_type['defaults']['local_directory'] = args.local_directory
+        logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
+    
+    # Apply memory_limit override if provided
+    if args.dask_memory_limit:
+        # Override in both analysis type defaults
+        for analysis_type in config.get('analyses', {}).values():
+            if 'defaults' in analysis_type:
+                analysis_type['defaults']['memory_limit'] = args.dask_memory_limit
+        logger.info(f"Overriding memory_limit from CLI: {args.dask_memory_limit}")
     
     if args.analysis_type == 'list':
         list_analyses(config)

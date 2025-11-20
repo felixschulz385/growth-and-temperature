@@ -39,17 +39,11 @@ analyses:
 
       ## Mining
 
-      ntlharm_regfav_twfe_replicate:
-        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
+      ntlharm_mines_twfe:
+        description: "TWFE MODIS NTLHARM analysis for mining occurence"
         data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "ntl_harm ~ reg_fav::smallint | pixel_id + year | 0 | subdivision"
-        subset: "research_hodler_raschky_2014"
-
-      viirs_regfav_twfe_replicate:
-        description: "TWFE VIIRS analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "viirs_annual ~ reg_fav::smallint | pixel_id + year | 0 | subdivision"
-        subset: "research_hodler_raschky_2014"
+        formula: "ntl_harm ~ nb_mines_a | pixel_id + year | 0 | subdivision"
+        subset: "continent_af"
 
       ### Pooled Models:
       
