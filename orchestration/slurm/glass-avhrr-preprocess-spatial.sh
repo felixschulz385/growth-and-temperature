@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=glass-avhrr-preprocess-spatial
-#SBATCH --output=./log/slurm-%j.out
+#SBATCH --output=./log/slurm-%j.log
 #SBATCH --error=./log/slurm-%j.err
 #SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
@@ -20,7 +20,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
     --source glass_avhrr \
     --stage spatial \
     --dask-threads $SLURM_CPUS_PER_TASK \
-    --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \
+    --dask-memory-limit "${MEMORY_LIMIT_GB}GB" \
     --temp-dir "/scratch/schulz0022/glass_${SLURM_JOB_ID}" \
     --dashboard-port 8787 \
     --debug

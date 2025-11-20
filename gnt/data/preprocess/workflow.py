@@ -85,8 +85,8 @@ def process_task(task_config: Dict[str, Any]) -> None:
             import resource
             # Convert to bytes (assuming memory_limit is in MB)
             resource.setrlimit(resource.RLIMIT_AS, 
-                              (memory_limit * 1024 * 1024, 
-                               memory_limit * 1024 * 1024))
+                              (int(memory_limit) * 1024 * 1024, 
+                               int(memory_limit) * 1024 * 1024))
             logger.info(f"Memory limit set to {memory_limit}MB")
         except (ImportError, ValueError, resource.error) as e:
             logger.warning(f"Could not set memory limit: {str(e)}")
