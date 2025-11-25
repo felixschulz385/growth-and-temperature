@@ -27,23 +27,38 @@ analyses:
 
       ntlharm_regfav_twfe_replicate:
         description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "ntl_harm ~ reg_fav::smallint | pixel_id + year | 0 | subdivision"
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
         subset: "research_hodler_raschky_2014"
+        query: "(subdivision % 1 == 0) AND (year < 2010)"
+
+      ntlharm_regfav_twfe_af:
+        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
+        subset: "continent_af"
+        query: "(subdivision % 1 == 0)"
+
+      ntlharm_regfav_twfe_HDI:
+        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
+        query: "(subdivision % 1 == 0) AND (((HDI_ME == 0) AND (HDI_HI == 0) AND (HDI_VH == 0)) OR (HDI_ME == 1))"
 
       viirs_regfav_twfe_replicate:
         description: "TWFE VIIRS analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "viirs_annual ~ reg_fav::smallint | pixel_id + year | 0 | subdivision"
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "log(viirs_annual + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
         subset: "research_hodler_raschky_2014"
+        query: "(subdivision % 1 == 0)"
 
       ## Mining
 
       ntlharm_mines_twfe:
         description: "TWFE MODIS NTLHARM analysis for mining occurence"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "ntl_harm ~ nb_mines_a | pixel_id + year | 0 | subdivision"
-        subset: "continent_af"
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision"
+        query: "(subdivision % 1 == 0)"
 
       ### Pooled Models:
       

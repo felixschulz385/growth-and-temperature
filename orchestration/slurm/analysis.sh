@@ -8,9 +8,10 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 
-# Usage: sbatch analysis_modis_basic.sh <specification_name>
+# Usage: sbatch analysis.sh <type> <specification> [dataset_path]
 TYPE=${1:-online_rls}
 SPECIFICATION=${2:-modis_ntlharm_pooled}
+DATASET=${3:-}  # Optional dataset path override
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
@@ -25,11 +26,20 @@ export WD  # Make WD available to the Python script for env var expansion
 mkdir -p "${WD}/scratch_nobackup/${SLURM_JOB_ID}"
 
 # Run the analysis using the unified interface
-python run.py analysis \
-    --config orchestration/configs/analysis.yaml \
-    --analysis-type "${TYPE}" \
-    --specification "${SPECIFICATION}" \
-    --output output/analysis
+if [ -n "$DATASET" ]; then
+    python run.py analysis \
+        --config orchestration/configs/analysis.yaml \
+        --analysis-type "${TYPE}" \
+        --specification "${SPECIFICATION}" \
+        --output output/analysis \
+        --dataset "${DATASET}"
+else
+    python run.py analysis \
+        --config orchestration/configs/analysis.yaml \
+        --analysis-type "${TYPE}" \
+        --specification "${SPECIFICATION}" \
+        --output output/analysis
+fi
 
 echo "Analysis completed. Results saved to ${WD}/output/analysis"
 
