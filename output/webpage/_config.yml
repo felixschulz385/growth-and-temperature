@@ -1,0 +1,29 @@
+title: "GNT Analysis Results"
+description: "Growth and Temperature Analysis Pipeline Results"
+author: "Felix Schulz"
+baseurl: "" # the subpath of your site, e.g. /blog
+url: "" # the base hostname & protocol for your site
+
+# Build settings
+markdown: kramdown
+theme: minima
+
+# Exclude files from processing
+exclude:
+  - generate_tables.py
+  - README.md
+  - Gemfile
+  - Gemfile.lock
+
+# Include the _includes directory
+include:
+  - _includes
+
+# Include custom assets
+sass:
+  sass_dir: _sass
+  style: compressed
+
+# Make sure CSS files are processed
+keep_files:
+  - assets/css/tables.css

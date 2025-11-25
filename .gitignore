@@ -1,7 +1,7 @@
 /data
 /data_nobackup
 /scratch_nobackup
-/output/analysis
+
 /misc
 .DS_Store
 /.vscode
@@ -19,3 +19,20 @@ __init__.py
 
 debug_eog_credentials.sh
 git_access_token
+
+/output/analysis/**/*.parquet
+/output/analysis/**/*.csv
+
+# But allow rendered site
+!output/webpage/
+!output/webpage/**/*
+output/webpage/.nojekyll
+
+# Jekyll
+output/webpage/_site/
+output/webpage/.jekyll-cache/
+output/webpage/.sass-cache/
+output/webpage/_includes/*.html
+output/webpage/Gemfile.lock
+.bundle/
+vendor/
