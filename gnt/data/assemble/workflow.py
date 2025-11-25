@@ -62,7 +62,7 @@ def _load_land_mask(hpc_root: str, land_mask_path: str = None) -> Optional[xr.Da
 def _load_and_merge_datasets(
     assembly_config: Dict[str, Any],
     land_mask_ds: Optional[xr.Dataset] = None
-) -> xr.Dataset:
+) -> Tuple[xr.Dataset, Dict[str, List[str]]]:
     """
     Load and merge all zarr datasets into a single large xarray dataset.
     
@@ -71,7 +71,7 @@ def _load_and_merge_datasets(
         land_mask_ds: Optional land mask dataset
         
     Returns:
-        Large merged xarray dataset with all variables
+        Tuple of (merged dataset, mapping of resampling method to variable names)
     """
     logger.info("Loading and merging all zarr datasets...")
     
@@ -88,6 +88,7 @@ def _load_and_merge_datasets(
     
     merged_datasets = []
     land_mask_for_inner_join = None
+    resampling_map = {}  # Maps resampling method to list of variable names
     
     # Process land mask separately for inner join
     if land_mask_ds is not None:
@@ -101,12 +102,13 @@ def _load_and_merge_datasets(
     
     for dataset_name, dataset_config in datasets_config.items():
         zarr_path = dataset_config['path']
+        resampling_method = dataset_config.get('resampling', 'mode')  # default to mode
         
         if not os.path.exists(zarr_path):
             logger.warning(f"Dataset path does not exist: {zarr_path}, skipping")
             continue
         
-        logger.info(f"Loading dataset {dataset_name} from {zarr_path}")
+        logger.info(f"Loading dataset {dataset_name} from {zarr_path} (resampling: {resampling_method})")
         
         try:
             # Open zarr dataset with automatic scaling and masking
@@ -115,7 +117,6 @@ def _load_and_merge_datasets(
             # Apply year range filter if time/year dimension exists
             if year_range:
                 if 'time' in ds.coords:
-                    # Convert time to year for filtering
                     years = pd.Series(ds.coords['time']).dt.year
                     ds = ds[dict(time=years.between(year_range[0], year_range[1]))]
                     logger.info(f"Filtered {dataset_name} to year range {year_range[0]}-{year_range[1]}")
@@ -157,18 +158,29 @@ def _load_and_merge_datasets(
             # Transform BOOL to float32
             boolean_vars = [x for x, y in ds.dtypes.items() if y == np.dtype("bool")]
             if boolean_vars:
+                if len(boolean_vars) == 1:
+                   boolean_vars =  boolean_vars[0]
                 ds[boolean_vars] = ds[boolean_vars].astype("float32")
             
             # Transform INT to float32
-            int_vars = [x for x, y in ds.dtypes.items() if y == np.issubdtype(y, np.integer)]
+            int_vars = [x for x, y in ds.dtypes.items() if np.issubdtype(y, np.integer)]
             if int_vars:
+                if len(int_vars) == 1:
+                   int_vars =  int_vars[0]
                 ds[int_vars] = ds[int_vars].astype("float32")
+            
+            # Track which variables belong to this resampling method
+            var_names = list(ds.data_vars.keys())
+            if resampling_method not in resampling_map:
+                resampling_map[resampling_method] = []
+            resampling_map[resampling_method].extend(var_names)
             
             # Add dataset identifier for provenance
             ds.attrs['dataset_name'] = dataset_name
+            ds.attrs['resampling_method'] = resampling_method
             merged_datasets.append(ds)
             
-            logger.info(f"Loaded dataset {dataset_name}: {list(ds.data_vars.keys())}")
+            logger.info(f"Loaded dataset {dataset_name}: {var_names}")
             
         except Exception as e:
             logger.error(f"Failed to load dataset {dataset_name}: {e}")
@@ -201,8 +213,9 @@ def _load_and_merge_datasets(
         
         logger.info(f"Final dataset variables: {list(merged_ds.data_vars.keys())}")
         logger.info(f"Final dataset dimensions: {dict(merged_ds.sizes)}")
+        logger.info(f"Resampling method mapping: {resampling_map}")
         
-        return merged_ds
+        return merged_ds, resampling_map
         
     except Exception as e:
         logger.error(f"Failed to merge datasets: {e}")
@@ -288,16 +301,19 @@ def create_assembly_metadata(
 
 def _extract_and_process_tile(
     merged_ds: xr.Dataset,
+    resampling_map: Dict[str, List[str]],
     ix: int,
     iy: int, 
     tile_geobox,
     assembly_config: Dict[str, Any]
 ) -> Optional[pd.DataFrame]:
     """
-    Extract and process a single tile from the large merged dataset.
+    Extract and process a single tile from the large merged dataset,
+    applying different resampling methods to different variable groups.
     
     Args:
         merged_ds: Large merged xarray dataset
+        resampling_map: Mapping of resampling method to variable names
         ix, iy: Tile coordinates
         tile_geobox: Tile geobox for spatial bounds
         assembly_config: Assembly configuration
@@ -344,12 +360,35 @@ def _extract_and_process_tile(
                 # Create target geobox with new resolution
                 target_geobox_zoomed = native_geobox.zoom_to(resolution=target_resolution)
                 
-                # Reproject using ODC
-                tile_ds = tile_ds.odc.reproject(
-                    target_geobox_zoomed,
-                    resampling="bilinear",
-                    dst_nodata=np.nan
-                )
+                # Reproject each resampling method group separately
+                reprojected_datasets = []
+                
+                for resampling_method, var_names in resampling_map.items():
+                    # Filter to variables that exist in this tile
+                    vars_in_tile = [v for v in var_names if v in tile_ds.data_vars]
+                    
+                    if not vars_in_tile:
+                        continue
+                    
+                    logger.debug(f"Reprojecting {len(vars_in_tile)} variables with {resampling_method}: {vars_in_tile}")
+                    
+                    # Extract subset for this resampling method
+                    subset_ds = tile_ds[vars_in_tile]
+                    
+                    # Reproject using specified method
+                    reprojected_subset = subset_ds.odc.reproject(
+                        target_geobox_zoomed,
+                        resampling=resampling_method,
+                        dst_nodata=np.nan
+                    )
+                    
+                    reprojected_datasets.append(reprojected_subset)
+                
+                # Merge all reprojected subsets back together
+                if len(reprojected_datasets) == 1:
+                    tile_ds = reprojected_datasets[0]
+                else:
+                    tile_ds = xr.merge(reprojected_datasets, compat='override', join='inner')
                 
                 logger.debug(f"Reprojection complete for tile [{ix}, {iy}]: shape {tile_ds.dims}")
             else:
@@ -395,6 +434,7 @@ def _extract_and_process_tile(
 
 def process_tile(
     merged_ds: xr.Dataset,
+    resampling_map: Dict[str, List[str]],
     ix: int, 
     iy: int, 
     tile_geobox,
@@ -426,7 +466,7 @@ def process_tile(
     
     # Extract and process tile data from merged dataset
     merged = _extract_and_process_tile(
-        merged_ds, ix, iy, tile_geobox, assembly_config
+        merged_ds, resampling_map, ix, iy, tile_geobox, assembly_config
     )
     
     if merged is None or merged.empty:
@@ -510,7 +550,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
         # Outer merge for all datasets, then inner join with land mask
         logger.info("Step 1: Loading and merging all zarr datasets...")
         try:
-            merged_ds = _load_and_merge_datasets(assembly_config, land_mask_ds)
+            merged_ds, resampling_map = _load_and_merge_datasets(assembly_config, land_mask_ds)
             logger.info("Successfully created large merged dataset")
         except Exception as e:
             logger.error(f"Failed to create merged dataset: {e}")
@@ -554,7 +594,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
             tile_geobox = tiles[ix, iy]
             try:
                 success = process_tile(
-                    merged_ds, ix, iy, tile_geobox,
+                    merged_ds, resampling_map, ix, iy, tile_geobox,
                     assembly_config, output_path
                 )
                 if success:

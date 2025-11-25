@@ -6,7 +6,7 @@
 #SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=64G
+#SBATCH --mem=128G
 
 # Accept assemble config name as first argument, default to "modis"
 SOURCE=${1:-modis}
@@ -21,8 +21,8 @@ cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
 # Set DATA_NOBACKUP environment variable
 export DATA_NOBACKUP="/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup"
 
-# Calculate memory limit (leave some buffer for system - 90% of allocated)
-MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.9 / 1024" | bc)
+# Calculate memory limit (leave some buffer for system - 60% of allocated)
+MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 
 # Run the assembly using the unified interface
 python run.py assemble \
