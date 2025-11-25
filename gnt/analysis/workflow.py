@@ -230,7 +230,8 @@ def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
 
 
 def run_online_rls(config: Dict[str, Any], spec_name: str, 
-                   output_dir: Optional[str] = None, verbose: bool = True) -> Any:
+                   output_dir: Optional[str] = None, verbose: bool = True,
+                   dataset_override: Optional[str] = None) -> Any:
     """Run Online RLS analysis with specified configuration."""
     logger = logging.getLogger(__name__)
     
@@ -239,8 +240,11 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     spec_config = rls_config['specifications'][spec_name]
     defaults = rls_config['defaults']
     
+    # Apply dataset override if provided
+    data_source = dataset_override or spec_config['data_source']
+    
     logger.info(f"Running Online RLS analysis: {spec_config['description']}")
-    logger.info(f"Data source: {spec_config['data_source']}")
+    logger.info(f"Data source: {data_source}")
     
     # Merge settings
     settings = {**defaults, **spec_config.get('settings', {})}
@@ -269,7 +273,7 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     # Combine with any user-specified query
     user_query = spec_config.get('query')
     if geo_query and user_query:
-        query = f"({geo_query}) & ({user_query})"
+        query = f"({geo_query}) AND ({user_query})"
     else:
         query = geo_query or user_query
     
@@ -289,7 +293,7 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         memory_limit=settings.get('memory_limit')
     )
     
-    model.fit(spec_config['data_source'], cluster=cluster, query=query)
+    model.fit(data_source, cluster=cluster, query=query)
     
     # Print results
     logger.info(f"Analysis complete! Total observations: {model.n_obs_:,}")
@@ -320,7 +324,7 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
                 'description': spec_config['description'],
                 'timestamp': datetime.now().isoformat(),
                 'formula': formula,
-                'data_source': spec_config['data_source'],
+                'data_source': data_source,
                 'query': query
             },
             'specification': {
@@ -364,7 +368,8 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
 
 
 def run_online_2sls(config: Dict[str, Any], spec_name: str, 
-                    output_dir: Optional[str] = None, verbose: bool = True) -> Any:
+                    output_dir: Optional[str] = None, verbose: bool = True,
+                    dataset_override: Optional[str] = None) -> Any:
     """Run Online 2SLS analysis with specified configuration."""
     logger = logging.getLogger(__name__)
     
@@ -373,7 +378,11 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
     spec_config = twosls_config['specifications'][spec_name]
     defaults = twosls_config['defaults']
     
+    # Apply dataset override if provided
+    data_source = dataset_override or spec_config['data_source']
+    
     logger.info(f"Running Online 2SLS analysis: {spec_config['description']}")
+    logger.info(f"Data source: {data_source}")
     
     # Merge settings
     settings = {**defaults, **spec_config.get('settings', {})}
@@ -425,7 +434,7 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
         memory_limit=settings.get('memory_limit')
     )
     
-    model.fit(spec_config['data_source'], cluster=cluster, query=query)
+    model.fit(data_source, cluster=cluster, query=query)
     
     # Print results
     logger.info(f"Analysis complete! Total observations: {model.results_.n_obs:,}")
@@ -470,7 +479,7 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
                 'timestamp': datetime.now().isoformat(),
                 'formula': formula,
                 'endogenous': endogenous,
-                'data_source': spec_config['data_source'],
+                'data_source': data_source,
                 'query': query
             },
             'specification': {
@@ -529,7 +538,8 @@ def run_online_2sls(config: Dict[str, Any], spec_name: str,
 
 
 def run_duckreg(config: Dict[str, Any], spec_name: str, 
-                output_dir: Optional[str] = None, verbose: bool = True) -> Any:
+                output_dir: Optional[str] = None, verbose: bool = True,
+                dataset_override: Optional[str] = None) -> Any:
     """Run DuckReg compressed OLS analysis with specified configuration."""
     logger = logging.getLogger(__name__)
     
@@ -538,8 +548,11 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     spec_config = duckreg_config['specifications'][spec_name]
     defaults = duckreg_config['defaults']
     
+    # Apply dataset override if provided
+    data_source = dataset_override or spec_config['data_source']
+    
     logger.info(f"Running DuckReg analysis: {spec_config['description']}")
-    logger.info(f"Data source: {spec_config['data_source']}")
+    logger.info(f"Data source: {data_source}")
     
     # Merge settings
     settings = {**defaults, **spec_config.get('settings', {})}
@@ -603,7 +616,7 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     # Create and fit model
     model = compressed_ols(
         formula=formula,
-        data=spec_config['data_source'],
+        data=data_source,
         subset=sql_where,
         n_bootstraps=settings.get('n_bootstraps', 100),
         round_strata=settings.get('round_strata'),
@@ -665,7 +678,7 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
         if hasattr(model, 'df_compressed'):
             compression_stats['n_compressed_rows'] = len(model.df_compressed)
             compression_stats['n_observations'] = int(model.df_compressed['count'].sum()) if 'count' in model.df_compressed.columns else None
-            compression_stats['compression_ratio'] = compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
+            compression_stats['compression_ratio'] = 1 - compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
             compression_stats['has_standard_errors'] = has_vcov
         
         # Generate human-readable summary
@@ -682,7 +695,7 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
                 'description': spec_config['description'],
                 'timestamp': datetime.now().isoformat(),
                 'formula': formula,
-                'data_source': spec_config['data_source'],
+                'data_source': data_source,
                 'query': sql_where
             },
             'specification': {
@@ -759,7 +772,7 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
         if hasattr(model, 'df_compressed'):
             compression_stats['n_compressed_rows'] = len(model.df_compressed)
             compression_stats['n_observations'] = int(model.df_compressed['count'].sum()) if 'count' in model.df_compressed.columns else None
-            compression_stats['compression_ratio'] = compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
+            compression_stats['compression_ratio'] = 1 - compression_stats['n_compressed_rows'] / compression_stats['n_observations'] if compression_stats['n_observations'] else None
             compression_stats['has_standard_errors'] = has_vcov
         
         text_summary = format_duckreg_summary(spec_config, settings, results_df, model, compression_stats)
@@ -857,6 +870,8 @@ def main():
                        help="Analysis specification to use")
     parser.add_argument("--output", "-o",
                        help="Output directory for results")
+    parser.add_argument("--dataset",
+                       help="Override dataset path (overrides data_source in specification)")
     parser.add_argument("--debug", action="store_true",
                        help="Enable debug logging")
     parser.add_argument("--verbose", "-v", action="store_true", default=True,
@@ -940,7 +955,7 @@ def main():
                 logger.info(f"Available specifications: {list(specs.keys())}")
                 sys.exit(1)
             
-            run_online_rls(config, args.specification, output_dir, verbose)
+            run_online_rls(config, args.specification, output_dir, verbose, args.dataset)
         
         elif args.analysis_type == 'online_2sls':
             if not args.specification:
@@ -958,7 +973,7 @@ def main():
                 logger.info(f"Available specifications: {list(specs.keys())}")
                 sys.exit(1)
             
-            run_online_2sls(config, args.specification, output_dir, verbose)
+            run_online_2sls(config, args.specification, output_dir, verbose, args.dataset)
         
         elif args.analysis_type == 'duckreg':
             if not args.specification:
@@ -976,7 +991,7 @@ def main():
                 logger.info(f"Available specifications: {list(specs.keys())}")
                 sys.exit(1)
             
-            run_duckreg(config, args.specification, output_dir, verbose)
+            run_duckreg(config, args.specification, output_dir, verbose, args.dataset)
         
         else:
             logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")

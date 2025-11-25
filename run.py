@@ -381,6 +381,11 @@ def main():
     )
     
     parser.add_argument(
+        "--dataset",
+        help="Override dataset path for analysis (overrides data_source in specification)"
+    )
+    
+    parser.add_argument(
         "--output", "-o",
         help="Output directory for analysis results"
     )
@@ -530,7 +535,7 @@ def main():
                     logger.info(f"Available specifications: {list(specs.keys())}")
                     return 1
                 
-                run_online_rls(config, args.specification, output_dir, verbose)
+                run_online_rls(config, args.specification, output_dir, verbose, args.dataset)
             elif args.analysis_type == 'online_2sls':
                 # Validate specification exists
                 if 'online_2sls' not in config.get('analyses', {}):
@@ -543,7 +548,7 @@ def main():
                     logger.info(f"Available 2SLS specifications: {list(specs.keys())}")
                     return 1
                 
-                run_online_2sls(config, args.specification, output_dir, verbose)
+                run_online_2sls(config, args.specification, output_dir, verbose, args.dataset)
             elif args.analysis_type == 'duckreg':
                 # Validate specification exists
                 if 'duckreg' not in config.get('analyses', {}):
@@ -556,7 +561,7 @@ def main():
                     logger.info(f"Available specifications: {list(specs.keys())}")
                     return 1
                 
-                run_duckreg(config, args.specification, output_dir, verbose)
+                run_duckreg(config, args.specification, output_dir, verbose, args.dataset)
             else:
                 logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")
                 return 1
