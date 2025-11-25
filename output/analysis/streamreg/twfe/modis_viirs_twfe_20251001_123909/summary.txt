@@ -1,0 +1,27 @@
+================================================================================
+GNT Analysis Results: Demeaned MODIS VIIRS analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_viirs_twfe
+Timestamp: 20251001_123909
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 7,611,479,331
+  Features: 1
+  Clusters (Dim 1): 3408
+  Clusters (Dim 2): 9
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: 0.000000
+  RMSE: 0.008021
+  RSS: 489702.594062
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+viirs_annual_twoway_demeaned -0.000616    0.000225     -2.732     0.006291   ***  
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

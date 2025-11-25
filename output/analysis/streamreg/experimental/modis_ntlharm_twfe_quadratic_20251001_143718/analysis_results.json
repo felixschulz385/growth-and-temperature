@@ -1,0 +1,144 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "modis_ntlharm_twfe_quadratic",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "20251001_143718",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "median_twoway_demeaned",
+    "feature_variables": [
+      "ntl_harm_twoway_demeaned"
+    ],
+    "feature_engineering": {
+      "enabled": true,
+      "transformations": [
+        {
+          "type": "quadratic",
+          "features": [
+            "ntl_harm_twoway_demeaned"
+          ]
+        }
+      ],
+      "transformed_feature_names": [
+        "ntl_harm_twoway_demeaned",
+        "ntl_harm_twoway_demeaned_squared"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": false,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 17760984303,
+    "n_features": 2,
+    "n_clusters_1": 3409,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 71575,
+    "feature_names": [
+      "ntl_harm_twoway_demeaned",
+      "ntl_harm_twoway_demeaned_squared"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 702839.975333723,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -5.6303184337025414e-11,
+    "root_mean_squared_error": 0.006290638262563917,
+    "degrees_of_freedom": 17760984301
+  },
+  "coefficients": {
+    "estimates": {
+      "ntl_harm_twoway_demeaned": {
+        "coefficient": -0.005174952676310503,
+        "std_error": 0.002728381367136038,
+        "t_statistic": -1.8967116322681141,
+        "p_value": 0.05786600762103111,
+        "ci_lower_95": -0.010522580155897137,
+        "ci_upper_95": 0.00017267480327613077,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_squared": {
+        "coefficient": -0.00010737100059665997,
+        "std_error": 0.00010181797512165876,
+        "t_statistic": -1.0545387537747248,
+        "p_value": 0.291636327553388,
+        "ci_lower_95": -0.00030693423183511114,
+        "ci_upper_95": 9.21922306417912e-05,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        7.4440648845351144e-06,
+        -2.3604556096759964e-08
+      ],
+      [
+        -2.3604556096759435e-08,
+        1.0366900057874723e-08
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "ntl_harm_twoway_demeaned",
+        "coefficient": -0.005174952676310503,
+        "std_error": 0.002728381367136038,
+        "t_statistic": -1.8967116322681141,
+        "p_value": 0.05786600762103111,
+        "significance": "*"
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_squared",
+        "coefficient": -0.00010737100059665997,
+        "std_error": 0.00010181797512165876,
+        "t_statistic": -1.0545387537747248,
+        "p_value": 0.291636327553388,
+        "significance": ""
+      }
+    ]
+  }
+}

@@ -1,0 +1,296 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "modis_viirs_twfe_hdi",
+    "description": "Demeaned MODIS VIIRS analysis",
+    "timestamp": "20251013_143958",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "median_twoway_demeaned",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "viirs_annual_twoway_demeaned"
+    ],
+    "formula": "median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH - 1",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "viirs_annual_twoway_demeaned",
+        "viirs_annual_twoway_demeaned_x_HDI_ME",
+        "viirs_annual_twoway_demeaned_x_HDI_HI",
+        "viirs_annual_twoway_demeaned_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 7592407246,
+    "n_features": 7,
+    "n_clusters_1": 3380,
+    "n_clusters_2": 9,
+    "n_cluster_intersections": 30425,
+    "feature_names": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "viirs_annual_twoway_demeaned",
+      "viirs_annual_twoway_demeaned_x_HDI_ME",
+      "viirs_annual_twoway_demeaned_x_HDI_HI",
+      "viirs_annual_twoway_demeaned_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 476775.30599373847,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -7.902631882217293e-10,
+    "root_mean_squared_error": 0.0079244135020784,
+    "degrees_of_freedom": 7592407239
+  },
+  "coefficients": {
+    "estimates": {
+      "HDI_HI": {
+        "coefficient": 0.03875683375335934,
+        "std_error": 0.05176034155934197,
+        "t_statistic": 0.7487746909267508,
+        "p_value": 0.45399301662048486,
+        "ci_lower_95": -0.06269343570295093,
+        "ci_upper_95": 0.14020710320966961,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_ME": {
+        "coefficient": 0.14349855477800413,
+        "std_error": 0.1422944814406696,
+        "t_statistic": 1.0084618414231092,
+        "p_value": 0.3132327976284517,
+        "ci_lower_95": -0.13539862884570827,
+        "ci_upper_95": 0.4223957384017165,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 0.12539614308071606,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "viirs_annual_twoway_demeaned": {
+        "coefficient": -0.0005562312669036762,
+        "std_error": 0.00026896945702290366,
+        "t_statistic": -2.0680090336662693,
+        "p_value": 0.03863917363786218,
+        "ci_lower_95": -0.0010834114026685672,
+        "ci_upper_95": -2.9051131138785042e-05,
+        "significant_5pct": true,
+        "significant_1pct": false
+      },
+      "viirs_annual_twoway_demeaned_x_HDI_ME": {
+        "coefficient": 0.00013779415741247637,
+        "std_error": 0.000840425362106805,
+        "t_statistic": 0.16395763815010245,
+        "p_value": 0.8697644922949044,
+        "ci_lower_95": -0.0015094395523168615,
+        "ci_upper_95": 0.0017850278671418143,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "viirs_annual_twoway_demeaned_x_HDI_HI": {
+        "coefficient": 0.00017068414349207743,
+        "std_error": 0.000157210626734855,
+        "t_statistic": 1.085703600558417,
+        "p_value": 0.2776101472141548,
+        "ci_lower_95": -0.0001374486849082384,
+        "ci_upper_95": 0.00047881697189239324,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "viirs_annual_twoway_demeaned_x_HDI_VH": {
+        "coefficient": -0.0013651368522463263,
+        "std_error": 0.0008081252260940265,
+        "t_statistic": -1.6892640003883395,
+        "p_value": 0.09116884896682764,
+        "ci_lower_95": -0.002949062295390618,
+        "ci_upper_95": 0.00021878859089796547,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        0.0026791329583397434,
+        0.0005765156241496019,
+        0.001579534933190265,
+        8.126574396662353e-06,
+        1.5878097268042537e-05,
+        -6.1458628043236115e-06,
+        -1.675951106016351e-05
+      ],
+      [
+        0.0005765156241496018,
+        0.020247719448469068,
+        0.0005998689729748445,
+        7.442337449552381e-06,
+        3.069662587237102e-05,
+        -1.1462113275718952e-05,
+        -3.633758900160095e-07
+      ],
+      [
+        0.001579534933190265,
+        0.0005998689729748444,
+        -0.0005072542850673041,
+        1.684845260980509e-06,
+        1.054077304731664e-05,
+        -1.7200900844887417e-06,
+        6.030683733388678e-06
+      ],
+      [
+        8.126574396662356e-06,
+        7.442337449552382e-06,
+        1.684845260980509e-06,
+        7.234456881119563e-08,
+        1.4134428750985217e-07,
+        -3.6373590815308824e-08,
+        -5.0047960043286136e-08
+      ],
+      [
+        1.5878097268042537e-05,
+        3.069662587237102e-05,
+        1.054077304731664e-05,
+        1.413442875098522e-07,
+        7.063147892723544e-07,
+        -1.073167999226709e-07,
+        1.2578108113003015e-07
+      ],
+      [
+        -6.14586280432361e-06,
+        -1.1462113275718954e-05,
+        -1.7200900844887413e-06,
+        -3.6373590815308804e-08,
+        -1.073167999226709e-07,
+        2.4715181158365907e-08,
+        3.870990775717987e-08
+      ],
+      [
+        -1.675951106016351e-05,
+        -3.633758900160081e-07,
+        6.030683733388678e-06,
+        -5.0047960043286096e-08,
+        1.2578108113003013e-07,
+        3.870990775717983e-08,
+        6.530663810495214e-07
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "HDI_HI",
+        "coefficient": 0.03875683375335934,
+        "std_error": 0.05176034155934197,
+        "t_statistic": 0.7487746909267508,
+        "p_value": 0.45399301662048486,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": 0.14349855477800413,
+        "std_error": 0.1422944814406696,
+        "t_statistic": 1.0084618414231092,
+        "p_value": 0.3132327976284517,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 0.12539614308071606,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "viirs_annual_twoway_demeaned",
+        "coefficient": -0.0005562312669036762,
+        "std_error": 0.00026896945702290366,
+        "t_statistic": -2.0680090336662693,
+        "p_value": 0.03863917363786218,
+        "significance": "**"
+      },
+      {
+        "variable": "viirs_annual_twoway_demeaned_x_HDI_ME",
+        "coefficient": 0.00013779415741247637,
+        "std_error": 0.000840425362106805,
+        "t_statistic": 0.16395763815010245,
+        "p_value": 0.8697644922949044,
+        "significance": ""
+      },
+      {
+        "variable": "viirs_annual_twoway_demeaned_x_HDI_HI",
+        "coefficient": 0.00017068414349207743,
+        "std_error": 0.000157210626734855,
+        "t_statistic": 1.085703600558417,
+        "p_value": 0.2776101472141548,
+        "significance": ""
+      },
+      {
+        "variable": "viirs_annual_twoway_demeaned_x_HDI_VH",
+        "coefficient": -0.0013651368522463263,
+        "std_error": 0.0008081252260940265,
+        "t_statistic": -1.6892640003883395,
+        "p_value": 0.09116884896682764,
+        "significance": "*"
+      }
+    ]
+  }
+}

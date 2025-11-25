@@ -1,0 +1,130 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "ntlharm_mines_twfe",
+    "description": "TWFE MODIS NTLHARM analysis for mining occurence",
+    "timestamp": "2025-11-24T14:40:38.191396",
+    "formula": "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_5km.parquet",
+    "query": "(subdivision % 1 == 0)"
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62256399",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62256399",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "ntl_harm"
+    ],
+    "covariates": [
+      "nb_mines_a"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 739,
+    "n_observations": 14275102,
+    "compression_ratio": 0.9999482315432843
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "nb_mines_a",
+      "avg_nb_mines_a_fe0",
+      "avg_nb_mines_a_fe1"
+    ],
+    "estimates": [
+      -3.797826327665265,
+      0.17080398562636034,
+      -0.06304665374908036,
+      -5.196826491442797
+    ],
+    "std_errors": [
+      0.11447672898046475,
+      0.04762026576168794,
+      0.14283564604496468,
+      1.6293434681754395
+    ],
+    "t_statistics": [
+      -33.175531494382206,
+      3.586791944445168,
+      -0.44139299603989096,
+      -3.189521787731026
+    ],
+    "p_values": [
+      0.0,
+      0.00033477121931735354,
+      0.6589285118580697,
+      0.001425083962971918
+    ],
+    "conf_int_lower": [
+      -4.022200716466976,
+      0.07746826473345199,
+      -0.34300451999721115,
+      -8.390339689066659
+    ],
+    "conf_int_upper": [
+      -3.573451938863554,
+      0.2641397065192687,
+      0.21691121249905043,
+      -2.0033132938189357
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.013104921478066777,
+      0.002860497897783924,
+      -0.002831017326595901,
+      -0.11795948006014408
+    ],
+    [
+      0.002860497897783923,
+      0.002267689711213788,
+      -0.0007314500067507326,
+      -0.057699239994213836
+    ],
+    [
+      -0.002831017326595901,
+      -0.0007314500067507326,
+      0.02040202178108243,
+      -0.011426446234788813
+    ],
+    [
+      -0.1179594800601441,
+      -0.05769923999421382,
+      -0.011426446234788815,
+      2.6547601372859693
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(nb_mines_a, 5) AS nb_mines_a, ROUND(avg_nb_mines_a_fe0, 5) AS avg_nb_mines_a_fe0, ROUND(avg_nb_mines_a_fe1, 5) AS avg_nb_mines_a_fe1, subdivision, COUNT(*) as count, SUM(ntl_harm) as sum_ntl_harm\n        FROM design_matrix\n        GROUP BY ROUND(nb_mines_a, 5), ROUND(avg_nb_mines_a_fe0, 5), ROUND(avg_nb_mines_a_fe1, 5), subdivision\n        "
+  }
+}

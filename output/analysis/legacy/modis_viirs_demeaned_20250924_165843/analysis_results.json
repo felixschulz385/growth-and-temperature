@@ -1,0 +1,129 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "modis_viirs_demeaned",
+    "description": "Demeaned MODIS temperature analysis",
+    "timestamp": "20250924_165843",
+    "cluster_type": "one_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "median_twoway_demeaned",
+    "feature_variables": [
+      "viirs_annual_twoway_demeaned"
+    ],
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 4
+  },
+  "sample_statistics": {
+    "n_observations": 7373605893,
+    "n_features": 2,
+    "n_clusters_1": 3204,
+    "n_clusters_2": 9,
+    "n_cluster_intersections": 28841,
+    "feature_names": [
+      "intercept",
+      "viirs_annual_twoway_demeaned"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 379768.4237137275,
+    "r_squared": -37.70833891569872,
+    "adjusted_r_squared": -37.7083389209483,
+    "root_mean_squared_error": 0.0071766119711959885,
+    "degrees_of_freedom": 7373605891
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": -0.002767968113746866,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "viirs_annual_twoway_demeaned": {
+        "coefficient": -0.0006853669975642059,
+        "std_error": 0.0007742143117266526,
+        "t_statistic": -0.8852419636052717,
+        "p_value": 0.37602614399738776,
+        "ci_lower_95": -0.002202827048548445,
+        "ci_upper_95": 0.000832093053420033,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        1.1477906013022695e-05,
+        1.56484414394843e-07
+      ],
+      [
+        1.56484414394843e-07,
+        3.8753278595929744e-07
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "one_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": -0.002767968113746866,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "viirs_annual_twoway_demeaned",
+        "coefficient": -0.0006853669975642059,
+        "std_error": 0.0007742143117266526,
+        "t_statistic": -0.8852419636052717,
+        "p_value": 0.37602614399738776,
+        "significance": ""
+      }
+    ]
+  }
+}

@@ -1,0 +1,131 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "ntlharm_mines_twfe",
+    "description": "TWFE MODIS NTLHARM analysis for mining occurence",
+    "timestamp": "2025-11-17T11:01:21.747759",
+    "formula": "ntl_harm ~ nb_mines_a | pixel_id + year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "query": "country IN (65,3,38,18,46,52,39,215,51,157,48,47,20,89,72,68,61,79,87,83,85,45,117,131,126,127,139,155,144,151,154,136,150,158,160,162,88,186,189,195,205,192,212,198,201,260,263,204,69,191,210,216,224,229,67,228,22,261)"
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61734532",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61734532",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "ntl_harm"
+    ],
+    "covariates": [
+      "nb_mines_a"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 252,
+    "n_observations": 1012194326,
+    "compression_ratio": 2.48964051197418e-07
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "nb_mines_a",
+      "avg_nb_mines_a_fe0",
+      "avg_nb_mines_a_fe1"
+    ],
+    "estimates": [
+      0.17065811689884,
+      0.06716993548214045,
+      0.1613514482485594,
+      8.245318991400909
+    ],
+    "std_errors": [
+      0.03608545997259092,
+      0.03510450379569996,
+      0.24062217939765587,
+      1.3333601688853793
+    ],
+    "t_statistics": [
+      4.729276473916784,
+      1.9134278573784675,
+      0.6705593335263893,
+      6.18386478298176
+    ],
+    "p_values": [
+      2.253213749803251e-06,
+      0.055693300949341884,
+      0.5025012962767375,
+      6.255094220364299e-10
+    ],
+    "conf_int_lower": [
+      0.0999306153525618,
+      -0.0016348919574314669,
+      -0.3102680233708461,
+      5.631933060385565
+    ],
+    "conf_int_upper": [
+      0.2413856184451182,
+      0.13597476292171237,
+      0.6329709198679649,
+      10.858704922416253
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.0013021604214334612,
+      3.373205415546834e-05,
+      -0.001637849307548429,
+      -0.0021933157017468632
+    ],
+    [
+      3.373205415546834e-05,
+      0.001232326186742313,
+      -7.137223798129131e-06,
+      -0.003758152642230812
+    ],
+    [
+      -0.0016378493075484292,
+      -7.1372237981292125e-06,
+      0.05789903321807769,
+      0.0006817326767394734
+    ],
+    [
+      -0.0021933157017468637,
+      -0.003758152642230812,
+      0.0006817326767394734,
+      1.7778493399700472
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(nb_mines_a, 5) AS nb_mines_a, ROUND(avg_nb_mines_a_fe0, 5) AS avg_nb_mines_a_fe0, ROUND(avg_nb_mines_a_fe1, 5) AS avg_nb_mines_a_fe1, subdivision, COUNT(*) as count, SUM(ntl_harm) as sum_ntl_harm\n        FROM design_matrix\n        GROUP BY ROUND(nb_mines_a, 5), ROUND(avg_nb_mines_a_fe0, 5), ROUND(avg_nb_mines_a_fe1, 5), subdivision\n        ",
+    "design_matrix_query": "\n        CREATE OR REPLACE TABLE design_matrix AS\n        \n            SELECT *\n            FROM (\n            SELECT *\n            FROM (\n        SELECT pixel_id AS pixel_id, year AS year, ntl_harm AS ntl_harm, nb_mines_a AS nb_mines_a, subdivision AS subdivision\n        FROM read_parquet('/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet/**/*.parquet')\n        WHERE COLUMNS(['pixel_id', 'year', 'nb_mines_a', 'ntl_harm', 'subdivision']) IS NOT NULL AND country IN (65,3,38,18,46,52,39,215,51,157,48,47,20,89,72,68,61,79,87,83,85,45,117,131,126,127,139,155,144,151,154,136,150,158,160,162,88,186,189,195,205,192,212,198,201,260,263,204,69,191,210,216,224,229,67,228,22,261)\n        )\n            JOIN fe_0_avgs fe0\n            USING (pixel_id)\n            )\n            JOIN fe_1_avgs fe1\n            USING (year)\n            \n        "
+  }
+}

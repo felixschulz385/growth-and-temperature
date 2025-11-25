@@ -1,0 +1,221 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "debug_feature_engineering",
+    "description": "DEBUG: Feature engineering test with quadratic and interaction terms",
+    "timestamp": "20251001_111838",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "target_variable": "median",
+    "feature_variables": [
+      "ntl_harm",
+      "viirs_annual"
+    ],
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.01,
+    "forget_factor": 1.0,
+    "chunk_size": 5000,
+    "n_workers": 2
+  },
+  "sample_statistics": {
+    "n_observations": 19072085,
+    "n_features": 8,
+    "n_clusters_1": 52,
+    "n_clusters_2": 9,
+    "n_cluster_intersections": 477,
+    "feature_names": [
+      "intercept",
+      "ntl_harm",
+      "viirs_annual"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 9172.300923137731,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -3.670287194168509e-07,
+    "root_mean_squared_error": 0.02193007214764262,
+    "degrees_of_freedom": 19072077
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": 297.57284764067197,
+        "std_error": 0.5731754329191977,
+        "t_statistic": 519.1653908213154,
+        "p_value": 0.0,
+        "ci_lower_95": 296.44942379215036,
+        "ci_upper_95": 298.6962714891936,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "ntl_harm": {
+        "coefficient": -0.07721288338659583,
+        "std_error": 0.08016473109750827,
+        "t_statistic": -0.9631777257841487,
+        "p_value": 0.3354583411643093,
+        "ci_lower_95": -0.23433575633771203,
+        "ci_upper_95": 0.07990998956452038,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "viirs_annual": {
+        "coefficient": 0.004837682855665267,
+        "std_error": 0.0110324241055563,
+        "t_statistic": 0.4384968171436454,
+        "p_value": 0.6610261769208459,
+        "ci_lower_95": -0.016785868391225083,
+        "ci_upper_95": 0.026461234102555617,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        0.3285300769021097,
+        -0.02242266558650674,
+        0.002742206034104739,
+        0.00041613422043680436,
+        -4.652994924075162e-06,
+        -5.570312329409292e-06,
+        0.00018802447242366216,
+        -5.846666842937204e-06
+      ],
+      [
+        -0.022339803679143972,
+        0.006426384111935809,
+        0.0003418304864963316,
+        -0.00011728426314691578,
+        -2.924958455941747e-07,
+        -7.569384069954805e-06,
+        -0.00010228360064863881,
+        2.098397556490072e-06
+      ],
+      [
+        0.0027492718563611024,
+        0.0003398566989662239,
+        0.00012171438164485974,
+        -6.452072670179496e-06,
+        -1.6893285870251728e-07,
+        -1.0291872370538196e-06,
+        -8.409207489076263e-06,
+        1.4454599738721213e-07
+      ],
+      [
+        0.00030277429209694164,
+        -0.00010863002750594438,
+        -7.3739849482701265e-06,
+        1.9832526449183754e-06,
+        7.073274561475173e-09,
+        1.3992612508295444e-07,
+        1.7814415142876046e-06,
+        -3.60473690071705e-08
+      ],
+      [
+        -4.660680795437657e-06,
+        -2.893952673661465e-07,
+        -1.6885154440729494e-07,
+        5.550181308410458e-09,
+        2.410086890050308e-10,
+        1.2721982745100897e-09,
+        8.839711448371733e-09,
+        -1.3850267519255745e-10
+      ],
+      [
+        -5.661498297712158e-06,
+        -7.532598490974904e-06,
+        -1.0282225158923733e-06,
+        1.3870405605244628e-07,
+        1.2721982745099977e-09,
+        1.3616678559168537e-08,
+        1.4290991228920301e-07,
+        -2.7110320762052015e-09
+      ],
+      [
+        0.00030783160738135935,
+        -0.00011119089899819784,
+        -7.448818599480321e-06,
+        2.033081098930136e-06,
+        7.191894071490403e-09,
+        1.4118816546846147e-07,
+        1.8264721612928965e-06,
+        -3.6943674473474416e-08
+      ],
+      [
+        -5.830127918867628e-06,
+        2.0917255442397105e-06,
+        1.44371020355843e-07,
+        -3.82157885695806e-08,
+        -1.3850267519255207e-10,
+        -2.711032076205064e-09,
+        -3.432109644453001e-08,
+        6.926393325018043e-10
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": 297.57284764067197,
+        "std_error": 0.5731754329191977,
+        "t_statistic": 519.1653908213154,
+        "p_value": 0.0,
+        "significance": "***"
+      },
+      {
+        "variable": "ntl_harm",
+        "coefficient": -0.07721288338659583,
+        "std_error": 0.08016473109750827,
+        "t_statistic": -0.9631777257841487,
+        "p_value": 0.3354583411643093,
+        "significance": ""
+      },
+      {
+        "variable": "viirs_annual",
+        "coefficient": 0.004837682855665267,
+        "std_error": 0.0110324241055563,
+        "t_statistic": 0.4384968171436454,
+        "p_value": 0.6610261769208459,
+        "significance": ""
+      }
+    ]
+  }
+}

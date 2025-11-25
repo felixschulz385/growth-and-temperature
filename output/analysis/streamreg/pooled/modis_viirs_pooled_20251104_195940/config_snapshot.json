@@ -1,0 +1,192 @@
+{
+  "specification": {
+    "description": "Pooled MODIS VIIRS analysis",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/__modis.parquet",
+    "formula": "median ~ viirs_annual",
+    "cluster1_col": "subdivisions",
+    "cluster2_col": "year"
+  },
+  "timestamp": "2025-11-04T19:59:40.998014",
+  "full_config": {
+    "analyses": {
+      "online_rls": {
+        "description": "Online Recursive Least Squares with cluster-robust standard errors",
+        "module": "gnt.analysis.models.online_RLS",
+        "class": "OnlineRLS",
+        "defaults": {
+          "n_workers": 4,
+          "add_intercept": true,
+          "alpha": 0.001,
+          "forget_factor": 1.0,
+          "chunk_size": 50000,
+          "show_progress": false,
+          "verbose": false,
+          "cluster_type": "two_way",
+          "se_type": "stata",
+          "local_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/scratch/dask",
+          "memory_limit": "24GiB"
+        },
+        "specifications": {
+          "ntlharm_regfav_twfe_replicate": {
+            "description": "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/__modis.parquet",
+            "formula": "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned - 1",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year",
+            "subset": "research_hodler_raschky_2014"
+          },
+          "viirs_regfav_twfe_replicate": {
+            "description": "TWFE MODIS VIIRS analysis for replication of Hodler & Raschky (2014)",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/__modis.parquet",
+            "formula": "viirs_annual_twoway_demeaned ~ reg_fav_twoway_demeaned - 1",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year",
+            "subset": "research_hodler_raschky_2014"
+          },
+          "modis_ntlharm_pooled": {
+            "description": "Pooled MODIS NTLHARM analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/__modis.parquet",
+            "formula": "median ~ ntl_harm",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_viirs_pooled": {
+            "description": "Pooled MODIS VIIRS analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/__modis.parquet",
+            "formula": "median ~ viirs_annual",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_ntlharm_ufe": {
+            "description": "UFE MODIS NTLHARM analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_unit_demeaned ~ ntl_harm_unit_demeaned - 1",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_viirs_ufe": {
+            "description": "UFE MODIS VIIRS analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_unit_demeaned ~ viirs_annual_unit_demeaned - 1",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_ntlharm_twfe": {
+            "description": "TWFE MODIS NTLHARM analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median ~ ntl_harm - 1 | pixel_id + year",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_viirs_twfe": {
+            "description": "Demeaned MODIS VIIRS analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned - 1",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_ntlharm_twfe_hdi": {
+            "description": "TWFE MODIS NTLHARM analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_viirs_twfe_hdi": {
+            "description": "Demeaned MODIS VIIRS analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_ntlharm_twfe_quadratic": {
+            "description": "TWFE MODIS NTLHARM with quadratic term",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned + I(ntl_harm_twoway_demeaned^2) - 1",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "debug_modis_viirs_twfe_hdi": {
+            "description": "Demeaned MODIS VIIRS analysis",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+            "formula": "modis_median ~ viirs_annual",
+            "cluster1_col": "subdivision",
+            "cluster2_col": "year",
+            "subset": "research_hodler_raschky_2014",
+            "settings": {
+              "verbose": true,
+              "show_progress": true
+            }
+          }
+        }
+      },
+      "online_2sls": {
+        "description": "Online Two-Stage Least Squares with cluster-robust standard errors",
+        "module": "gnt.analysis.models.online_RLS",
+        "class": "Online2SLS",
+        "defaults": {
+          "n_workers": 8,
+          "add_intercept": true,
+          "alpha": 0.001,
+          "forget_factor": 1.0,
+          "chunk_size": 20000,
+          "show_progress": true,
+          "verbose": false,
+          "cluster_type": "two_way",
+          "weak_instrument_threshold": 10.0,
+          "se_type": "HC3",
+          "local_directory": "/tmp/dask-spill",
+          "memory_limit": "24GiB"
+        },
+        "specifications": {
+          "modis_ntlharm_regfav_twfe": {
+            "description": "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_viirs_regfav_twfe": {
+            "description": "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned | reg_fav_twoway_demeaned",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "modis_ntlharm_regfav_pooled_hdi": {
+            "description": "2SLS: Growth effect on temperature interacted with HDI classes using regional favoritism as instrument",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+            "formula": "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year"
+          },
+          "debug_modis_ntlharm_regfav": {
+            "description": "2SLS: Growth effect on temperature using regional favoritism as instrument",
+            "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+            "formula": "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned",
+            "cluster1_col": "subdivisions",
+            "cluster2_col": "year",
+            "module": "gnt.analysis.streamreg",
+            "class": "iv",
+            "settings": {
+              "verbose": true
+            }
+          }
+        }
+      }
+    },
+    "output": {
+      "base_path": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/output/analysis",
+      "formats": [
+        "json"
+      ]
+    },
+    "hpc": {
+      "default_workers": 4,
+      "memory_limit": "32GiB",
+      "temp_dir": "/tmp",
+      "dashboard_port": 8788,
+      "local_directory": "/tmp/dask-spill"
+    }
+  }
+}

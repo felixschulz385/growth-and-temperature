@@ -1,0 +1,131 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_viirs_twfe",
+    "description": "TWFE MODIS VIIRS analysis",
+    "timestamp": "2025-11-17T18:15:27.536363",
+    "formula": "modis_median ~ viirs_annual | pixel_id + year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61728261",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61728261",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 71049968,
+    "n_observations": 7600515932,
+    "compression_ratio": 0.009348045400557947
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "viirs_annual",
+      "avg_viirs_annual_fe0",
+      "avg_viirs_annual_fe1"
+    ],
+    "estimates": [
+      282.8502884920665,
+      -0.0006161761802432331,
+      0.13814998225752917,
+      5.624215890391266
+    ],
+    "std_errors": [
+      1.525513865529459,
+      9.120600596008755e-05,
+      0.03628674758924925,
+      1.613416161112139
+    ],
+    "t_statistics": [
+      185.41312201964018,
+      -6.75587285899655,
+      3.807174559189735,
+      3.4859052648353632
+    ],
+    "p_values": [
+      0.0,
+      1.4197754083511427e-11,
+      0.00014056353212099637,
+      0.0004904746677816263
+    ],
+    "conf_int_lower": [
+      279.86028131562875,
+      -0.0007949399519250047,
+      0.06702795698260064,
+      2.4619202146114736
+    ],
+    "conf_int_upper": [
+      285.84029566850427,
+      -0.00043741240856146144,
+      0.2092720075324577,
+      8.786511566171058
+    ]
+  },
+  "vcov_matrix": [
+    [
+      2.327192553922632,
+      3.690416294685575e-05,
+      -0.050794934229087596,
+      -1.300484373548776
+    ],
+    [
+      3.690416294685575e-05,
+      8.318535523191526e-09,
+      -6.319858241964892e-07,
+      -3.2965074234832013e-05
+    ],
+    [
+      -0.050794934229087596,
+      -6.319858241964892e-07,
+      0.001316728050605886,
+      0.01887165911171934
+    ],
+    [
+      -1.300484373548776,
+      -3.2965074234832013e-05,
+      0.01887165911171934,
+      2.6031117089378313
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(viirs_annual, 5) AS viirs_annual, ROUND(avg_viirs_annual_fe0, 5) AS avg_viirs_annual_fe0, ROUND(avg_viirs_annual_fe1, 5) AS avg_viirs_annual_fe1, subdivision, COUNT(*) as count, SUM(modis_median) as sum_modis_median\n        FROM design_matrix\n        GROUP BY ROUND(viirs_annual, 5), ROUND(avg_viirs_annual_fe0, 5), ROUND(avg_viirs_annual_fe1, 5), subdivision\n        ",
+    "design_matrix_query": "\n        CREATE OR REPLACE TABLE design_matrix AS\n        \n            SELECT *\n            FROM (\n            SELECT *\n            FROM (\n        SELECT pixel_id AS pixel_id, year AS year, modis_median AS modis_median, viirs_annual AS viirs_annual, subdivision AS subdivision\n        FROM read_parquet('/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet/**/*.parquet')\n        WHERE COLUMNS(['pixel_id', 'year', 'viirs_annual', 'modis_median', 'subdivision']) IS NOT NULL\n        )\n            JOIN fe_0_avgs fe0\n            USING (pixel_id)\n            )\n            JOIN fe_1_avgs fe1\n            USING (year)\n            \n        "
+  }
+}

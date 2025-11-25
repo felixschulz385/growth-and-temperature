@@ -1,0 +1,55 @@
+================================================================================
+GNT Analysis Results: 2SLS: Growth effect on temperature using regional favoritism as intrument
+================================================================================
+
+Analysis Type: Online 2SLS Regression
+Specification: modis_ntlharm_regfav_twfe
+Timestamp: 20251001_171003
+Standard Errors: two_way
+
+Instrument Specification:
+  Exogenous variables: []
+  Endogenous variables: ['ntl_harm_twoway_demeaned']
+  Instruments: ['reg_fav_twoway_demeaned']
+  Identification: Just-identified
+
+Sample Information:
+  Observations: 17,760,984,303
+  Features: 2
+  Clusters (Dim 1): 3409
+  Clusters (Dim 2): 21
+
+FIRST STAGE RESULTS
+================================================================================
+
+First Stage 1: ntl_harm_twoway_demeaned
+--------------------------------------------------
+Dependent Variable: ntl_harm_twoway_demeaned
+R-squared: 0.000000
+Adjusted R-squared: -0.000000
+Observations: 17,871,105,294
+RMSE: 0.016197
+RSS: 4688432.970806
+
+Coefficient Estimates:
+Variable                  Coeff        Std Err      t-stat     P>|t|      Sig  
+--------------------------------------------------------------------------------
+intercept                 0.000000     0.025971     0.000      1.000000        
+reg_fav_twoway_demeaned   -0.066666    0.062010     -1.075     0.282340        
+
+SECOND STAGE RESULTS
+================================================================================
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.006207
+  RSS: 684239.054757
+
+Coefficient Estimates:
+Variable                  Coeff        Std Err      t-stat     P>|t|      Sig  
+--------------------------------------------------------------------------------
+intercept                 0.000000     nan          nan        nan             
+ntl_harm_twoway_demeaned(fitted) 0.611072     nan          nan        nan             
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

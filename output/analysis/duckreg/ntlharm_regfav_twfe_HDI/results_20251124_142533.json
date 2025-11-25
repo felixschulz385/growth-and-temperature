@@ -1,0 +1,130 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "ntlharm_regfav_twfe_HDIlow",
+    "description": "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)",
+    "timestamp": "2025-11-24T14:25:33.000122",
+    "formula": "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_5km.parquet",
+    "query": "(subdivision % 1 == 0) AND (((HDI_ME == 0) AND (HDI_HI == 0) AND (HDI_VH == 0)) OR (HDI_ME == 1))"
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62256399",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62256399",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "ntl_harm"
+    ],
+    "covariates": [
+      "reg_fav"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 2209,
+    "n_observations": 163526700,
+    "compression_ratio": 0.9999864915026109
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "reg_fav",
+      "avg_reg_fav_fe0",
+      "avg_reg_fav_fe1"
+    ],
+    "estimates": [
+      -3.995640187748736,
+      -0.07692091489782904,
+      0.6960528918798619,
+      1.1956466356829099
+    ],
+    "std_errors": [
+      0.0688089991131341,
+      0.048212819463581254,
+      0.3960433383184397,
+      0.8555233569469667
+    ],
+    "t_statistics": [
+      -58.06857008890946,
+      -1.5954452727232258,
+      1.7575169799225323,
+      1.3975616515599436
+    ],
+    "p_values": [
+      0.0,
+      0.11061269892921821,
+      0.07882973021232154,
+      0.1622447409215817
+    ],
+    "conf_int_lower": [
+      -4.130505826010479,
+      -0.1714180410464483,
+      -0.08019205122427986,
+      -0.48117914393314476
+    ],
+    "conf_int_upper": [
+      -3.860774549486993,
+      0.017576211250790216,
+      1.4722978349840035,
+      2.8724724152989642
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.004734678358951288,
+      0.0011607941365632006,
+      -0.006037975397371571,
+      -0.027332137646892542
+    ],
+    [
+      0.0011607941365632003,
+      0.0023244759606278797,
+      -0.00456878957957946,
+      -0.03139810331051284
+    ],
+    [
+      -0.006037975397371571,
+      -0.00456878957957946,
+      0.15685032582641406,
+      -0.0214526873440574
+    ],
+    [
+      -0.027332137646892542,
+      -0.031398103310512834,
+      -0.021452687344057395,
+      0.731920214281807
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(reg_fav, 5) AS reg_fav, ROUND(avg_reg_fav_fe0, 5) AS avg_reg_fav_fe0, ROUND(avg_reg_fav_fe1, 5) AS avg_reg_fav_fe1, subdivision, COUNT(*) as count, SUM(ntl_harm) as sum_ntl_harm\n        FROM design_matrix\n        GROUP BY ROUND(reg_fav, 5), ROUND(avg_reg_fav_fe0, 5), ROUND(avg_reg_fav_fe1, 5), subdivision\n        "
+  }
+}

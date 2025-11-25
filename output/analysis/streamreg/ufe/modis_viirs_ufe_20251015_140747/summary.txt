@@ -1,0 +1,27 @@
+================================================================================
+GNT Analysis Results: UFE MODIS VIIRS analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_viirs_ufe
+Timestamp: 20251015_140747
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 7,592,407,219
+  Features: 1
+  Clusters (Dim 1): 3380
+  Clusters (Dim 2): 9
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: 0.000000
+  RMSE: 0.008533
+  RSS: 552874.743622
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+viirs_annual_unit_demeaned -0.000490    0.000217     -2.259     0.023912   **   
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

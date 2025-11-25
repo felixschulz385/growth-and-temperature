@@ -1,0 +1,333 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "modis_ntlharm_twfe_hdi",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "20251015_150234",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "median_twoway_demeaned",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "ntl_harm_twoway_demeaned"
+    ],
+    "formula": "median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "intercept",
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "ntl_harm_twoway_demeaned",
+        "ntl_harm_twoway_demeaned_x_HDI_ME",
+        "ntl_harm_twoway_demeaned_x_HDI_HI",
+        "ntl_harm_twoway_demeaned_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 20000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 17716471744,
+    "n_features": 8,
+    "n_clusters_1": 3381,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 70987,
+    "feature_names": [
+      "intercept",
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "ntl_harm_twoway_demeaned",
+      "ntl_harm_twoway_demeaned_x_HDI_ME",
+      "ntl_harm_twoway_demeaned_x_HDI_HI",
+      "ntl_harm_twoway_demeaned_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 714087.8836156859,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -3.9511260929714354e-10,
+    "root_mean_squared_error": 0.006348735210463605,
+    "degrees_of_freedom": 17716471736
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": -4.834978057493447e-08,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_HI": {
+        "coefficient": 7.754934578062551e-08,
+        "std_error": 0.08260657829674273,
+        "t_statistic": 9.387793003851288e-07,
+        "p_value": 0.9999992509624902,
+        "ci_lower_95": -0.16190881591226997,
+        "ci_upper_95": 0.16190897101096152,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_ME": {
+        "coefficient": -2.9237856473103556e-08,
+        "std_error": 0.11645975431274785,
+        "t_statistic": -2.5105545384018675e-07,
+        "p_value": 0.9999997996867296,
+        "ci_lower_95": -0.22826114769084227,
+        "ci_upper_95": 0.22826108921512933,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 1.0046929985314603e-07,
+        "std_error": 0.09051038876039201,
+        "t_statistic": 1.1100305857609145e-06,
+        "p_value": 0.9999991143237337,
+        "ci_lower_95": -0.1774002615010685,
+        "ci_upper_95": 0.1774004624396682,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned": {
+        "coefficient": -0.005275500196242775,
+        "std_error": 0.003445970504662064,
+        "t_statistic": -1.5309185580972138,
+        "p_value": 0.12578952203001137,
+        "ci_lower_95": -0.01202960238538042,
+        "ci_upper_95": 0.00147860199289487,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_x_HDI_ME": {
+        "coefficient": 0.013319454211843043,
+        "std_error": 0.00929530374425241,
+        "t_statistic": 1.432922966081544,
+        "p_value": 0.15187985322837627,
+        "ci_lower_95": -0.0048993411268916775,
+        "ci_upper_95": 0.03153824955057776,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_x_HDI_HI": {
+        "coefficient": -0.0045704318274494855,
+        "std_error": 0.004685781383881634,
+        "t_statistic": -0.9753830691229145,
+        "p_value": 0.3293702788151265,
+        "ci_lower_95": -0.013754563339857489,
+        "ci_upper_95": 0.004613699684958518,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_x_HDI_VH": {
+        "coefficient": -0.0014251856033030493,
+        "std_error": 0.006132475705634461,
+        "t_statistic": -0.23239971452208155,
+        "p_value": 0.8162275706336579,
+        "ci_lower_95": -0.013444837986346592,
+        "ci_upper_95": 0.010594466779740495,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        -1.16070857034958e-06,
+        -0.0015056704290075196,
+        -0.0015803501342471777,
+        -0.0020099779065552307,
+        -6.363430453322312e-06,
+        4.5563177426035416e-05,
+        4.7546964579260475e-05,
+        6.87101610106915e-05
+      ],
+      [
+        -0.0015056704290075194,
+        0.006823846777895887,
+        0.006339238491661204,
+        0.006707256429248141,
+        1.3874959332024741e-05,
+        -0.00017950830142208607,
+        -0.00021337521415246987,
+        -0.00019960094719662238
+      ],
+      [
+        -0.001580350134247178,
+        0.006339238491661203,
+        0.013562874374585593,
+        0.006842308270772623,
+        -3.4889571148634725e-05,
+        0.0001314688612483676,
+        -0.00012486301611827977,
+        -0.00024475181947534373
+      ],
+      [
+        -0.0020099779065552307,
+        0.006707256429248142,
+        0.006842308270772624,
+        0.008192130473557296,
+        2.708086648563522e-05,
+        -0.00014802246256974622,
+        -0.00012130394764611307,
+        -0.0002486383663328416
+      ],
+      [
+        -6.363430453322314e-06,
+        1.3874959332024782e-05,
+        -3.488957114863469e-05,
+        2.708086648563522e-05,
+        1.1874712719000918e-05,
+        -4.3864179469529524e-06,
+        -2.8717498461256435e-06,
+        -1.0989367832174427e-05
+      ],
+      [
+        4.556317742603541e-05,
+        -0.0001795083014220861,
+        0.0001314688612483676,
+        -0.0001480224625697462,
+        -4.386417946952954e-06,
+        8.640267169791286e-05,
+        6.28080629473558e-06,
+        -2.2329552546975194e-05
+      ],
+      [
+        4.754696457926046e-05,
+        -0.00021337521415246984,
+        -0.00012486301611827974,
+        -0.00012130394764611303,
+        -2.8717498461256477e-06,
+        6.280806294735587e-06,
+        2.1956547177531683e-05,
+        -1.8556450603067208e-07
+      ],
+      [
+        6.87101610106915e-05,
+        -0.0001996009471966225,
+        -0.0002447518194753438,
+        -0.0002486383663328415,
+        -1.098936783217442e-05,
+        -2.232955254697519e-05,
+        -1.8556450603066954e-07,
+        3.760725828019687e-05
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": -4.834978057493447e-08,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_HI",
+        "coefficient": 7.754934578062551e-08,
+        "std_error": 0.08260657829674273,
+        "t_statistic": 9.387793003851288e-07,
+        "p_value": 0.9999992509624902,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": -2.9237856473103556e-08,
+        "std_error": 0.11645975431274785,
+        "t_statistic": -2.5105545384018675e-07,
+        "p_value": 0.9999997996867296,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 1.0046929985314603e-07,
+        "std_error": 0.09051038876039201,
+        "t_statistic": 1.1100305857609145e-06,
+        "p_value": 0.9999991143237337,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned",
+        "coefficient": -0.005275500196242775,
+        "std_error": 0.003445970504662064,
+        "t_statistic": -1.5309185580972138,
+        "p_value": 0.12578952203001137,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_x_HDI_ME",
+        "coefficient": 0.013319454211843043,
+        "std_error": 0.00929530374425241,
+        "t_statistic": 1.432922966081544,
+        "p_value": 0.15187985322837627,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_x_HDI_HI",
+        "coefficient": -0.0045704318274494855,
+        "std_error": 0.004685781383881634,
+        "t_statistic": -0.9753830691229145,
+        "p_value": 0.3293702788151265,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_x_HDI_VH",
+        "coefficient": -0.0014251856033030493,
+        "std_error": 0.006132475705634461,
+        "t_statistic": -0.23239971452208155,
+        "p_value": 0.8162275706336579,
+        "significance": ""
+      }
+    ]
+  }
+}

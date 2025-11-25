@@ -1,0 +1,188 @@
+{
+  "metadata": {
+    "analysis_type": "online_2sls",
+    "specification": "modis_ntlharm_regfav_pooled_subset",
+    "description": "2SLS: Growth effect on temperature using regional favoritism as instrument",
+    "timestamp": "20251013_132505",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "target_variable": "median",
+    "feature_variables": [
+      "ntl_harm"
+    ],
+    "formula": "median ~ ntl_harm | reg_fav",
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 4
+  },
+  "sample_statistics": {
+    "n_observations": 44512567,
+    "n_features": 2,
+    "n_clusters_1": 52,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 1113,
+    "feature_names": [
+      "intercept",
+      "ntl_harm"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 15235.789207925003,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -2.2465566740237364e-08,
+    "root_mean_squared_error": 0.018500827656750797,
+    "degrees_of_freedom": 44512565
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": 297.63876863013854,
+        "std_error": 1.2682419686239708,
+        "t_statistic": 234.6861056436048,
+        "p_value": 0.0,
+        "ci_lower_95": 295.15301437163555,
+        "ci_upper_95": 300.12452288864154,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "ntl_harm": {
+        "coefficient": -0.10430205639319581,
+        "std_error": 0.3320488705187672,
+        "t_statistic": -0.31411658238813595,
+        "p_value": 0.7534324955661689,
+        "ci_lower_95": -0.7551178426099795,
+        "ci_upper_95": 0.5465137298235879,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        1.608437690979205,
+        -0.4148920082021328
+      ],
+      [
+        -0.4148920082020323,
+        0.11025645241278903
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Two-Stage Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": 297.63876863013854,
+        "std_error": 1.2682419686239708,
+        "t_statistic": 234.6861056436048,
+        "p_value": 0.0,
+        "significance": "***"
+      },
+      {
+        "variable": "ntl_harm",
+        "coefficient": -0.10430205639319581,
+        "std_error": 0.3320488705187672,
+        "t_statistic": -0.31411658238813595,
+        "p_value": 0.7534324955661689,
+        "significance": ""
+      }
+    ]
+  },
+  "iv_specification": {
+    "exogenous_variables": [],
+    "endogenous_variables": [
+      "ntl_harm"
+    ],
+    "instrument_variables": [
+      "reg_fav"
+    ],
+    "identification_status": {
+      "n_endogenous": 1,
+      "n_instruments": 1,
+      "over_identified": false,
+      "rank_condition_satisfied": true
+    }
+  },
+  "first_stage_results": {
+    "ntl_harm": {
+      "dependent_variable": "ntl_harm",
+      "r_squared": 0.0,
+      "adjusted_r_squared": -2.178299807198414e-08,
+      "observations": 45907365,
+      "rss": 291608.87058154447,
+      "rmse": 0.07970015803435249,
+      "coefficients": [
+        {
+          "variable": "intercept",
+          "coefficient": 2.2791197909788297,
+          "std_error": 0.519416409082001,
+          "t_statistic": 4.3878471128913095,
+          "p_value": 1.1447819978638307e-05,
+          "significance": "***"
+        },
+        {
+          "variable": "reg_fav",
+          "coefficient": 1.7107807879821069,
+          "std_error": 2.670745050154046,
+          "t_statistic": 0.6405631222206817,
+          "p_value": 0.5218065657999369,
+          "significance": ""
+        }
+      ],
+      "covariance_matrix": [
+        [
+          0.2697934060236406,
+          -0.37574094501587724
+        ],
+        [
+          -0.37574094501587735,
+          7.132879122922338
+        ]
+      ]
+    }
+  },
+  "first_stage_diagnostics": {
+    "ntl_harm_r_squared": 0.0,
+    "ntl_harm_adj_r_squared": -2.178299807198414e-08,
+    "ntl_harm_observations": 45907365
+  }
+}

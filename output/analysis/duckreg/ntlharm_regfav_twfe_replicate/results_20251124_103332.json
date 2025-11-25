@@ -1,0 +1,130 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "ntlharm_regfav_twfe_replicate",
+    "description": "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)",
+    "timestamp": "2025-11-24T10:33:32.876905",
+    "formula": "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_5km.parquet",
+    "query": "(country IN (2,3,6,9,15,16,18,19,20,22,23,24,27,29,32,33,36,38,39,40,43,45,46,47,48,50,53,59,60,63,65,66,68,70,72,73,74,76,79,80,81,83,85,87,88,90,93,96,98,100,102,107,108,111,114,115,116,117,119,122,124,125,126,130,132,134,136,139,141,143,144,146,148,150,151,155,156,158,160,162,163,165,166,167,169,170,172,174,175,177,178,180,181,182,188,189,191,192,198,199,201,203,207,208,209,215,216,217,218,221,224,227,228,229,230,232,233,237,240,250,256,258,259,260,261,263)) AND (subdivision % 1 == 0)"
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62253083",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62253083",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "ntl_harm"
+    ],
+    "covariates": [
+      "reg_fav"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 1705,
+    "n_observations": 164082300,
+    "compression_ratio": 1.0391126891809781e-05
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "reg_fav",
+      "avg_reg_fav_fe0",
+      "avg_reg_fav_fe1"
+    ],
+    "estimates": [
+      -3.8585466639560697,
+      -0.009343029449434964,
+      0.35404988170546237,
+      -0.5994444490239489
+    ],
+    "std_errors": [
+      0.07129759422408805,
+      0.024048414018057313,
+      0.3540970550816454,
+      0.5568303339518544
+    ],
+    "t_statistics": [
+      -54.11889006841764,
+      -0.38850917330429907,
+      0.9998667784001418,
+      -1.0765298017614446
+    ],
+    "p_values": [
+      0.0,
+      0.6976392668648206,
+      0.31737498361148764,
+      0.2816903800018773
+    ],
+    "conf_int_lower": [
+      -3.998289948635282,
+      -0.0564779209248273,
+      -0.33998034625456264,
+      -1.6908319035695833
+    ],
+    "conf_int_upper": [
+      -3.7188033792768573,
+      0.03779186202595737,
+      1.0480801096654875,
+      0.4919430055216857
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.0050833469421427135,
+      7.963483149850926e-06,
+      -0.008396661858109913,
+      -0.0095906905470677
+    ],
+    [
+      7.96348314985093e-06,
+      0.0005783262167838955,
+      -0.002214878181782774,
+      -0.0016749827159298048
+    ],
+    [
+      -0.008396661858109913,
+      -0.002214878181782774,
+      0.12538472441749382,
+      -0.020489981352597046
+    ],
+    [
+      -0.0095906905470677,
+      -0.001674982715929805,
+      -0.02048998135259705,
+      0.3100600208089337
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(reg_fav, 5) AS reg_fav, ROUND(avg_reg_fav_fe0, 5) AS avg_reg_fav_fe0, ROUND(avg_reg_fav_fe1, 5) AS avg_reg_fav_fe1, subdivision, COUNT(*) as count, SUM(ntl_harm) as sum_ntl_harm\n        FROM design_matrix\n        GROUP BY ROUND(reg_fav, 5), ROUND(avg_reg_fav_fe0, 5), ROUND(avg_reg_fav_fe1, 5), subdivision\n        "
+  }
+}

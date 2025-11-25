@@ -1,0 +1,131 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_ntlharm_twfe",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "2025-11-17T16:32:07.823664",
+    "formula": "modis_median ~ ntl_harm | pixel_id + year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61728248",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61728248",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "ntl_harm"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 1656538,
+    "n_observations": 17735418722,
+    "compression_ratio": 9.340281309203814e-05
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "ntl_harm",
+      "avg_ntl_harm_fe0",
+      "avg_ntl_harm_fe1"
+    ],
+    "estimates": [
+      283.3094059356221,
+      -0.005534548337792766,
+      0.1419499759506328,
+      0.44347373468370255
+    ],
+    "std_errors": [
+      1.5198033363699424,
+      0.0012601825325303819,
+      0.05136518796033475,
+      0.15528307787082785
+    ],
+    "t_statistics": [
+      186.41188577221314,
+      -4.39186244446642,
+      2.7635443690043435,
+      2.8559051041775843
+    ],
+    "p_values": [
+      0.0,
+      1.123837964001062e-05,
+      0.0057177318174588265,
+      0.004291433770609698
+    ],
+    "conf_int_lower": [
+      280.330591396337,
+      -0.008004506101552315,
+      0.0412742075483767,
+      0.13911890205688
+    ],
+    "conf_int_upper": [
+      286.28822047490723,
+      -0.003064590574033218,
+      0.24262574435288892,
+      0.7478285673105252
+    ]
+  },
+  "vcov_matrix": [
+    [
+      2.309802181241208,
+      0.0006064577164953009,
+      -0.07328816839641976,
+      -0.11923324809190004
+    ],
+    [
+      0.0006064577164953009,
+      1.5880600152946872e-06,
+      -1.7220086449119105e-05,
+      -0.00013480989666313808
+    ],
+    [
+      -0.07328816839641975,
+      -1.7220086449119105e-05,
+      0.002638382534200518,
+      0.002880561199525455
+    ],
+    [
+      -0.11923324809190004,
+      -0.00013480989666313808,
+      0.0028805611995254554,
+      0.024112834273037585
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(ntl_harm, 5) AS ntl_harm, ROUND(avg_ntl_harm_fe0, 5) AS avg_ntl_harm_fe0, ROUND(avg_ntl_harm_fe1, 5) AS avg_ntl_harm_fe1, subdivision, COUNT(*) as count, SUM(modis_median) as sum_modis_median\n        FROM design_matrix\n        GROUP BY ROUND(ntl_harm, 5), ROUND(avg_ntl_harm_fe0, 5), ROUND(avg_ntl_harm_fe1, 5), subdivision\n        ",
+    "design_matrix_query": "\n        CREATE OR REPLACE TABLE design_matrix AS\n        \n            SELECT *\n            FROM (\n            SELECT *\n            FROM (\n        SELECT pixel_id AS pixel_id, year AS year, modis_median AS modis_median, ntl_harm AS ntl_harm, subdivision AS subdivision\n        FROM read_parquet('/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet/**/*.parquet')\n        WHERE COLUMNS(['pixel_id', 'year', 'ntl_harm', 'modis_median', 'subdivision']) IS NOT NULL\n        )\n            JOIN fe_0_avgs fe0\n            USING (pixel_id)\n            )\n            JOIN fe_1_avgs fe1\n            USING (year)\n            \n        "
+  }
+}

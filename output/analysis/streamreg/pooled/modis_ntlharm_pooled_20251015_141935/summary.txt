@@ -1,0 +1,28 @@
+================================================================================
+GNT Analysis Results: Pooled MODIS VIIRS analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_ntlharm_pooled
+Timestamp: 20251015_141935
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 7,592,407,219
+  Features: 2
+  Clusters (Dim 1): 3380
+  Clusters (Dim 2): 9
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.028147
+  RSS: 6015017.855200
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+intercept            284.294406   0.127435     2230.894   0.000000   ***  
+viirs_annual         0.076871     0.001892     40.628     0.000000   ***  
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

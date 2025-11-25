@@ -1,0 +1,188 @@
+{
+  "metadata": {
+    "analysis_type": "online_2sls",
+    "specification": "modis_viirs_regfav_twfe",
+    "description": "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument",
+    "timestamp": "20251013_150741",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "median_twoway_demeaned",
+    "feature_variables": [
+      "viirs_annual_twoway_demeaned"
+    ],
+    "formula": "median_twoway_demeaned ~ viirs_annual_twoway_demeaned | reg_fav_twoway_demeaned",
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 7592407246,
+    "n_features": 2,
+    "n_clusters_1": 3380,
+    "n_clusters_2": 9,
+    "n_cluster_intersections": 30425,
+    "feature_names": [
+      "intercept",
+      "viirs_annual_twoway_demeaned"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 457615.9591868239,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -1.3171064239259067e-10,
+    "root_mean_squared_error": 0.007763558564536081,
+    "degrees_of_freedom": 7592407244
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": 0.0004050768948669919,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "viirs_annual_twoway_demeaned": {
+        "coefficient": 142.74932832749562,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        -0.00048464262137115735,
+        0.1661905014374208
+      ],
+      [
+        0.1661905014374208,
+        -8885.454816890482
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Two-Stage Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": 0.0004050768948669919,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "viirs_annual_twoway_demeaned",
+        "coefficient": 142.74932832749562,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      }
+    ]
+  },
+  "iv_specification": {
+    "exogenous_variables": [],
+    "endogenous_variables": [
+      "viirs_annual_twoway_demeaned"
+    ],
+    "instrument_variables": [
+      "reg_fav_twoway_demeaned"
+    ],
+    "identification_status": {
+      "n_endogenous": 1,
+      "n_instruments": 1,
+      "over_identified": false,
+      "rank_condition_satisfied": true
+    }
+  },
+  "first_stage_results": {
+    "viirs_annual_twoway_demeaned": {
+      "dependent_variable": "viirs_annual_twoway_demeaned",
+      "r_squared": 0.0,
+      "adjusted_r_squared": -1.3090173389684878e-10,
+      "observations": 7639312837,
+      "rss": 60380849.72877382,
+      "rmse": 0.08890423773316784,
+      "coefficients": [
+        {
+          "variable": "intercept",
+          "coefficient": 3.443432446263524e-06,
+          "std_error": 0.0031215565579963776,
+          "t_statistic": 0.0011031139056066784,
+          "p_value": 0.9991198426244143,
+          "significance": ""
+        },
+        {
+          "variable": "reg_fav_twoway_demeaned",
+          "coefficient": 0.000831793588420684,
+          "std_error": NaN,
+          "t_statistic": NaN,
+          "p_value": NaN,
+          "significance": ""
+        }
+      ],
+      "covariance_matrix": [
+        [
+          9.744115344770192e-06,
+          -2.700514689289727e-06
+        ],
+        [
+          -2.7005146892897272e-06,
+          -7.889719024216952e-06
+        ]
+      ]
+    }
+  },
+  "first_stage_diagnostics": {
+    "viirs_annual_twoway_demeaned_r_squared": 0.0,
+    "viirs_annual_twoway_demeaned_adj_r_squared": -1.3090173389684878e-10,
+    "viirs_annual_twoway_demeaned_observations": 7639312837
+  }
+}

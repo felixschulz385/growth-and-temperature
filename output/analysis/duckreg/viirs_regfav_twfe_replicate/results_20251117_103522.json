@@ -1,0 +1,131 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "viirs_regfav_twfe_replicate",
+    "description": "TWFE VIIRS analysis for replication of Hodler & Raschky (2014)",
+    "timestamp": "2025-11-17T11:02:28.729239",
+    "formula": "viirs_annual ~ reg_fav::smallint | pixel_id + year | 0 | country",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "query": "country IN (2,3,6,9,15,16,18,19,20,22,23,24,27,29,32,33,36,38,39,40,43,45,46,47,48,50,53,59,60,63,65,66,68,70,72,73,74,76,79,80,81,83,85,87,88,90,93,96,98,100,102,107,108,111,114,115,116,117,119,122,124,125,126,130,132,134,136,139,141,143,144,146,148,150,151,155,156,158,160,162,163,165,166,167,169,170,172,174,175,177,178,180,181,182,188,189,191,192,198,199,201,203,207,208,209,215,216,217,218,221,224,227,228,229,230,232,233,237,240,250,256,258,259,260,261,263)"
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 999,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61727806",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 999,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/61727806",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "viirs_annual"
+    ],
+    "covariates": [
+      "reg_fav"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "country"
+  },
+  "model_statistics": {
+    "n_bootstraps": 999,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 356,
+    "n_observations": 6357458825,
+    "compression_ratio": 5.599721678103043e-08
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "reg_fav",
+      "avg_reg_fav_fe0",
+      "avg_reg_fav_fe1"
+    ],
+    "estimates": [
+      0.28300122468536226,
+      0.0025074381990287664,
+      0.3298344722099068,
+      -1.2448509062298594
+    ],
+    "std_errors": [
+      0.0764057706094016,
+      0.00701841475379029,
+      0.17389429122641065,
+      0.9420923000690293
+    ],
+    "t_statistics": [
+      3.7039247484605498,
+      0.35726560583707684,
+      1.8967527334204537,
+      -1.321368305566924
+    ],
+    "p_values": [
+      0.00021228925695004897,
+      0.7208929757485931,
+      0.05786058028550034,
+      0.1863785886793763
+    ],
+    "conf_int_lower": [
+      0.13324591429093513,
+      -0.011248654718400202,
+      -0.01099833859385807,
+      -3.091351814365157
+    ],
+    "conf_int_upper": [
+      0.4327565350797894,
+      0.016263531116457737,
+      0.6706672830136717,
+      0.601650001905438
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.005837841782416497,
+      4.537793361826186e-05,
+      -0.0007476591956609253,
+      -0.04779090240996226
+    ],
+    [
+      4.537793361826186e-05,
+      4.9258145656221224e-05,
+      -4.902892396826142e-06,
+      -0.0011344474247939659
+    ],
+    [
+      -0.0007476591956609251,
+      -4.902892396826144e-06,
+      0.03023922452113572,
+      -0.007250411238637919
+    ],
+    [
+      -0.04779090240996226,
+      -0.001134447424793966,
+      -0.007250411238637919,
+      0.887537901849354
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(reg_fav, 5) AS reg_fav, ROUND(avg_reg_fav_fe0, 5) AS avg_reg_fav_fe0, ROUND(avg_reg_fav_fe1, 5) AS avg_reg_fav_fe1, country, COUNT(*) as count, SUM(viirs_annual) as sum_viirs_annual\n        FROM design_matrix\n        GROUP BY ROUND(reg_fav, 5), ROUND(avg_reg_fav_fe0, 5), ROUND(avg_reg_fav_fe1, 5), country\n        ",
+    "design_matrix_query": "\n        CREATE OR REPLACE TABLE design_matrix AS\n        \n            SELECT *\n            FROM (\n            SELECT *\n            FROM (\n        SELECT pixel_id AS pixel_id, year AS year, viirs_annual AS viirs_annual, CAST(reg_fav AS smallint) AS reg_fav, country AS country\n        FROM read_parquet('/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet/**/*.parquet')\n        WHERE COLUMNS(['pixel_id', 'year', 'reg_fav', 'viirs_annual', 'country']) IS NOT NULL AND country IN (2,3,6,9,15,16,18,19,20,22,23,24,27,29,32,33,36,38,39,40,43,45,46,47,48,50,53,59,60,63,65,66,68,70,72,73,74,76,79,80,81,83,85,87,88,90,93,96,98,100,102,107,108,111,114,115,116,117,119,122,124,125,126,130,132,134,136,139,141,143,144,146,148,150,151,155,156,158,160,162,163,165,166,167,169,170,172,174,175,177,178,180,181,182,188,189,191,192,198,199,201,203,207,208,209,215,216,217,218,221,224,227,228,229,230,232,233,237,240,250,256,258,259,260,261,263)\n        )\n            JOIN fe_0_avgs fe0\n            USING (pixel_id)\n            )\n            JOIN fe_1_avgs fe1\n            USING (year)\n            \n        "
+  }
+}

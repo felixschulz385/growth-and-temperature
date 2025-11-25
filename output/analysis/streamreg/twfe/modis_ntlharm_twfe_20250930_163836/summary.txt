@@ -1,0 +1,27 @@
+================================================================================
+GNT Analysis Results: TWFE MODIS NTLHARM analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_ntlharm_twfe
+Timestamp: 20250930_163836
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 17,760,984,303
+  Features: 1
+  Clusters (Dim 1): 3409
+  Clusters (Dim 2): 21
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: 0.000000
+  RMSE: 0.006294
+  RSS: 703695.385489
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+ntl_harm_twoway_demeaned -0.005512    0.002832     -1.946     0.051668   *    
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

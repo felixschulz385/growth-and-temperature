@@ -1,0 +1,333 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "viirs_regfav_twfe_hdi",
+    "description": "TWFE MODIS NTLHARM analysis in HDI groups",
+    "timestamp": "20251015_140843",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "viirs_annual_twoway_demeaned",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav_twoway_demeaned"
+    ],
+    "formula": "viirs_annual_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "intercept",
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "reg_fav_twoway_demeaned",
+        "reg_fav_twoway_demeaned_x_HDI_ME",
+        "reg_fav_twoway_demeaned_x_HDI_HI",
+        "reg_fav_twoway_demeaned_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 7639312837,
+    "n_features": 8,
+    "n_clusters_1": 3628,
+    "n_clusters_2": 9,
+    "n_cluster_intersections": 32661,
+    "feature_names": [
+      "intercept",
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav_twoway_demeaned",
+      "reg_fav_twoway_demeaned_x_HDI_ME",
+      "reg_fav_twoway_demeaned_x_HDI_HI",
+      "reg_fav_twoway_demeaned_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 60380733.19153359,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -9.163128034117562e-10,
+    "root_mean_squared_error": 0.08890415193891722,
+    "degrees_of_freedom": 7639312829
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": -3.682005974049429e-06,
+        "std_error": 0.003433775172382048,
+        "t_statistic": -0.0010722909303043217,
+        "p_value": 0.9991444357859769,
+        "ci_lower_95": -0.006733881343842863,
+        "ci_upper_95": 0.006726517331894765,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_HI": {
+        "coefficient": -6.708529765914012e-05,
+        "std_error": 0.009004048286500638,
+        "t_statistic": -0.0074505706238512815,
+        "p_value": 0.9940553597289321,
+        "ci_lower_95": -0.017715019939200393,
+        "ci_upper_95": 0.01758084934388211,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_ME": {
+        "coefficient": 3.301459769316657e-05,
+        "std_error": 0.017185514281158845,
+        "t_statistic": 0.0019210712669426352,
+        "p_value": 0.9984672078387031,
+        "ci_lower_95": -0.03365059339337817,
+        "ci_upper_95": 0.0337166225887645,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 3.2679848714216396e-06,
+        "std_error": 0.006655683846229264,
+        "t_statistic": 0.0004910066263548705,
+        "p_value": 0.9996082334093213,
+        "ci_lower_95": -0.013041872353737934,
+        "ci_upper_95": 0.013048408323480778,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned": {
+        "coefficient": -0.0005659601768836535,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_ME": {
+        "coefficient": 0.011962865931218303,
+        "std_error": 0.09250312385822944,
+        "t_statistic": 0.12932391288268952,
+        "p_value": 0.8971013505710153,
+        "ci_lower_95": -0.1693432568309114,
+        "ci_upper_95": 0.19326898869334802,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_HI": {
+        "coefficient": 0.008114188143181983,
+        "std_error": 0.007948997103706766,
+        "t_statistic": 1.0207813686833758,
+        "p_value": 0.3073580334550521,
+        "ci_lower_95": -0.007465846180083278,
+        "ci_upper_95": 0.023694222466447243,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_VH": {
+        "coefficient": 0.0004182635146911014,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        1.1790811934467363e-05,
+        4.044200910705496e-06,
+        4.387116479648481e-05,
+        -1.4664118113425182e-05,
+        -6.8495269913090234e-06,
+        0.00013312706091728294,
+        -3.1234414830463774e-07,
+        1.1780224930071011e-05
+      ],
+      [
+        4.044200910705488e-06,
+        8.107288554563507e-05,
+        -2.540027158686581e-05,
+        -5.260669350773595e-05,
+        -2.8346977583913064e-05,
+        -0.000799809828273424,
+        3.948128818024104e-05,
+        3.142557589549753e-05
+      ],
+      [
+        4.38711647964848e-05,
+        -2.54002715868658e-05,
+        0.0002953419011079146,
+        -3.3912612411581214e-05,
+        -2.0938014509179572e-05,
+        0.0011422155435108273,
+        2.49287942156239e-05,
+        0.00011381616168102643
+      ],
+      [
+        -1.466411811342517e-05,
+        -5.2606693507735957e-05,
+        -3.3912612411581214e-05,
+        4.429812746095717e-05,
+        2.3199147376545933e-05,
+        0.00027492494664949595,
+        -1.3517401933068579e-05,
+        -2.9785700935599148e-05
+      ],
+      [
+        -6.8495269913090234e-06,
+        -2.834697758391306e-05,
+        -2.0938014509179575e-05,
+        2.3199147376545947e-05,
+        -1.6771550487192457e-05,
+        0.0001619799642134629,
+        1.5525661450893676e-05,
+        8.934155705505096e-06
+      ],
+      [
+        0.000133127060917283,
+        -0.0007998098282734241,
+        0.0011422155435108273,
+        0.0002749249466494959,
+        0.00016197996421346287,
+        0.008556827923530937,
+        -0.000206506914469107,
+        9.484186872263697e-05
+      ],
+      [
+        -3.123441483046376e-07,
+        3.9481288180241006e-05,
+        2.492879421562392e-05,
+        -1.3517401933068586e-05,
+        1.5525661450893676e-05,
+        -0.0002065069144691069,
+        6.318655495473856e-05,
+        1.850739630915058e-06
+      ],
+      [
+        1.1780224930071008e-05,
+        3.142557589549755e-05,
+        0.00011381616168102645,
+        -2.9785700935599158e-05,
+        8.934155705505096e-06,
+        9.484186872263689e-05,
+        1.8507396309150445e-06,
+        -4.869666213299872e-05
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": -3.682005974049429e-06,
+        "std_error": 0.003433775172382048,
+        "t_statistic": -0.0010722909303043217,
+        "p_value": 0.9991444357859769,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_HI",
+        "coefficient": -6.708529765914012e-05,
+        "std_error": 0.009004048286500638,
+        "t_statistic": -0.0074505706238512815,
+        "p_value": 0.9940553597289321,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": 3.301459769316657e-05,
+        "std_error": 0.017185514281158845,
+        "t_statistic": 0.0019210712669426352,
+        "p_value": 0.9984672078387031,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 3.2679848714216396e-06,
+        "std_error": 0.006655683846229264,
+        "t_statistic": 0.0004910066263548705,
+        "p_value": 0.9996082334093213,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned",
+        "coefficient": -0.0005659601768836535,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_ME",
+        "coefficient": 0.011962865931218303,
+        "std_error": 0.09250312385822944,
+        "t_statistic": 0.12932391288268952,
+        "p_value": 0.8971013505710153,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_HI",
+        "coefficient": 0.008114188143181983,
+        "std_error": 0.007948997103706766,
+        "t_statistic": 1.0207813686833758,
+        "p_value": 0.3073580334550521,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_VH",
+        "coefficient": 0.0004182635146911014,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      }
+    ]
+  }
+}

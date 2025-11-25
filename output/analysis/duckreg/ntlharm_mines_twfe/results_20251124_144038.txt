@@ -1,0 +1,40 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS NTLHARM analysis for mining occurence
+Formula:     log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_5km.parquet
+Timestamp:   2025-11-24T14:40:38.188482
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method: mundlak
+Bootstrap Iterations: 999
+Random Seed:          42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    14,275,102
+Compressed Rows:       739
+Compression Ratio:     0.9999 (99.99%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Bootstrap)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                    Coefficient  Std. Error     t-stat     P>|t|    [0.025    0.975]
+Intercept             -3.797826    0.114477 -33.175531  0.000000 -4.022201 -3.573452
+nb_mines_a             0.170804    0.047620   3.586792  0.000335  0.077468  0.264140
+avg_nb_mines_a_fe0    -0.063047    0.142836  -0.441393  0.658929 -0.343005  0.216911
+avg_nb_mines_a_fe1    -5.196826    1.629343  -3.189522  0.001425 -8.390340 -2.003313
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================
