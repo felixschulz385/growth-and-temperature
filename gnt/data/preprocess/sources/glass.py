@@ -888,9 +888,10 @@ class GlassPreprocessor(AbstractPreprocessor):
                         logger.error(f"Failed to get target geobox: {e}")
                         return False
                     
-                    # Step 1: Create empty zarr file with target dimensions
-                    if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
-                        return False
+                    if not os.path.exists(output_path):
+                        # Step 1: Create empty zarr file with target dimensions
+                        if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
+                            return False
                     
                     # Step 2: Process by year with aggregation and reprojection
                     success = self._process_years_chunked(source_files, output_path, target_geobox)
@@ -1211,7 +1212,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                 for iy in range(tiles.shape[1]):
 
                     try:
-                        logger.info(f"Reprojecting tile [{ix}, {iy}] for year {year} to: {year_source}")
+                        logger.info(f"Reprojecting tile [{ix}, {iy}] for year {year} to: {output_path}")
                         
                         # Get the tile index
                         tile_geobox = tiles[ix, iy]
@@ -1238,7 +1239,8 @@ class GlassPreprocessor(AbstractPreprocessor):
                         # This is unpractical since nans are required
                         # I convert them back here although future data sources shouldn't store ints to begin with
                         int_vars = [key for key, val in clipped_ds.dtypes.items() if np.issubdtype(val, np.integer)]
-                        clipped_ds[int_vars] = clipped_ds[int_vars].astype("float").where(clipped_ds.valid_count > 0, np.nan)
+                        if int_vars:
+                            clipped_ds[int_vars] = clipped_ds[int_vars].astype("float32").where(clipped_ds.valid_count > 0, np.nan)
                         
                         # Reproject to target geobox for this tile
                         reprojected_ds = xr_reproject(clipped_ds, tile_geobox, resampling="mode", dst_nodata=np.nan)

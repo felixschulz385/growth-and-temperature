@@ -3,9 +3,9 @@
 #SBATCH --output=./log/slurm-%j.log
 #SBATCH --error=./log/slurm-%j.err
 #SBATCH --partition=scicore
-#SBATCH --time=1-00:00:00
+#SBATCH --time=3-00:00:00
  #SBATCH --time=00:30:00
-#SBATCH --qos=1day
+#SBATCH --qos=1week
 # SBATCH --qos=30min
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
@@ -25,5 +25,4 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \
     --temp-dir "/scratch/schulz0022/glass_${SLURM_JOB_ID}" \
-    --dashboard-port 8787 \
-    --debug
+    --dashboard-port 8787
