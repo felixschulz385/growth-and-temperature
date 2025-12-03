@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH --job-name=analysis
-#SBATCH --output=./log/slurm-%j.log
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/analysis/slurm-%j.log
+#SBATCH --error=./log/analysis/slurm-%j.err
 #SBATCH --partition=scicore
-#SBATCH --time=0-06:00:00
+#SBATCH --time=0-02:00:00
 #SBATCH --qos=6hours
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G

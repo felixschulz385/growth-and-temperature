@@ -9,10 +9,13 @@ analyses:
 
     # Default Settings
     defaults:
-      n_bootstraps: 999
+      se_method: "analytical"
+      fitter: "duckdb"
+      n_bootstraps: 0
       seed: 42
       fe_method: "mundlak"
       round_strata: 5
+      n_jobs: 4  # Number of parallel jobs for bootstrap
       duckdb_kwargs:
         temp_directory: "${WD}/scratch_nobackup/${SLURM_JOB_ID}"
         memory_limit: "96GB"
@@ -21,112 +24,143 @@ analyses:
     # Predefined model specifications
     specifications:
 
+      ### Pooled Models:
+      
+      modis_ntlharm_pooled:
+        description: "Pooled MODIS NTLHARM analysis"
+        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        formula: "modis_median ~ ntl_harm | 0 | 0 | subdivision"
+
+      modis_viirs_pooled:
+        description: "Pooled MODIS VIIRS analysis"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_median ~ viirs_annual | 0 | 0 | subdivision"
+
+      ### UFE Models:
+
+      modis_ntlharm_ufe:
+        description: "UFE MODIS NTLHARM analysis"
+        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        formula: "modis_median ~ ntl_harm | pixel_id | 0 | subdivision"
+
+      modis_viirs_ufe:
+        description: "UFE MODIS VIIRS analysis"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_median ~ viirs_annual | pixel_id | 0 | subdivision"
+
+      ### TWFE Models:
+
+      modis_ntlharm_twfe:
+        description: "TWFE MODIS NTLHARM analysis"
+        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        formula: "modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision"
+        
+      modis_viirs_twfe:
+        description: "TWFE MODIS VIIRS analysis"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+
+      modis_ntlharm_twfe_log:
+        description: "TWFE MODIS NTLHARM analysis with logged night lights"
+        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        formula: "modis_median ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      modis_viirs_twfe_log:
+        description: "TWFE MODIS VIIRS analysis with logged night lights"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_median ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      modisMean_viirs_twfe:
+        description: "TWFE MODIS VIIRS analysis"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_mean ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+
+      modisRollMax_viirs_twfe:
+        description: "TWFE MODIS VIIRS analysis"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_rollmax3 ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+
+      modis30C_viirs_twfe:
+        description: "TWFE MODIS VIIRS analysis"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_gt30C ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+
+      ## HDI split
+
+      modis_ntlharm_twfe_hdi:
+        description: "TWFE MODIS NTLHARM analysis with HDI interactions"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | pixel_id + country*year | 0 | subdivision"
+
+      modis_viirs_twfe_hdi:
+        description: "TWFE MODIS VIIRS analysis with HDI interactions"
+        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        formula: "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH | pixel_id + country*year | 0 | subdivision"
+
       ### First stage:
 
       ## Regional Favoritism
 
       ntlharm_regfav_twfe_replicate:
         description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
+        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
         subset: "research_hodler_raschky_2014"
-        query: "(subdivision % 1 == 0) AND (year < 2010)"
+        query: "year < 2010"
+
+      ntlharm_regfav_twfe_replicate_1km:
+        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014) at 1km resolution"
+        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
+        subset: "research_hodler_raschky_2014"
+        query: "year < 2010"
 
       ntlharm_regfav_twfe_af:
-        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
+        description: "TWFE MODIS NTLHARM analysis for Africa"
+        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
         subset: "continent_af"
-        query: "(subdivision % 1 == 0)"
 
       ntlharm_regfav_twfe_HDI:
         description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
-        query: "(subdivision % 1 == 0) AND (((HDI_ME == 0) AND (HDI_HI == 0) AND (HDI_VH == 0)) OR (HDI_ME == 1))"
+        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
+        query: "(((HDI_ME == 0) AND (HDI_HI == 0) AND (HDI_VH == 0)) OR (HDI_ME == 1))"
 
       viirs_regfav_twfe_replicate:
         description: "TWFE VIIRS analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
-        formula: "log(viirs_annual + 0.01) ~ reg_fav::smallint | pixel_id + country*year | 0 | subdivision"
+        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
+        formula: "log(viirs_annual + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
         subset: "research_hodler_raschky_2014"
-        query: "(subdivision % 1 == 0)"
 
       ## Mining
 
       ntlharm_mines_twfe:
         description: "TWFE MODIS NTLHARM analysis for mining occurence"
-        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        formula: "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision"
+        subset: "continent_af"
+
+      ### IV
+
+      ntlharm_mines_2sls:
+        description: "TWFE MODIS NTLHARM analysis for mining occurence"
+        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
         formula: "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision"
         query: "(subdivision % 1 == 0)"
 
-      ### Pooled Models:
-      
-      modis_ntlharm_pooled:
-        description: "Pooled MODIS NTLHARM analysis"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "median ~ ntl_harm | 0 | 0 | subdivision"
+      ### DEBUG
 
-      modis_viirs_pooled:
-        description: "Pooled MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "median ~ viirs_annual | 0 | 0 | subdivision"
-
-      ### UFE Models:
-
-      modis_ntlharm_ufe:
-        description: "UFE MODIS NTLHARM analysis"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_unit_demeaned ~ ntl_harm_unit_demeaned - 1 | 0 | 0 | subdivision"
-
-      modis_viirs_ufe:
-        description: "UFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_unit_demeaned ~ viirs_annual_unit_demeaned - 1 | 0 | 0 | subdivision"
-
-      ### TWFE Models:
-
-      modis_ntlharm_twfe:
-        description: "TWFE MODIS NTLHARM analysis"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median ~ ntl_harm | pixel_id + year | 0 | subdivision"
-
-      modis_viirs_twfe:
-        description: "TWFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median ~ viirs_annual | pixel_id + year | 0 | subdivision"
-
-      ## HDI split
-
-      modis_ntlharm_twfe_hdi:
-        description: "TWFE MODIS NTLHARM analysis with HDI interactions"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | pixel_id + year | 0 | subdivision"
-
-      modis_viirs_twfe_hdi:
-        description: "TWFE MODIS VIIRS analysis with HDI interactions"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH | pixel_id + year | 0 | subdivision"
-
-      ## Experimental
-
-      modis_ntlharm_twfe_quadratic:
-        description: "TWFE MODIS NTLHARM analysis with quadratic term"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned + I(ntl_harm_twoway_demeaned^2) - 1 | pixel_id + year | 0 | subdivision"
-
-      ## DEBUG
-
-      debug_modis_viirs_twfe_hdi:
-        description: "TWFE MODIS VIIRS analysis with HDI interactions"
+      debug:
+        description: "Debug Setting"
         data_source: "${WD}/data_nobackup/assembled/modis_subset.parquet"
-        formula: "modis_median ~ viirs_annual | 0 | 0 | subdivision"
+        formula: "modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision"
         subset: "research_hodler_raschky_2014"
-        settings:
-          verbose: true
-          show_progress: true
+        query: "year < 2010"
+        settings:  
+          n_bootstraps: 0
+          fitter: "duckreg"
         
-
   # Two-Stage Least Squares analysis
   online_2sls:
     description: "Online Two-Stage Least Squares with cluster-robust standard errors"
@@ -178,8 +212,8 @@ analyses:
 
       debug_modis_ntlharm_regfav:
         description: "2SLS: Growth effect on temperature using regional favoritism as instrument"
-        data_source: "${WD}/data_nobackup/assembled/modis_subset.parquet"
-        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
+        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
+        formula: "modis_median ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
         cluster1_col: "subdivision"
         cluster2_col: "year"
         module: "gnt.analysis.streamreg"

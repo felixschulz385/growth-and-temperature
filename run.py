@@ -391,6 +391,18 @@ def main():
     )
     
     parser.add_argument(
+        "--se-method",
+        choices=['analytical', 'bootstrap', 'none'],
+        help="Standard error method for duckreg analysis (overrides config)"
+    )
+    
+    parser.add_argument(
+        "--fitter",
+        choices=['numpy', 'duckdb'],
+        help="Fitter type for duckreg analysis (overrides config)"
+    )
+    
+    parser.add_argument(
         "--verbose", "-v", action="store_true", default=True,
         help="Enable verbose progress output (default: True)"
     )
@@ -521,6 +533,18 @@ def main():
                     if 'defaults' in analysis_type:
                         analysis_type['defaults']['memory_limit'] = args.dask_memory_limit
                 logger.info(f"Overriding memory_limit from CLI: {args.dask_memory_limit}")
+            
+            # Apply se_method override if provided
+            if args.se_method:
+                if 'duckreg' in config.get('analyses', {}):
+                    config['analyses']['duckreg']['defaults']['se_method'] = args.se_method
+                logger.info(f"Overriding se_method from CLI: {args.se_method}")
+            
+            # Apply fitter override if provided
+            if args.fitter:
+                if 'duckreg' in config.get('analyses', {}):
+                    config['analyses']['duckreg']['defaults']['fitter'] = args.fitter
+                logger.info(f"Overriding fitter from CLI: {args.fitter}")
             
             # Determine verbosity
             verbose = args.verbose and not args.quiet
