@@ -1,0 +1,135 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_ntlharm_twfe",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "2025-11-26T11:29:18.563218",
+    "formula": "modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62536874",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "n_bootstraps": 0,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62536874",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "ntl_harm"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "se_method": "analytical",
+    "se_type": "cluster",
+    "n_bootstraps": 0,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 39104776,
+    "n_observations": 496741067,
+    "compression_ratio": 0.9212773442788453
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "ntl_harm",
+      "avg_ntl_harm_fe0",
+      "avg_ntl_harm_fe1"
+    ],
+    "estimates": [
+      284.27860477891477,
+      0.028152178987962788,
+      0.09861057664288682,
+      -0.12010888089007582
+    ],
+    "std_errors": [
+      1.588614156540939,
+      0.010455861031576105,
+      0.048102883753332944,
+      0.2625627970558592
+    ],
+    "t_statistics": [
+      178.94754595282296,
+      2.692478305033398,
+      2.049993034691071,
+      -0.4574482075787878
+    ],
+    "p_values": [
+      0.0,
+      0.007092314971108404,
+      0.040365110519226866,
+      0.6473489209856522
+    ],
+    "conf_int_lower": [
+      281.1649210320945,
+      0.0076586913660736215,
+      0.004328924486354246,
+      -0.6347319631195598
+    ],
+    "conf_int_upper": [
+      287.392288525735,
+      0.04864566660985195,
+      0.1928922287994194,
+      0.39451420133940823
+    ]
+  },
+  "vcov_matrix": [
+    [
+      2.5236949383622793,
+      0.00507222787005654,
+      -0.04178992740799402,
+      -0.26034640758906535
+    ],
+    [
+      0.005072227870056718,
+      0.00010932502991163174,
+      -3.638689909102519e-05,
+      -0.001464316572709054
+    ],
+    [
+      -0.0417899274079999,
+      -3.63868990910646e-05,
+      0.0023138874253866622,
+      -0.0028762211127832437
+    ],
+    [
+      -0.2603464075890651,
+      -0.001464316572709127,
+      -0.0028762211127836296,
+      0.06893922239779632
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(ntl_harm, 5) AS ntl_harm, ROUND(avg_ntl_harm_fe0, 5) AS avg_ntl_harm_fe0, ROUND(avg_ntl_harm_fe1, 5) AS avg_ntl_harm_fe1, __cluster__, COUNT(*) as count, SUM(modis_median) as sum_modis_median\n        FROM design_matrix\n        GROUP BY ROUND(ntl_harm, 5), ROUND(avg_ntl_harm_fe0, 5), ROUND(avg_ntl_harm_fe1, 5), __cluster__\n        "
+  }
+}

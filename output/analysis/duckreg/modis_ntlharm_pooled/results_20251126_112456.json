@@ -1,0 +1,102 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_ntlharm_pooled",
+    "description": "Pooled MODIS NTLHARM analysis",
+    "timestamp": "2025-11-26T11:24:56.232144",
+    "formula": "modis_median ~ ntl_harm | 0 | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62536815",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "n_bootstraps": 0,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62536815",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "ntl_harm"
+    ],
+    "fe_cols": [],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "se_method": "analytical",
+    "se_type": "cluster",
+    "n_bootstraps": 0,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 2,
+    "estimator_type": "DuckRegression",
+    "n_compressed_rows": 15000700,
+    "n_observations": 496746217,
+    "compression_ratio": 0.9698020850755669
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "ntl_harm"
+    ],
+    "estimates": [
+      284.1296730805596,
+      0.10592751844412651
+    ],
+    "std_errors": [
+      1.401685333518056,
+      0.050467446213057564
+    ],
+    "t_statistics": [
+      202.70574735017698,
+      2.0989276532229133
+    ],
+    "p_values": [
+      0.0,
+      0.035823278735783504
+    ],
+    "conf_int_lower": [
+      281.3823698268642,
+      0.007011323866533692
+    ],
+    "conf_int_upper": [
+      286.876976334255,
+      0.20484371302171933
+    ]
+  },
+  "vcov_matrix": [
+    [
+      1.9647217741996237,
+      -0.06737493467845364
+    ],
+    [
+      -0.06737493467845333,
+      0.0025469631272678583
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(ntl_harm, 5) AS ntl_harm, subdivision AS subdivision, COUNT(*) as count, SUM(modis_median) as sum_modis_median, SUM(POW(modis_median, 2)) as sum_modis_median_sq\n        FROM read_parquet('/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet/**/*.parquet')\n        WHERE COLUMNS(['ntl_harm', 'subdivision', 'modis_median']) IS NOT NULL\n        GROUP BY ROUND(ntl_harm, 5), subdivision\n        "
+  }
+}

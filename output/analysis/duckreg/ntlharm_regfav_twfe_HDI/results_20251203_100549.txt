@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)
+Formula:     log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-03T10:06:10.995837
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    168,479,100
+Compressed Rows:       13,088
+Compression Ratio:     0.9999 (99.99%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                 Coefficient  Std. Error     t-stat     P>|t|    [0.025    0.975]
+Intercept          -3.978608    0.070356 -56.549379  0.000000 -4.116506 -3.840709
+reg_fav            -0.072595    0.045977  -1.578925  0.114353 -0.162711  0.017521
+avg_reg_fav_fe0     0.693330    0.362745   1.911342  0.055961 -0.017650  1.404311
+avg_reg_fav_fe1     1.107072    0.877193   1.262061  0.206927 -0.612227  2.826370
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

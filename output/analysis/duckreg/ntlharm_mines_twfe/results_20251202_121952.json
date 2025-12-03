@@ -1,0 +1,135 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "ntlharm_mines_twfe",
+    "description": "TWFE MODIS NTLHARM analysis for mining occurence",
+    "timestamp": "2025-12-02T12:19:52.395685",
+    "formula": "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet",
+    "query": "country IN (65,3,38,18,46,52,39,215,51,157,48,47,20,89,72,68,61,79,87,83,85,45,117,131,126,127,139,155,144,151,154,136,150,158,160,162,88,186,189,195,205,192,212,198,201,260,263,204,69,191,210,216,224,229,67,228,22,261)"
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62929468",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "n_bootstraps": 0,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62929468",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "ntl_harm"
+    ],
+    "covariates": [
+      "nb_mines_a"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "se_method": "analytical",
+    "se_type": "cluster",
+    "n_bootstraps": 0,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 2269,
+    "n_observations": 198852709,
+    "compression_ratio": 0.9999885895444351
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "nb_mines_a",
+      "avg_nb_mines_a_fe0",
+      "avg_nb_mines_a_fe1"
+    ],
+    "estimates": [
+      -4.428138159915272,
+      0.0631995702999803,
+      0.08559151603002212,
+      0.21038763903216334
+    ],
+    "std_errors": [
+      0.022644996280745094,
+      0.027657753318750908,
+      0.11470755741160346,
+      0.3997852905560639
+    ],
+    "t_statistics": [
+      -195.54598751162044,
+      2.285057993381313,
+      0.7461715510417097,
+      0.5262515755382942
+    ],
+    "p_values": [
+      0.0,
+      0.022309427476744137,
+      0.45556379118981716,
+      0.5987134235257279
+    ],
+    "conf_int_lower": [
+      -4.472522352625532,
+      0.008990373795228525,
+      -0.13923529649672067,
+      -0.5731915304577218
+    ],
+    "conf_int_upper": [
+      -4.383753967205012,
+      0.11740876680473208,
+      0.3104183285567649,
+      0.9939668085220486
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.0005127958565549591,
+      0.00012273672438727653,
+      -0.000271725093709047,
+      -0.0029993927374043082
+    ],
+    [
+      0.00012273672438727702,
+      0.0007649513186408769,
+      -7.656151382762171e-05,
+      -0.0031205027529611607
+    ],
+    [
+      -0.000271725093709048,
+      -7.656151382718073e-05,
+      0.013157823727336305,
+      -0.0008105359807296202
+    ],
+    [
+      -0.0029993927374043087,
+      -0.0031205027529611603,
+      -0.0008105359807296734,
+      0.15982827854499643
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(nb_mines_a, 5) AS nb_mines_a, ROUND(avg_nb_mines_a_fe0, 5) AS avg_nb_mines_a_fe0, ROUND(avg_nb_mines_a_fe1, 5) AS avg_nb_mines_a_fe1, __cluster__, COUNT(*) as count, SUM(ntl_harm) as sum_ntl_harm\n        FROM design_matrix\n        GROUP BY ROUND(nb_mines_a, 5), ROUND(avg_nb_mines_a_fe0, 5), ROUND(avg_nb_mines_a_fe1, 5), __cluster__\n        "
+  }
+}

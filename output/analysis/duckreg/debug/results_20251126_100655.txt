@@ -1,0 +1,38 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Debug Setting
+Formula:     modis_median ~ viirs_annual | 0 | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet
+Timestamp:   2025-11-26T10:06:55.338707
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method: mundlak
+Bootstrap Iterations: 999
+Random Seed:          42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    19,044,689
+Compressed Rows:       81,161
+Compression Ratio:     0.9957 (99.57%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 2
+Standard Errors:        Available (Bootstrap)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+              Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept      297.521913    0.465682  638.895181  0.000000  296.609176  298.434649
+viirs_annual     0.000046    0.005813    0.007967  0.993643   -0.011347    0.011439
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

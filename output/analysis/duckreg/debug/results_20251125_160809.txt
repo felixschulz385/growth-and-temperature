@@ -1,0 +1,46 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Debug Setting
+Formula:     modis_median ~ viirs_annual*HDI_ME | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet
+Timestamp:   2025-11-25T16:08:09.329977
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method: mundlak
+Bootstrap Iterations: 999
+Random Seed:          42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    19,044,478
+Compressed Rows:       1,012,003
+Compression Ratio:     0.9469 (94.69%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 10
+Standard Errors:        Available (Bootstrap)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                               Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept                       297.868640    0.545469  546.078423  0.000000  296.799522  298.937759
+viirs_annual                      0.000464    0.000917    0.506468  0.612528   -0.001333    0.002262
+HDI_ME                           -0.456311    0.638297   -0.714889  0.474678   -1.707373    0.794751
+viirs_annual_x_HDI_ME            -0.000221    0.004793   -0.046024  0.963291   -0.009614    0.009173
+avg_viirs_annual_fe0             -0.002514    0.011655   -0.215668  0.829247   -0.025358    0.020330
+avg_HDI_ME_fe0                   -0.456311    0.638297   -0.714889  0.474678   -1.707373    0.794751
+avg_viirs_annual_x_HDI_ME_fe0    -0.073866    0.069545   -1.062139  0.288173   -0.210174    0.062441
+avg_viirs_annual_fe1             -0.383945    2.365140   -0.162335  0.871042   -5.019619    4.251729
+avg_HDI_ME_fe1                   -0.456311    0.638297   -0.714889  0.474678   -1.707373    0.794751
+avg_viirs_annual_x_HDI_ME_fe1    -0.032745    0.045804   -0.714889  0.474678   -0.122521    0.057031
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

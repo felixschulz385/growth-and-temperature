@@ -1,0 +1,133 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "debug",
+    "description": "Debug Setting",
+    "timestamp": "2025-12-02T15:05:22.615567",
+    "formula": "modis_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckreg",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62945989",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "n_bootstraps": 0,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62945989",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "se_method": "analytical",
+    "se_type": "cluster",
+    "n_bootstraps": 0,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 2504461,
+    "n_observations": 19044478,
+    "compression_ratio": 0.8684941115214604
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "viirs_annual",
+      "avg_viirs_annual_fe0",
+      "avg_viirs_annual_fe1"
+    ],
+    "estimates": [
+      296.68726304211407,
+      0.00016819140072572668,
+      -0.003933839648825615,
+      2.346627262174515
+    ],
+    "std_errors": [
+      1.034708827811987,
+      0.0003656514481026794,
+      0.009310417745923383,
+      2.9021429018934053
+    ],
+    "t_statistics": [
+      286.73502638369683,
+      0.45997739540880056,
+      -0.4225202086714174,
+      0.8085843259625627
+    ],
+    "p_values": [
+      0.0,
+      0.6455324457216782,
+      0.6726453533686563,
+      0.41875428352248223
+    ],
+    "conf_int_lower": [
+      294.6592337396026,
+      -0.000548485437555525,
+      -0.022182258430835447,
+      -3.3415728255365593
+    ],
+    "conf_int_upper": [
+      298.71529234462554,
+      0.0008848682390069783,
+      0.014314579133184215,
+      8.034827349885589
+    ]
+  },
+  "vcov_matrix": [
+    [
+      1.070622358352056,
+      0.0002980025580352221,
+      0.0014523921942844102,
+      -2.6617700519775944
+    ],
+    [
+      0.0002980025580352221,
+      1.3370098149958646e-07,
+      -2.9071258732636794e-07,
+      -0.0005559292709919262
+    ],
+    [
+      0.0014523921942844102,
+      -2.9071258732636794e-07,
+      8.668387860360504e-05,
+      -0.012952993911342072
+    ],
+    [
+      -2.6617700519775944,
+      -0.0005559292709919262,
+      -0.012952993911342072,
+      8.422433423010276
+    ]
+  ]
+}

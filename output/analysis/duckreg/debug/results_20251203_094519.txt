@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Debug Setting
+Formula:     modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet
+Timestamp:   2025-12-03T09:45:54.553921
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    16,655,444
+Compressed Rows:       356,741
+Compression Ratio:     0.9786 (97.86%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                  Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept          295.940846    1.686947  175.429809  0.000000  292.634429  299.247263
+ntl_harm            -0.012495    0.012546   -0.995901  0.319298   -0.037086    0.012096
+avg_ntl_harm_fe0    -0.013548    0.015818   -0.856493  0.391725   -0.044552    0.017455
+avg_ntl_harm_fe1     0.601583    0.760390    0.791152  0.428856   -0.888780    2.091947
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

@@ -1,0 +1,121 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "ntlharm_regfav_twfe_replicate_1km",
+    "description": "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014) at 1km resolution",
+    "timestamp": "2025-12-03T10:11:40.178144",
+    "formula": "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet",
+    "query": "(country IN (2,3,6,9,15,16,18,19,20,22,23,24,27,29,32,33,36,38,39,40,43,45,46,47,48,50,53,59,60,63,65,66,68,70,72,73,74,76,79,80,81,83,85,87,88,90,93,96,98,100,102,107,108,111,114,115,116,117,119,122,124,125,126,130,132,134,136,139,141,143,144,146,148,150,151,155,156,158,160,162,163,165,166,167,169,170,172,174,175,177,178,180,181,182,188,189,191,192,198,199,201,203,207,208,209,215,216,217,218,221,224,227,228,229,230,232,233,237,240,250,256,258,259,260,261,263)) AND (year < 2010)"
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62985719",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "ntl_harm"
+    ],
+    "covariates": [
+      "reg_fav"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 1386726160,
+    "n_compressed_rows": 6580,
+    "compression_ratio": 0.9999952550112706,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak"
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "reg_fav",
+      "avg_reg_fav_fe0",
+      "avg_reg_fav_fe1"
+    ],
+    "estimates": [
+      -3.7678876431854853,
+      0.04445059488653595,
+      0.0945980515276918,
+      -1.43505134430049
+    ],
+    "std_errors": [
+      0.10361504445066537,
+      0.04753728298267372,
+      0.2513109255411379,
+      1.2892839489324233
+    ],
+    "t_statistics": [
+      -36.364291142870705,
+      0.9350680581121391,
+      0.3764183802355491,
+      -1.1130607384732958
+    ],
+    "p_values": [
+      0.0,
+      0.3497532266138599,
+      0.7066058836642362,
+      0.2656823443002949
+    ],
+    "conf_int_lower": [
+      -3.9709731303087894,
+      -0.04872247975950454,
+      -0.3979713625329384,
+      -3.9620478842080393
+    ],
+    "conf_int_upper": [
+      -3.564802156062181,
+      0.13762366953257643,
+      0.587167465588322,
+      1.0919451956070594
+    ]
+  },
+  "vcov_matrix": [
+    [
+      0.01073607743651336,
+      0.0026761497028039553,
+      -0.0051217200674234815,
+      -0.09236738229958798
+    ],
+    [
+      0.0026761497028039553,
+      0.0022597932733748006,
+      0.0012579203040129696,
+      -0.04963463003532369
+    ],
+    [
+      -0.0051217200674234815,
+      0.0012579203040129696,
+      0.06315718129634335,
+      -0.05511219170457196
+    ],
+    [
+      -0.09236738229958798,
+      -0.04963463003532369,
+      -0.05511219170457196,
+      1.6622531009747836
+    ]
+  ]
+}

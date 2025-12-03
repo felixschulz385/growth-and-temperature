@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS NTLHARM analysis
+Formula:     modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet
+Timestamp:   2025-11-26T11:29:18.561672
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    496,741,067
+Compressed Rows:       39,104,776
+Compression Ratio:     0.9213 (92.13%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                  Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept          284.278605    1.588614  178.947546  0.000000  281.164921  287.392289
+ntl_harm             0.028152    0.010456    2.692478  0.007092    0.007659    0.048646
+avg_ntl_harm_fe0     0.098611    0.048103    2.049993  0.040365    0.004329    0.192892
+avg_ntl_harm_fe1    -0.120109    0.262563   -0.457448  0.647349   -0.634732    0.394514
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

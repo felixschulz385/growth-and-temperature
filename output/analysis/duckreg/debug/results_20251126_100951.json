@@ -1,0 +1,68 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "debug",
+    "description": "Debug Setting",
+    "timestamp": "2025-11-26T10:09:51.098948",
+    "formula": "modis_median ~ viirs_annual | 0 | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62517131",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "n_bootstraps": 0,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62517131",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_bootstraps": 0,
+    "compression_method": "mundlak",
+    "has_standard_errors": false,
+    "vcov_available": false,
+    "n_coefficients": 2,
+    "estimator_type": "DuckRegression",
+    "n_compressed_rows": 81161,
+    "n_observations": 19044689,
+    "compression_ratio": 0.9957383919474873
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "viirs_annual"
+    ],
+    "estimates": [
+      297.52191294416843,
+      4.6309808007025925e-05
+    ]
+  },
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(viirs_annual, 5) AS viirs_annual, subdivision AS subdivision, COUNT(*) as count, SUM(modis_median) as sum_modis_median, SUM(POW(modis_median, 2)) as sum_modis_median_sq\n        FROM read_parquet('/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet/**/*.parquet')\n        WHERE COLUMNS(['modis_median', 'viirs_annual', 'subdivision']) IS NOT NULL\n        GROUP BY ROUND(viirs_annual, 5), subdivision\n        "
+  }
+}

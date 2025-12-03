@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE VIIRS analysis for replication of Hodler & Raschky (2014)
+Formula:     log(viirs_annual + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-03T10:06:48.298110
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    56,101,805
+Compressed Rows:       6,630
+Compression Ratio:     0.9999 (99.99%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                 Coefficient  Std. Error     t-stat     P>|t|    [0.025    0.975]
+Intercept          -4.260359    0.044438 -95.872672  0.000000 -4.347456 -4.173261
+reg_fav             0.021207    0.036897   0.574745  0.565464 -0.051112  0.093525
+avg_reg_fav_fe0     0.261229    0.170554   1.531655  0.125607 -0.073056  0.595515
+avg_reg_fav_fe1    -0.461982    0.572338  -0.807184  0.419561 -1.583765  0.659801
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

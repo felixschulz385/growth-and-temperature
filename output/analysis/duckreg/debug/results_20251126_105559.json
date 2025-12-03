@@ -1,0 +1,135 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "debug",
+    "description": "Debug Setting",
+    "timestamp": "2025-11-26T10:55:59.494370",
+    "formula": "modis_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62517131",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "n_bootstraps": 0,
+    "round_strata": 5,
+    "seed": 42,
+    "duckdb_kwargs": {
+      "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/62517131",
+      "memory_limit": "96GB",
+      "max_temp_directory_size": "512GB",
+      "enable_progress_bar": "true"
+    },
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "se_method": "analytical",
+    "se_type": "cluster",
+    "n_bootstraps": 0,
+    "compression_method": "mundlak",
+    "has_standard_errors": true,
+    "vcov_available": true,
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak",
+    "n_compressed_rows": 2504461,
+    "n_observations": 19044478,
+    "compression_ratio": 0.8684941115214604
+  },
+  "coefficients": {
+    "names": [
+      "Intercept",
+      "viirs_annual",
+      "avg_viirs_annual_fe0",
+      "avg_viirs_annual_fe1"
+    ],
+    "estimates": [
+      296.68726304211964,
+      0.00016819140074297856,
+      -0.003933839648866455,
+      2.3466272621602933
+    ],
+    "std_errors": [
+      1.0347088278108865,
+      0.0003656514481043064,
+      0.009310417745932345,
+      2.9021429018912666
+    ],
+    "t_statistics": [
+      286.73502638400714,
+      0.45997739545393507,
+      -0.42252020867539714,
+      0.8085843259582582
+    ],
+    "p_values": [
+      0.0,
+      0.6455324456892813,
+      0.6726453533657522,
+      0.41875428352495914
+    ],
+    "conf_int_lower": [
+      294.65923373961033,
+      -0.000548485437541462,
+      -0.02218225843089385,
+      -3.3415728255465895
+    ],
+    "conf_int_upper": [
+      298.71529234462895,
+      0.0008848682390274191,
+      0.014314579133160941,
+      8.034827349867175
+    ]
+  },
+  "vcov_matrix": [
+    [
+      1.070622358349779,
+      0.00029800255803368443,
+      0.0014523921942895582,
+      -2.6617700519723475
+    ],
+    [
+      0.00029800255803369186,
+      1.3370098150077628e-07,
+      -2.9071258736392453e-07,
+      -0.0005559292709799733
+    ],
+    [
+      0.0014523921942895385,
+      -2.907125873639728e-07,
+      8.668387860377193e-05,
+      -0.012952993911369642
+    ],
+    [
+      -2.661770051972347,
+      -0.0005559292709799822,
+      -0.012952993911369629,
+      8.422433422997862
+    ]
+  ],
+  "sql_queries": {
+    "aggregation_query": "\n        SELECT ROUND(viirs_annual, 5) AS viirs_annual, ROUND(avg_viirs_annual_fe0, 5) AS avg_viirs_annual_fe0, ROUND(avg_viirs_annual_fe1, 5) AS avg_viirs_annual_fe1, __cluster__, COUNT(*) as count, SUM(modis_median) as sum_modis_median\n        FROM design_matrix\n        GROUP BY ROUND(viirs_annual, 5), ROUND(avg_viirs_annual_fe0, 5), ROUND(avg_viirs_annual_fe1, 5), __cluster__\n        "
+  }
+}
