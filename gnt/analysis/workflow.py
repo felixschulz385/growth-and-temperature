@@ -74,7 +74,6 @@ def load_subset(subset_name: str) -> List[int]:
     if not subsets_dir.exists():
         raise FileNotFoundError(f"Subsets directory not found: {subsets_dir}")
     
-    # Determine subset file path
     if len(subset_name) == 2 and subset_name.isupper():
         subset_file = subsets_dir / f"continent_{subset_name.lower()}.json"
     elif subset_name.endswith('.json'):
@@ -122,13 +121,11 @@ def get_compression_stats(model: Any) -> Dict[str, Any]:
         'n_compressed_rows': getattr(model, 'n_compressed_rows', None),
     }
     
-    # Fallback to df_compressed if available
     if stats['n_compressed_rows'] is None and hasattr(model, 'df_compressed') and model.df_compressed is not None:
         stats['n_compressed_rows'] = len(model.df_compressed)
         if 'count' in model.df_compressed.columns:
             stats['n_observations'] = int(model.df_compressed['count'].sum())
     
-    # Calculate compression ratio
     if stats['n_compressed_rows'] and stats['n_observations']:
         stats['compression_ratio'] = 1 - stats['n_compressed_rows'] / stats['n_observations']
     else:
@@ -139,6 +136,22 @@ def get_compression_stats(model: Any) -> Dict[str, Any]:
 
 def build_results_dataframe(model: Any) -> pd.DataFrame:
     """Build results DataFrame from model."""
+    # Use model's built-in summary_df if available
+    if hasattr(model, 'summary_df'):
+        df = model.summary_df()
+        if not df.empty:
+            # Rename columns to match expected format
+            col_map = {
+                'coefficient': 'Coefficient',
+                'std_error': 'Std. Error',
+                't_stat': 't-stat',
+                'p_value': 'P>|t|',
+                'ci_lower': '[0.025',
+                'ci_upper': '0.975]'
+            }
+            return df.rename(columns=col_map)
+    
+    # Fallback to manual construction
     point_estimate = model.point_estimate.flatten()
     coef_names = getattr(model, 'coef_names_', [f'coef_{i}' for i in range(len(point_estimate))])
     has_vcov = hasattr(model, 'vcov') and model.vcov is not None
@@ -206,7 +219,6 @@ def format_duckreg_summary(spec_config: Dict[str, Any], settings: Dict[str, Any]
     if ratio:
         lines.append(f"Compression Ratio:     {ratio:.4f} ({ratio*100:.2f}%)")
     
-    # SE availability
     has_se = compression_stats.get('has_standard_errors', False)
     se_type = compression_stats.get('se_type')
     if has_se:
@@ -225,6 +237,17 @@ def format_duckreg_summary(spec_config: Dict[str, Any], settings: Dict[str, Any]
         "-" * 80,
         f"Number of Coefficients: {len(results_df)}",
         f"Standard Errors:        {se_msg}",
+    ])
+    
+    # Add first stage diagnostics for 2SLS
+    if hasattr(model, 'first_stage') and model.first_stage:
+        lines.extend(["", "FIRST STAGE DIAGNOSTICS", "-" * 80])
+        for endog_var, fs_result in model.first_stage.items():
+            f_stat = fs_result.f_statistic
+            f_str = f"{f_stat:.2f}" if f_stat else "N/A"
+            lines.append(f"  {endog_var}: F-stat = {f_str}")
+    
+    lines.extend([
         "",
         "REGRESSION RESULTS",
         "-" * 80,
@@ -236,6 +259,24 @@ def format_duckreg_summary(spec_config: Dict[str, Any], settings: Dict[str, Any]
     ])
     
     return "\n".join(lines)
+
+
+def _extract_first_stage_statistics(model: Any, logger: logging.Logger) -> Dict[str, Any]:
+    """Extract first stage statistics using the model's built-in methods."""
+    first_stage_results = {}
+    
+    for endog_var, fs_result in model.first_stage.items():
+        # Use the FirstStageResults.to_dict() method
+        fs_info = fs_result.to_dict()
+        first_stage_results[endog_var] = fs_info
+        
+        # Log F-statistic
+        f_stat = fs_result.f_statistic
+        is_weak = fs_result.is_weak_instrument
+        if f_stat is not None:
+            logger.info(f"First stage {endog_var}: F={f_stat:.2f}, weak={is_weak}")
+    
+    return first_stage_results
 
 
 def run_duckreg(config: Dict[str, Any], spec_name: str, 
@@ -328,7 +369,9 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
         output_path = Path(output_dir) / 'duckreg' / spec_name
         output_path.mkdir(parents=True, exist_ok=True)
         
-        coef_names = list(results_df.index)
+        # Use model's summary() method for comprehensive results
+        model_summary = model.summary()
+        
         results_container = {
             'metadata': {
                 'analysis_type': 'duckreg',
@@ -343,31 +386,38 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
                 'settings': settings,
                 'fe_method': settings.get('fe_method', 'mundlak'),
                 'se_method': se_method,
-                'outcome_vars': getattr(model, 'outcome_vars', None),
-                'covariates': getattr(model, 'covariates', None),
-                'fe_cols': getattr(model, 'fe_cols', None),
-                'cluster_col': getattr(model, 'cluster_col', None)
+                'outcome_vars': model_summary.get('outcome_vars'),
+                'covariates': model_summary.get('covariates'),
+                'fe_cols': model_summary.get('fe_cols'),
+                'cluster_col': model_summary.get('cluster_col'),
             },
             'model_statistics': {
                 **compression_stats,
-                'n_coefficients': len(coef_names),
-                'estimator_type': type(model).__name__,
+                'n_coefficients': len(results_df),
+                'estimator_type': model_summary.get('estimator_type'),
             },
-            'coefficients': {
-                'names': coef_names,
-                'estimates': results_df['Coefficient'].tolist(),
-            }
         }
         
+        # Add coefficients from model's results
+        if model_summary.get('coefficients'):
+            results_container['coefficients'] = model_summary['coefficients']
+        
+        # Add vcov if available
         if compression_stats['has_standard_errors']:
-            results_container['coefficients'].update({
-                'std_errors': results_df['Std. Error'].tolist(),
-                't_statistics': results_df['t-stat'].tolist(),
-                'p_values': results_df['P>|t|'].tolist(),
-                'conf_int_lower': results_df['[0.025'].tolist(),
-                'conf_int_upper': results_df['0.975]'].tolist()
-            })
             results_container['vcov_matrix'] = np.asarray(model.vcov).tolist()
+        
+        # Add first stage results for 2SLS using model's built-in methods
+        if hasattr(model, 'first_stage') and model.first_stage:
+            results_container['first_stage'] = _extract_first_stage_statistics(model, logger)
+            results_container['specification'].update({
+                'endogenous_vars': model_summary.get('endogenous_vars'),
+                'instrument_vars': model_summary.get('instrument_vars'),
+                'exogenous_vars': model_summary.get('exogenous_vars'),
+            })
+            results_container['model_statistics']['weak_instruments'] = model.has_weak_instruments()
+            results_container['model_statistics']['first_stage_f_stats'] = model.get_first_stage_f_stats()
+            
+            logger.info(f"First stage results stored for {len(model.first_stage)} endogenous variable(s)")
         
         # Save files
         with open(output_path / f'results_{timestamp}.txt', 'w') as f:
@@ -396,7 +446,6 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
     
     from streamreg.api import OLS
     
-    # Setup cluster
     cluster = None
     if settings.get('cluster_type') == 'one_way':
         cluster = spec_config.get('cluster1_col')
@@ -409,7 +458,6 @@ def run_online_rls(config: Dict[str, Any], spec_name: str,
         target = spec_config.get('target_col')
         formula = f"{target} ~ {' + '.join(features)}"
     
-    # Build query
     geo_query = build_geographic_query(spec_config)
     user_query = spec_config.get('query')
     query = f"({geo_query}) AND ({user_query})" if geo_query and user_query else (geo_query or user_query)
