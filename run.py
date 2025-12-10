@@ -133,7 +133,7 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     Run the specified data operation for a source.
     
     Args:
-        operation_type: Type of operation ('index', 'download', 'preprocess', 'validate', 'extract', 'assemble', 'demean')
+        operation_type: Type of operation ('index', 'download', 'preprocess', 'validate', 'extract', 'assemble', 'demean', 'tables')
         source: Data source name or assembly name for assemble/demean operations
         config: Full configuration dictionary
         mode: Override mode (optional)
@@ -183,6 +183,64 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         
         return
     
+    elif operation_type == "tables":
+        # Handle table generation operations
+        try:
+            import importlib
+            tables_module = importlib.import_module('gnt.analysis.generate_tables')
+            
+            # Get table names to generate (source is treated as table name(s))
+            table_names = [source] if source else None
+            
+            logger.info(f"Generating tables: {table_names or 'all'}")
+            
+            # Get table config path
+            config_path = cli_overrides.get('table_config') if cli_overrides else None
+            if not config_path:
+                config_path = config.get('tables', {}).get('config_path')
+            if not config_path:
+                # Default to orchestration/configs/table_configs.yaml
+                project_root_path = Path(__file__).parent
+                config_path = project_root_path / "orchestration" / "configs" / "table_configs.yaml"
+            
+            # Get analysis config path for base_path lookup
+            analysis_config_path = cli_overrides.get('analysis_config') if cli_overrides else None
+            if not analysis_config_path:
+                analysis_config_path = Path(__file__).parent / "orchestration" / "configs" / "analysis.yaml"
+            
+            logger.info(f"Using table config: {config_path}")
+            logger.info(f"Using analysis config: {analysis_config_path}")
+            
+            config_loader = tables_module.ConfigLoader(config_path=config_path, analysis_config=analysis_config_path)
+            
+            # Get output directory override if provided
+            output_dir = cli_overrides.get('output_dir') if cli_overrides else None
+            
+            # If specific table names provided, generate those; otherwise generate all
+            if table_names:
+                for table_name in table_names:
+                    logger.info(f"Generating table: {table_name}")
+                    generated_tables = tables_module.generate_table_from_config(table_name, config_loader)
+                    tables_module.save_generated_tables(table_name, generated_tables, output_dir)
+            else:
+                # Generate all tables
+                all_table_names = config_loader.get_all_table_names()
+                for table_name in all_table_names:
+                    logger.info(f"Generating table: {table_name}")
+                    generated_tables = tables_module.generate_table_from_config(table_name, config_loader)
+                    tables_module.save_generated_tables(table_name, generated_tables, output_dir)
+            
+            logger.info("Table generation completed successfully")
+                        
+        except ImportError as e:
+            logger.error(f"Error importing table generation module: {e}")
+            raise ValueError(f"Could not import table generation module: {e}") from e
+        except Exception as e:
+            logger.error(f"Error during table generation: {e}")
+            raise
+        
+        return
+
     # Ensure the source exists in configuration
     if 'sources' not in config or source not in config['sources']:
         raise ValueError(f"Source '{source}' not found in configuration")
@@ -351,21 +409,20 @@ def main():
     # Main operation type argument
     parser.add_argument(
         "operation",
-        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble", "demean", "analysis"],
+        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble", "demean", "analysis", "tables"],
         help="Operation to perform"
     )
     
     # Common arguments
     parser.add_argument(
         "--config", 
-        required=True,
         help="Path to unified configuration file (YAML or JSON)"
     )
     
-    # Make source optional for analysis operations
+    # Make source optional for certain operations
     parser.add_argument(
         "--source",
-        help="Data source name (must be defined in config) or assembly name for assemble operation"
+        help="Data source name (must be defined in config), assembly name for assemble operation, or table name for tables operation"
     )
     
     # Analysis-specific arguments
@@ -451,6 +508,14 @@ def main():
         help="Processing stage for preprocess operation (e.g., annual, spatial, vector)"
     )
 
+    # Administrative level argument for PLAD preprocessing
+    parser.add_argument(
+        '--admin-level',
+        type=int,
+        choices=[1, 2],
+        help='Administrative level for PLAD preprocessor (1 or 2) - overrides config'
+    )
+
     # Dask configuration arguments (for preprocess and assemble operations)
     parser.add_argument('--dask-threads', type=int, help='Number of Dask threads (overrides config)')
     parser.add_argument('--dask-memory-limit', help='Dask memory limit per worker (overrides config, e.g., "4GB", "32GB")')
@@ -478,6 +543,22 @@ def main():
         help='Override level for demeaning (0=none, 1=remove results, 2=remove intermediate+results)'
     )
 
+    # Table-specific arguments
+    parser.add_argument(
+        "--table-config",
+        help="Path to table configuration file (YAML) - overrides default"
+    )
+    
+    parser.add_argument(
+        "--analysis-config",
+        help="Path to analysis configuration file (YAML) for table generation - overrides default"
+    )
+    
+    parser.add_argument(
+        "--output-dir",
+        help="Output directory for generated tables (overrides config default)"
+    )
+    
     # Parse arguments
     args = parser.parse_args()
     
@@ -488,9 +569,15 @@ def main():
         if args.analysis_type == "online_rls" and not args.specification:
             parser.error("Online RLS analysis requires --specification")
         # For analysis, config should point to analysis.yaml by default
-        if args.config == "config.yaml":  # Default was changed
+        if not args.config or args.config == "config.yaml":
             args.config = "orchestration/configs/analysis.yaml"
+    elif args.operation == "tables":
+        # Tables operation: source is optional (table name) - if not provided, generates all tables
+        # Config is also optional for tables - we use table_config and analysis_config instead
+        logger.info("Table generation mode - source is optional (specify table name to generate specific table)")
     else:
+        if not args.config:
+            parser.error(f"{args.operation} operation requires --config")
         if not args.source:
             parser.error(f"{args.operation} operation requires --source")
     
@@ -501,7 +588,7 @@ def main():
         if args.operation == "analysis":
             logger.info(f"Starting GNT analysis system: {args.analysis_type}")
             
-            # Load analysis configuration
+            # Load analysis configuration with environment variable expansion
             config = load_config_with_env_vars(args.config)
             
             # Import and run analysis
@@ -589,6 +676,31 @@ def main():
             else:
                 logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")
                 return 1
+        elif args.operation == "tables":
+            logger.info("Starting GNT table generation system")
+            
+            # Load configuration if provided, otherwise use empty dict
+            config = load_config_with_env_vars(args.config) if args.config and Path(args.config).exists() else {}
+            
+            # Apply CLI overrides for tables operation
+            cli_overrides = {}
+            
+            if hasattr(args, 'table_config') and args.table_config:
+                cli_overrides['table_config'] = args.table_config
+                config.setdefault('tables', {})['config_path'] = args.table_config
+                logger.info(f"Overriding table config from CLI: {args.table_config}")
+            
+            if hasattr(args, 'analysis_config') and args.analysis_config:
+                cli_overrides['analysis_config'] = args.analysis_config
+                logger.info(f"Overriding analysis config from CLI: {args.analysis_config}")
+            
+            if hasattr(args, 'output_dir') and args.output_dir:
+                cli_overrides['output_dir'] = args.output_dir
+                config.setdefault('tables', {})['output_dir'] = args.output_dir
+                logger.info(f"Overriding output directory from CLI: {args.output_dir}")
+            
+            # Run table generation operation (source is optional - table name to generate)
+            run_operation(args.operation, args.source, config, None, None, None, cli_overrides)
         else:
             logger.info(f"Starting GNT {args.operation} system for {args.source}")
             
@@ -649,6 +761,11 @@ def main():
                     if args.stage:
                         preprocess_config['stage'] = args.stage
                         logger.info(f"Setting stage from CLI: {args.stage}")
+                    
+                    # Set admin_level if provided (for PLAD preprocessor)
+                    if args.admin_level is not None:
+                        source_config['admin_level'] = args.admin_level
+                        logger.info(f"Overriding admin_level from CLI: {args.admin_level}")
                 
                 # Prepare CLI overrides for assembly operations
                 elif args.operation == "assemble":
@@ -679,3 +796,4 @@ def main():
 
 if __name__ == "__main__":
     exit_code = main()
+    sys.exit(exit_code)

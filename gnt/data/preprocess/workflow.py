@@ -393,7 +393,12 @@ class PreprocessTaskHandlers:
             if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
                 preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
             
-            # 10. Create data source instance if possible (skip for misc preprocessor)
+            # 10. Pass admin_level if specified (for PLAD and other preprocessors)
+            if 'admin_level' in source_config:
+                preprocessor_config['admin_level'] = source_config['admin_level']
+                logger.debug(f"Passing admin_level to preprocessor: {source_config['admin_level']}")
+            
+            # 11. Create data source instance if possible (skip for misc preprocessor)
             if source_name.lower() != 'misc':
                 try:
                     if 'source_class' in source_config:
