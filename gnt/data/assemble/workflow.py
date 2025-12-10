@@ -19,6 +19,7 @@ import xarray as xr
 from odc.geo import GeoboxTiles
 from odc.geo.geobox import GeoBox
 from odc.geo.xr import ODCExtensionDa
+import math
 
 # Import common utilities
 from gnt.data.common.geobox import get_or_create_geobox
@@ -49,7 +50,8 @@ def _load_land_mask(hpc_root: str, land_mask_path: str = None) -> Optional[xr.Da
         for path in potential_paths:
             if os.path.exists(path):
                 logger.info(f"Loading land mask from: {path}")
-                land_mask_ds = xr.open_zarr(path, consolidated=False, chunks='auto')["land_mask"]
+                land_mask_ds = xr.open_zarr(path, consolidated=False, chunks='auto')
+                land_mask_ds = land_mask_ds.odc.assign_crs(4326)
                 return land_mask_ds
         
         logger.warning(f"Land mask not found in any of: {potential_paths}")
@@ -88,7 +90,7 @@ def _load_and_merge_datasets(
     
     merged_datasets = []
     land_mask_for_inner_join = None
-    resampling_map = {}  # Maps resampling method to list of variable names
+    resampling_map = {}  # Maps resampling method to list of {'vars': list, 'config': dict}
     
     # Process land mask separately for inner join
     if land_mask_ds is not None:
@@ -169,11 +171,11 @@ def _load_and_merge_datasets(
                    int_vars =  int_vars[0]
                 ds[int_vars] = ds[int_vars].astype("float32")
             
-            # Track which variables belong to this resampling method
+            # Track which variables belong to this resampling method, with config
             var_names = list(ds.data_vars.keys())
             if resampling_method not in resampling_map:
                 resampling_map[resampling_method] = []
-            resampling_map[resampling_method].extend(var_names)
+            resampling_map[resampling_method].append({'vars': var_names, 'config': dataset_config})
             
             # Add dataset identifier for provenance
             ds.attrs['dataset_name'] = dataset_name
@@ -299,192 +301,424 @@ def create_assembly_metadata(
         logger.error(f"Failed to create metadata file: {e}")
         return False
 
-def _extract_and_process_tile(
-    merged_ds: xr.Dataset,
-    resampling_map: Dict[str, List[str]],
-    ix: int,
-    iy: int, 
-    tile_geobox,
-    assembly_config: Dict[str, Any]
-) -> Optional[pd.DataFrame]:
+def _load_datasets_for_processing(
+    assembly_config: Dict[str, Any],
+    target_geobox,
+    land_mask_ds: Optional[xr.Dataset] = None
+) -> List[Tuple[str, xr.Dataset, Dict[str, Any]]]:
     """
-    Extract and process a single tile from the large merged dataset,
-    applying different resampling methods to different variable groups.
+    Load datasets individually, apply basic filtering, and ensure they carry geobox metadata.
+    
+    This function loads each dataset as a separate xarray.Dataset rather than merging them upfront.
+    This source-by-source approach allows for independent reprojection and winsorization per dataset
+    before final concatenation at the tile level.
     
     Args:
-        merged_ds: Large merged xarray dataset
-        resampling_map: Mapping of resampling method to variable names
-        ix, iy: Tile coordinates
-        tile_geobox: Tile geobox for spatial bounds
         assembly_config: Assembly configuration
+        target_geobox: Target geobox for alignment checks
+        land_mask_ds: Optional land mask dataset (unused here, kept for interface symmetry)
         
     Returns:
-        Processed DataFrame for the tile
+        List of tuples (dataset_name, dataset_xr, dataset_config)
+    """
+    logger.info("Loading datasets (source-by-source)...")
+    datasets_config = assembly_config['datasets']
+    processing_config = assembly_config.get('processing', {})
+    target_resolution = processing_config.get('resolution')
+    year_range = processing_config.get('year_range')
+    loaded = []
+
+    for dataset_name, dataset_config in datasets_config.items():
+        zarr_path = dataset_config['path']
+        resampling_method = dataset_config.get('resampling', 'mode')
+        if not os.path.exists(zarr_path):
+            logger.warning(f"Dataset path does not exist: {zarr_path}, skipping")
+            continue
+        logger.info(f"Loading dataset {dataset_name} from {zarr_path} (resampling: {resampling_method})")
+        try:
+            ds = xr.open_zarr(zarr_path, mask_and_scale=True, consolidated=False, chunks='auto')
+            ds = ds.odc.assign_crs(4326)
+            
+            # Convert time coordinate to integer years if present
+            # This must happen before year range filtering
+            if 'time' in ds.coords:
+                ds = ds.rename(time='year')
+                ds.coords["year"] = pd.Series(ds.coords["year"]).dt.year.astype("int16")
+                logger.debug(f"Converted 'time' to 'year' coordinate for {dataset_name}")
+            
+            # Apply year range filter if time/year dimension exists
+            if year_range:
+                if 'year' in ds.coords:
+                    ds = ds.sel(year=slice(year_range[0], year_range[1]))
+                    logger.info(f"Filtered {dataset_name} to year range {year_range[0]}-{year_range[1]}")
+            
+            # Check and subset columns if specified
+            columns = dataset_config.get('columns')
+            if columns:
+                # Check which columns exist in the dataset
+                available_vars = [var for var in columns if var in ds.data_vars]
+                missing_vars = [var for var in columns if var not in ds.data_vars]
+                
+                if missing_vars:
+                    logger.warning(f"Dataset {dataset_name} missing specified columns: {missing_vars}")
+                
+                if available_vars:
+                    ds = ds[available_vars]
+                else:
+                    logger.warning(f"No specified columns found in dataset {dataset_name}, skipping")
+                    continue
+            else:
+                # Remove spatial_ref if present, keep all other variables
+                vars_to_keep = [var for var in ds.data_vars.keys() if var != 'spatial_ref']
+                if vars_to_keep:
+                    ds = ds[vars_to_keep]
+                    logger.debug(f"Dataset {dataset_name}: keeping all variables {vars_to_keep}")
+            
+            # Apply column prefix if specified
+            column_prefix = dataset_config.get('column_prefix')
+            if column_prefix:
+                logger.info(f"Applying prefix '{column_prefix}' to dataset {dataset_name}")
+                # Rename all data variables with prefix
+                rename_dict = {var: f"{column_prefix}{var}" for var in ds.data_vars}
+                ds = ds.rename(rename_dict)
+                logger.debug(f"Renamed variables: {list(ds.data_vars.keys())}")
+                
+            # Transform BOOL to float32
+            boolean_vars = [x for x, y in ds.dtypes.items() if y == np.dtype("bool")]
+            if boolean_vars:
+                if len(boolean_vars) == 1:
+                   boolean_vars =  boolean_vars[0]
+                ds[boolean_vars] = ds[boolean_vars].astype("float32")
+            
+            # Transform INT to float32
+            int_vars = [x for x, y in ds.dtypes.items() if np.issubdtype(y, np.integer)]
+            if int_vars:
+                if len(int_vars) == 1:
+                   int_vars =  int_vars[0]
+                ds[int_vars] = ds[int_vars].astype("float32")
+            
+            # Verify dataset has geobox metadata needed for reprojection
+            if not hasattr(ds, 'odc') or ds.odc.geobox is None:
+                raise ValueError(f"Dataset {dataset_name} lacks geobox metadata for alignment")
+            
+            native_res = abs(ds.odc.geobox.resolution.x)
+            if target_resolution:
+                logger.debug(f"{dataset_name}: native res={native_res}, target res={target_resolution}")
+            
+            ds.attrs['dataset_name'] = dataset_name
+            ds.attrs['resampling_method'] = resampling_method
+            loaded.append((dataset_name, ds, dataset_config))
+            logger.info(f"Loaded dataset {dataset_name}: {list(ds.data_vars.keys())}")
+        except Exception as e:
+            logger.error(f"Failed to load dataset {dataset_name}: {e}")
+            continue
+
+    if not loaded:
+        raise ValueError("No datasets could be loaded successfully")
+    return loaded
+
+def winsorize(array):
+    """
+    Apply winsorization to clip outliers at 0.1% and 99.9% quantiles.
+    Preserves NaN values throughout the operation.
+    """
+    return array.where(array > array.quantile(.001), array.quantile(.001)).where(array < array.quantile(.999), array.quantile(.999)).where(~array.isnull())
+
+def _make_pixel_ids(ix: int, iy: int, tile_geobox) -> pd.DataFrame:
+    """
+    Generate pixel ID DataFrame with latitude, longitude, and pixel_id columns.
+    
+    Format: [ix: 16 bits | iy: 16 bits | local_pixel: 32 bits]
+    This allows decoding tile coordinates and pixel location from a single integer.
+    
+    Args:
+        ix: Tile x index
+        iy: Tile y index
+        tile_geobox: Target geobox for tile
+    
+    Returns:
+        DataFrame with columns ['latitude', 'longitude', 'pixel_id']
+    """
+    h, w = tile_geobox.shape
+    local_pixel_ids = np.arange(h * w, dtype="uint32").reshape((h, w))
+    pixel_id_matrix = (np.uint64(ix) << 48) | (np.uint64(iy) << 32) | local_pixel_ids.astype(np.uint64)
+    
+    # Get coordinate arrays from geobox
+    lats = tile_geobox.coords['latitude'].values
+    lons = tile_geobox.coords['longitude'].values
+    
+    # Create meshgrid and flatten
+    lat_grid, lon_grid = np.meshgrid(lats, lons, indexing='ij')
+    
+    # Create DataFrame with lat/lon/pixel_id
+    pixel_id_df = pd.DataFrame({
+        'latitude': lat_grid.flatten(),
+        'longitude': lon_grid.flatten(),
+        'pixel_id': pixel_id_matrix.flatten()
+    })
+    
+    return pixel_id_df
+
+def _extract_and_process_dataset_tile(
+    ds: xr.Dataset,
+    dataset_config: Dict[str, Any],
+    resampling_method: str,
+    ix: int,
+    iy: int,
+    padded_tile_geobox,
+    target_geobox_zoomed
+) -> Optional[pd.DataFrame]:
+    """
+    Extract and process a single dataset tile with winsorization and reprojection.
+    
+    Processing pipeline:
+    1. Extract tile from padded bounds
+    2. Apply winsorization if configured (clips outliers at 0.1% and 99.9% quantiles)
+    3. Reproject to target resolution if needed
+    4. Convert to DataFrame (without pixel_id)
+    
+    Args:
+        ds: Source dataset
+        dataset_config: Dataset-specific configuration including winsorize flag
+        resampling_method: Resampling method for reprojection (bilinear, mode, nearest, etc.)
+        ix, iy: Tile indices
+        padded_tile_geobox: Padded geobox for extraction
+        target_geobox_zoomed: Target geobox at desired resolution (or None if no resolution change)
+        
+    Returns:
+        DataFrame with latitude/longitude coordinates, or None if tile is empty
     """
     try:
-        logger.debug(f"Extracting tile [{ix}, {iy}] from merged dataset")
-        
-        # Pad the tile geobox by 64 pixels to handle edge effects during reprojection
-        padded_tile_geobox = tile_geobox.pad(64, 64)
-        
-        # Extract tile bounds with padding
         bbox = padded_tile_geobox.boundingbox
         
-        # Slice dataset to padded tile bounds
-        if 'latitude' in merged_ds.coords and 'longitude' in merged_ds.coords:
-            tile_ds = merged_ds.sel(
-                latitude=slice(bbox.top, bbox.bottom),
-                longitude=slice(bbox.left, bbox.right)
-            ).compute()
+        # Extract tile data with padding
+        if 'latitude' in ds.coords and 'longitude' in ds.coords:
+            tile_ds = ds.sel(latitude=slice(bbox.top, bbox.bottom), longitude=slice(bbox.left, bbox.right)).compute()
         else:
-            logger.warning(f"Unknown coordinate system in merged dataset")
+            logger.warning(f"Unknown coordinate system in dataset {dataset_config.get('path')}")
             return None
         
-        # Check if tile has data
         if tile_ds.sizes.get('latitude', 0) == 0 or tile_ds.sizes.get('longitude', 0) == 0:
-            logger.debug(f"No spatial data in tile [{ix}, {iy}]")
             return None
         
-        # Apply reprojection if target resolution is specified
-        processing_config = assembly_config.get('processing', {})
-        target_resolution = processing_config.get('resolution')
+        # Apply winsorization before reprojection if configured
+        # This reduces impact of outliers on resampling operations
+        if dataset_config.get('winsorize', False):
+            for var in tile_ds.data_vars:
+                if np.issubdtype(tile_ds[var].dtype, np.floating):
+                    tile_ds[var] = winsorize(tile_ds[var])
         
-        if target_resolution is not None and hasattr(tile_ds, 'odc'):
-            native_geobox = tile_ds.odc.geobox
-            native_res = abs(native_geobox.resolution.x)
+        # Apply resolution reprojection if target resolution differs from native
+        if target_geobox_zoomed is not None and hasattr(tile_ds, 'odc'):
+            logger.debug(f"Reprojecting tile [{ix}, {iy}] to target resolution")
             
-            # Check if reprojection is needed
-            if abs(native_res - target_resolution) >= 1e-10:
-                logger.debug(f"Reprojecting tile [{ix}, {iy}] from {native_res}° to {target_resolution}°")
-                
-                # Create target geobox with new resolution
-                target_geobox_zoomed = native_geobox.zoom_to(resolution=target_resolution)
-                
-                # Reproject each resampling method group separately
-                reprojected_datasets = []
-                
-                for resampling_method, var_names in resampling_map.items():
-                    # Filter to variables that exist in this tile
-                    vars_in_tile = [v for v in var_names if v in tile_ds.data_vars]
-                    
-                    if not vars_in_tile:
-                        continue
-                    
-                    logger.debug(f"Reprojecting {len(vars_in_tile)} variables with {resampling_method}: {vars_in_tile}")
-                    
-                    # Extract subset for this resampling method
-                    subset_ds = tile_ds[vars_in_tile]
-                    
-                    # Reproject using specified method
-                    reprojected_subset = subset_ds.odc.reproject(
-                        target_geobox_zoomed,
-                        resampling=resampling_method,
-                        dst_nodata=np.nan
-                    )
-                    
-                    reprojected_datasets.append(reprojected_subset)
-                
-                # Merge all reprojected subsets back together
-                if len(reprojected_datasets) == 1:
-                    tile_ds = reprojected_datasets[0]
-                else:
-                    tile_ds = xr.merge(reprojected_datasets, compat='override', join='inner')
-                
-                logger.debug(f"Reprojection complete for tile [{ix}, {iy}]: shape {tile_ds.dims}")
-            else:
-                logger.debug(f"Tile [{ix}, {iy}] already at target resolution {target_resolution}°")
-
-        # Create bit-packed pixel ID: combines ix (16 bits), iy (16 bits), and local pixel index (32 bits)
-        # Format: [ix: 16 bits | iy: 16 bits | local_pixel: 32 bits] = 64-bit integer
-        tile_size_actual = (tile_ds.sizes['latitude'], tile_ds.sizes['longitude'])
-        local_pixel_ids = np.arange(tile_size_actual[0] * tile_size_actual[1], dtype="uint32").reshape(tile_size_actual)
+            # Reproject using specified method (bilinear for continuous, mode for categorical)
+            tile_ds = tile_ds.odc.reproject(
+                target_geobox_zoomed,
+                resampling=resampling_method,
+                dst_nodata=np.nan
+            )
+            
+            logger.debug(f"Reprojection complete for tile [{ix}, {iy}]: shape {tile_ds.dims}")
         
-        # Bit-pack: (ix << 48) | (iy << 32) | local_pixel_id
-        pixel_id_matrix = (
-            (np.uint64(ix) << 48) | 
-            (np.uint64(iy) << 32) | 
-            local_pixel_ids.astype(np.uint64)
-        )
-        
-        tile_ds = tile_ds.assign({
-            'pixel_id': (['latitude', 'longitude'], pixel_id_matrix)
-        })
-                
-        # Convert to DataFrame
-        logger.debug(f"Transforming to dataframe...")
+        # Convert to DataFrame with lat/lon coordinates preserved
         df = tile_ds.to_dataframe().reset_index()
-        
-        # Clean
-        df = df.drop(columns=['band', 'latitude', 'longitude'])
-        
-        # Apply land mask filtering if land_mask variable is present
-        if 'land_mask' in df.columns:
-            df = df[df.land_mask]
-            df = df.drop(columns=['land_mask'])
-        
-        if df.empty:
-            logger.debug(f"No data remaining in tile [{ix}, {iy}]")
-            return None
-        
-        return df
-        
+        df = df.drop(columns=['band', 'spatial_ref'], errors='ignore')
+        return df if not df.empty else None
     except Exception as e:
-        logger.warning(f"Failed to extract tile [{ix}, {iy}] from merged dataset: {e}")
+        logger.warning(f"Failed to extract tile [{ix}, {iy}] for dataset {dataset_config.get('path')}: {e}")
         return None
 
 def process_tile(
-    merged_ds: xr.Dataset,
-    resampling_map: Dict[str, List[str]],
-    ix: int, 
-    iy: int, 
+    datasets: List[Tuple[str, xr.Dataset, Dict[str, Any]]],
+    land_mask_ds: Optional[xr.Dataset],
+    ix: int,
+    iy: int,
     tile_geobox,
-    assembly_config: Dict[str, Any], 
+    assembly_config: Dict[str, Any],
     output_base_path: str
 ) -> bool:
-    """Process a single tile from the merged dataset and write to parquet."""
-    logger.debug(f"Processing tile ix={ix}, iy={iy} from merged dataset")
+    """
+    Process a single tile across all datasets, merge on configured index_cols, and write to parquet.
     
-    # Check if tile already exists using fast file existence check
+    Workflow:
+    1. Check if tile already exists (skip if valid)
+    2. Determine target resolution and create padded/target geoboxes
+    3. Create pixel ID DataFrame with lat/lon coordinates
+    4. Extract and process each dataset independently with its configured resampling method
+    5. Merge all DataFrames on configured index_cols using iterative merge operations
+    6. Extract and apply land mask using right join to implicitly filter to land pixels (if configured)
+    7. Write combined result to parquet with pixel_id as index
+    
+    This source-by-source approach allows different resampling methods for different datasets
+    while maintaining proper spatial alignment through configured index columns.
+    
+    Args:
+        datasets: List of (name, xr.Dataset, config) tuples
+        land_mask_ds: Optional land mask for filtering to land pixels
+        ix, iy: Tile indices
+        tile_geobox: Target geobox for tile
+        assembly_config: Assembly configuration
+        output_base_path: Output directory base path
+        
+    Returns:
+        True if tile was processed successfully, False if no data
+    """
+    logger.debug(f"Processing tile ix={ix}, iy={iy}")
     tile_output_path = os.path.join(output_base_path, f"ix={ix}", f"iy={iy}")
     output_file = os.path.join(tile_output_path, "data.parquet")
-    
+
+    # Skip tiles that already exist and are valid (resume on failure)
     if os.path.exists(output_file):
-        # Optionally verify the file is valid and not corrupted
         try:
             import pyarrow.parquet as pq
             parquet_file = pq.ParquetFile(output_file)
-            # Quick check that file has some rows
             if parquet_file.metadata.num_rows > 0:
                 logger.debug(f"Tile ix={ix}, iy={iy} already exists and is valid, skipping")
                 return True
-            else:
-                logger.warning(f"Tile ix={ix}, iy={iy} exists but is empty, will reprocess")
         except Exception as e:
             logger.warning(f"Tile ix={ix}, iy={iy} exists but appears corrupted ({e}), will reprocess")
-    
+
     processing_config = assembly_config.get('processing', {})
     
-    # Extract and process tile data from merged dataset
-    merged = _extract_and_process_tile(
-        merged_ds, resampling_map, ix, iy, tile_geobox, assembly_config
-    )
+    # Determine if resolution reprojection is needed
+    target_resolution = processing_config.get('resolution')
+    native_res = abs(tile_geobox.resolution.x)
     
-    if merged is None or merged.empty:
-        logger.debug(f"No data for tile ix={ix}, iy={iy}, skipping")
+    # Create padded tile geobox (64 pixels) to handle reprojection edge effects
+    padded_tile_geobox = tile_geobox.pad(64, 64)
+    
+    # Create target geobox with new resolution if needed
+    target_geobox_zoomed = None
+    if target_resolution is not None and abs(native_res - target_resolution) >= 1e-10:
+        logger.debug(f"Tile [{ix}, {iy}]: will reproject from {native_res}° to {target_resolution}°")
+        target_geobox_zoomed = tile_geobox.zoom_to(resolution=target_resolution)
+    else:
+        logger.debug(f"Tile [{ix}, {iy}]: already at target resolution {target_resolution}°")
+        target_geobox_zoomed = tile_geobox
+    
+    # Create pixel ID DataFrame with lat/lon as base
+    pixel_id_df = _make_pixel_ids(ix, iy, target_geobox_zoomed)
+    
+    if pixel_id_df is None or pixel_id_df.empty:
+        logger.warning(f"Failed to create pixel_id DataFrame for tile [{ix}, {iy}]")
         return False
+
+    # Start with pixel_id_df as base (contains lat, lon, pixel_id)
+    combined = pixel_id_df
+    
+    # Extract each dataset independently and merge on configured index_cols
+    for dataset_name, ds, dataset_config in datasets:
+        logger.debug(f"Tile [{ix}, {iy}]: starting processing of dataset '{dataset_name}'")
         
-    # Write tile to output parquet partition
+        resampling_method = dataset_config.get('resampling', 'mode')
+        logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - resampling method: {resampling_method}")
+        
+        # Get index_cols from dataset config, default to ['latitude', 'longitude']
+        index_cols = dataset_config.get('index_cols', ['latitude', 'longitude'])
+        logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - index_cols: {index_cols}")
+        
+        df = _extract_and_process_dataset_tile(
+            ds, dataset_config, resampling_method, ix, iy,
+            padded_tile_geobox, target_geobox_zoomed
+        )
+        
+        if df is not None and not df.empty:
+            logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - extracted {len(df)} rows, columns: {list(df.columns)}")
+            
+            # Find common columns between combined and df for merging
+            merge_cols = [col for col in index_cols if col in combined.columns and col in df.columns]
+            logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - merge columns available: {merge_cols}")
+            
+            if not merge_cols:
+                logger.warning(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - no common columns found between index_cols {index_cols} and available columns. Combined cols: {list(combined.columns)}, DF cols: {list(df.columns)}")
+                continue
+            
+            # Merge on configured index columns
+            rows_before = len(combined)
+            combined = pd.merge(
+                combined, df,
+                on=merge_cols,
+                how='outer'  # Keep all rows from combined (will filter with land mask later)
+            )
+            rows_after = len(combined)
+            logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - merged on {merge_cols}, rows before: {rows_before}, after: {rows_after}")
+        else:
+            logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - extraction returned no data or empty dataframe")
+
+    # Extract and apply land mask if configured - use RIGHT join as final filter
+    if land_mask_ds is not None:
+        logger.debug(f"Tile [{ix}, {iy}]: processing land_mask dataset")
+        mask_df = _extract_and_process_dataset_tile(
+            land_mask_ds, {'winsorize': False}, 'nearest', ix, iy, 
+            padded_tile_geobox, target_geobox_zoomed
+        )
+        if mask_df is not None and 'land_mask' in mask_df.columns:
+            # Filter to land pixels only
+            mask_df = mask_df[mask_df.land_mask.astype(bool)]
+            mask_df = mask_df.drop(columns=['land_mask'], errors='ignore')
+            
+            # Right join with land mask to implicitly filter combined to land pixels
+            rows_before = len(combined)
+            combined = pd.merge(
+                combined, mask_df[['latitude', 'longitude']], 
+                on=['latitude', 'longitude'], 
+                how='right'  # Keep only land pixels
+            )
+            rows_after = len(combined)
+            logger.debug(f"Tile [{ix}, {iy}]: land_mask right join applied - rows before: {rows_before}, after land filtering: {rows_after}")
+        else:
+            logger.debug(f"Tile [{ix}, {iy}]: land_mask extraction returned no data or no land_mask column")
+
+    # Drop lat/lon columns and set pixel_id as index
+    combined = combined.drop(columns=['latitude', 'longitude'], errors='ignore')
+    
+    if combined.empty:
+        logger.debug(f"No data remaining in tile ix={ix}, iy={iy} after processing")
+        return False
+
+    # Write combined tile to parquet
     os.makedirs(tile_output_path, exist_ok=True)
-    
     compression = processing_config.get('compression', 'snappy')
-    
-    logger.debug(f"Writing tile ix={ix}, iy={iy} to {output_file}")
-    merged.to_parquet(output_file, index = False, compression=compression, engine='pyarrow')
-    
+    logger.debug(f"Tile [{ix}, {iy}]: writing to parquet with compression={compression}, rows={len(combined)}, columns={len(combined.columns)}")
+    combined.reset_index().to_parquet(output_file, index=False, compression=compression, engine='pyarrow')
+    logger.info(f"Tile [{ix}, {iy}]: successfully written to {output_file}")
     return True
 
+def _adjust_tile_size_for_reprojection(native_resolution: float, target_resolution: Optional[float], tile_size: int) -> int:
+    """
+    Ensure tile size is large enough to produce at least one output pixel after reprojection.
+    
+    When target resolution is coarser than native resolution, multiple input pixels map to
+    one output pixel. This function ensures the tile is large enough to guarantee at least
+    one output pixel after resampling.
+    """
+    if target_resolution is None:
+        return tile_size
+    min_tile_pixels = max(1, math.ceil(target_resolution / native_resolution))
+    if tile_size < min_tile_pixels:
+        logger.info(
+            f"Increasing tile_size from {tile_size} to {min_tile_pixels} to cover at least one "
+            f"reprojected pixel (native_res={native_resolution}, target_res={target_resolution})."
+        )
+    return max(tile_size, min_tile_pixels)
+
 def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = None):
-    """Run the data assembly process based on configuration."""
+    """
+    Run the complete data assembly workflow.
+    
+    Main steps:
+    1. Initialize Dask cluster for parallel tile processing
+    2. Load all datasets individually (source-by-source approach)
+    3. Create metadata YAML for provenance
+    4. Process all tiles in parallel, each tile extracting/processing all datasets
+    5. Write results as partitioned parquet files (ix/iy directory structure)
+    
+    The source-by-source approach allows:
+    - Independent resampling methods per dataset (e.g., bilinear for temperature, mode for categorical)
+    - Per-dataset winsorization configuration
+    - Flexible alignment and concatenation at tile level
+    """
     logger.info(f"Starting assembly: {assembly_config.get('description', 'Unknown')}")
     
     # Get output path - now expecting parquet directory output
@@ -505,7 +739,16 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
     logger.info(f"Using hpc_root: {hpc_root}")
         
     target_geobox = get_or_create_geobox(hpc_root)
-    
+
+    # Ensure tile size can fit at least one pixel after reprojection
+    processing_config.setdefault('tile_size', 2048)
+    native_res = abs(target_geobox.resolution.x)
+    processing_config['tile_size'] = _adjust_tile_size_for_reprojection(
+        native_res,
+        processing_config.get('resolution'),
+        processing_config['tile_size']
+    )
+
     # Get available tiles
     logger.info("Discovering available tiles...")
     all_tiles = get_available_tiles(assembly_config, target_geobox)
@@ -545,71 +788,64 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Dict[str, Any] = 
         if processing_config.get('apply_land_mask', False):
             land_mask_path = processing_config.get('land_mask_path')
             land_mask_ds = _load_land_mask(hpc_root, land_mask_path)
-        
-        # Load and merge all datasets into one large xarray dataset
-        # Outer merge for all datasets, then inner join with land mask
-        logger.info("Step 1: Loading and merging all zarr datasets...")
+            
+            # Convert time to year for land mask if present
+            if land_mask_ds is not None and "time" in land_mask_ds.coords:
+                land_mask_ds = land_mask_ds.rename(time='year')
+                land_mask_ds.coords["year"] = pd.Series(land_mask_ds.coords["year"]).dt.year.astype("int16")
+                logger.debug("Converted 'time' to 'year' coordinate for land_mask")
+
+        logger.info("Step 1: Loading datasets with alignment checks...")
         try:
-            merged_ds, resampling_map = _load_and_merge_datasets(assembly_config, land_mask_ds)
-            logger.info("Successfully created large merged dataset")
+            # Load each dataset as separate xarray.Dataset, not pre-merged
+            # This allows per-dataset configuration (resampling, winsorization) to be applied independently
+            # Time-to-year conversion happens during loading, before year range filtering
+            datasets = _load_datasets_for_processing(assembly_config, target_geobox, land_mask_ds)
+            logger.info(f"Successfully loaded {len(datasets)} datasets")
         except Exception as e:
-            logger.error(f"Failed to create merged dataset: {e}")
+            logger.error(f"Failed to load datasets: {e}")
             return
-        
-        # Convert time coordinate to integer years
-        logger.info("Step 2: Converting time coordinate to integer years...")
-        if "time" in merged_ds.coords:
-            merged_ds = merged_ds.rename(time='year')
-            merged_ds.coords["year"] = pd.Series(merged_ds.coords["year"]).dt.year.astype("int16")
-            logger.info(f"Time coordinate converted to year: {merged_ds.coords['year'].values[:5]}...")
-        else:
-            logger.info("No time coordinate found in merged dataset")
-        
-        # Create assembly metadata file
+
+        logger.info("Step 2: Creating assembly metadata...")
+
         if not create_assembly_metadata(output_path, assembly_config):
             logger.warning("Failed to create assembly metadata")
-        
-        # Step 3: Process tiles from merged dataset
-        logger.info("Step 3: Processing tiles from merged dataset...")
 
+        logger.info("Step 3: Processing tiles (source-by-source)...")
+        # Process each tile, extracting all datasets and concatenating results
         processed_count = 0
         skipped_count = 0
 
         for ix, iy in all_tiles:
-            # Skip if tile already exists and is valid
             tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
             output_file = os.path.join(tile_output_path, "data.parquet")
-
             if os.path.exists(output_file):
                 try:
                     import pyarrow.parquet as pq
                     parquet_file = pq.ParquetFile(output_file)
                     if parquet_file.metadata.num_rows > 0:
-                        logger.debug(f"Tile ix={ix}, iy={iy} already exists and is valid, skipping")
                         skipped_count += 1
                         continue
                 except Exception:
-                    pass  # Will reprocess if file is corrupted
-
-            tile_geobox = tiles[ix, iy]
+                    pass
+            tile_geobox = GeoboxTiles(target_geobox, (processing_config.get('tile_size', 2048), processing_config.get('tile_size', 2048)))[ix, iy]
             try:
-                success = process_tile(
-                    merged_ds, resampling_map, ix, iy, tile_geobox,
-                    assembly_config, output_path
-                )
+                success = process_tile(datasets, land_mask_ds, ix, iy, tile_geobox, assembly_config, output_path)
                 if success:
                     processed_count += 1
-                    logger.debug(f"Completed tile ix={ix}, iy={iy}")
-                else:
-                    logger.debug(f"No data for tile ix={ix}, iy={iy}")
             except Exception as e:
                 logger.error(f"Failed to process tile ix={ix}, iy={iy}: {e}")
                 continue
-            
+
         logger.info(f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, skipped {skipped_count} existing tiles")
 
 def run_workflow_with_config(config: Dict[str, Any]):
-    """Entry point for running assembly workflow with unified configuration."""
+    """
+    Entry point for assembly workflow with unified configuration.
+    
+    Applies CLI overrides (Dask settings, tile size, compression) to assembly config
+    before running the assembly process.
+    """
     assembly_name = config.get('assembly_name', 'main')
     
     # Get assembly configuration

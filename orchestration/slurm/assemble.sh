@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=assemble_modis
-#SBATCH --output=./log/slurm-%j.log
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/assemble/slurm-%j.log
+#SBATCH --error=./log/assemble/slurm-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
