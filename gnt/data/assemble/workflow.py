@@ -417,16 +417,24 @@ def _load_datasets_for_processing(
         raise ValueError("No datasets could be loaded successfully")
     return loaded
 
-def winsorize(array):
+def winsorize(array, cutoff: float = 0.001):
     """
-    Apply winsorization to clip outliers at 0.1% and 99.9% quantiles.
-    Preserves NaN values throughout the operation.
+    Apply winsorization to clip outliers at specified quantiles.
+    
+    Args:
+        array: xarray DataArray to winsorize
+        cutoff: Quantile cutoff on both sides (e.g., 0.001 clips at 0.1% and 99.9%)
+    
+    Returns:
+        Winsorized array with NaN values preserved
     """
-    return array.where(array > array.quantile(.001), array.quantile(.001)).where(array < array.quantile(.999), array.quantile(.999)).where(~array.isnull())
+    lower_quantile = cutoff
+    upper_quantile = 1.0 - cutoff
+    return array.where(array > array.quantile(lower_quantile), array.quantile(lower_quantile)).where(array < array.quantile(upper_quantile), array.quantile(upper_quantile)).where(~array.isnull())
 
-def _make_pixel_ids(ix: int, iy: int, tile_geobox) -> pd.DataFrame:
+def _make_pixel_ids(ix: int, iy: int, tile_geobox) -> xr.Dataset:
     """
-    Generate pixel ID DataFrame with latitude, longitude, and pixel_id columns.
+    Generate pixel ID xarray Dataset with pixel_id as a data variable.
     
     Format: [ix: 16 bits | iy: 16 bits | local_pixel: 32 bits]
     This allows decoding tile coordinates and pixel location from a single integer.
@@ -437,27 +445,23 @@ def _make_pixel_ids(ix: int, iy: int, tile_geobox) -> pd.DataFrame:
         tile_geobox: Target geobox for tile
     
     Returns:
-        DataFrame with columns ['latitude', 'longitude', 'pixel_id']
+        xarray Dataset with pixel_id as a data variable and lat/lon coordinates
     """
     h, w = tile_geobox.shape
     local_pixel_ids = np.arange(h * w, dtype="uint32").reshape((h, w))
     pixel_id_matrix = (np.uint64(ix) << 48) | (np.uint64(iy) << 32) | local_pixel_ids.astype(np.uint64)
     
-    # Get coordinate arrays from geobox
-    lats = tile_geobox.coords['latitude'].values
-    lons = tile_geobox.coords['longitude'].values
+    # Create xarray Dataset with pixel_id as data variable
+    pixel_id_ds = xr.Dataset(
+        data_vars={'pixel_id': (['latitude', 'longitude'], pixel_id_matrix)},
+        coords={
+            'latitude': tile_geobox.coords['latitude'].values,
+            'longitude': tile_geobox.coords['longitude'].values
+        }
+    )
+    pixel_id_ds = pixel_id_ds.odc.assign_crs(4326)
     
-    # Create meshgrid and flatten
-    lat_grid, lon_grid = np.meshgrid(lats, lons, indexing='ij')
-    
-    # Create DataFrame with lat/lon/pixel_id
-    pixel_id_df = pd.DataFrame({
-        'latitude': lat_grid.flatten(),
-        'longitude': lon_grid.flatten(),
-        'pixel_id': pixel_id_matrix.flatten()
-    })
-    
-    return pixel_id_df
+    return pixel_id_ds
 
 def _extract_and_process_dataset_tile(
     ds: xr.Dataset,
@@ -466,27 +470,30 @@ def _extract_and_process_dataset_tile(
     ix: int,
     iy: int,
     padded_tile_geobox,
-    target_geobox_zoomed
+    target_geobox_zoomed,
+    pixel_id_ds: xr.Dataset
 ) -> Optional[pd.DataFrame]:
     """
     Extract and process a single dataset tile with winsorization and reprojection.
     
     Processing pipeline:
     1. Extract tile from padded bounds
-    2. Apply winsorization if configured (clips outliers at 0.1% and 99.9% quantiles)
+    2. Apply winsorization if configured (clips outliers at specified quantiles)
     3. Reproject to target resolution if needed
-    4. Convert to DataFrame (without pixel_id)
+    4. Assign pixel_id variable and drop lat/lon coordinates
+    5. Convert to DataFrame with pixel_id
     
     Args:
         ds: Source dataset
-        dataset_config: Dataset-specific configuration including winsorize flag
+        dataset_config: Dataset-specific configuration including winsorize cutoff
         resampling_method: Resampling method for reprojection (bilinear, mode, nearest, etc.)
         ix, iy: Tile indices
         padded_tile_geobox: Padded geobox for extraction
         target_geobox_zoomed: Target geobox at desired resolution (or None if no resolution change)
+        pixel_id_ds: xarray Dataset containing pixel_id variable (already in target coordinate system)
         
     Returns:
-        DataFrame with latitude/longitude coordinates, or None if tile is empty
+        DataFrame with pixel_id, or None if tile is empty
     """
     try:
         bbox = padded_tile_geobox.boundingbox
@@ -501,12 +508,14 @@ def _extract_and_process_dataset_tile(
         if tile_ds.sizes.get('latitude', 0) == 0 or tile_ds.sizes.get('longitude', 0) == 0:
             return None
         
-        # Apply winsorization before reprojection if configured
+        # Apply winsorization before reprojection if configured with a cutoff value
         # This reduces impact of outliers on resampling operations
-        if dataset_config.get('winsorize', False):
+        winsorize_cutoff = dataset_config.get('winsorize')
+        if winsorize_cutoff is not None and winsorize_cutoff > 0:
             for var in tile_ds.data_vars:
                 if np.issubdtype(tile_ds[var].dtype, np.floating):
-                    tile_ds[var] = winsorize(tile_ds[var])
+                    tile_ds[var] = winsorize(tile_ds[var], cutoff=winsorize_cutoff)
+            logger.debug(f"Applied winsorization with cutoff={winsorize_cutoff} for tile [{ix}, {iy}]")
         
         # Apply resolution reprojection if target resolution differs from native
         if target_geobox_zoomed is not None and hasattr(tile_ds, 'odc'):
@@ -521,9 +530,13 @@ def _extract_and_process_dataset_tile(
             
             logger.debug(f"Reprojection complete for tile [{ix}, {iy}]: shape {tile_ds.dims}")
         
-        # Convert to DataFrame with lat/lon coordinates preserved
+        # Assign pixel_id directly - no reprojection needed since pixel_id_ds 
+        # was already created in target_geobox_zoomed coordinate system
+        tile_ds = tile_ds.assign(pixel_id=pixel_id_ds['pixel_id'])
+        
+        # Convert to DataFrame with pixel_id
         df = tile_ds.to_dataframe().reset_index()
-        df = df.drop(columns=['band', 'spatial_ref'], errors='ignore')
+        df = df.drop(columns=['band', 'spatial_ref', 'latitude', 'longitude'], errors='ignore')
         return df if not df.empty else None
     except Exception as e:
         logger.warning(f"Failed to extract tile [{ix}, {iy}] for dataset {dataset_config.get('path')}: {e}")
@@ -544,7 +557,7 @@ def process_tile(
     Workflow:
     1. Check if tile already exists (skip if valid)
     2. Determine target resolution and create padded/target geoboxes
-    3. Create pixel ID DataFrame with lat/lon coordinates
+    3. Create pixel ID xarray Dataset
     4. Extract and process each dataset independently with its configured resampling method
     5. Merge all DataFrames on configured index_cols using iterative merge operations
     6. Extract and apply land mask using right join to implicitly filter to land pixels (if configured)
@@ -597,15 +610,15 @@ def process_tile(
         logger.debug(f"Tile [{ix}, {iy}]: already at target resolution {target_resolution}°")
         target_geobox_zoomed = tile_geobox
     
-    # Create pixel ID DataFrame with lat/lon as base
-    pixel_id_df = _make_pixel_ids(ix, iy, target_geobox_zoomed)
+    # Create pixel ID xarray Dataset
+    pixel_id_ds = _make_pixel_ids(ix, iy, target_geobox_zoomed)
     
-    if pixel_id_df is None or pixel_id_df.empty:
-        logger.warning(f"Failed to create pixel_id DataFrame for tile [{ix}, {iy}]")
+    if pixel_id_ds is None or pixel_id_ds.sizes.get('latitude', 0) == 0:
+        logger.warning(f"Failed to create pixel_id Dataset for tile [{ix}, {iy}]")
         return False
 
-    # Start with pixel_id_df as base (contains lat, lon, pixel_id)
-    combined = pixel_id_df
+    # Start with empty combined DataFrame - will build through merges
+    combined = None
     
     # Extract each dataset independently and merge on configured index_cols
     for dataset_name, ds, dataset_config in datasets:
@@ -614,35 +627,39 @@ def process_tile(
         resampling_method = dataset_config.get('resampling', 'mode')
         logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - resampling method: {resampling_method}")
         
-        # Get index_cols from dataset config, default to ['latitude', 'longitude']
-        index_cols = dataset_config.get('index_cols', ['latitude', 'longitude'])
+        # Get index_cols from dataset config, default to ['pixel_id']
+        index_cols = dataset_config.get('index_cols', ['pixel_id'])
         logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - index_cols: {index_cols}")
         
         df = _extract_and_process_dataset_tile(
             ds, dataset_config, resampling_method, ix, iy,
-            padded_tile_geobox, target_geobox_zoomed
+            padded_tile_geobox, target_geobox_zoomed, pixel_id_ds
         )
         
         if df is not None and not df.empty:
             logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - extracted {len(df)} rows, columns: {list(df.columns)}")
             
-            # Find common columns between combined and df for merging
-            merge_cols = [col for col in index_cols if col in combined.columns and col in df.columns]
-            logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - merge columns available: {merge_cols}")
-            
-            if not merge_cols:
-                logger.warning(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - no common columns found between index_cols {index_cols} and available columns. Combined cols: {list(combined.columns)}, DF cols: {list(df.columns)}")
-                continue
-            
-            # Merge on configured index columns
-            rows_before = len(combined)
-            combined = pd.merge(
-                combined, df,
-                on=merge_cols,
-                how='outer'  # Keep all rows from combined (will filter with land mask later)
-            )
-            rows_after = len(combined)
-            logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - merged on {merge_cols}, rows before: {rows_before}, after: {rows_after}")
+            if combined is None:
+                combined = df
+                logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - initialized combined DataFrame")
+            else:
+                # Find common columns between combined and df for merging
+                merge_cols = [col for col in index_cols if col in combined.columns and col in df.columns]
+                logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - merge columns available: {merge_cols}")
+                
+                if not merge_cols:
+                    logger.warning(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - no common columns found between index_cols {index_cols} and available columns. Combined cols: {list(combined.columns)}, DF cols: {list(df.columns)}")
+                    continue
+                
+                # Merge on configured index columns
+                rows_before = len(combined)
+                combined = pd.merge(
+                    combined, df,
+                    on=merge_cols,
+                    how='outer'  # Keep all rows from combined (will filter with land mask later)
+                )
+                rows_after = len(combined)
+                logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - merged on {merge_cols}, rows before: {rows_before}, after: {rows_after}")
         else:
             logger.debug(f"Tile [{ix}, {iy}]: dataset '{dataset_name}' - extraction returned no data or empty dataframe")
 
@@ -650,8 +667,8 @@ def process_tile(
     if land_mask_ds is not None:
         logger.debug(f"Tile [{ix}, {iy}]: processing land_mask dataset")
         mask_df = _extract_and_process_dataset_tile(
-            land_mask_ds, {'winsorize': False}, 'nearest', ix, iy, 
-            padded_tile_geobox, target_geobox_zoomed
+            land_mask_ds, {'winsorize': None}, 'nearest', ix, iy, 
+            padded_tile_geobox, target_geobox_zoomed, pixel_id_ds
         )
         if mask_df is not None and 'land_mask' in mask_df.columns:
             # Filter to land pixels only
@@ -659,21 +676,19 @@ def process_tile(
             mask_df = mask_df.drop(columns=['land_mask'], errors='ignore')
             
             # Right join with land mask to implicitly filter combined to land pixels
-            rows_before = len(combined)
-            combined = pd.merge(
-                combined, mask_df[['latitude', 'longitude']], 
-                on=['latitude', 'longitude'], 
-                how='right'  # Keep only land pixels
-            )
-            rows_after = len(combined)
-            logger.debug(f"Tile [{ix}, {iy}]: land_mask right join applied - rows before: {rows_before}, after land filtering: {rows_after}")
+            if combined is not None:
+                rows_before = len(combined)
+                combined = pd.merge(
+                    combined, mask_df[['pixel_id']], 
+                    on=['pixel_id'], 
+                    how='right'  # Keep only land pixels
+                )
+                rows_after = len(combined)
+                logger.debug(f"Tile [{ix}, {iy}]: land_mask right join applied - rows before: {rows_before}, after land filtering: {rows_after}")
         else:
             logger.debug(f"Tile [{ix}, {iy}]: land_mask extraction returned no data or no land_mask column")
 
-    # Drop lat/lon columns and set pixel_id as index
-    combined = combined.drop(columns=['latitude', 'longitude'], errors='ignore')
-    
-    if combined.empty:
+    if combined is None or combined.empty:
         logger.debug(f"No data remaining in tile ix={ix}, iy={iy} after processing")
         return False
 
