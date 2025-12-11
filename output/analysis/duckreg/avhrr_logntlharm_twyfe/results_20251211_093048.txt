@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and year fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(ntl_harm + 0.01) | pixel_id + year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_5km.parquet
+Timestamp:   2025-12-11T09:31:28.934479
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    193,444,195
+Compressed Rows:       46,245,729
+Compression Ratio:     0.7609 (76.09%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                           Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept                   275.229015    1.061452  259.294927  0.000000  273.148570  277.309460
+log_ntl_harm_0_01            -0.015693    0.010879   -1.442552  0.149147   -0.037016    0.005629
+avg_log_ntl_harm_0_01_fe0    -0.004468    0.173983   -0.025681  0.979512   -0.345475    0.336539
+avg_log_ntl_harm_0_01_fe1    -6.102337    0.230907  -26.427725  0.000000   -6.554914   -5.649760
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

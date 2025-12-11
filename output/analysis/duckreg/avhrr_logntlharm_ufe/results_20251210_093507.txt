@@ -1,0 +1,40 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Unit fixed effects (UFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel-level fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(ntl_harm + 0.01) | pixel_id | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-10T09:35:31.979972
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    193,444,195
+Compressed Rows:       17,657,858
+Compression Ratio:     0.9087 (90.87%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 3
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                           Coefficient  Std. Error      t-stat    P>|t|      [0.025      0.975]
+Intercept                   298.167606    0.410900  725.645770  0.00000  297.362243  298.972970
+log_ntl_harm_0_01            -0.108360    0.010636  -10.188329  0.00000   -0.129206   -0.087514
+avg_log_ntl_harm_0_01_fe0     0.088113    0.175914    0.500889  0.61645   -0.256678    0.432904
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

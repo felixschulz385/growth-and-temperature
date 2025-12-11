@@ -1,0 +1,114 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_viirs_ufe",
+    "description": "UFE MODIS VIIRS analysis",
+    "timestamp": "2025-12-06T18:15:17.483257",
+    "formula": "modis_median ~ viirs_annual | pixel_id | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/63638788",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 8558990698,
+    "n_compressed_rows": 424682146,
+    "compression_ratio": 0.9503817493224713,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 3,
+    "estimator_type": "DuckMundlak"
+  },
+  "coefficients": {
+    "coefficients": [
+      284.35891884645025,
+      -0.0005451026853006598,
+      0.14021261076226357
+    ],
+    "coef_names": [
+      "Intercept",
+      "viirs_annual",
+      "avg_viirs_annual_fe0"
+    ],
+    "n_obs": 8558990698,
+    "n_compressed": 424682146,
+    "vcov": [
+      [
+        1.832735897874816,
+        6.331611937902737e-06,
+        -0.04618175221260464
+      ],
+      [
+        6.331611937902737e-06,
+        9.300559909503023e-09,
+        3.297981763538011e-08
+      ],
+      [
+        -0.04618175221260464,
+        3.297981763538011e-08,
+        0.0013204918706654746
+      ]
+    ],
+    "std_errors": [
+      1.3537857651322887,
+      9.64394105617772e-05,
+      0.03633857276593943
+    ],
+    "t_statistics": [
+      210.04720700299532,
+      -5.652281387094103,
+      3.8585062673041057
+    ],
+    "p_values": [
+      0.0,
+      1.5833210964544264e-08,
+      0.00011408214283159523
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      1.832735897874816,
+      6.331611937902737e-06,
+      -0.04618175221260464
+    ],
+    [
+      6.331611937902737e-06,
+      9.300559909503023e-09,
+      3.297981763538011e-08
+    ],
+    [
+      -0.04618175221260464,
+      3.297981763538011e-08,
+      0.0013204918706654746
+    ]
+  ]
+}

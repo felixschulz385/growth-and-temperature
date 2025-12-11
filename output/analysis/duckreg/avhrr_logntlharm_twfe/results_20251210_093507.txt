@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-10T09:35:40.397946
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    193,441,825
+Compressed Rows:       46,201,880
+Compression Ratio:     0.7612 (76.12%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                           Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept                   295.468281    1.384830  213.360660  0.000000  292.754013  298.182548
+log_ntl_harm_0_01            -0.034236    0.038464   -0.890090  0.373417   -0.109626    0.041153
+avg_log_ntl_harm_0_01_fe0     0.270102    0.163902    1.647948  0.099363   -0.051146    0.591349
+avg_log_ntl_harm_0_01_fe1    -0.974251    0.477310   -2.041127  0.041238   -1.909780   -0.038723
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

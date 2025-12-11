@@ -1,0 +1,45 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Debug Setting
+Formula:     modis_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-08T10:07:28.794179
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    7,936,293
+Compressed Rows:       7,350
+Compression Ratio:     0.9991 (99.91%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+FIRST STAGE DIAGNOSTICS
+--------------------------------------------------------------------------------
+  log(ntl_harm+0.01): F-stat = 5.44
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                                  Coefficient  Std. Error    t-stat         P>|t|       [0.025       0.975]
+Intercept                         3927.562923  492.311112  7.977807  1.554312e-15  2962.633143  4892.492703
+fitted_log_ntl_harm_0_01            -2.258554    1.364831 -1.654823  9.796042e-02    -4.933624     0.416515
+avg_fitted_log_ntl_harm_0_01_fe0   -28.419423    6.114375 -4.647968  3.352205e-06   -40.403599   -16.435247
+avg_fitted_log_ntl_harm_0_01_fe1   837.137185  109.753877  7.627404  2.398082e-14   622.019586  1052.254785
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

@@ -1,0 +1,45 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)
+Formula:     modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-07T22:09:24.959453
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    115,535,642
+Compressed Rows:       12,999
+Compression Ratio:     0.9999 (99.99%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+FIRST STAGE DIAGNOSTICS
+--------------------------------------------------------------------------------
+  log(ntl_harm+0.01): F-stat = 1.95
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                                  Coefficient  Std. Error    t-stat     P>|t|       [0.025      0.975]
+Intercept                         -892.728802  719.886092 -1.240097  0.214939 -2303.705542  518.247938
+fitted_log_ntl_harm_0_01            11.008025    8.217139  1.339642  0.180362    -5.097567   27.113618
+avg_fitted_log_ntl_harm_0_01_fe0   -53.327935   66.181037 -0.805789  0.420365  -183.042767   76.386897
+avg_fitted_log_ntl_harm_0_01_fe1  -254.440984  197.968607 -1.285259  0.198702  -642.459453  133.577485
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

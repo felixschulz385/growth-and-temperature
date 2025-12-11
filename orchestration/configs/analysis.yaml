@@ -24,203 +24,460 @@ analyses:
     # Predefined model specifications
     specifications:
 
-      ### Pooled Models:
+      # Pooled Models
+
+      ## MODIS
+
+      ### HARM
       
       modis_ntlharm_pooled:
-        description: "Pooled MODIS NTLHARM analysis"
-        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        description: "Pooled regression model estimating the effect of harmonized nighttime lights (NTL) on median MODIS land surface temperature at 1km resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
         formula: "modis_median ~ ntl_harm | 0 | 0 | subdivision"
 
+      modis_logntlharm_pooled:
+        description: "Pooled regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ log(ntl_harm + 0.01) | 0 | 0 | subdivision"
+
+      ### VIIRS
+
       modis_viirs_pooled:
-        description: "Pooled MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        description: "Pooled regression model estimating the effect of annual VIIRS nighttime lights on median MODIS land surface temperature at 500m resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
         formula: "modis_median ~ viirs_annual | 0 | 0 | subdivision"
 
-      ### UFE Models:
+      modis_logviirs_pooled:
+        description: "Pooled regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median MODIS land surface temperature at 500m resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ log(viirs_annual + 0.01) | 0 | 0 | subdivision"
+
+      ## AVHRR
+
+      ### HARM
+
+      avhrr_ntlharm_pooled:
+        description: "Pooled regression model estimating the effect of harmonized nighttime lights (NTL) on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ ntl_harm | 0 | 0 | subdivision"
+
+      avhrr_logntlharm_pooled:
+        description: "Pooled regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(ntl_harm + 0.01) | 0 | 0 | subdivision"
+
+      ### VIIRS
+
+      avhrr_viirs_pooled:
+        description: "Pooled regression model estimating the effect of annual VIIRS nighttime lights on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ viirs_annual | 0 | 0 | subdivision"
+
+      avhrr_logviirs_pooled:
+        description: "Pooled regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(viirs_annual + 0.01) | 0 | 0 | subdivision"
+
+      # UFE Models
+
+      ## MODIS
+
+      ### HARM
 
       modis_ntlharm_ufe:
-        description: "UFE MODIS NTLHARM analysis"
-        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        description: "Unit fixed effects (UFE) regression model estimating the effect of harmonized nighttime lights (NTL) on median MODIS land surface temperature at 1km resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
         formula: "modis_median ~ ntl_harm | pixel_id | 0 | subdivision"
 
+      modis_logntlharm_ufe:
+        description: "Unit fixed effects (UFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ log(ntl_harm + 0.01) | pixel_id | 0 | subdivision"
+
+      ### VIIRS
+
       modis_viirs_ufe:
-        description: "UFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+        description: "Unit fixed effects (UFE) regression model estimating the effect of annual VIIRS nighttime lights on median MODIS land surface temperature at 500m resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
         formula: "modis_median ~ viirs_annual | pixel_id | 0 | subdivision"
 
-      ### TWFE Models:
+      modis_logviirs_ufe:
+        description: "Unit fixed effects (UFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median MODIS land surface temperature at 500m resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ log(viirs_annual + 0.01) | pixel_id | 0 | subdivision"
+
+      # AVHRR
+
+      ## MODIS
+
+      ### HARM
+
+      avhrr_ntlharm_ufe:
+        description: "Unit fixed effects (UFE) regression model estimating the effect of harmonized nighttime lights (NTL) on median AVHRR land surface temperature at 5km resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ ntl_harm | pixel_id | 0 | subdivision"
+
+      avhrr_logntlharm_ufe:
+        description: "Unit fixed effects (UFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(ntl_harm + 0.01) | pixel_id | 0 | subdivision"
+
+      ### VIIRS
+
+      avhrr_viirs_ufe:
+        description: "Unit fixed effects (UFE) regression model estimating the effect of annual VIIRS nighttime lights on median AVHRR land surface temperature at 5km resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ viirs_annual | pixel_id | 0 | subdivision"
+
+      avhrr_logviirs_ufe:
+        description: "Unit fixed effects (UFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel-level fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(viirs_annual + 0.01) | pixel_id | 0 | subdivision"
+
+      # TWFE
+
+      ## MODIS
+
+      ### HARM
 
       modis_ntlharm_twfe:
-        description: "TWFE MODIS NTLHARM analysis"
-        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of harmonized nighttime lights (NTL) on median MODIS land surface temperature at 1km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
         formula: "modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision"
-        
-      modis_viirs_twfe:
-        description: "TWFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
-        formula: "modis_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
 
-      modis_ntlharm_twfe_log:
-        description: "TWFE MODIS NTLHARM analysis with logged night lights"
-        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
+      modis_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
         formula: "modis_median ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
 
-      modis_viirs_twfe_log:
-        description: "TWFE MODIS VIIRS analysis with logged night lights"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
+      ### VIIRS
+        
+      modis_viirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of annual VIIRS nighttime lights on median MODIS land surface temperature at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+
+      modis_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median MODIS land surface temperature at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
         formula: "modis_median ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
 
-      modisMean_viirs_twfe:
-        description: "TWFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
-        formula: "modis_mean ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+      ## MODIS MEAN
 
-      modisRollMax_viirs_twfe:
-        description: "TWFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
-        formula: "modis_rollmax3 ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+      ### HARM
 
-      modis30C_viirs_twfe:
-        description: "TWFE MODIS VIIRS analysis"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
-        formula: "modis_gt30C ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+      modisMean_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on mean MODIS land surface temperature at 1km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_mean ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ### VIIRS
+
+      modisMean_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on mean MODIS land surface temperature at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_mean ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ## MODIS ROLLMAX
+
+      ### HARM
+
+      modisRollMax_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on rolling maximum (3-period) MODIS land surface temperature at 1km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_rollmax3 ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ### VIIRS
+
+      modisRollMax_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on rolling maximum (3-period) MODIS land surface temperature at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_rollmax3 ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ## MODIS >30C
+
+      ### HARM
+
+      modis30C_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on the proportion of days with MODIS temperature >30°C at 1km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_gt30C ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ### VIIRS
+
+      modis30C_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on the proportion of days with MODIS temperature >30°C at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_gt30C ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ## AVHRR
+
+      ### HARM
+
+      avhrr_ntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of harmonized nighttime lights (NTL) on median AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision"
+
+      avhrr_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ### VIIRS
+
+      avhrr_viirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of annual VIIRS nighttime lights on median AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision"
+
+      avhrr_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ## AVHRR MEAN
+
+      avhrrMean_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on mean AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_mean ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      avhrrMean_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on mean AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_mean ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ## AVHRR ROLLMAX
+
+      avhrrRollMax_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on rolling maximum (3-period) AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_rollmax3 ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      avhrrRollMax_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on rolling maximum (3-period) AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_rollmax3 ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      ## AVHRR >30C
+
+      avhrr30C_logntlharm_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on the proportion of days with AVHRR temperature >30°C at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_gt30C ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      avhrr30C_logviirs_twfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on the proportion of days with AVHRR temperature >30°C at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_gt30C ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision"
+
+      # TWFE (YEAR)
+
+      ## MODIS
+
+      ### HARM
+
+      modis_ntlharm_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of harmonized nighttime lights on median MODIS land surface temperature at 1km resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ ntl_harm | pixel_id + year | 0 | subdivision"
+
+      modis_logntlharm_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ ntl_harm | pixel_id + year | 0 | subdivision"
+
+      ### VIIRS
+
+      modis_viirs_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of annual VIIRS nighttime lights on median MODIS land surface temperature at 500m resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ viirs_annual | pixel_id + year | 0 | subdivision"
+
+      modis_logviirs_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of annual VIIRS nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 500m resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ viirs_annual | pixel_id + year | 0 | subdivision"
+
+      ## AVHRR
+
+      ### HARM
+
+      avhrr_ntlharm_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of harmonized nighttime lights (NTL) on median AVHRR land surface temperature at 5km resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ ntl_harm | pixel_id + year | 0 | subdivision"
+
+      avhrr_logntlharm_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(ntl_harm + 0.01) | pixel_id + year | 0 | subdivision"
+
+      ### VIIRS
+
+      avhrr_viirs_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of annual VIIRS nighttime lights on median AVHRR land surface temperature at 5km resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ viirs_annual | pixel_id + year | 0 | subdivision"
+
+      avhrr_logviirs_twyfe:
+        description: "Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ log(viirs_annual + 0.01) | pixel_id + year | 0 | subdivision"
 
       ## HDI split
 
       modis_ntlharm_twfe_hdi:
-        description: "TWFE MODIS NTLHARM analysis with HDI interactions"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
-        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | pixel_id + country*year | 0 | subdivision"
+        description: "Two-way fixed effects (TWFE) regression model estimating the heterogeneous effects of two-way demeaned harmonized nighttime lights (NTL) interacted with Human Development Index (HDI) categories (Medium, High, Very High) on median MODIS land surface temperature at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | pixel_id + country*year | 0 | subdivision"
 
       modis_viirs_twfe_hdi:
-        description: "TWFE MODIS VIIRS analysis with HDI interactions"
-        data_source: "${WD}/data_nobackup/assembled/500m.parquet"
-        formula: "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH | pixel_id + country*year | 0 | subdivision"
+        description: "Two-way fixed effects (TWFE) regression model estimating the heterogeneous effects of two-way demeaned annual VIIRS nighttime lights interacted with Human Development Index (HDI) categories (Medium, High, Very High) on median MODIS land surface temperature at 500m resolution, with pixel and country-year fixed effects, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ viirs_annual_twoway_demeaned:HDI_ME + viirs_annual_twoway_demeaned:HDI_HI + viirs_annual_twoway_demeaned:HDI_VH | pixel_id + country*year | 0 | subdivision"
 
-      ### First stage:
-
+      # IV
+      
       ## Regional Favoritism
+      
+      ### H&R Replication
 
-      ntlharm_regfav_twfe_replicate:
-        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
+      #### TWFE
+
+      ##### AVHRR
+
+      ###### HARM
+
+      avhrr_logntlharm_regfav_twfe_replicate:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to Hodler & Raschky (2014) research areas and years before 2010, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
         subset: "research_hodler_raschky_2014"
         query: "year < 2010"
 
-      ntlharm_regfav_twfe_replicate_1km:
-        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014) at 1km resolution"
-        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
+      ##### MODIS
+
+      ###### HARM
+
+      modis_logntlharm_regfav_twfe_replicate:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to Hodler & Raschky (2014) research areas and years before 2010, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
         subset: "research_hodler_raschky_2014"
         query: "year < 2010"
 
-      ntlharm_regfav_twfe_af:
-        description: "TWFE MODIS NTLHARM analysis for Africa"
-        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
-        subset: "continent_af"
+      ###### VIIRS
 
-      ntlharm_regfav_twfe_HDI:
-        description: "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
+      modis_logviirs_regfav_twfe_replicate:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median MODIS land surface temperature at 500m resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to Hodler & Raschky (2014) research areas, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(viirs_annual + 0.01) (reg_fav) | subdivision"
+        subset: "research_hodler_raschky_2014"
+      
+      #### TWFE (YEAR)
+
+      ##### AVHRR
+
+      ###### HARM
+
+      avhrr_logntlharm_regfav_twyfe_replicate:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution using regional favoritism as an instrument, with pixel and year fixed effects, subset to Hodler & Raschky (2014) research areas and years before 2010, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
+        subset: "research_hodler_raschky_2014"
+        query: "year < 2010"
+
+      ##### MODIS
+
+      ###### HARM
+
+      modis_logntlharm_regfav_twyfe_replicate:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using regional favoritism as an instrument, with pixel and year fixed effects, subset to Hodler & Raschky (2014) research areas and years before 2010, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
+        subset: "research_hodler_raschky_2014"
+        query: "year < 2010"
+
+      ###### VIIRS
+
+      modis_logviirs_regfav_twyfe_replicate:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median MODIS land surface temperature at 500m resolution using regional favoritism as an instrument, with pixel and year fixed effects, subset to Hodler & Raschky (2014) research areas, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_500m.parquet"
+        formula: "modis_median ~ 1 | pixel_id + year | log(viirs_annual + 0.01) (reg_fav) | subdivision"
+        subset: "research_hodler_raschky_2014"
+      
+      ### Other Subsets
+
+      #### TWFE
+
+      ##### MODIS
+
+      ###### HARM
+
+      modis_logntlharm_regfav_twfe_HDI:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to Medium HDI countries, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
         query: "(((HDI_ME == 0) AND (HDI_HI == 0) AND (HDI_VH == 0)) OR (HDI_ME == 1))"
 
-      viirs_regfav_twfe_replicate:
-        description: "TWFE VIIRS analysis for replication of Hodler & Raschky (2014)"
-        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
-        formula: "log(viirs_annual + 0.01) ~ reg_fav | pixel_id + country*year | 0 | subdivision"
-        subset: "research_hodler_raschky_2014"
+      modis_logntlharm_regfav_twfe_af:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to African continent, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
+        subset: "continent_af"
+
+      ##### AVHRR
+
+      ###### HARM
+
+      avhrr_logntlharm_regfav_twfe_HDI:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to Medium HDI countries, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
+        query: "(((HDI_ME == 0) AND (HDI_HI == 0) AND (HDI_VH == 0)) OR (HDI_ME == 1))"
+
+      avhrr_logntlharm_regfav_twfe_af:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to African continent, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision"
+        subset: "continent_af"
 
       ## Mining
 
-      ntlharm_mines_twfe:
-        description: "TWFE MODIS NTLHARM analysis for mining occurence"
-        data_source: "${WD}/data_nobackup/assembled/1km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision"
+      modis_logntlharm_mines_twfe:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using mining occurrence as an instrument, with pixel and country-year fixed effects, subset to African continent, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision"
         subset: "continent_af"
 
-      ### IV
-
-      ntlharm_mines_2sls:
-        description: "TWFE MODIS NTLHARM analysis for mining occurence"
-        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
-        formula: "log(ntl_harm + 0.01) ~ nb_mines_a | pixel_id + country*year | 0 | subdivision"
-        query: "(subdivision % 1 == 0)"
+      modis_logntlharm_mines_twyfe:
+        description: "Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using mining occurrence as an instrument, with pixel and year fixed effects, subset to African continent, clustered by subdivision."
+        data_source: "${WD}/data_nobackup/assembled/_1km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision"
+        subset: "continent_af"
 
       ### DEBUG
 
       debug:
-        description: "Debug Setting"
-        data_source: "${WD}/data_nobackup/assembled/modis_subset.parquet"
-        formula: "modis_median ~ ntl_harm | pixel_id + country*year | 0 | subdivision"
-        subset: "research_hodler_raschky_2014"
-        query: "year < 2010"
+        description: "Debug configuration for testing: Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 5km resolution using mining occurrence as an instrument, with pixel and year fixed effects, subset to African continent, clustered by subdivision, with no bootstraps."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "modis_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision"
+        subset: "continent_af"
         settings:  
           n_bootstraps: 0
-          fitter: "duckreg"
+          fitter: "duckdb"
         
-  # Two-Stage Least Squares analysis
-  online_2sls:
-    description: "Online Two-Stage Least Squares with cluster-robust standard errors"
-    module: "gnt.analysis.models.online_RLS"
-    class: "Online2SLS"
-    
-    defaults:
-      n_workers: 8
-      add_intercept: true
-      alpha: 0.001
-      forget_factor: 1.0
-      chunk_size: 20000
-      show_progress: true
-      verbose: false
-      cluster_type: "two_way"
-      weak_instrument_threshold: 10.0
-      se_type: "HC3"
-      local_directory: "/tmp/dask-spill"  # Default Dask spill directory
-      memory_limit: "32GiB"  # Memory limit per Dask worker
-    
-    specifications:
-      
-      ### TWFE Models:
-
-      modis_ntlharm_regfav_twfe:
-        description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
-        cluster1_col: "subdivision"
-        cluster2_col: "year"
-
-      modis_viirs_regfav_twfe:
-        description: "2SLS TWFE: Growth effect on temperature using regional favoritism as instrument"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_twoway_demeaned ~ viirs_annual_twoway_demeaned | reg_fav_twoway_demeaned"
-        cluster1_col: "subdivision"
-        cluster2_col: "year"
-
-      ## HDI split
-
-      modis_ntlharm_regfav_pooled_hdi:
-        description: "2SLS: Growth effect on temperature interacted with HDI classes using regional favoritism as instrument"
-        data_source: "${WD}/data_nobackup/assembled/modis.parquet"
-        formula: "modis_median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH | reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH"
-        cluster1_col: "subdivision"
-        cluster2_col: "year"
-
-      ## DEBUG
-
-      debug_modis_ntlharm_regfav:
-        description: "2SLS: Growth effect on temperature using regional favoritism as instrument"
-        data_source: "${WD}/data_nobackup/assembled/5km.parquet"
-        formula: "modis_median ~ ntl_harm_twoway_demeaned | reg_fav_twoway_demeaned"
-        cluster1_col: "subdivision"
-        cluster2_col: "year"
-        module: "gnt.analysis.streamreg"
-        class: "iv"
-        settings:
-          verbose: true
-
+      debug_avhrr:
+        description: "Debug configuration for testing: Instrumental variables (IV) two-way fixed effects (TWFE) regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution using mining occurrence as an instrument, with pixel and year fixed effects, subset to African continent, clustered by subdivision, with no bootstraps."
+        data_source: "${WD}/data_nobackup/assembled/_5km.parquet"
+        formula: "avhrr_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision"
+        subset: "continent_af"
+        settings:  
+          n_bootstraps: 0
+          fitter: "duckdb"
+        
 # Output settings
 output:
   base_path: "${WD}/output/analysis"

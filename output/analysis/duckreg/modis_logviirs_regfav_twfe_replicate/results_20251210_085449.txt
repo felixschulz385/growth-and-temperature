@@ -1,0 +1,45 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median MODIS land surface temperature at 500m resolution using regional favoritism as an instrument, with pixel and country-year fixed effects, subset to Hodler & Raschky (2014) research areas, clustered by subdivision.
+Formula:     modis_median ~ 1 | pixel_id + country*year | log(viirs_annual + 0.01) (reg_fav) | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet
+Timestamp:   2025-12-10T12:32:39.502095
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    7,111,668,356
+Compressed Rows:       25,253
+Compression Ratio:     1.0000 (100.00%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+FIRST STAGE DIAGNOSTICS
+--------------------------------------------------------------------------------
+  log(viirs_annual+0.01): F-stat = 0.21
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                                       Coefficient   Std. Error    t-stat     P>|t|      [0.025        0.975]
+Intercept                             10451.705850  5768.465956  1.811869  0.070006 -854.487424  21757.899124
+fitted_log_viirs_annual_0_01           -130.266685    97.081609 -1.341827  0.179652 -320.546638     60.013268
+avg_fitted_log_viirs_annual_0_01_fe0    262.101138   308.263136  0.850251  0.395185 -342.094608    866.296884
+avg_fitted_log_viirs_annual_0_01_fe1   2235.740394  1427.474108  1.566221  0.117297 -562.108858   5033.589646
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

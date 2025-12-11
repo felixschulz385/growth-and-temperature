@@ -1,0 +1,39 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Pooled regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(viirs_annual + 0.01) | 0 | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-10T09:35:31.981086
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    64,107,236
+Compressed Rows:       6,100,663
+Compression Ratio:     0.9048 (90.48%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 2
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                       Coefficient  Std. Error      t-stat    P>|t|      [0.025      0.975]
+Intercept               296.855476    0.384493  772.070706  0.00000  296.101871  297.609082
+log_viirs_annual_0_01     0.222201    0.194684    1.141337  0.25373   -0.159381    0.603782
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

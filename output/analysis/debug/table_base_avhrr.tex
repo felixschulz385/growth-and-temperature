@@ -1,0 +1,30 @@
+\begin{table}[htbp]
+\centering
+\caption{Regression Estimates of Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models for AVHRR at 5km Resolution}
+\begin{tabular}{lcccccc}
+\toprule
+ & (D.P) & (V.P) & (D.1FE) & (V.1FE) & (D.2FE) & (V.2FE) \\
+\midrule
+$HARM$ & -0.0382 &  & -0.0999*** &  & -0.0502* &  \\
+ & (0.0313) &  & (0.0058) &  & (0.0196) &  \\
+$VIIRS$ &  & 0.0244 &  & -0.0016 &  & -0.0025 \\
+ &  & (0.0173) &  & (0.0013) &  & (0.0033) \\
+\midrule
+N Observations & 193,444,195 & 64,107,236 & 193,444,195 & 64,107,236 & 193,441,825 & 64,106,449 \\
+N Compressed Rows & 9,432,329 & 6,235,784 & 17,590,527 & 6,667,086 & 45,474,549 & 8,685,211 \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+\cmidrule(lr){1-7}
+Resolution & 5km & 5km & 5km & 5km & 5km & 5km \\
+Spatial Extent & World & World & World & World & World & World \\
+Temporal Extent & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Independent variable is AVHRR surface temperature. Dependent variable is nighttime lights. FE models use Mundlak fixed effects estimation with clustered standard errors. NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects. Standard errors in parentheses. * p<0.05, ** p<0.01, *** p<0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

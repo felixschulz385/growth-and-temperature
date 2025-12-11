@@ -1,0 +1,45 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Instrumental variables (IV) two-way fixed effects (TWFE) regression model replicating Hodler & Raschky (2014) by estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median MODIS land surface temperature at 1km resolution using regional favoritism as an instrument, with pixel and year fixed effects, subset to Hodler & Raschky (2014) research areas and years before 2010, clustered by subdivision.
+Formula:     modis_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (reg_fav) | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_1km.parquet
+Timestamp:   2025-12-11T09:40:54.053097
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    1,375,582,363
+Compressed Rows:       30,270
+Compression Ratio:     1.0000 (100.00%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+FIRST STAGE DIAGNOSTICS
+--------------------------------------------------------------------------------
+  log(ntl_harm+0.01): F-stat = 0.27
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                                   Coefficient   Std. Error    t-stat         P>|t|        [0.025        0.975]
+Intercept                        -23861.686456  3351.220073 -7.120298  1.076916e-12 -30430.077800 -17293.295113
+fitted_log_ntl_harm_0_01            -16.844619    22.718140 -0.741461  4.584139e-01    -61.372173     27.682935
+avg_fitted_log_ntl_harm_0_01_fe0    278.007099   617.120911  0.450490  6.523568e-01   -931.549886   1487.564085
+avg_fitted_log_ntl_harm_0_01_fe1  -7218.083782   936.081835 -7.710954  1.243450e-14  -9052.804178  -5383.363387
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

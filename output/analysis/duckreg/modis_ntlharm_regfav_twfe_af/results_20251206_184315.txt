@@ -1,0 +1,45 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS NTLHARM analysis for Africa
+Formula:     modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet
+Timestamp:   2025-12-06T18:49:16.754382
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    603,978,285
+Compressed Rows:       3,506
+Compression Ratio:     1.0000 (100.00%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+FIRST STAGE DIAGNOSTICS
+--------------------------------------------------------------------------------
+  log(ntl_harm+0.01): F-stat = 0.94
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                                  Coefficient  Std. Error    t-stat     P>|t|       [0.025       0.975]
+Intercept                           55.878901  693.786051  0.080542  0.935806 -1303.941760  1415.699562
+fitted_log_ntl_harm_0_01            -2.735345    7.844758 -0.348684  0.727326   -18.111071    12.640380
+avg_fitted_log_ntl_harm_0_01_fe0   -31.296423   82.134536 -0.381039  0.703175  -192.280115   129.687268
+avg_fitted_log_ntl_harm_0_01_fe1   -21.827133  160.210363 -0.136240  0.891631  -335.839444   292.185179
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

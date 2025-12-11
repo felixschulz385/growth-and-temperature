@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and year fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(viirs_annual + 0.01) | pixel_id + year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/_5km.parquet
+Timestamp:   2025-12-11T09:31:20.729503
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    64,107,236
+Compressed Rows:       8,699,271
+Compression Ratio:     0.8643 (86.43%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                               Coefficient  Std. Error     t-stat     P>|t|     [0.025      0.975]
+Intercept                        70.671156   20.119345   3.512597  0.000444  31.237239  110.105073
+log_viirs_annual_0_01            -0.059068    0.038854  -1.520265  0.128444  -0.135221    0.017085
+avg_log_viirs_annual_0_01_fe0     0.339439    0.243324   1.395011  0.163013  -0.137475    0.816354
+avg_log_viirs_annual_0_01_fe1   -53.976827    4.808901 -11.224359  0.000000 -63.402272  -44.551382
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

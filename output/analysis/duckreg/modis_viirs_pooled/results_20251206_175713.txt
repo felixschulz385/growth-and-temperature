@@ -1,0 +1,39 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Pooled MODIS VIIRS analysis
+Formula:     modis_median ~ viirs_annual | 0 | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet
+Timestamp:   2025-12-06T18:09:20.507274
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    8,558,990,698
+Compressed Rows:       93,477,698
+Compression Ratio:     0.9891 (98.91%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 2
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+              Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept      284.374269    1.350963  210.497516  0.000000  281.726382  287.022156
+viirs_annual     0.081187    0.021708    3.739933  0.000184    0.038639    0.123735
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

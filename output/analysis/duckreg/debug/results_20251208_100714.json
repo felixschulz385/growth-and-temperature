@@ -1,0 +1,225 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "debug",
+    "description": "Debug Setting",
+    "timestamp": "2025-12-08T10:07:28.801870",
+    "formula": "modis_median ~ 1 | pixel_id + year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet",
+    "query": "country IN (65,3,38,18,46,52,39,215,51,157,48,47,20,89,72,68,61,79,87,83,85,45,117,131,126,127,139,155,144,151,154,136,150,158,160,162,88,186,189,195,205,192,212,198,201,260,263,204,69,191,210,216,224,229,67,228,22,261)"
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/63752445",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": null,
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "subdivision",
+    "endogenous_vars": [
+      "log(ntl_harm+0.01)"
+    ],
+    "instrument_vars": [
+      "nb_mines_a"
+    ],
+    "exogenous_vars": []
+  },
+  "model_statistics": {
+    "n_observations": 7936293,
+    "n_compressed_rows": 7350,
+    "compression_ratio": 0.9990738749186805,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 4,
+    "estimator_type": "Duck2SLS",
+    "weak_instruments": true,
+    "first_stage_f_stats": {
+      "log(ntl_harm+0.01)": 5.44076690176118
+    }
+  },
+  "coefficients": {
+    "coefficients": [
+      3927.5629228821736,
+      -2.258554306398375,
+      -28.419422928983035,
+      837.1371854252528
+    ],
+    "coef_names": [
+      "Intercept",
+      "fitted_log_ntl_harm_0_01",
+      "avg_fitted_log_ntl_harm_0_01_fe0",
+      "avg_fitted_log_ntl_harm_0_01_fe1"
+    ],
+    "n_obs": 7936293,
+    "n_compressed": 7350,
+    "vcov": [
+      [
+        242370.23140664047,
+        -68.65266570704719,
+        7.186274539245131,
+        53939.6711369384
+      ],
+      [
+        -68.65266570704719,
+        1.862764777161062,
+        1.3061849541050319,
+        -18.42785902980488
+      ],
+      [
+        7.186274539245131,
+        1.3061849541050319,
+        37.38558738864513,
+        -36.972878256886304
+      ],
+      [
+        53939.6711369384,
+        -18.42785902980488,
+        -36.972878256886304,
+        12045.913566770601
+      ]
+    ],
+    "std_errors": [
+      492.31111241433547,
+      1.3648314097942873,
+      6.114375470041493,
+      109.75387722887334
+    ],
+    "t_statistics": [
+      7.977806764549904,
+      -1.6548229255207374,
+      -4.647968229662903,
+      7.627404211693983
+    ],
+    "p_values": [
+      1.5543122344752192e-15,
+      0.09796042217753498,
+      3.35220527758473e-06,
+      2.398081733190338e-14
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      242370.23140664047,
+      -68.65266570704719,
+      7.186274539245131,
+      53939.6711369384
+    ],
+    [
+      -68.65266570704719,
+      1.862764777161062,
+      1.3061849541050319,
+      -18.42785902980488
+    ],
+    [
+      7.186274539245131,
+      1.3061849541050319,
+      37.38558738864513,
+      -36.972878256886304
+    ],
+    [
+      53939.6711369384,
+      -18.42785902980488,
+      -36.972878256886304,
+      12045.913566770601
+    ]
+  ],
+  "first_stage": {
+    "log(ntl_harm+0.01)": {
+      "endogenous_variable": "log(ntl_harm+0.01)",
+      "coefficients": [
+        -4.498924907295411,
+        0.05494148331213486,
+        0.09851914196545673,
+        3.657999356852146
+      ],
+      "coef_names": [
+        "Intercept",
+        "nb_mines_a",
+        "avg_nb_mines_a_fe0",
+        "avg_nb_mines_a_fe1"
+      ],
+      "n_obs": 7936293,
+      "n_compressed": 7350,
+      "vcov": [
+        [
+          0.0004235267114097508,
+          1.9038715933314243e-05,
+          -0.00023000219659029638,
+          -0.0017897249493236539
+        ],
+        [
+          1.9038715933314243e-05,
+          0.0005548053506134367,
+          3.187243589741865e-05,
+          0.00136957187739413
+        ],
+        [
+          -0.00023000219659029638,
+          3.187243589741865e-05,
+          0.012211638540006679,
+          -0.001340595397447515
+        ],
+        [
+          -0.0017897249493236539,
+          0.00136957187739413,
+          -0.001340595397447515,
+          0.2415410695532085
+        ]
+      ],
+      "std_errors": [
+        0.02057976461016381,
+        0.023554306413338447,
+        0.11050628280784165,
+        0.49146827929502074
+      ],
+      "t_statistics": [
+        -218.60915285073327,
+        2.332545155353092,
+        0.8915252550551425,
+        7.443001941242898
+      ],
+      "p_values": [
+        0.0,
+        0.019672030316739475,
+        0.37264744899366087,
+        9.836575998178887e-14
+      ],
+      "se_type": "cluster",
+      "instrument_names": [
+        "nb_mines_a"
+      ],
+      "f_statistic": 5.44076690176118,
+      "f_pvalue": 0.019672055180087522,
+      "is_weak_instrument": true,
+      "instrument_statistics": {
+        "nb_mines_a": {
+          "coefficient": 0.05494148331213486,
+          "std_error": 0.023554306413338447,
+          "t_statistic": 2.332545155353092,
+          "p_value": 0.019672030316739475
+        }
+      }
+    }
+  }
+}

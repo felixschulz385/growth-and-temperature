@@ -1,0 +1,138 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modisRollMax_logviirs_twfe",
+    "description": "TWFE rollmax3 MODIS VIIRS analysis with logged night lights",
+    "timestamp": "2025-12-09T10:51:51.787600",
+    "formula": "modis_rollmax3 ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/63968825",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "modis_rollmax3"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 8554730778,
+    "n_compressed_rows": 811062382,
+    "compression_ratio": 0.9051913610086024,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak"
+  },
+  "coefficients": {
+    "coefficients": [
+      306.753185291385,
+      -0.0157565430756248,
+      0.3891023714342365,
+      1.3540114516257127
+    ],
+    "coef_names": [
+      "Intercept",
+      "log_viirs_annual_0_01",
+      "avg_log_viirs_annual_0_01_fe0",
+      "avg_log_viirs_annual_0_01_fe1"
+    ],
+    "n_obs": 8554730778,
+    "n_compressed": 811062382,
+    "vcov": [
+      [
+        7.9349808515631555,
+        -0.04350241885612373,
+        -0.11550115388623157,
+        2.1953908632305206
+      ],
+      [
+        -0.04350241885612373,
+        0.0002590397823867785,
+        0.0005949773041786384,
+        -0.012014245469113068
+      ],
+      [
+        -0.11550115388623157,
+        0.0005949773041786384,
+        0.014578144400181547,
+        -0.03311308650429744
+      ],
+      [
+        2.1953908632305206,
+        -0.012014245469113068,
+        -0.03311308650429744,
+        0.6114004675384062
+      ]
+    ],
+    "std_errors": [
+      2.816909805365297,
+      0.01609471287059134,
+      0.12073998674913604,
+      0.7819210110608399
+    ],
+    "t_statistics": [
+      108.89705616669727,
+      -0.9789887649636514,
+      3.2226471271914456,
+      1.731647356283101
+    ],
+    "p_values": [
+      0.0,
+      0.3275855307990443,
+      0.0012701191835218228,
+      0.08333636904745423
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      7.9349808515631555,
+      -0.04350241885612373,
+      -0.11550115388623157,
+      2.1953908632305206
+    ],
+    [
+      -0.04350241885612373,
+      0.0002590397823867785,
+      0.0005949773041786384,
+      -0.012014245469113068
+    ],
+    [
+      -0.11550115388623157,
+      0.0005949773041786384,
+      0.014578144400181547,
+      -0.03311308650429744
+    ],
+    [
+      2.1953908632305206,
+      -0.012014245469113068,
+      -0.03311308650429744,
+      0.6114004675384062
+    ]
+  ]
+}

@@ -1,0 +1,35 @@
+\begin{table}[htbp]
+\centering
+\caption{Nighttime Lights and Temperature: Instrumenting Mining}
+\begin{tabular}{lcc}
+\toprule
+ & (M.1) & (M.2) \\
+\midrule
+\midrule
+\multicolumn{3}{l}{\textit{First Stage: log(ntl\_harm+0.01)}} \\
+  Active Mines & 0.063* & 0.056* \\
+ & (0.028) & (0.026) \\
+\midrule
+\multicolumn{3}{l}{\textit{Second Stage}} \\
+$\hat{\log(HARM + 0.01)}$ & 4.042 & -2.273 \\
+ & (2.325) & (1.355) \\
+\midrule
+N Observations & 198,398,025 & 198,398,025 \\
+N Compressed Rows & 2,273 & 6,805 \\
+First Stage F (log(ntl\_harm+0.01)) & 5.226 & 4.819 \\
+\midrule
+Nighttime Lights & DMSP & DMSP \\
+Fixed Effects & Pixel + Country×Year & Pixel + Year \\
+Clustering & ADM2 & ADM2 \\
+\cmidrule(lr){1-3}
+Resolution & 1km & 1km \\
+Spatial Extent & Africa & Africa \\
+Temporal Extent & 2000-2009 & 2000-2009 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Dependent variable is log(nighttime lights + 0.01). Both models use Mundlak fixed effects estimation with clustered standard errors. Standard errors in parentheses. * p<0.05, ** p<0.01, *** p<0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

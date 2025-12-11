@@ -59,8 +59,8 @@ tables:
     model_names: ["(lD.P)", "(lV.P)", "(lD.1FE)", "(lV.1FE)", "(lD.2FE)", "(lV.2FE)", "(lD.2FEY)", "(lV.2FEY)"]
     caption: "Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions"
     select_coefs:
-      log_ntl_harm_0_01: "$\\hat{\\log(\\text{HARM} + 0.01)}$"
-      log_viirs_annual_0_01: "$\\hat{\\log(\\text{VIIRS} + 0.01)}$"
+      log_ntl_harm_0_01: "$\\log(\\text{HARM} + 0.01)$"
+      log_viirs_annual_0_01: "$\\log(\\text{VIIRS} + 0.01)$"
     show_stats:
       - n_observations
       - n_compressed_rows
@@ -68,9 +68,44 @@ tables:
       - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
         Fixed Effects: ["NO", "NO", "PX", "PX", "PX+CY", "PX+CY", "PX+YR", "PX+YR"]
         Clustering: "ADM2"
-      - Resolution: ["5km", "5km", "5km", "5km", "5km", "5km", "5km", "5km"]
+      - Resolution: ["1km", "500m", "1km", "500m", "1km", "500m", "1km", "500m"]
         Spatial Extent: "World"
-        Temporal Extent: ["1981-2005", "2012-2020", "1981-2005", "2012-2020", "1981-2005", "2012-2020", "1981-2005", "2012-2020"]
+        Temporal Extent: ["2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020"]
+    notes:
+      - "Independent variable is MODIS surface temperature from the GLASS product"
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "FE models use Mundlak fixed effects estimation with clustered standard errors."
+      - "NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  alt_log_modis:
+    model_paths:
+      - name: "modisMean_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modisMean_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "modisMean_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modisMean_logviirs_twfe"
+        analysis_type: "duckreg"
+    model_names: ["(alD.2FE)", "(alV.2FE)", "(lD.1FE)", "(lV.1FE)", "(lD.2FE)", "(lV.2FE)", "(lD.2FEY)", "(lV.2FEY)"]
+    caption: "Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions"
+    select_coefs:
+      log_ntl_harm_0_01: "$\\log(\\text{HARM} + 0.01)$"
+      log_viirs_annual_0_01: "$\\log(\\text{VIIRS} + 0.01)$"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["NO", "NO", "PX", "PX", "PX+CY", "PX+CY", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["1km", "500m", "1km", "500m", "1km", "500m", "1km", "500m"]
+        Spatial Extent: "World"
+        Temporal Extent: ["2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020"]
     notes:
       - "Independent variable is MODIS surface temperature from the GLASS product"
       - "Dependent variable is log(nighttime lights + 0.01)"
@@ -218,7 +253,7 @@ tables:
         Clustering: "ADM2"
       - Resolution: ["5km", "5km", "5km", "5km", "5km", "5km"]
         Spatial Extent: "World"
-        Temporal Extent: ["1981-2005", "2012-2020", "1981-2005", "2012-2020", "1981-2005", "2012-2020"]
+        Temporal Extent: ["1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020"]
     notes:
       - "Independent variable is AVHRR surface temperature"
       - "Dependent variable is nighttime lights"
@@ -261,7 +296,7 @@ tables:
         Clustering: "ADM2"
       - Resolution: ["5km", "5km", "5km", "5km", "5km", "5km", "5km", "5km"]
         Spatial Extent: "World"
-        Temporal Extent: ["1981-2005", "2012-2020", "1981-2005", "2012-2020", "1981-2005", "2012-2020", "1981-2005", "2012-2020"]
+        Temporal Extent: ["1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020"]
     notes:
       - "Independent variable is AVHRR surface temperature"
       - "Dependent variable is log(nighttime lights + 0.01)"

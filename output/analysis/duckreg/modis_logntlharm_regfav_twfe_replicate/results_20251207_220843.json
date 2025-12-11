@@ -1,0 +1,227 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_logntlharm_regfav_twfe_replicate",
+    "description": "TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014) at 1km resolution",
+    "timestamp": "2025-12-07T22:18:48.622710",
+    "formula": "modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (reg_fav) | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet",
+    "query": "(country IN (2,3,6,9,15,16,18,19,20,22,23,24,27,29,32,33,36,38,39,40,43,45,46,47,48,50,53,59,60,63,65,66,68,70,72,73,74,76,79,80,81,83,85,87,88,90,93,96,98,100,102,107,108,111,114,115,116,117,119,122,124,125,126,130,132,134,136,139,141,143,144,146,148,150,151,155,156,158,160,162,163,165,166,167,169,170,172,174,175,177,178,180,181,182,188,189,191,192,198,199,201,203,207,208,209,215,216,217,218,221,224,227,228,229,230,232,233,237,240,250,256,258,259,260,261,263)) AND (year < 2010)"
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/63746973",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": null,
+    "fe_cols": [
+      "pixel_id",
+      "country_year"
+    ],
+    "cluster_col": "subdivision",
+    "endogenous_vars": [
+      "log(ntl_harm+0.01)"
+    ],
+    "instrument_vars": [
+      "reg_fav"
+    ],
+    "exogenous_vars": [
+      "_intercept"
+    ]
+  },
+  "model_statistics": {
+    "n_observations": 1375582363,
+    "n_compressed_rows": 8412,
+    "compression_ratio": 0.9999938847718419,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 4,
+    "estimator_type": "Duck2SLS",
+    "weak_instruments": true,
+    "first_stage_f_stats": {
+      "log(ntl_harm+0.01)": 0.9392134915815545
+    }
+  },
+  "coefficients": {
+    "coefficients": [
+      898.4407301142572,
+      -7.411883695594372,
+      42.39529941046006,
+      128.04939781625097
+    ],
+    "coef_names": [
+      "Intercept",
+      "fitted_log_ntl_harm_0_01",
+      "avg_fitted_log_ntl_harm_0_01_fe0",
+      "avg_fitted_log_ntl_harm_0_01_fe1"
+    ],
+    "n_obs": 1375582363,
+    "n_compressed": 8412,
+    "vcov": [
+      [
+        2188550.018685257,
+        -18083.36029481564,
+        569.8536111226995,
+        598157.6214814677
+      ],
+      [
+        -18083.36029481564,
+        202.34571862543783,
+        520.2191325969055,
+        -5519.783566146347
+      ],
+      [
+        569.8536111226995,
+        520.2191325969055,
+        12572.421997517065,
+        -12924.352101328244
+      ],
+      [
+        598157.6214814677,
+        -5519.783566146347,
+        -12924.352101328244,
+        177123.90146323468
+      ]
+    ],
+    "std_errors": [
+      1479.3748742915898,
+      14.224827542906727,
+      112.12681212590084,
+      420.8609051257133
+    ],
+    "t_statistics": [
+      0.6073110647796304,
+      -0.5210526224826072,
+      0.3781013533396168,
+      0.3042558628200497
+    ],
+    "p_values": [
+      0.5436444966854439,
+      0.6023301138748303,
+      0.7053553029976438,
+      0.7609329684339099
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      2188550.018685257,
+      -18083.36029481564,
+      569.8536111226995,
+      598157.6214814677
+    ],
+    [
+      -18083.36029481564,
+      202.34571862543783,
+      520.2191325969055,
+      -5519.783566146347
+    ],
+    [
+      569.8536111226995,
+      520.2191325969055,
+      12572.421997517065,
+      -12924.352101328244
+    ],
+    [
+      598157.6214814677,
+      -5519.783566146347,
+      -12924.352101328244,
+      177123.90146323468
+    ]
+  ],
+  "first_stage": {
+    "log(ntl_harm+0.01)": {
+      "endogenous_variable": "log(ntl_harm+0.01)",
+      "coefficients": [
+        -3.7717819210436607,
+        0.04603214997742392,
+        0.09133047639183009,
+        -1.4634089456407429
+      ],
+      "coef_names": [
+        "Intercept",
+        "reg_fav",
+        "avg_reg_fav_fe0",
+        "avg_reg_fav_fe1"
+      ],
+      "n_obs": 1375582363,
+      "n_compressed": 13122,
+      "vcov": [
+        [
+          0.010642585540333383,
+          0.002639187912671243,
+          -0.005135185936147147,
+          -0.09071851697669125
+        ],
+        [
+          0.002639187912671243,
+          0.0022560992261470873,
+          0.0011991708836884669,
+          -0.048384829451158406
+        ],
+        [
+          -0.005135185936147147,
+          0.0011991708836884669,
+          0.06212388734775832,
+          -0.052859454580911736
+        ],
+        [
+          -0.09071851697669125,
+          -0.048384829451158406,
+          -0.052859454580911736,
+          1.615088277265866
+        ]
+      ],
+      "std_errors": [
+        0.10316290777374096,
+        0.047498412880296194,
+        0.24924663959170706,
+        1.2708612344649852
+      ],
+      "t_statistics": [
+        -36.56141536176948,
+        0.9691302758564271,
+        0.36642610926044694,
+        -1.1515096266641711
+      ],
+      "p_values": [
+        0.0,
+        0.3324801936022048,
+        0.7140471401030255,
+        0.24952263715480183
+      ],
+      "se_type": "cluster",
+      "instrument_names": [
+        "reg_fav"
+      ],
+      "f_statistic": 0.9392134915815545,
+      "f_pvalue": 0.33248019377259785,
+      "is_weak_instrument": true,
+      "instrument_statistics": {
+        "reg_fav": {
+          "coefficient": 0.04603214997742392,
+          "std_error": 0.047498412880296194,
+          "t_statistic": 0.9691302758564271,
+          "p_value": 0.3324801936022048
+        }
+      }
+    }
+  }
+}
