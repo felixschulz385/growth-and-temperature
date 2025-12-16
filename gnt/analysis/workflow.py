@@ -119,6 +119,8 @@ def get_compression_stats(model: Any) -> Dict[str, Any]:
     stats = {
         'n_observations': getattr(model, 'n_obs', None),
         'n_compressed_rows': getattr(model, 'n_compressed_rows', None),
+        'has_standard_errors': hasattr(model, 'vcov') and model.vcov is not None,
+        'se_type': getattr(model, 'se', None),
     }
     
     if stats['n_compressed_rows'] is None and hasattr(model, 'df_compressed') and model.df_compressed is not None:
@@ -132,133 +134,6 @@ def get_compression_stats(model: Any) -> Dict[str, Any]:
         stats['compression_ratio'] = None
     
     return stats
-
-
-def build_results_dataframe(model: Any) -> pd.DataFrame:
-    """Build results DataFrame from model."""
-    # Use model's built-in summary_df if available
-    if hasattr(model, 'summary_df'):
-        df = model.summary_df()
-        if not df.empty:
-            # Rename columns to match expected format
-            col_map = {
-                'coefficient': 'Coefficient',
-                'std_error': 'Std. Error',
-                't_stat': 't-stat',
-                'p_value': 'P>|t|',
-                'ci_lower': '[0.025',
-                'ci_upper': '0.975]'
-            }
-            return df.rename(columns=col_map)
-    
-    # Fallback to manual construction
-    point_estimate = model.point_estimate.flatten()
-    coef_names = getattr(model, 'coef_names_', [f'coef_{i}' for i in range(len(point_estimate))])
-    has_vcov = hasattr(model, 'vcov') and model.vcov is not None
-    
-    if has_vcov:
-        std_err = np.sqrt(np.diag(model.vcov))
-        from scipy import stats
-        t_stats = point_estimate / std_err
-        p_values = 2 * (1 - stats.norm.cdf(np.abs(t_stats)))
-        
-        return pd.DataFrame({
-            'Coefficient': point_estimate,
-            'Std. Error': std_err,
-            't-stat': t_stats,
-            'P>|t|': p_values,
-            '[0.025': point_estimate - 1.96 * std_err,
-            '0.975]': point_estimate + 1.96 * std_err
-        }, index=coef_names)
-    
-    return pd.DataFrame({'Coefficient': point_estimate}, index=coef_names)
-
-
-def format_duckreg_summary(spec_config: Dict[str, Any], settings: Dict[str, Any], 
-                           results_df: pd.DataFrame, model: Any, 
-                           compression_stats: Dict[str, Any]) -> str:
-    """Format DuckReg results as human-readable text summary."""
-    lines = [
-        "=" * 80,
-        "DUCKREG REGRESSION ANALYSIS RESULTS",
-        "=" * 80,
-        "",
-        "SPECIFICATION",
-        "-" * 80,
-        f"Name:        {spec_config.get('description', 'N/A')}",
-        f"Formula:     {spec_config.get('formula', 'N/A')}",
-        f"Data Source: {spec_config.get('data_source', 'N/A')}",
-        f"Timestamp:   {datetime.now().isoformat()}",
-        "",
-        "ANALYSIS SETTINGS",
-        "-" * 80,
-        f"Fixed Effects Method:  {settings.get('fe_method', 'N/A')}",
-        f"SE Computation Method: {compression_stats.get('se_method', 'N/A')}",
-    ]
-    
-    se_method = compression_stats.get('se_method', '')
-    if se_method == 'bootstrap':
-        lines.append(f"Bootstrap Iterations:  {settings.get('n_bootstraps', 0)}")
-    elif se_method == 'analytical':
-        lines.append(f"SE Type:               {compression_stats.get('se_type', 'N/A')}")
-    
-    lines.extend([
-        f"Random Seed:           {settings.get('seed', 'N/A')}",
-        f"Round Strata Decimals: {settings.get('round_strata', 'None')}",
-        "",
-        "DATA COMPRESSION STATISTICS",
-        "-" * 80,
-    ])
-    
-    n_obs = compression_stats.get('n_observations')
-    n_compressed = compression_stats.get('n_compressed_rows')
-    ratio = compression_stats.get('compression_ratio')
-    
-    lines.append(f"Total Observations:    {n_obs:,}" if n_obs else "Total Observations:    N/A")
-    lines.append(f"Compressed Rows:       {n_compressed:,}" if n_compressed else "Compressed Rows:       N/A (out-of-core)")
-    if ratio:
-        lines.append(f"Compression Ratio:     {ratio:.4f} ({ratio*100:.2f}%)")
-    
-    has_se = compression_stats.get('has_standard_errors', False)
-    se_type = compression_stats.get('se_type')
-    if has_se:
-        if se_method == 'bootstrap':
-            se_msg = f"Available (Bootstrap, {settings.get('n_bootstraps', 0)} iterations)"
-        elif se_type == 'cluster':
-            se_msg = "Available (Cluster-Robust)"
-        else:
-            se_msg = f"Available ({se_type or 'unknown'})"
-    else:
-        se_msg = "Not Available"
-    
-    lines.extend([
-        "",
-        "MODEL STATISTICS",
-        "-" * 80,
-        f"Number of Coefficients: {len(results_df)}",
-        f"Standard Errors:        {se_msg}",
-    ])
-    
-    # Add first stage diagnostics for 2SLS
-    if hasattr(model, 'first_stage') and model.first_stage:
-        lines.extend(["", "FIRST STAGE DIAGNOSTICS", "-" * 80])
-        for endog_var, fs_result in model.first_stage.items():
-            f_stat = fs_result.f_statistic
-            f_str = f"{f_stat:.2f}" if f_stat else "N/A"
-            lines.append(f"  {endog_var}: F-stat = {f_str}")
-    
-    lines.extend([
-        "",
-        "REGRESSION RESULTS",
-        "-" * 80,
-        results_df.to_string(),
-        "",
-        "=" * 80,
-        "ANALYSIS COMPLETE",
-        "=" * 80,
-    ])
-    
-    return "\n".join(lines)
 
 
 def _extract_first_stage_statistics(model: Any, logger: logging.Logger) -> Dict[str, Any]:
@@ -349,27 +224,27 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     
     logger.info("Analysis complete!")
     
-    # Build results
-    results_df = build_results_dataframe(model)
-    print("\n", results_df.to_string())
-    print("=" * 80)
-    
-    # Get compression stats
+    # Use unified summary functions
     compression_stats = get_compression_stats(model)
-    compression_stats['has_standard_errors'] = hasattr(model, 'vcov') and model.vcov is not None
-    compression_stats['se_type'] = getattr(model, 'se', None)
     compression_stats['se_method'] = se_method
     
-    # Generate and print summary
-    text_summary = format_duckreg_summary(spec_config, settings, results_df, model, compression_stats)
-    print("\n" + text_summary)
+    # Print results using model's unified summary methods
+    results_df = model.summary_df()
+    if verbose and not results_df.empty:
+        print("\n", results_df.to_string())
+        print("=" * 80)
+    
+    # Use model's print_summary if 2SLS, otherwise print text version
+    if hasattr(model, 'print_summary'):
+        print()
+        model.print_summary(precision=4, include_diagnostics=True)
     
     # Save results if output_dir provided
     if output_dir:
         output_path = Path(output_dir) / 'duckreg' / spec_name
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # Use model's summary() method for comprehensive results
+        # Get full model summary dict for comprehensive output
         model_summary = model.summary()
         
         results_container = {
@@ -421,7 +296,13 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
         
         # Save files
         with open(output_path / f'results_{timestamp}.txt', 'w') as f:
-            f.write(text_summary)
+            f.write(f"Analysis: {spec_config['description']}\n")
+            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
+            f.write(f"Formula: {formula}\n")
+            f.write("=" * 80 + "\n\n")
+            f.write(results_df.to_string())
+            f.write("\n\n" + "=" * 80 + "\n")
+        
         with open(output_path / f'results_{timestamp}.json', 'w') as f:
             json.dump(results_container, f, indent=2)
         
