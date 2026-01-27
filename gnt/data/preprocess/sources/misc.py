@@ -661,24 +661,40 @@ class MiscPreprocessor(AbstractPreprocessor):
                     logger.info("Classifying HDI values into groups")
                     hdi["hdi_group"] = hdi["hdi"].apply(assign_group)
                     
-                    # Get first value from 1990-2023
-                    logger.info("Aggregating to modal HDI group per country")
-                    hdi = (
-                        hdi.groupby("iso3")["hdi_group"]
-                        .agg("first")
-                        .reset_index()
-                    )
+                    # Sort by country and year
+                    hdi.sort_values(["iso3", "year"], inplace=True)
+                    
+                    # Get indicators for panel years
+                    logger.info("Creating HDI classifications for panel years 1991, 1999, 2011")
+                    year_indicators = {}
+                    for panel_year in [1991, 1999, 2011]:
+                        year_indicators[panel_year] = hdi.query(f"year <= {panel_year}").groupby("iso3").last()
+                    
+                    # Merge into panel
+                    hdi = pd.concat(year_indicators).reset_index(names=["indicator_year", "iso3"]).drop(columns=["year"])
                     
                     # Convert to boolean dummy variables
                     logger.info("Creating HDI class dummy variables")
+                    hdi["HDI_LO"] = hdi.hdi_group.isin(["Low"])
                     hdi["HDI_ME"] = hdi.hdi_group.isin(["Medium"])
                     hdi["HDI_HI"] = hdi.hdi_group.isin(["High"])
                     hdi["HDI_VH"] = hdi.hdi_group.isin(["Very High"])
                     
-                    # Drop string classification
-                    hdi.drop(columns=["hdi_group"], inplace=True)
+                    # Drop hdi_group and hdi columns, keep only classifications and identifiers
+                    hdi = hdi[["iso3", "indicator_year", "HDI_LO", "HDI_ME", "HDI_HI", "HDI_VH"]]
                     
-                    result_df = hdi
+                    # Create wide format with year-specific columns
+                    logger.info("Creating wide format with year suffixes")
+                    hdi_wide = hdi[["iso3"]].drop_duplicates().reset_index(drop=True)
+                    
+                    for year in [1991, 1999, 2011]:
+                        year_data = hdi[hdi['indicator_year'] == year].set_index('iso3')
+                        hdi_wide[f"HDI_LO_{year}"] = hdi_wide['iso3'].map(year_data['HDI_LO'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                        hdi_wide[f"HDI_ME_{year}"] = hdi_wide['iso3'].map(year_data['HDI_ME'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                        hdi_wide[f"HDI_HI_{year}"] = hdi_wide['iso3'].map(year_data['HDI_HI'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                        hdi_wide[f"HDI_VH_{year}"] = hdi_wide['iso3'].map(year_data['HDI_VH'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                    
+                    result_df = hdi_wide
                     logger.info(f"HDI processing complete: {len(hdi)} countries classified")
             
             # Process World Bank income group data if available
@@ -718,28 +734,52 @@ class MiscPreprocessor(AbstractPreprocessor):
                     )
                     
                     # Drop NAs
-                    wb = wb.query("classification!='..'").dropna()
+                    wb = wb.query("classification!='..'")
                     
-                    # Get first classification
-                    wb = wb.dropna().groupby("iso3").classification.agg("first").reset_index()
+                    # Sort by country and year
+                    wb.sort_values(["iso3", "year"], inplace=True)
+                    
+                    # Get indicators for panel years
+                    logger.info("Creating World Bank classifications for panel years 1991, 1999, 2011")
+                    year_indicators = {}
+                    for panel_year in [1991, 1999, 2011]:
+                        year_indicators[panel_year] = wb.query(f"year <= {panel_year}").groupby("iso3").last()
+                    
+                    # Merge into panel
+                    wb = pd.concat(year_indicators).reset_index(names=["indicator_year", "iso3"]).drop(columns=["year"])
                     
                     # Convert to booleans
                     logger.info("Creating World Bank income group dummy variables")
+                    wb["WB_LO"] = wb.classification.isin(["L"])
                     wb["WB_LM"] = wb.classification.isin(["LM", "LM*"])
                     wb["WB_UM"] = wb.classification.isin(["UM"])
                     wb["WB_HI"] = wb.classification.isin(["H"])
                     
-                    # Drop string classification
-                    wb.drop(columns=["classification"], inplace=True)
+                    # Keep only classifications and identifiers
+                    wb = wb[["iso3", "indicator_year", "WB_LO", "WB_LM", "WB_UM", "WB_HI"]]
                     
-                    logger.info(f"World Bank processing complete: {len(wb)} countries classified")
-                    
-                    # Merge with HDI if both available
+                    # Create wide format with year-specific columns
+                    logger.info("Creating wide format with year suffixes")
                     if result_df is not None:
-                        result_df = result_df.merge(wb, on="iso3", how="outer")
+                        # Merge with existing HDI data
+                        for year in [1991, 1999, 2011]:
+                            year_data = wb[wb['indicator_year'] == year].set_index('iso3')
+                            result_df[f"WB_LO_{year}"] = result_df['iso3'].map(year_data['WB_LO'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                            result_df[f"WB_LM_{year}"] = result_df['iso3'].map(year_data['WB_LM'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                            result_df[f"WB_UM_{year}"] = result_df['iso3'].map(year_data['WB_UM'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                            result_df[f"WB_HI_{year}"] = result_df['iso3'].map(year_data['WB_HI'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
                         logger.info("Merged HDI and World Bank classifications")
                     else:
-                        result_df = wb
+                        # Create base from World Bank data
+                        result_df = wb[["iso3"]].drop_duplicates().reset_index(drop=True)
+                        for year in [1991, 1999, 2011]:
+                            year_data = wb[wb['indicator_year'] == year].set_index('iso3')
+                            result_df[f"WB_LO_{year}"] = result_df['iso3'].map(year_data['WB_LO'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                            result_df[f"WB_LM_{year}"] = result_df['iso3'].map(year_data['WB_LM'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                            result_df[f"WB_UM_{year}"] = result_df['iso3'].map(year_data['WB_UM'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                            result_df[f"WB_HI_{year}"] = result_df['iso3'].map(year_data['WB_HI'].to_dict()).fillna(False).infer_objects(copy=False).astype(bool)
+                    
+                    logger.info(f"World Bank processing complete: {len(wb)} countries classified")
             
             if result_df is None:
                 logger.error("No data to process")
@@ -907,6 +947,109 @@ class MiscPreprocessor(AbstractPreprocessor):
 
         except Exception as e:
             logger.exception(f"Error in GADM rasterization: {e}")
+            return False
+        
+    def _rasterize_country_classifications_target(self, target: Dict[str, Any]) -> bool:
+        """Rasterize country classifications by mapping to GADM country grid."""
+        try:
+            import xarray as xr
+            import numpy as np
+            from zarr.codecs import BloscCodec
+
+            # Get input paths
+            classifications_parquet = self._strip_remote_prefix(target['source_files'][0])
+            gadm_zarr = self._strip_remote_prefix(target['source_files'][1])
+            output_path = self._strip_remote_prefix(target['output_path'])
+
+            # Check for existence unless overwrite is True
+            if not self.overwrite and os.path.exists(output_path):
+                logger.info(f"Skipping country classifications rasterization, output already exists: {output_path}")
+                return True
+
+            # Ensure output directory exists
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+            # Load the country classifications table
+            logger.info(f"Loading country classifications from {classifications_parquet}")
+            classifications_df = pd.read_parquet(classifications_parquet)
+            
+            # Load the GADM countries grid
+            logger.info(f"Loading GADM countries grid from {gadm_zarr}")
+            gadm_grid = xr.open_zarr(gadm_zarr, chunks="auto", consolidated=False)
+            country_grid = gadm_grid.country.astype("int16").compute()
+            
+            # Load the country code mapping
+            gadm_dir = os.path.dirname(gadm_zarr)
+            country_mapping_file = os.path.join(gadm_dir, "country_code_mapping.json")
+            
+            if not os.path.exists(country_mapping_file):
+                logger.error(f"Country mapping file not found: {country_mapping_file}")
+                return False
+            
+            with open(country_mapping_file, 'r') as f:
+                country_code_to_id = json.load(f)
+            
+            # Merge classifications with country codes
+            logger.info("Merging classifications with country IDs")
+            classifications_df['country_id'] = classifications_df['iso3'].map(
+                lambda x: country_code_to_id.get(x, 0)
+            )
+            
+            # Get classification columns (all except iso3 and country_id)
+            classification_cols = [col for col in classifications_df.columns 
+                                  if col not in ['iso3', 'country_id']]
+            
+            # Process and write each classification variable individually
+            logger.info("Processing and writing each classification variable")
+            for col in classification_cols:
+                logger.info(f"Processing classification variable: {col}")
+                
+                # Get country IDs where this classification is True
+                
+                country_ids_with_classification = classifications_df.query(f"{col} & country_id!=0").country_id.unique()
+                
+                # Use isin to create boolean mask efficiently
+                classification_array = country_grid.isin(country_ids_with_classification)
+                
+                # Add attributes (don't set _FillValue here as it's an encoding field)
+                classification_array.attrs = {
+                    'description': f'{col} classification grid (True/False)'
+                }
+                
+                # Add CRS
+                if 'crs' in country_grid.attrs:
+                    classification_array = classification_array.rio.write_crs(country_grid.attrs['crs'])
+                    classification_array = classification_array.odc.assign_crs(country_grid.attrs['crs'])
+                
+                # Create single-variable dataset and write to zarr
+                single_ds = xr.Dataset(
+                    {col: classification_array},
+                    attrs={
+                        'description': 'Country classifications grid (HDI and World Bank income groups)',
+                        'source': 'UNDP HDI and World Bank income classifications',
+                        'date_created': datetime.now().isoformat(),
+                        'note': 'Boolean values: True where classification applies, False otherwise'
+                    }
+                    )
+                logger.info(f"Writing {col} to zarr")
+                
+                compressor = BloscCodec(cname="lz4", clevel=5, shuffle='bitshuffle', blocksize=0)
+                encoding = {col: {"chunks": (512, 512), "compressors": compressor, "dtype": "bool"}}
+                single_ds.to_zarr(output_path, mode='a', encoding=encoding, zarr_format=3, consolidated=False)
+                
+                # Explicitly delete to free memory
+                del classification_array
+                del single_ds
+            
+            logger.info("Country classifications rasterization complete")
+            
+            # Close datasets
+            gadm_grid.close()
+            
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error in country classifications rasterization: {e}")
             return False
 
     def _create_empty_gadm_zarr(self, output_path: str, geobox, include_subdivisions: bool) -> bool:
@@ -1142,118 +1285,3 @@ class MiscPreprocessor(AbstractPreprocessor):
         """Create an instance from configuration dictionary."""
         return cls(**config)
 
-    def _rasterize_country_classifications_target(self, target: Dict[str, Any]) -> bool:
-        """Rasterize country classifications by mapping to GADM country grid."""
-        try:
-            import xarray as xr
-            import numpy as np
-            from zarr.codecs import BloscCodec
-
-            # Get input paths
-            classifications_parquet = self._strip_remote_prefix(target['source_files'][0])
-            gadm_zarr = self._strip_remote_prefix(target['source_files'][1])
-            output_path = self._strip_remote_prefix(target['output_path'])
-
-            # Check for existence unless overwrite is True
-            if not self.overwrite and os.path.exists(output_path):
-                logger.info(f"Skipping country classifications rasterization, output already exists: {output_path}")
-                return True
-
-            # Ensure output directory exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-            # Load the country classifications table
-            logger.info(f"Loading country classifications from {classifications_parquet}")
-            classifications_df = pd.read_parquet(classifications_parquet)
-            
-            # Load the GADM countries grid
-            logger.info(f"Loading GADM countries grid from {gadm_zarr}")
-            gadm_grid = xr.open_zarr(gadm_zarr, chunks="auto", consolidated=False)
-            country_grid = gadm_grid.country.astype("int16").compute()
-            
-            # Load the country code mapping
-            gadm_dir = os.path.dirname(gadm_zarr)
-            country_mapping_file = os.path.join(gadm_dir, "country_code_mapping.json")
-            
-            if not os.path.exists(country_mapping_file):
-                logger.error(f"Country mapping file not found: {country_mapping_file}")
-                return False
-            
-            with open(country_mapping_file, 'r') as f:
-                country_code_to_id = json.load(f)
-            
-            # Merge classifications with country codes
-            logger.info("Merging classifications with country IDs")
-            classifications_df['country_id'] = classifications_df['iso3'].map(
-                lambda x: country_code_to_id.get(x, 0)
-            )
-            
-            # Get classification columns (all except iso3 and country_id)
-            classification_cols = [col for col in classifications_df.columns 
-                                  if col not in ['iso3', 'country_id']]
-            
-            logger.info(f"Creating grids for {len(classification_cols)} classification variables")
-            
-            # Create grids for each classification variable using efficient isin() method
-            classification_arrays = {}
-            for col in classification_cols:
-                logger.info(f"Processing classification variable: {col}")
-                
-                # Get country IDs where this classification is True
-                country_ids_with_classification = classifications_df.loc[
-                    ((classifications_df[col] == True) & classifications_df["country_id"] != 0), 
-                    "country_id"
-                ].unique()
-                
-                # Use isin to create boolean mask efficiently
-                classification_array = country_grid.isin(country_ids_with_classification)
-                
-                # Add attributes
-                classification_array.attrs = {
-                    'description': f'{col} classification grid (True/False)',
-                    '_FillValue': -1
-                }
-                
-                classification_arrays[col] = classification_array
-            
-            # Create dataset
-            logger.info("Creating output dataset")
-            ds = xr.Dataset(
-                classification_arrays,
-                attrs={
-                    'description': 'Country classifications grid (HDI and World Bank income groups)',
-                    'source': 'UNDP HDI and World Bank income classifications',
-                    'date_created': datetime.now().isoformat(),
-                    'crs': str(country_grid.attrs.get('crs', 'EPSG:4326')),
-                    'note': 'Boolean values: True where classification applies, False otherwise'
-                }
-            )
-            
-            # Add CRS
-            if 'crs' in country_grid.attrs:
-                ds = ds.rio.write_crs(country_grid.attrs['crs'])
-            
-            # Setup encoding - use bool dtype for minimal storage
-            compressor = BloscCodec(cname="lz4", clevel=5, shuffle='bitshuffle', blocksize=0)
-            encoding = {}
-            for var_name in classification_arrays.keys():
-                encoding[var_name] = {
-                    "chunks": (512, 512),
-                    "compressors": compressor,
-                    "dtype": "bool"
-                }
-            
-            # Write to zarr
-            logger.info(f"Writing country classifications grid to {output_path}")
-            ds.to_zarr(output_path, zarr_format=3, consolidated=False, encoding=encoding, mode="w")
-            
-            logger.info("Country classifications rasterization complete")
-            
-            # Close datasets
-            gadm_grid.close()
-            
-            return True
-            
-        except Exception as e:
-            logger.exception(f"Error in country classifications rasterization: {e}")
-            return False
