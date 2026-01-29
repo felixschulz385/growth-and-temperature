@@ -543,6 +543,24 @@ def main():
         help='Override level for demeaning (0=none, 1=remove results, 2=remove intermediate+results)'
     )
 
+    # Assembly mode arguments
+    parser.add_argument(
+        '--create',
+        action='store_true',
+        help='Assembly mode: recreate all tiles (default behavior)'
+    )
+    
+    parser.add_argument(
+        '--update',
+        action='store_true',
+        help='Assembly mode: update existing tiles with new datasource'
+    )
+    
+    parser.add_argument(
+        '--datasource',
+        help='Datasource name to update (required with --update)'
+    )
+
     # Table-specific arguments
     parser.add_argument(
         "--table-config",
@@ -769,6 +787,23 @@ def main():
                 
                 # Prepare CLI overrides for assembly operations
                 elif args.operation == "assemble":
+                    # Validate assembly mode arguments
+                    if args.update and not args.datasource:
+                        logger.error("--update mode requires --datasource")
+                        return 1
+                    if args.update and args.create:
+                        logger.error("Cannot use both --update and --create")
+                        return 1
+                    
+                    # Set assembly mode (default to create)
+                    if args.update:
+                        cli_overrides['assembly_mode'] = 'update'
+                        cli_overrides['datasource'] = args.datasource
+                        logger.info(f"Assembly mode: UPDATE datasource '{args.datasource}'")
+                    else:
+                        cli_overrides['assembly_mode'] = 'create'
+                        logger.info("Assembly mode: CREATE (recreate all tiles)")
+                    
                     # Collect Dask-related overrides
                     if args.dask_threads is not None:
                         cli_overrides['dask_threads'] = args.dask_threads
@@ -782,6 +817,14 @@ def main():
                     if args.local_directory is not None:
                         cli_overrides['local_directory'] = args.local_directory
                         logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
+                    
+                    # Assembly-specific overrides
+                    if args.tile_size is not None:
+                        cli_overrides['tile_size'] = args.tile_size
+                        logger.info(f"Overriding tile_size from CLI: {args.tile_size}")
+                    if args.compression is not None:
+                        cli_overrides['compression'] = args.compression
+                        logger.info(f"Overriding compression from CLI: {args.compression}")
 
             # Run the operation
             run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None), args.override_level, cli_overrides)
