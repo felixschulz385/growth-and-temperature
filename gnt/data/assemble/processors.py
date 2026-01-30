@@ -94,9 +94,16 @@ class TileProcessor:
         self.processing_config = assembly_config.get('processing', {})
         self.compression = self.processing_config.get('compression', 'snappy')
         self.column_order_map = {}  # Track {dataset_name: [col1, col2, ...]}
+        self.all_index_cols = self._get_all_index_cols()  # Cache all index columns
         
         # Pre-build column order map from dataset configs
         self._build_column_order_map_from_config()
+        
+        # Log index column configuration
+        logger.info(f"Unified index columns for merging: {self.all_index_cols}")
+        for dataset_name, dataset_config in self.assembly_config.get('datasets', {}).items():
+            idx_cols = dataset_config.get('index_cols', ['pixel_id'])
+            logger.debug(f"Dataset '{dataset_name}' index_cols: {idx_cols}")
     
     def _build_column_order_map_from_config(self) -> None:
         """
@@ -233,8 +240,10 @@ class TileProcessor:
             # Assign pixel_id
             tile_ds = tile_ds.assign(pixel_id=pixel_id_ds['pixel_id'])
             
-            # Convert to DataFrame
-            df = tile_ds.to_dataframe().reset_index(drop=True)
+            # Convert to DataFrame, preserving all coordinates as columns (including year)
+            df = tile_ds.to_dataframe().reset_index()
+            
+            # Drop spatial coordinates but keep index coordinates like year
             df = df.drop(
                 columns=['band', 'spatial_ref', LATITUDE_COORD, LONGITUDE_COORD], 
                 errors='ignore'
@@ -250,7 +259,6 @@ class TileProcessor:
         self,
         combined: Optional[pd.DataFrame],
         df: pd.DataFrame,
-        index_cols: List[str],
         dataset_name: str,
         ix: int,
         iy: int,
@@ -258,19 +266,21 @@ class TileProcessor:
         """
         Merge a new DataFrame into the combined result.
         
+        Uses all available common index columns from the unified set for merging.
         Uses outer join to preserve all rows, with land mask filtering applied later.
         """
         if combined is None:
             logger.debug(f"Tile [{ix}, {iy}]: {dataset_name} - initialized combined DataFrame")
             return df
         
-        # Find common merge columns
-        merge_cols = [col for col in index_cols if col in combined.columns and col in df.columns]
+        # Find common merge columns from the unified index set
+        # Use all index columns that are present in both dataframes
+        merge_cols = [col for col in self.all_index_cols if col in combined.columns and col in df.columns]
         
         if not merge_cols:
             logger.warning(
                 f"Tile [{ix}, {iy}]: {dataset_name} - no common columns found for merge. "
-                f"index_cols: {index_cols}, combined: {list(combined.columns)}, df: {list(df.columns)}"
+                f"all_index_cols: {self.all_index_cols}, combined: {list(combined.columns)}, df: {list(df.columns)}"
             )
             return combined
         
@@ -425,10 +435,7 @@ class TileProcessor:
             logger.error(f"Failed to load existing tile [{ix}, {iy}]: {e}")
             return False
         
-        # Get unified index columns from all datasets
-        all_index_cols = self._get_all_index_cols()
-        
-        # Note: column_order_map is already built in __init__ from zarr files
+        # Note: all_index_cols and column_order_map are already built in __init__
         
         # Create geoboxes
         padded_tile_geobox, target_geobox_zoomed = self._create_tile_geoboxes(tile_geobox)
@@ -447,7 +454,9 @@ class TileProcessor:
         dataset_name, ds, dataset_config = datasets[0]
         logger.info(f"Tile [{ix}, {iy}]: updating datasource '{dataset_name}'")
         
-        index_cols = dataset_config.get('index_cols', ['pixel_id'])
+        # Get index_cols for this specific dataset for logging
+        dataset_index_cols = dataset_config.get('index_cols', ['pixel_id'])
+        logger.debug(f"Tile [{ix}, {iy}]: '{dataset_name}' configured index_cols: {dataset_index_cols}")
         
         df = self._extract_dataset_tile(
             ds, dataset_config, ix, iy,
@@ -464,10 +473,15 @@ class TileProcessor:
         )
         
         # Use unified index columns for merge (intersection of what's available)
-        merge_cols = [col for col in all_index_cols if col in existing_df.columns and col in df.columns]
+        merge_cols = [col for col in self.all_index_cols if col in existing_df.columns and col in df.columns]
         if not merge_cols:
-            logger.error(f"Tile [{ix}, {iy}]: no common index columns found for merge")
+            logger.error(
+                f"Tile [{ix}, {iy}]: no common index columns found for merge. "
+                f"all_index_cols: {self.all_index_cols}, existing: {list(existing_df.columns)}, new: {list(df.columns)}"
+            )
             return False
+        
+        logger.info(f"Tile [{ix}, {iy}]: merging on index columns: {merge_cols}")
         
         # Identify columns to drop from existing data (excluding index columns)
         cols_to_drop = [col for col in df.columns if col not in all_index_cols and col in existing_df.columns]
@@ -487,7 +501,7 @@ class TileProcessor:
         # Reorder columns based on complete dataset order from config
         datasets_config = self.assembly_config.get('datasets', {})
         dataset_order = list(datasets_config.keys())
-        combined = self._reorder_columns(combined, all_index_cols, dataset_order)
+        combined = self._reorder_columns(combined, self.all_index_cols, dataset_order)
         logger.debug(f"Tile [{ix}, {iy}]: reordered columns to: {list(combined.columns)}")
         
         # Write updated tile
@@ -538,8 +552,6 @@ class TileProcessor:
         for dataset_name, ds, dataset_config in datasets:
             logger.debug(f"Tile [{ix}, {iy}]: processing '{dataset_name}'")
             
-            index_cols = dataset_config.get('index_cols', ['pixel_id'])
-            
             df = self._extract_dataset_tile(
                 ds, dataset_config, ix, iy,
                 padded_tile_geobox, target_geobox_zoomed, pixel_id_ds
@@ -551,7 +563,7 @@ class TileProcessor:
                     f"extracted {len(df)} rows, {len(df.columns)} columns"
                 )
                 combined = self._merge_dataframes(
-                    combined, df, index_cols, dataset_name, ix, iy
+                    combined, df, dataset_name, ix, iy
                 )
         
         # Apply land mask filter
@@ -568,8 +580,7 @@ class TileProcessor:
         
         # Reorder columns based on dataset order in config
         dataset_order = [name for name, _, _ in datasets]
-        all_index_cols = self._get_all_index_cols()
-        combined = self._reorder_columns(combined, all_index_cols, dataset_order)
+        combined = self._reorder_columns(combined, self.all_index_cols, dataset_order)
         logger.debug(f"Tile [{ix}, {iy}]: reordered columns to: {list(combined.columns)}")
         
         # Write to parquet

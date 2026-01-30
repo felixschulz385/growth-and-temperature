@@ -197,6 +197,18 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 errors.append(f"Dataset '{name}' missing required 'path' field")
             elif not os.path.exists(config['path']):
                 logger.warning(f"Dataset path does not exist: {config['path']}")
+            
+            # Validate index_cols if specified
+            index_cols = config.get('index_cols')
+            if index_cols is not None:
+                if not isinstance(index_cols, list):
+                    errors.append(f"Dataset '{name}' index_cols must be a list, got {type(index_cols)}")
+                elif not index_cols:
+                    errors.append(f"Dataset '{name}' index_cols cannot be empty")
+                elif not all(isinstance(col, str) for col in index_cols):
+                    errors.append(f"Dataset '{name}' index_cols must contain only strings")
+            else:
+                logger.debug(f"Dataset '{name}' using default index_cols: ['pixel_id']")
     
     processing = assembly_config.get('processing', {})
     year_range = processing.get('year_range')
