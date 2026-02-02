@@ -6,9 +6,10 @@ import logging
 import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List
-import pandas as pd
-import numpy as np
 from datetime import datetime
+import pandas as pd
+import openpyxl
+import shutil
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -41,29 +42,208 @@ def setup_logging(config: Dict[str, Any]) -> logging.Logger:
     return logging.getLogger(__name__)
 
 
+def get_directory_size(path: Path) -> int:
+    """Get total size of a directory in bytes."""
+    try:
+        if not path.exists():
+            return 0
+        total_size = 0
+        for dirpath, dirnames, filenames in os.walk(path):
+            for filename in filenames:
+                filepath = os.path.join(dirpath, filename)
+                if os.path.exists(filepath):
+                    total_size += os.path.getsize(filepath)
+        return total_size
+    except Exception:
+        return 0
+
+
+def bytes_to_gb(bytes_size: int) -> float:
+    """Convert bytes to GB."""
+    return bytes_size / (1024 ** 3)
+
+
+def format_size_string(bytes_size: int, max_size_gb: int = 512) -> str:
+    """Format byte size as GB string with a maximum cap."""
+    size_gb = bytes_to_gb(bytes_size)
+    # Triple the size, but cap at max_size_gb
+    recommended_size_gb = min(size_gb * 3, max_size_gb)
+    return f"{int(recommended_size_gb)}GB"
+
+
 def load_config(config_path: str) -> Dict[str, Any]:
-    """Load analysis configuration from YAML file."""
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
+    """Load analysis configuration from Excel or YAML file."""
+    config_path = Path(config_path)
     
-    def expand_env_vars(obj):
-        if isinstance(obj, str):
-            expanded = os.path.expandvars(obj)
-            if expanded != obj:
-                try:
-                    if expanded.isdigit() or (expanded.startswith('-') and expanded[1:].isdigit()):
-                        return int(expanded)
-                    return float(expanded)
-                except ValueError:
-                    return expanded
-            return expanded
-        elif isinstance(obj, dict):
-            return {k: expand_env_vars(v) for k, v in obj.items()}
-        elif isinstance(obj, list):
-            return [expand_env_vars(item) for item in obj]
-        return obj
+    # Check file extension
+    if config_path.suffix.lower() in ['.xlsx', '.xls']:
+        # Load defaults from the YAML analysis configuration
+        yaml_config_path = config_path.parent / "analysis.yaml"
+        yaml_defaults = {
+            'se_method': 'analytical',
+            'fitter': 'duckdb',
+            'n_bootstraps': 100,
+            'seed': 42,
+            'fe_method': 'mundlak',
+            'round_strata': 5,
+            'n_jobs': 1,
+            'duckdb_kwargs': {}
+        }
+        
+        if yaml_config_path.exists():
+            try:
+                with open(yaml_config_path, 'r') as f:
+                    yaml_config = yaml.safe_load(f)
+                if 'analyses' in yaml_config and 'duckreg' in yaml_config['analyses']:
+                    yaml_defaults = yaml_config['analyses']['duckreg'].get('defaults', yaml_defaults)
+            except Exception:
+                pass  # Use hardcoded defaults if YAML loading fails
+        
+        # Load from Excel - read from "Models" sheet
+        df = pd.read_excel(config_path, sheet_name='Models')
+        
+        # Build config structure from Excel data
+        config = {
+            'analyses': {
+                'duckreg': {
+                    'description': 'DuckReg compressed OLS/2SLS analysis',
+                    'specifications': {},
+                    'defaults': yaml_defaults  # Use defaults from YAML
+                }
+            },
+            'output': {
+                'base_path': str(project_root / "output" / "analysis")
+            },
+            'logging': {
+                'level': 'INFO',
+                'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            }
+        }
+        
+        # Process each row as a specification
+        for _, row in df.iterrows():
+            model_name = row['model_name']
+            
+            # Build formula from components
+            dependent = row['dependent']
+            independent = row['independent']
+            
+            # Parse fixed effects (0 means none, otherwise column names)
+            fixed_effects = []
+            if pd.notna(row['fixed_effects']) and str(row['fixed_effects']) != '0':
+                fixed_effects = [fe.strip() for fe in str(row['fixed_effects']).split(',')]
+            
+            # Parse instruments (0 means OLS, otherwise IV formula)
+            instruments = []
+            if pd.notna(row['instruments']) and str(row['instruments']) != '0':
+                instruments = [inst.strip() for inst in str(row['instruments']).split(',')]
+            
+            # Build formula
+            if instruments:
+                # IV formula: dependent ~ exog + [endog ~ instruments] | fixed_effects
+                formula = f"{dependent} ~ {independent}"
+                if fixed_effects:
+                    formula += " | " + " + ".join(fixed_effects)
+            else:
+                # OLS formula: dependent ~ independent | fixed_effects
+                formula = f"{dependent} ~ {independent}"
+                if fixed_effects:
+                    formula += " | " + " + ".join(fixed_effects)
+            
+            # Build clustering specification
+            cluster_col = None
+            if pd.notna(row['clustering']) and str(row['clustering']) != '0':
+                cluster_col = str(row['clustering'])
+            
+            # Build specification
+            spec = {
+                'description': f"{row.get('section', 'Analysis')} - {row.get('subsection', model_name)}",
+                'data_source': str(row['data_source']),
+                'formula': formula,
+                'settings': {}
+            }
+            
+            # Expand data_source path
+            data_source_value = str(row['data_source'])
+            # Handle both direct paths and simple filenames
+            if not data_source_value.startswith('/') and not data_source_value.startswith('${'):
+                # If it's a simple filename like "5km", expand it
+                data_source_expanded = os.path.expandvars(f"${{WD}}/data_nobackup/assembled/{data_source_value}.parquet")
+            else:
+                # Otherwise expand as-is
+                data_source_expanded = os.path.expandvars(data_source_value)
+            
+            spec['data_source'] = data_source_expanded
+            
+            # Calculate directory size and set max_temp_directory_size
+            # First expand environment variables for size calculation
+            data_source_for_size = os.path.expandvars(data_source_expanded)
+            data_dir = Path(data_source_for_size.replace('.parquet', ''))
+            dir_size = get_directory_size(data_dir)
+            
+            # Store the calculated temp dir size in settings for later use
+            if dir_size > 0:
+                calculated_size = format_size_string(dir_size)
+                spec['settings']['_max_temp_directory_size'] = calculated_size
+                # Log this for debugging
+                logger.info(f"Model {model_name}: Data dir size ~{bytes_to_gb(dir_size):.1f}GB -> max_temp_directory_size: {calculated_size}")
+            
+            # Add clustering if specified
+            if cluster_col:
+                spec['cluster1_col'] = cluster_col
+                spec['settings']['cluster_type'] = 'one_way'
+            
+            # Add query if specified
+            if pd.notna(row.get('query')) and str(row['query']).strip():
+                spec['query'] = str(row['query'])
+            
+            # Add subset if specified
+            if pd.notna(row.get('subset')) and str(row['subset']).strip():
+                spec['subset'] = str(row['subset'])
+            
+            # Override defaults with row-specific settings
+            if pd.notna(row.get('se_method')):
+                spec['se_method'] = str(row['se_method'])
+            if pd.notna(row.get('fitter')):
+                spec['fitter'] = str(row['fitter'])
+            if pd.notna(row.get('n_bootstraps')):
+                spec['settings']['n_bootstraps'] = int(row['n_bootstraps'])
+            if pd.notna(row.get('seed')):
+                spec['settings']['seed'] = int(row['seed'])
+            if pd.notna(row.get('fe_method')):
+                spec['settings']['fe_method'] = str(row['fe_method'])
+            if pd.notna(row.get('round_strata')):
+                spec['settings']['round_strata'] = int(row['round_strata'])
+            if pd.notna(row.get('n_jobs')):
+                spec['settings']['n_jobs'] = int(row['n_jobs'])
+            
+            config['analyses']['duckreg']['specifications'][model_name] = spec
+        
+        return config
     
-    return expand_env_vars(config)
+    else:
+        # Load from YAML (legacy support)
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        def expand_env_vars(obj):
+            if isinstance(obj, str):
+                expanded = os.path.expandvars(obj)
+                if expanded != obj:
+                    try:
+                        if expanded.isdigit() or (expanded.startswith('-') and expanded[1:].isdigit()):
+                            return int(expanded)
+                        return float(expanded)
+                    except ValueError:
+                        return expanded
+                return expanded
+            elif isinstance(obj, dict):
+                return {k: expand_env_vars(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [expand_env_vars(item) for item in obj]
+            return obj
+        
+        return expand_env_vars(config)
 
 
 def load_subset(subset_name: str) -> List[int]:
@@ -112,46 +292,6 @@ def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
             queries.append(f"{country_col} == {country_filter}")
     
     return " & ".join(f"({q})" for q in queries) if queries else None
-
-
-def get_compression_stats(model: Any) -> Dict[str, Any]:
-    """Extract compression statistics from model."""
-    stats = {
-        'n_observations': getattr(model, 'n_obs', None),
-        'n_compressed_rows': getattr(model, 'n_compressed_rows', None),
-        'has_standard_errors': hasattr(model, 'vcov') and model.vcov is not None,
-        'se_type': getattr(model, 'se', None),
-    }
-    
-    if stats['n_compressed_rows'] is None and hasattr(model, 'df_compressed') and model.df_compressed is not None:
-        stats['n_compressed_rows'] = len(model.df_compressed)
-        if 'count' in model.df_compressed.columns:
-            stats['n_observations'] = int(model.df_compressed['count'].sum())
-    
-    if stats['n_compressed_rows'] and stats['n_observations']:
-        stats['compression_ratio'] = 1 - stats['n_compressed_rows'] / stats['n_observations']
-    else:
-        stats['compression_ratio'] = None
-    
-    return stats
-
-
-def _extract_first_stage_statistics(model: Any, logger: logging.Logger) -> Dict[str, Any]:
-    """Extract first stage statistics using the model's built-in methods."""
-    first_stage_results = {}
-    
-    for endog_var, fs_result in model.first_stage.items():
-        # Use the FirstStageResults.to_dict() method
-        fs_info = fs_result.to_dict()
-        first_stage_results[endog_var] = fs_info
-        
-        # Log F-statistic
-        f_stat = fs_result.f_statistic
-        is_weak = fs_result.is_weak_instrument
-        if f_stat is not None:
-            logger.info(f"First stage {endog_var}: F={f_stat:.2f}, weak={is_weak}")
-    
-    return first_stage_results
 
 
 def run_duckreg(config: Dict[str, Any], spec_name: str, 
@@ -204,8 +344,24 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     se_method = spec_config.get('se_method', settings.get('se_method', 'analytical'))
     logger.info(f"Fitter: {fitter}, SE method: {se_method}")
     
+    # Prepare duckdb_kwargs with environment variable expansion
+    duckdb_kwargs = settings.get('duckdb_kwargs', {}).copy()
+    
+    # Expand environment variables in duckdb_kwargs
+    for key, value in duckdb_kwargs.items():
+        if isinstance(value, str):
+            duckdb_kwargs[key] = os.path.expandvars(value)
+    
+    # If calculated max_temp_directory_size exists in settings, use it
+    if '_max_temp_directory_size' in spec_config.get('settings', {}):
+        duckdb_kwargs['max_temp_directory_size'] = spec_config['settings']['_max_temp_directory_size']
+        logger.info(f"Using calculated max_temp_directory_size: {duckdb_kwargs['max_temp_directory_size']}")
+    
+    logger.info(f"DuckDB kwargs: {duckdb_kwargs}")
+    
     # Import and fit model
     from duckreg import compressed_ols
+    from duckreg.utils.summary import format_model_summary
     
     model = compressed_ols(
         formula=formula,
@@ -215,7 +371,7 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
         round_strata=settings.get('round_strata'),
         seed=settings.get('seed', 42),
         fe_method=settings.get('fe_method', 'mundlak'),
-        duckdb_kwargs=settings.get('duckdb_kwargs', {}),
+        duckdb_kwargs=duckdb_kwargs,
         db_name=db_name,
         n_jobs=settings.get('n_jobs', 1),
         se_method=se_method,
@@ -224,85 +380,74 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     
     logger.info("Analysis complete!")
     
-    # Use unified summary functions
-    compression_stats = get_compression_stats(model)
-    compression_stats['se_method'] = se_method
+    # Get standardized model summary from duckreg
+    model_summary = model.summary()
     
-    # Print results using model's unified summary methods
-    results_df = model.summary_df()
-    if verbose and not results_df.empty:
-        print("\n", results_df.to_string())
-        print("=" * 80)
+    # Format comprehensive output using summary.py formatter
+    text_output = format_model_summary(model_summary, spec_config, precision=4)
     
-    # Use model's print_summary if 2SLS, otherwise print text version
-    if hasattr(model, 'print_summary'):
-        print()
-        model.print_summary(precision=4, include_diagnostics=True)
+    # Print to console
+    print("\n" + text_output)
     
     # Save results if output_dir provided
     if output_dir:
         output_path = Path(output_dir) / 'duckreg' / spec_name
         output_path.mkdir(parents=True, exist_ok=True)
         
-        # Get full model summary dict for comprehensive output
-        model_summary = model.summary()
-        
+        # Store results with workflow-specific context
         results_container = {
-            'metadata': {
+            # Analysis metadata (workflow-specific context)
+            'analysis_metadata': {
                 'analysis_type': 'duckreg',
                 'spec_name': spec_name,
                 'description': spec_config['description'],
-                'timestamp': datetime.now().isoformat(),
                 'formula': formula,
                 'data_source': data_source,
-                'query': sql_where
-            },
-            'specification': {
+                'query': sql_where,
                 'settings': settings,
-                'fe_method': settings.get('fe_method', 'mundlak'),
-                'se_method': se_method,
-                'outcome_vars': model_summary.get('outcome_vars'),
-                'covariates': model_summary.get('covariates'),
-                'fe_cols': model_summary.get('fe_cols'),
-                'cluster_col': model_summary.get('cluster_col'),
             },
-            'model_statistics': {
-                **compression_stats,
-                'n_coefficients': len(results_df),
-                'estimator_type': model_summary.get('estimator_type'),
-            },
+            # Standardized model results from duckreg
+            # Includes: version_info, model_spec, sample_info, coefficients, [first_stage]
+            **model_summary,
         }
         
-        # Add coefficients from model's results
-        if model_summary.get('coefficients'):
-            results_container['coefficients'] = model_summary['coefficients']
+        # Log version info for tracking
+        version_info = model_summary.get('version_info', {})
+        duckreg_version = version_info.get('duckreg_version', 'unknown')
+        logger.info(f"Results computed with duckreg version: {duckreg_version}")
         
-        # Add vcov if available
-        if compression_stats['has_standard_errors']:
-            results_container['vcov_matrix'] = np.asarray(model.vcov).tolist()
+        # Log first stage info for 2SLS
+        if model_summary.get('first_stage'):
+            logger.info(f"First stage results stored for {len(model_summary['first_stage'])} endogenous variable(s)")
         
-        # Add first stage results for 2SLS using model's built-in methods
-        if hasattr(model, 'first_stage') and model.first_stage:
-            results_container['first_stage'] = _extract_first_stage_statistics(model, logger)
-            results_container['specification'].update({
-                'endogenous_vars': model_summary.get('endogenous_vars'),
-                'instrument_vars': model_summary.get('instrument_vars'),
-                'exogenous_vars': model_summary.get('exogenous_vars'),
-            })
-            results_container['model_statistics']['weak_instruments'] = model.has_weak_instruments()
-            results_container['model_statistics']['first_stage_f_stats'] = model.get_first_stage_f_stats()
-            
-            logger.info(f"First stage results stored for {len(model.first_stage)} endogenous variable(s)")
-        
-        # Save files
+        # Save comprehensive text output (same as console)
         with open(output_path / f'results_{timestamp}.txt', 'w') as f:
-            f.write(f"Analysis: {spec_config['description']}\n")
-            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-            f.write(f"Formula: {formula}\n")
-            f.write("=" * 80 + "\n\n")
-            f.write(results_df.to_string())
-            f.write("\n\n" + "=" * 80 + "\n")
+            f.write(text_output)
         
+        # Save coefficients as CSV for easy loading
+        coefficients_df = model.summary_df()
+        if not coefficients_df.empty:
+            coefficients_df.to_csv(output_path / 'coefficients.csv')
+        
+        # Save first stage results as CSV files (if IV)
+        first_stage = model_summary.get('first_stage', {})
+        for endog, fs_dict in first_stage.items():
+            if isinstance(fs_dict, dict) and 'coef_names' in fs_dict:
+                fs_df = pd.DataFrame({
+                    'variable': fs_dict.get('coef_names', []),
+                    'coefficient': fs_dict.get('coefficients', []),
+                    'std_error': fs_dict.get('std_errors', []),
+                    't_stat': fs_dict.get('t_statistics', []),
+                    'p_value': fs_dict.get('p_values', []),
+                })
+                if 'ci_lower' in fs_dict and 'ci_upper' in fs_dict:
+                    fs_df['ci_lower'] = fs_dict['ci_lower']
+                    fs_df['ci_upper'] = fs_dict['ci_upper']
+                
+                safe_name = endog.replace(' ', '_').replace('/', '_')
+                fs_df.to_csv(output_path / f'first_stage_{safe_name}.csv', index=False)
+        
+        # Save complete JSON with all metadata and results
         with open(output_path / f'results_{timestamp}.json', 'w') as f:
             json.dump(results_container, f, indent=2)
         
@@ -311,149 +456,135 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     return model
 
 
-def run_online_rls(config: Dict[str, Any], spec_name: str, 
-                   output_dir: Optional[str] = None, verbose: bool = True,
-                   dataset_override: Optional[str] = None) -> Any:
-    """Run Online RLS analysis with specified configuration."""
+def cleanup_analysis_results(output_dir: str, dry_run: bool = False) -> None:
+    """
+    Cleanup regression results: keep only the latest result per model grouped by minor version (X in y.X.z).
+    
+    Reads duckreg version from result JSON files and groups results by the second version component.
+    For each model and version group, keeps only the most recent result.
+    
+    Args:
+        output_dir: Base output directory containing analysis results
+        dry_run: If True, only show what would be deleted without actually deleting
+    """
     logger = logging.getLogger(__name__)
     
-    rls_config = config['analyses']['online_rls']
-    spec_config = rls_config['specifications'][spec_name]
-    defaults = rls_config['defaults']
-    settings = {**defaults, **spec_config.get('settings', {})}
+    output_path = Path(output_dir) / 'duckreg'
+    if not output_path.exists():
+        logger.warning(f"DuckReg output directory not found: {output_path}")
+        return
     
-    data_source = dataset_override or spec_config['data_source']
-    logger.info(f"Running Online RLS: {spec_config['description']}")
+    total_deleted = 0
+    total_kept = 0
     
-    from streamreg.api import OLS
-    
-    cluster = None
-    if settings.get('cluster_type') == 'one_way':
-        cluster = spec_config.get('cluster1_col')
-    elif settings.get('cluster_type') == 'two_way':
-        cluster = [spec_config.get('cluster1_col'), spec_config.get('cluster2_col')]
-    
-    formula = spec_config.get('formula')
-    if not formula:
-        features = spec_config.get('feature_cols', [])
-        target = spec_config.get('target_col')
-        formula = f"{target} ~ {' + '.join(features)}"
-    
-    geo_query = build_geographic_query(spec_config)
-    user_query = spec_config.get('query')
-    query = f"({geo_query}) AND ({user_query})" if geo_query and user_query else (geo_query or user_query)
-    
-    model = OLS(
-        formula=formula,
-        alpha=settings.get('alpha', 1e-3),
-        forget_factor=settings.get('forget_factor', 1.0),
-        chunk_size=settings.get('chunk_size', 10000),
-        n_workers=settings.get('n_workers'),
-        show_progress=settings.get('show_progress', True),
-        se_type=settings.get('se_type', 'stata'),
-        local_directory=settings.get('local_directory'),
-        memory_limit=settings.get('memory_limit')
-    )
-    
-    model.fit(data_source, cluster=cluster, query=query)
-    
-    logger.info(f"Complete! N={model.n_obs_:,}, R²={model.r_squared_:.4f}")
-    print(model.summary().to_string())
-    
-    if output_dir:
-        output_path = Path(output_dir) / 'online_rls' / spec_name
-        output_path.mkdir(parents=True, exist_ok=True)
+    # Process each specification directory
+    for spec_dir in output_path.iterdir():
+        if not spec_dir.is_dir():
+            continue
         
-        summary_df = model.summary()
-        summary_df.to_csv(output_path / 'coefficients.csv')
+        # Collect result JSON files (which contain version info)
+        result_files = list(spec_dir.glob("results_*.json"))
+        if not result_files:
+            logger.debug(f"No result files in {spec_dir.name}")
+            continue
         
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        results = {
-            'metadata': {'spec_name': spec_name, 'timestamp': datetime.now().isoformat()},
-            'model_statistics': {'n_obs': int(model.n_obs_), 'r_squared': float(model.r_squared_)},
-            'coefficients': {'names': summary_df.index.tolist(), 'estimates': summary_df['coef'].tolist()}
-        }
-        with open(output_path / f'results_{timestamp}.json', 'w') as f:
-            json.dump(results, f, indent=2)
+        # Group by minor version (X in y.X.z) and timestamp
+        version_groups = {}  # version_minor -> {timestamp: [files]}
+        
+        for json_file in result_files:
+            try:
+                # Read version info from JSON
+                with open(json_file, 'r') as f:
+                    data = json.load(f)
+                
+                # Extract duckreg version
+                version_info = data.get('version_info', {})
+                duckreg_version = version_info.get('duckreg_version', 'unknown')
+                
+                # Parse version: y.X.z -> extract X (default to 0.0.0 if unparseable)
+                if duckreg_version == 'unknown':
+                    duckreg_version = '0.0.0'
+                
+                version_parts = duckreg_version.split('.')
+                if len(version_parts) >= 2 and version_parts[1].isdigit():
+                    version_minor = int(version_parts[1])
+                else:
+                    logger.warning(f"Could not parse version from {json_file.name}: {duckreg_version}, assuming 0.0.0")
+                    version_minor = 0  # Default to 0.0.0 when unparseable
+                
+                # Extract timestamp from filename: results_YYYYMMDD_HHMMSS.json
+                parts = json_file.stem.split('_', 1)
+                if len(parts) == 2 and len(parts[1]) == 15:
+                    timestamp = datetime.strptime(parts[1], '%Y%m%d_%H%M%S')
+                else:
+                    logger.warning(f"Invalid timestamp in filename: {json_file.name}")
+                    continue
+                
+                # Group files
+                if version_minor not in version_groups:
+                    version_groups[version_minor] = {}
+                if timestamp not in version_groups[version_minor]:
+                    version_groups[version_minor][timestamp] = []
+                
+                # Find associated files (txt, json, csv)
+                base_name = f"results_{parts[1]}"
+                associated_files = [json_file]
+                
+                # Look for matching txt file
+                txt_file = spec_dir / f"{base_name}.txt"
+                if txt_file.exists():
+                    associated_files.append(txt_file)
+                
+                version_groups[version_minor][timestamp].extend(associated_files)
+                
+            except Exception as e:
+                logger.error(f"Error processing {json_file}: {e}")
+                continue
+        
+        # For each version group, keep only the latest
+        for version_minor, timestamp_dict in version_groups.items():
+            if not timestamp_dict:
+                continue
+            
+            sorted_timestamps = sorted(timestamp_dict.keys(), reverse=True)
+            latest_timestamp = sorted_timestamps[0]
+            
+            version_str = f"0.{version_minor}.x" if version_minor >= 0 else "unknown"
+            
+            for ts, files in timestamp_dict.items():
+                if ts == latest_timestamp:
+                    logger.info(f"Keeping {spec_dir.name} (v{version_str}, {ts}): {len(files)} files")
+                    total_kept += len(files)
+                else:
+                    for file_path in files:
+                        if dry_run:
+                            logger.info(f"Would delete: {file_path.relative_to(output_path)}")
+                        else:
+                            file_path.unlink()
+                            logger.debug(f"Deleted: {file_path.relative_to(output_path)}")
+                        total_deleted += 1
     
-    return model
-
-
-def run_online_2sls(config: Dict[str, Any], spec_name: str, 
-                    output_dir: Optional[str] = None, verbose: bool = True,
-                    dataset_override: Optional[str] = None) -> Any:
-    """Run Online 2SLS analysis."""
-    logger = logging.getLogger(__name__)
-    
-    twosls_config = config['analyses']['online_2sls']
-    spec_config = twosls_config['specifications'][spec_name]
-    defaults = twosls_config['defaults']
-    settings = {**defaults, **spec_config.get('settings', {})}
-    
-    data_source = dataset_override or spec_config['data_source']
-    formula = spec_config.get('formula')
-    if not formula:
-        raise ValueError("2SLS requires formula")
-    
-    logger.info(f"Running Online 2SLS: {spec_config['description']}")
-    
-    from streamreg.api import TwoSLS
-    
-    cluster = None
-    if settings.get('cluster_type') == 'one_way':
-        cluster = spec_config.get('cluster1_col')
-    elif settings.get('cluster_type') == 'two_way':
-        cluster = [spec_config.get('cluster1_col'), spec_config.get('cluster2_col')]
-    
-    feature_engineering = spec_config.get('feature_engineering') or settings.get('feature_engineering')
-    endogenous = feature_engineering.get('endogenous') if feature_engineering else None
-    
-    geo_query = build_geographic_query(spec_config)
-    user_query = spec_config.get('query')
-    query = f"({geo_query}) & ({user_query})" if geo_query and user_query else (geo_query or user_query)
-    
-    model = TwoSLS(
-        formula=formula,
-        endogenous=endogenous,
-        alpha=settings.get('alpha', 1e-3),
-        forget_factor=settings.get('forget_factor', 1.0),
-        chunk_size=settings.get('chunk_size', 10000),
-        n_workers=settings.get('n_workers'),
-        show_progress=settings.get('show_progress', True),
-        se_type=settings.get('se_type', 'stata'),
-        local_directory=settings.get('local_directory'),
-        memory_limit=settings.get('memory_limit')
-    )
-    
-    model.fit(data_source, cluster=cluster, query=query)
-    
-    logger.info(f"Complete! N={model.results_.n_obs:,}")
-    print(model.summary(stage='second').to_string())
-    
-    return model
-
-
-def list_analyses(config: Dict[str, Any]) -> None:
-    """List available analyses."""
-    print("\nAvailable analyses:")
-    print("=" * 50)
-    for name, cfg in config['analyses'].items():
-        print(f"\n{name.upper()}: {cfg['description']}")
-        if 'specifications' in cfg:
-            for spec_name, spec_cfg in cfg['specifications'].items():
-                print(f"  - {spec_name}: {spec_cfg['description']}")
+    if dry_run:
+        logger.info(f"Dry run complete: would delete {total_deleted} files, keep {total_kept} files")
+    else:
+        logger.info(f"Cleanup complete: deleted {total_deleted} files, kept {total_kept} files")
 
 
 def main():
     """Main entrypoint."""
-    parser = argparse.ArgumentParser(description="GNT Analysis Pipeline")
-    parser.add_argument("analysis_type", choices=['online_rls', 'online_2sls', 'duckreg', 'list'])
-    parser.add_argument("--config", default="orchestration/configs/analysis.yaml")
-    parser.add_argument("--specification", "-s")
-    parser.add_argument("--output", "-o")
-    parser.add_argument("--dataset")
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--quiet", "-q", action="store_true")
+    parser = argparse.ArgumentParser(description="GNT Analysis Pipeline (DuckReg)")
+    parser.add_argument("--config", default="orchestration/configs/analysis.xlsx", 
+                       help="Path to analysis config file (Excel or YAML)")
+    parser.add_argument("--model", "-m", help="Model name (specification) to run")
+    parser.add_argument("--list", "-l", action="store_true", help="List available models")
+    parser.add_argument("--output", "-o", help="Output directory for results")
+    parser.add_argument("--dataset", help="Override dataset path for analysis")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
+    parser.add_argument("--quiet", "-q", action="store_true", help="Disable verbose output")
+    parser.add_argument("--se-method", choices=['analytical', 'bootstrap', 'none'], 
+                       help="Standard error method (overrides config)")
+    parser.add_argument("--fitter", choices=['numpy', 'duckdb'], 
+                       help="Fitter type (overrides config)")
     
     args = parser.parse_args()
     
@@ -470,33 +601,54 @@ def main():
     
     logger = setup_logging(config)
     
-    if args.analysis_type == 'list':
-        list_analyses(config)
-        return
+    # Handle --list option
+    if args.list:
+        specs = config['analyses']['duckreg']['specifications']
+        if not specs:
+            print("No models found in configuration")
+            sys.exit(0)
+        
+        print("\nAvailable models:")
+        print("=" * 80)
+        for model_name, spec in specs.items():
+            print(f"\n{model_name}")
+            print(f"  Description: {spec.get('description', 'N/A')}")
+            print(f"  Data source: {spec.get('data_source', 'N/A')}")
+            print(f"  Formula: {spec.get('formula', 'N/A')}")
+            print(f"  SE method: {spec.get('se_method', 'default')}")
+            print(f"  Fitter: {spec.get('fitter', 'default')}")
+        print("\n" + "=" * 80)
+        sys.exit(0)
     
-    output_dir = args.output or config.get('output', {}).get('base_path', str(project_root / "output" / "analysis"))
-    
-    runners = {
-        'online_rls': run_online_rls,
-        'online_2sls': run_online_2sls,
-        'duckreg': run_duckreg,
-    }
-    
-    if args.analysis_type not in config['analyses']:
-        logger.error(f"Unknown analysis: {args.analysis_type}")
+    # Require --model for actual execution
+    if not args.model:
+        logger.error("Model name required. Use --model <model_name> or --list to see available models")
         sys.exit(1)
     
-    if not args.specification:
-        logger.error(f"Specification required. Use -s/--specification")
+    output_dir = args.output or config.get('output', {}).get('base_path', 
+                                                            str(project_root / "output" / "analysis"))
+    
+    if 'duckreg' not in config.get('analyses', {}):
+        logger.error("DuckReg analysis not configured in config file")
         sys.exit(1)
     
-    specs = config['analyses'][args.analysis_type]['specifications']
-    if args.specification not in specs:
-        logger.error(f"Unknown specification: {args.specification}. Available: {list(specs.keys())}")
+    specs = config['analyses']['duckreg']['specifications']
+    if args.model not in specs:
+        logger.error(f"Unknown model: {args.model}. Available: {list(specs.keys())}")
         sys.exit(1)
+    
+    # Apply CLI overrides
+    if args.se_method:
+        config['analyses']['duckreg']['defaults']['se_method'] = args.se_method
+        logger.info(f"Overriding se_method from CLI: {args.se_method}")
+    
+    if args.fitter:
+        config['analyses']['duckreg']['defaults']['fitter'] = args.fitter
+        logger.info(f"Overriding fitter from CLI: {args.fitter}")
     
     try:
-        runners[args.analysis_type](config, args.specification, output_dir, not args.quiet, args.dataset)
+        logger.info(f"Running DuckReg model: {args.model}")
+        run_duckreg(config, args.model, output_dir, not args.quiet, args.dataset)
     except Exception as e:
         logger.error(f"Analysis failed: {e}")
         if args.debug:

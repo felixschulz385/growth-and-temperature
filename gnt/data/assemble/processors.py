@@ -188,6 +188,7 @@ class TileProcessor:
         padded_tile_geobox,
         target_geobox_zoomed,
         pixel_id_ds: xr.Dataset,
+        land_mask: Optional[xr.DataArray] = None,
     ) -> Optional[pd.DataFrame]:
         """
         Extract and process a single dataset tile.
@@ -195,9 +196,14 @@ class TileProcessor:
         Processing pipeline:
         1. Extract tile from padded bounds
         2. Apply winsorization if configured
-        3. Reproject to target resolution if needed
-        4. Assign pixel_id variable
-        5. Convert to DataFrame
+        3. Apply land mask at native resolution (using xarray .where())
+        4. Reproject to target resolution if needed
+        5. Assign pixel_id variable
+        6. Convert to DataFrame
+        7. Drop NaN rows
+        
+        Args:
+            land_mask: Optional boolean DataArray for masking pixels at native resolution (True=land, False=ocean)
         
         Returns:
             DataFrame with pixel_id, or None if tile is empty
@@ -229,6 +235,11 @@ class TileProcessor:
                         tile_ds[var] = winsorize(tile_ds[var], cutoff=winsorize_cutoff)
                 logger.debug(f"Applied winsorization with cutoff={winsorize_cutoff}")
             
+            # Apply land mask at native resolution before reprojection
+            if land_mask is not None:
+                for var in tile_ds.data_vars:
+                    tile_ds[var] = tile_ds[var].where(land_mask)
+            
             # Reproject to target resolution if needed
             if target_geobox_zoomed is not None and hasattr(tile_ds, 'odc'):
                 tile_ds = tile_ds.odc.reproject(
@@ -248,6 +259,13 @@ class TileProcessor:
                 columns=['band', 'spatial_ref', LATITUDE_COORD, LONGITUDE_COORD], 
                 errors='ignore'
             )
+            
+            # Drop rows where all data columns are NaN (from land mask filtering)
+            if land_mask is not None:
+                # Keep index columns, drop rows where all non-index columns are NaN
+                data_cols = [col for col in df.columns if col not in ['pixel_id', 'year']]
+                if data_cols:
+                    df = df.dropna(subset=data_cols, how='all')
             
             return df if not df.empty else None
             
@@ -350,56 +368,72 @@ class TileProcessor:
         
         return all_index_cols
     
-    def _apply_land_mask(
+    def _load_land_mask_as_dataarray(
         self,
-        combined: pd.DataFrame,
         land_mask_ds: Optional[xr.Dataset],
         ix: int,
         iy: int,
         padded_tile_geobox,
         target_geobox_zoomed,
-        pixel_id_ds: xr.Dataset,
-    ) -> pd.DataFrame:
+    ) -> Optional[xr.DataArray]:
         """
-        Apply land mask filter using right join.
+        Load and prepare land mask as a boolean xarray DataArray.
         
-        Filters combined data to only include land pixels.
+        Extracts the land mask tile at native resolution and returns as boolean DataArray.
+        The mask is NOT reprojected; masking is applied before reprojection in _extract_dataset_tile.
+        Returns None if mask cannot be loaded. Logs and skips tile if no land pixels are found.
+        
+        Args:
+            land_mask_ds: Land mask xarray Dataset
+            ix, iy: Tile indices for logging
+            padded_tile_geobox: Padded geobox for tile extraction
+            target_geobox_zoomed: Target resolution geobox (not used for reprojection here)
+            
+        Returns:
+            Boolean xarray DataArray at native resolution, or None if loading fails or no land pixels
         """
         if land_mask_ds is None:
-            return combined
+            return None
         
-        logger.debug(f"Tile [{ix}, {iy}]: processing land_mask")
+        logger.debug(f"Tile [{ix}, {iy}]: loading land_mask as boolean raster")
         
-        mask_df = self._extract_dataset_tile(
-            land_mask_ds, 
-            {'winsorize': None, 'resampling': 'nearest'}, 
-            ix, iy,
-            padded_tile_geobox, 
-            target_geobox_zoomed, 
-            pixel_id_ds
-        )
-        
-        if mask_df is None or 'land_mask' not in mask_df.columns:
-            logger.debug(f"Tile [{ix}, {iy}]: land_mask extraction failed")
-            return combined
-        
-        # Filter to land pixels only
-        mask_df = mask_df[mask_df.land_mask.astype(bool)]
-        mask_df = mask_df.drop(columns=['land_mask'], errors='ignore')
-        
-        rows_before = len(combined)
-        combined = pd.merge(
-            combined, 
-            mask_df[['pixel_id']], 
-            on=['pixel_id'], 
-            how='right'
-        )
-        logger.debug(
-            f"Tile [{ix}, {iy}]: land_mask filter applied, "
-            f"rows: {rows_before} -> {len(combined)}"
-        )
-        
-        return combined
+        try:
+            bbox = padded_tile_geobox.boundingbox
+            
+            # Extract land mask tile
+            if LATITUDE_COORD in land_mask_ds.coords and LONGITUDE_COORD in land_mask_ds.coords:
+                mask_tile = land_mask_ds.sel(
+                    latitude=slice(bbox.top, bbox.bottom),
+                    longitude=slice(bbox.left, bbox.right)
+                ).compute()
+            else:
+                logger.warning(f"Tile [{ix}, {iy}]: land_mask has unknown coordinate system")
+                return None
+            
+            if mask_tile is None or mask_tile.sizes.get(LATITUDE_COORD, 0) == 0:
+                logger.debug(f"Tile [{ix}, {iy}]: land_mask tile is empty")
+                return None
+            
+            # Extract boolean land mask DataArray at native resolution
+            if 'land_mask' not in mask_tile.data_vars:
+                logger.warning(f"Tile [{ix}, {iy}]: 'land_mask' variable not found")
+                return None
+            
+            land_mask = mask_tile['land_mask'].astype(bool)
+            
+            # Quick check: if no land pixels, skip tile entirely
+            if not land_mask.any():
+                logger.debug(f"Tile [{ix}, {iy}]: no land pixels found, skipping tile")
+                return None
+            
+            land_pixel_count = int(land_mask.sum())
+            logger.debug(f"Tile [{ix}, {iy}]: found {land_pixel_count} land pixels")
+            
+            return land_mask
+            
+        except Exception as e:
+            logger.warning(f"Tile [{ix}, {iy}]: failed to load land_mask: {e}")
+            return None
     
     def _process_tile_update_mode(
         self,
@@ -547,6 +581,16 @@ class TileProcessor:
             logger.warning(f"Failed to create pixel_id for tile [{ix}, {iy}]")
             return False
         
+        # Returns None if tile has no land pixels (early exit)
+        land_mask = self._load_land_mask_as_dataarray(
+            land_mask_ds, ix, iy,
+            padded_tile_geobox, target_geobox_zoomed
+        )
+        
+        # If land mask was needed but not found, skip tile
+        if land_mask_ds is not None and land_mask is None:
+            return False
+        
         # Process each dataset
         combined = None
         for dataset_name, ds, dataset_config in datasets:
@@ -554,7 +598,8 @@ class TileProcessor:
             
             df = self._extract_dataset_tile(
                 ds, dataset_config, ix, iy,
-                padded_tile_geobox, target_geobox_zoomed, pixel_id_ds
+                padded_tile_geobox, target_geobox_zoomed, pixel_id_ds,
+                land_mask=land_mask
             )
             
             if df is not None and not df.empty:
@@ -565,13 +610,6 @@ class TileProcessor:
                 combined = self._merge_dataframes(
                     combined, df, dataset_name, ix, iy
                 )
-        
-        # Apply land mask filter
-        if combined is not None:
-            combined = self._apply_land_mask(
-                combined, land_mask_ds, ix, iy,
-                padded_tile_geobox, target_geobox_zoomed, pixel_id_ds
-            )
         
         # Check for empty result
         if combined is None or combined.empty:

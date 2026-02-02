@@ -28,6 +28,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 python run.py assemble \
     --config orchestration/configs/data.yaml \
     --source $SOURCE \
+    --no-overwrite \
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \
     --temp-dir "${DATA_NOBACKUP}/scratch/dask" \

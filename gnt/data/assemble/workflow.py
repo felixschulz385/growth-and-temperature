@@ -95,15 +95,21 @@ def _process_all_tiles(
     processor = TileProcessor(assembly_config, output_path)
     processed_count = 0
     skipped_count = 0
+    overwrite = processing_config.get('overwrite', True)  # Default to True for backward compatibility
     
     for ix, iy in all_tiles:
         tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
         output_file = os.path.join(tile_output_path, "data.parquet")
         
-        # Default behavior: recreate all tiles (no skipping)
-        # Only skip in update mode if tile doesn't exist yet
+        # In update mode, skip tiles that don't exist yet
         if assembly_mode == 'update' and not os.path.exists(output_file):
             logger.warning(f"Tile ix={ix}, iy={iy} does not exist, skipping in update mode")
+            skipped_count += 1
+            continue
+        
+        # In create mode, skip existing tiles if overwrite=False
+        if assembly_mode == 'create' and not overwrite and os.path.exists(output_file):
+            logger.info(f"Tile ix={ix}, iy={iy} already exists, skipping (overwrite=False)")
             skipped_count += 1
             continue
         

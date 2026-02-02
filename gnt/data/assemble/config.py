@@ -164,6 +164,7 @@ def apply_cli_overrides(assembly_config: Dict[str, Any], cli_overrides: Dict[str
         'compression': 'compression',
         'assembly_mode': 'assembly mode',
         'datasource': 'datasource',
+        'overwrite': 'overwrite',
     }
     
     for key, log_name in processing_overrides.items():

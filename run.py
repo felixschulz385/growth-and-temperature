@@ -49,7 +49,162 @@ logger = logging.getLogger("main")
 
 
 def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
-    """Load YAML/JSON configuration file with environment variable expansion."""
+    """Load YAML/JSON/Excel configuration file with environment variable expansion."""
+    config_path = Path(config_path)
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found at {config_path}")
+    
+    # Check if it's an Excel file
+    if config_path.suffix.lower() in ['.xlsx', '.xls']:
+        # Import Excel loading function from workflow
+        from gnt.analysis.workflow import (
+            get_directory_size, bytes_to_gb, format_size_string
+        )
+        import pandas as pd
+        
+        # Load defaults from the YAML analysis configuration
+        yaml_config_path = Path(config_path).parent / "analysis.yaml"
+        yaml_defaults = {
+            'se_method': 'analytical',
+            'fitter': 'duckdb',
+            'n_bootstraps': 100,
+            'seed': 42,
+            'fe_method': 'mundlak',
+            'round_strata': 5,
+            'n_jobs': 1,
+            'duckdb_kwargs': {}
+        }
+        
+        if yaml_config_path.exists():
+            try:
+                with open(yaml_config_path, 'r') as f:
+                    yaml_config = yaml.safe_load(f)
+                if 'analyses' in yaml_config and 'duckreg' in yaml_config['analyses']:
+                    yaml_defaults = yaml_config['analyses']['duckreg'].get('defaults', yaml_defaults)
+            except Exception:
+                pass  # Use hardcoded defaults if YAML loading fails
+        
+        # Load from Excel - read from "Models" sheet
+        df = pd.read_excel(config_path, sheet_name='Models')
+        
+        # Build config structure from Excel data
+        config = {
+            'analyses': {
+                'duckreg': {
+                    'description': 'DuckReg compressed OLS/2SLS analysis',
+                    'specifications': {},
+                    'defaults': yaml_defaults  # Use defaults from YAML
+                }
+            },
+            'output': {
+                'base_path': str(Path(project_root) / "output" / "analysis")
+            },
+            'logging': {
+                'level': 'INFO',
+                'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            }
+        }
+        
+        # Process each row as a specification
+        for _, row in df.iterrows():
+            model_name = row['model_name']
+            
+            # Build formula from components
+            dependent = row['dependent']
+            independent = row['independent']
+            
+            # Parse fixed effects (0 means none, otherwise column names)
+            fixed_effects = []
+            if pd.notna(row['fixed_effects']) and str(row['fixed_effects']) != '0':
+                fixed_effects = [fe.strip() for fe in str(row['fixed_effects']).split(',')]
+            
+            # Parse instruments (0 means OLS, otherwise IV formula)
+            instruments = []
+            if pd.notna(row['instruments']) and str(row['instruments']) != '0':
+                instruments = [inst.strip() for inst in str(row['instruments']).split(',')]
+            
+            # Build formula
+            if instruments:
+                # IV formula: dependent ~ exog + [endog ~ instruments] | fixed_effects
+                formula = f"{dependent} ~ {independent}"
+                if fixed_effects:
+                    formula += " | " + " + ".join(fixed_effects)
+            else:
+                # OLS formula: dependent ~ independent | fixed_effects
+                formula = f"{dependent} ~ {independent}"
+                if fixed_effects:
+                    formula += " | " + " + ".join(fixed_effects)
+            
+            # Build clustering specification
+            cluster_col = None
+            if pd.notna(row['clustering']) and str(row['clustering']) != '0':
+                cluster_col = str(row['clustering'])
+            
+            # Build specification
+            spec = {
+                'description': f"{row.get('section', 'Analysis')} - {row.get('subsection', model_name)}",
+                'data_source': str(row['data_source']),
+                'formula': formula,
+                'settings': {}
+            }
+            
+            # Expand data_source path
+            data_source_value = str(row['data_source'])
+            # Handle both direct paths and simple filenames
+            if not data_source_value.startswith('/') and not data_source_value.startswith('${'):
+                # If it's a simple filename like "5km", expand it
+                data_source_expanded = os.path.expandvars(f"${{WD}}/data_nobackup/assembled/{data_source_value}.parquet")
+            else:
+                # Otherwise expand as-is
+                data_source_expanded = os.path.expandvars(data_source_value)
+            
+            spec['data_source'] = data_source_expanded
+            
+            # Calculate directory size and set max_temp_directory_size
+            # First expand environment variables for size calculation
+            data_source_for_size = os.path.expandvars(data_source_expanded)
+            data_dir = Path(data_source_for_size.replace('.parquet', ''))
+            dir_size = get_directory_size(data_dir)
+            
+            # Store the calculated temp dir size in settings for later use
+            if dir_size > 0:
+                calculated_size = format_size_string(dir_size)
+                spec['settings']['_max_temp_directory_size'] = calculated_size
+            
+            # Add clustering if specified
+            if cluster_col:
+                spec['cluster1_col'] = cluster_col
+                spec['settings']['cluster_type'] = 'one_way'
+            
+            # Add query if specified
+            if pd.notna(row.get('query')) and str(row['query']).strip():
+                spec['query'] = str(row['query'])
+            
+            # Add subset if specified
+            if pd.notna(row.get('subset')) and str(row['subset']).strip():
+                spec['subset'] = str(row['subset'])
+            
+            # Override defaults with row-specific settings
+            if pd.notna(row.get('se_method')):
+                spec['se_method'] = str(row['se_method'])
+            if pd.notna(row.get('fitter')):
+                spec['fitter'] = str(row['fitter'])
+            if pd.notna(row.get('n_bootstraps')):
+                spec['settings']['n_bootstraps'] = int(row['n_bootstraps'])
+            if pd.notna(row.get('seed')):
+                spec['settings']['seed'] = int(row['seed'])
+            if pd.notna(row.get('fe_method')):
+                spec['settings']['fe_method'] = str(row['fe_method'])
+            if pd.notna(row.get('round_strata')):
+                spec['settings']['round_strata'] = int(row['round_strata'])
+            if pd.notna(row.get('n_jobs')):
+                spec['settings']['n_jobs'] = int(row['n_jobs'])
+            
+            config['analyses']['duckreg']['specifications'][model_name] = spec
+        
+        return config
+    
+    # Original YAML/JSON loading logic
     env_pattern = re.compile(r'\${([^}^{]+)}')
     
     # Function to replace environment variables in strings
@@ -86,11 +241,6 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
         else:
             return item
     
-    # Load and process the YAML/JSON file
-    config_path = Path(config_path)
-    if not config_path.exists():
-        raise FileNotFoundError(f"Configuration file not found at {config_path}")
-    
     with open(config_path, 'r') as f:
         if config_path.suffix.lower() == '.json':
             config = json.load(f)
@@ -125,6 +275,11 @@ def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = Fals
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     root_logger.addHandler(stdout_handler)
+
+    # Suppress rasterio debug logging
+    logging.getLogger('rasterio').setLevel(logging.WARNING)
+    logging.getLogger('rasterio.env').setLevel(logging.WARNING)
+    logging.getLogger('rasterio._env').setLevel(logging.WARNING)
     
     logger.debug("Logging configured successfully")
 
@@ -409,7 +564,7 @@ def main():
     # Main operation type argument
     parser.add_argument(
         "operation",
-        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble", "demean", "analysis", "tables"],
+        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble", "demean", "analysis", "tables", "cleanup"],
         help="Operation to perform"
     )
     
@@ -427,14 +582,14 @@ def main():
     
     # Analysis-specific arguments
     parser.add_argument(
-        "--analysis-type",
-        choices=['online_rls', 'online_2sls', 'duckreg', 'list'],
-        help="Type of analysis to run (required for analysis operation)"
+        "--model", "-m",
+        help="Model name to run for analysis operation"
     )
     
     parser.add_argument(
-        "--specification", "-s",
-        help="Analysis specification to use (for analysis operation)"
+        "--list-models",
+        action="store_true",
+        help="List available analysis models"
     )
     
     parser.add_argument(
@@ -504,6 +659,12 @@ def main():
     )
     
     parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="For cleanup operation: show what would be deleted without actually deleting"
+    )
+    
+    parser.add_argument(
         "--stage",
         help="Processing stage for preprocess operation (e.g., annual, spatial, vector)"
     )
@@ -560,6 +721,20 @@ def main():
         '--datasource',
         help='Datasource name to update (required with --update)'
     )
+    
+    parser.add_argument(
+        '--overwrite',
+        action='store_true',
+        default=None,
+        help='Overwrite existing tiles in create mode (default: True). Use --no-overwrite to skip existing tiles.'
+    )
+    
+    parser.add_argument(
+        '--no-overwrite',
+        dest='overwrite',
+        action='store_false',
+        help='Skip existing tiles in create mode instead of overwriting them'
+    )
 
     # Table-specific arguments
     parser.add_argument(
@@ -582,17 +757,18 @@ def main():
     
     # Validate arguments based on operation type
     if args.operation == "analysis":
-        if not args.analysis_type:
-            parser.error("Analysis operation requires --analysis-type")
-        if args.analysis_type == "online_rls" and not args.specification:
-            parser.error("Online RLS analysis requires --specification")
-        # For analysis, config should point to analysis.yaml by default
+        if not args.list_models and not args.model:
+            parser.error("Analysis operation requires --model <model_name> or --list-models")
+        # For analysis, config should point to analysis.xlsx by default
         if not args.config or args.config == "config.yaml":
-            args.config = "orchestration/configs/analysis.yaml"
+            args.config = "orchestration/configs/analysis.xlsx"
     elif args.operation == "tables":
         # Tables operation: source is optional (table name) - if not provided, generates all tables
         # Config is also optional for tables - we use table_config and analysis_config instead
         logger.info("Table generation mode - source is optional (specify table name to generate specific table)")
+    elif args.operation == "cleanup":
+        # Cleanup operation: only requires output directory
+        pass
     else:
         if not args.config:
             parser.error(f"{args.operation} operation requires --config")
@@ -603,14 +779,33 @@ def main():
         # Set up logging (SLURM handles file output automatically)
         setup_logging(args.log_level, debug=args.debug)
         
-        if args.operation == "analysis":
-            logger.info(f"Starting GNT analysis system: {args.analysis_type}")
+        if args.operation == "cleanup":
+            logger.info("Starting analysis results cleanup")
+            
+            # Import cleanup function from analysis workflow
+            from gnt.analysis.workflow import cleanup_analysis_results
+            
+            # Determine output directory
+            output_dir = args.output or str(Path(project_root) / "output" / "analysis")
+            
+            if not Path(output_dir).exists():
+                logger.error(f"Output directory not found: {output_dir}")
+                return 1
+            
+            logger.info(f"Cleaning up results in: {output_dir}")
+            if args.dry_run:
+                logger.info("DRY RUN MODE - no files will be deleted")
+            
+            cleanup_analysis_results(output_dir, dry_run=args.dry_run)
+            
+        elif args.operation == "analysis":
+            logger.info("Starting GNT analysis system: DuckReg")
             
             # Load analysis configuration with environment variable expansion
             config = load_config_with_env_vars(args.config)
             
             # Import and run analysis
-            from gnt.analysis.workflow import run_online_rls, run_online_2sls, run_duckreg, list_analyses, setup_logging as analysis_setup_logging
+            from gnt.analysis.workflow import run_duckreg, setup_logging as analysis_setup_logging
             
             # Setup analysis-specific logging
             if args.debug:
@@ -623,29 +818,12 @@ def main():
                 output_dir = config.get('output', {}).get('base_path', 
                                                           f"{project_root}/data_nobackup/analysis")
             
-            # Apply local_directory override if provided
-            if args.local_directory:
-                # Override in both analysis type defaults
-                for analysis_type in config.get('analyses', {}).values():
-                    if 'defaults' in analysis_type:
-                        analysis_type['defaults']['local_directory'] = args.local_directory
-                logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
-            
-            # Apply memory_limit override if provided
-            if args.dask_memory_limit:
-                # Override in both analysis type defaults
-                for analysis_type in config.get('analyses', {}).values():
-                    if 'defaults' in analysis_type:
-                        analysis_type['defaults']['memory_limit'] = args.dask_memory_limit
-                logger.info(f"Overriding memory_limit from CLI: {args.dask_memory_limit}")
-            
-            # Apply se_method override if provided
+            # Apply CLI overrides
             if args.se_method:
                 if 'duckreg' in config.get('analyses', {}):
                     config['analyses']['duckreg']['defaults']['se_method'] = args.se_method
                 logger.info(f"Overriding se_method from CLI: {args.se_method}")
             
-            # Apply fitter override if provided
             if args.fitter:
                 if 'duckreg' in config.get('analyses', {}):
                     config['analyses']['duckreg']['defaults']['fitter'] = args.fitter
@@ -654,46 +832,38 @@ def main():
             # Determine verbosity
             verbose = args.verbose and not args.quiet
             
-            if args.analysis_type == 'list':
-                list_analyses(config)
-            elif args.analysis_type == 'online_rls':
-                # Validate specification
-                specs = config['analyses']['online_rls']['specifications']
-                if args.specification not in specs:
-                    logger.error(f"Unknown specification: {args.specification}")
-                    logger.info(f"Available specifications: {list(specs.keys())}")
-                    return 1
-                
-                run_online_rls(config, args.specification, output_dir, verbose, args.dataset)
-            elif args.analysis_type == 'online_2sls':
-                # Validate specification exists
-                if 'online_2sls' not in config.get('analyses', {}):
-                    logger.error("Online 2SLS analysis not configured in config file")
-                    return 1
-                
-                specs = config['analyses']['online_2sls']['specifications']
-                if args.specification not in specs:
-                    logger.error(f"Unknown 2SLS specification: {args.specification}")
-                    logger.info(f"Available 2SLS specifications: {list(specs.keys())}")
-                    return 1
-                
-                run_online_2sls(config, args.specification, output_dir, verbose, args.dataset)
-            elif args.analysis_type == 'duckreg':
-                # Validate specification exists
-                if 'duckreg' not in config.get('analyses', {}):
-                    logger.error("DuckReg analysis not configured in config file")
-                    return 1
-                
+            # Handle --list-models
+            if args.list_models:
                 specs = config['analyses']['duckreg']['specifications']
-                if args.specification not in specs:
-                    logger.error(f"Unknown DuckReg specification: {args.specification}")
-                    logger.info(f"Available specifications: {list(specs.keys())}")
-                    return 1
+                if not specs:
+                    logger.info("No models found in configuration")
+                    return 0
                 
-                run_duckreg(config, args.specification, output_dir, verbose, args.dataset)
-            else:
-                logger.error(f"Analysis type '{args.analysis_type}' not yet implemented")
+                print("\nAvailable models:")
+                print("=" * 80)
+                for model_name, spec in specs.items():
+                    print(f"\n{model_name}")
+                    print(f"  Description: {spec.get('description', 'N/A')}")
+                    print(f"  Data source: {spec.get('data_source', 'N/A')}")
+                    print(f"  Formula: {spec.get('formula', 'N/A')}")
+                    print(f"  SE method: {spec.get('se_method', 'default')}")
+                    print(f"  Fitter: {spec.get('fitter', 'default')}")
+                print("\n" + "=" * 80)
+                return 0
+            
+            # Validate specification exists
+            if 'duckreg' not in config.get('analyses', {}):
+                logger.error("DuckReg analysis not configured in config file")
                 return 1
+            
+            specs = config['analyses']['duckreg']['specifications']
+            if args.model not in specs:
+                logger.error(f"Unknown model: {args.model}")
+                logger.info(f"Available models: {list(specs.keys())}")
+                return 1
+            
+            logger.info(f"Running model: {args.model}")
+            run_duckreg(config, args.model, output_dir, verbose, args.dataset)
         elif args.operation == "tables":
             logger.info("Starting GNT table generation system")
             
@@ -825,6 +995,9 @@ def main():
                     if args.compression is not None:
                         cli_overrides['compression'] = args.compression
                         logger.info(f"Overriding compression from CLI: {args.compression}")
+                    if args.overwrite is not None:
+                        cli_overrides['overwrite'] = args.overwrite
+                        logger.info(f"Overriding overwrite from CLI: {args.overwrite}")
 
             # Run the operation
             run_operation(args.operation, args.source, config, args.mode, getattr(args, "stage", None), args.override_level, cli_overrides)
