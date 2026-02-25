@@ -42,6 +42,12 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif preprocessor_name == 'berman_mining':
             from gnt.data.preprocess.sources.berman_mining import BermanMiningPreprocessor
             return BermanMiningPreprocessor
+        elif preprocessor_name in ['acag', 'acag_pm25', 'pm25']:
+            from gnt.data.preprocess.sources.acag import ACAGPreprocessor
+            return ACAGPreprocessor
+        elif preprocessor_name in ['esacci', 'esa_cci', 'esacci_lc', 'landcover']:
+            from gnt.data.preprocess.sources.esacci import ESACCIPreprocessor
+            return ESACCIPreprocessor
         else:
             # By convention, the class name is expected to be CamelCase
             class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'

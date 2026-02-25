@@ -134,5 +134,27 @@ def create_data_source(source_config):
         return BermanMiningDataSource(
             output_path=output_path or 'berman_mining'
         )
+    elif dataset_name.lower() in ['acag', 'acag_pm25', 'pm25']:
+        logger.info("Creating ACAG PM2.5 data source")
+        from gnt.data.download.sources.acag import ACAGDataSource
+        return ACAGDataSource(
+            base_url=base_url,
+            file_extensions=file_extensions,
+            output_path=output_path,
+            root_folder_id=config.get('root_folder_id'),
+            shared_link_url=config.get('shared_link_url'),
+        )
+    elif dataset_name.lower() in ['esacci', 'esa_cci', 'esacci_lc', 'landcover']:
+        logger.info("Creating ESA CCI Land Cover data source")
+        from gnt.data.download.sources.esacci import ESACCIDataSource
+        year_range = config.get('year_range')
+        if isinstance(year_range, list) and len(year_range) == 2:
+            year_range = tuple(year_range)
+        return ESACCIDataSource(
+            output_path=output_path,
+            year_range=year_range,
+            versions=config.get('versions'),
+            cdsapi_rc=config.get('cdsapi_rc'),
+        )
     else:
         raise ValueError(f"Unknown data source: {dataset_name}")
