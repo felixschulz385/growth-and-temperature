@@ -20,8 +20,9 @@ __init__.py
 debug_eog_credentials.sh
 git_access_token
 
-/output/analysis/**/*.parquet
-/output/analysis/**/*.csv
+/output/analysis
+#/output/analysis/**/*.parquet
+#/output/analysis/**/*.csv
 
 # But allow rendered site
 !output/webpage/

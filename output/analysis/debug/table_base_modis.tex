@@ -1,30 +1,33 @@
 \begin{table}[htbp]
 \centering
+\footnotesize
 \caption{Regression Estimates of Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions}
-\begin{tabular}{lcccccc}
+\begin{tabular}{lcccccccc}
 \toprule
- & (D.P) & (V.P) & (D.1FE) & (V.1FE) & (D.2FE) & (V.2FE) \\
+ & (D.P) & (V.P) & (D.1FE) & (V.1FE) & (D.2FE) & (V.2FE) & (D.2FEY) & (V.2FEY) \\
 \midrule
-$HARM$ & 0.1145*** &  & -0.0019 &  & -0.0095 &  \\
- & (0.0347) &  & (0.0010) &  & (0.0227) &  \\
-$VIIRS$ &  & 0.0812*** &  & -0.0005*** &  & -0.0042* \\
- &  & (0.0217) &  & (0.0001) &  & (0.0017) \\
+$HARM$ & 0.1235** &  & -0.0019 &  & -0.0095 &  & -0.0059*** &  \\
+ & (0.0472) &  & (0.0010) &  & (0.0227) &  & (0.0014) &  \\
+$VIIRS$ &  & 0.0812*** &  & -0.0005*** &  & -0.0042* &  & -0.0007*** \\
+ &  & (0.0217) &  & (0.0001) &  & (0.0017) &  & (0.0001) \\
 \midrule
-N Observations & 91,352,294 & 8,558,990,698 & 3,477,251,380 & 8,558,990,698 & 3,477,215,014 & 8,558,938,909 \\
-N Compressed Rows & 170,093 & 93,477,698 & 307,011,706 & 424,682,146 & 644,099,607 & 559,014,978 \\
+Model Version & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 \\
+Computed Date & 2025-12-11 & 2025-12-06 & 2025-12-06 & 2025-12-06 & 2025-12-06 & 2025-12-06 & 2025-12-10 & 2025-12-10 \\
+N Observations & 3,477,251,380 & 8,558,990,698 & 3,477,251,380 & 8,558,990,698 & 3,477,215,014 & 8,558,938,909 & 3,477,251,380 & 8,558,990,698 \\
+N Compressed Rows & 126,452,778 & 93,477,698 & 307,011,706 & 424,682,146 & 644,099,607 & 559,014,978 & 690,410,123 & 657,671,854 \\
 \midrule
-Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
-Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY \\
-Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
-\cmidrule(lr){1-7}
-Resolution & 1km & 500m & 1km & 500m & 1km & 500m \\
-Spatial Extent & World & World & World & World & World & World \\
-Temporal Extent & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 \\
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY & PX+YR & PX+YR \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+\cmidrule(lr){1-9}
+Resolution & 1km & 500m & 1km & 500m & 1km & 500m & 1km & 500m \\
+Spatial Extent & World & World & World & World & World & World & World & World \\
+Temporal Extent & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 \\
 \bottomrule
 \end{tabular}
 \begin{threeparttable}
 \begin{tablenotes}\small
-\item \textit{Notes:} Independent variable is MODIS surface temperature from the GLASS product. Dependent variable is nighttime lights. FE models use Mundlak fixed effects estimation with clustered standard errors. NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects. Standard errors in parentheses. * p<0.05, ** p<0.01, *** p<0.001
+\item \textit{Notes:} Independent variable is MODIS surface temperature from the GLASS product. Dependent variable is nighttime lights. FE models use Mundlak fixed effects estimation with clustered standard errors. NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p<0.05, ** p<0.01, *** p<0.001
 \end{tablenotes}
 \end{threeparttable}
 \end{table}

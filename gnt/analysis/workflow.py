@@ -304,14 +304,13 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     spec_config = duckreg_config['specifications'][spec_name]
     defaults = duckreg_config['defaults']
     settings = {**defaults, **spec_config.get('settings', {})}
-    
+
+
     data_source = dataset_override or spec_config['data_source']
     formula = spec_config.get('formula')
     if not formula:
         raise ValueError("DuckReg requires formula specification")
     
-    logger.info(f"Running DuckReg analysis: {spec_config['description']}")
-    logger.info(f"Data source: {data_source}")
     
     # Build SQL WHERE clause
     sql_where = None
@@ -326,8 +325,7 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
         user_sql = user_query.replace(' & ', ' AND ').replace(' | ', ' OR ')
         sql_where = f"({sql_where}) AND ({user_sql})" if sql_where else user_sql
     
-    if sql_where:
-        logger.info(f"Applying filter: {sql_where}")
+    # filter debug output handled in summary block below
     
     # Setup database path
     wd = os.environ.get('WD', project_root)
@@ -338,11 +336,9 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     db_name = str(scratch_path / f'duckreg_{spec_name}_{timestamp}.db')
     
-    logger.info(f"Database: {db_name}")
-    
-    fitter = spec_config.get('fitter', settings.get('fitter', 'numpy'))
+    # determine fitter and SE method
+    fitter = spec_config.get('fitter', settings.get('fitter', 'duckdb'))
     se_method = spec_config.get('se_method', settings.get('se_method', 'analytical'))
-    logger.info(f"Fitter: {fitter}, SE method: {se_method}")
     
     # Prepare duckdb_kwargs with environment variable expansion
     duckdb_kwargs = settings.get('duckdb_kwargs', {}).copy()
@@ -355,22 +351,37 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     # If calculated max_temp_directory_size exists in settings, use it
     if '_max_temp_directory_size' in spec_config.get('settings', {}):
         duckdb_kwargs['max_temp_directory_size'] = spec_config['settings']['_max_temp_directory_size']
-        logger.info(f"Using calculated max_temp_directory_size: {duckdb_kwargs['max_temp_directory_size']}")
+        # summary block will show duckdb_kwargs
     
-    logger.info(f"DuckDB kwargs: {duckdb_kwargs}")
-    
+    # Build a consolidated information block for logging
+    info_lines = [
+        "=== DuckReg analysis summary ===",
+        f"Description: {spec_config['description']}",
+        f"Data source: {data_source}",
+        f"Formula: {formula}",
+    ]
+    if sql_where:
+        info_lines.append(f"Filter: {sql_where}")
+    info_lines.append("Settings:")
+    for key, val in settings.items():
+        info_lines.append(f"  {key}: {val}")
+    info_lines.append(f"Fitter: {fitter}, SE method: {se_method}")
+    info_lines.append(f"Database path: {db_name}")
+    info_lines.append("=" * 30)
+    logger.info("\n" + "\n".join(info_lines))
+
     # Import and fit model
-    from duckreg import compressed_ols
+    from duckreg import duckreg
     from duckreg.utils.summary import format_model_summary
     
-    model = compressed_ols(
+    model = duckreg(
         formula=formula,
         data=data_source,
         subset=sql_where,
-        n_bootstraps=settings.get('n_bootstraps', 100),
+        n_bootstraps=settings.get('n_bootstraps', 0),
         round_strata=settings.get('round_strata'),
         seed=settings.get('seed', 42),
-        fe_method=settings.get('fe_method', 'mundlak'),
+        fe_method=settings.get('fe_method', 'demean'),
         duckdb_kwargs=duckdb_kwargs,
         db_name=db_name,
         n_jobs=settings.get('n_jobs', 1),

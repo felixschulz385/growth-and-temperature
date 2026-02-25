@@ -1,5 +1,6 @@
 \begin{table}[htbp]
 \centering
+\footnotesize
 \caption{Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions}
 \begin{tabular}{lcccccccc}
 \toprule
@@ -10,6 +11,8 @@ $\log(\text{HARM} + 0.01)$ & 0.5741** &  & -0.0007 &  & -0.0120 &  & -0.0015 &  
 $\log(\text{VIIRS} + 0.01)$ &  & 1.0445*** &  & -0.0101* &  & -0.0637* &  & -0.0180** \\
  &  & (0.2790) &  & (0.0049) &  & (0.0291) &  & (0.0070) \\
 \midrule
+Model Version & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 \\
+Computed Date & 2025-12-08 & 2025-12-08 & 2025-12-07 & 2025-12-07 & 2025-12-06 & 2025-12-06 & 2025-12-09 & 2025-12-09 \\
 N Observations & 3,477,251,380 & 8,558,990,698 & 3,477,251,380 & 8,558,990,698 & 3,477,215,014 & 8,558,938,909 & 3,477,251,380 & 8,558,990,698 \\
 N Compressed Rows & 70,090,044 & 94,149,484 & 309,578,535 & 623,922,008 & 663,909,860 & 761,053,544 & 708,088,482 & 811,900,669 \\
 \midrule
@@ -17,9 +20,9 @@ Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS 
 Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY & PX+YR & PX+YR \\
 Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
 \cmidrule(lr){1-9}
-Resolution & 1km & 500m & 1km & 500m & 1km & 500m & 1km & 500m \\
+Resolution & 5km & 5km & 5km & 5km & 5km & 5km & 5km & 5km \\
 Spatial Extent & World & World & World & World & World & World & World & World \\
-Temporal Extent & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 \\
+Temporal Extent & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 \\
 \bottomrule
 \end{tabular}
 \begin{threeparttable}

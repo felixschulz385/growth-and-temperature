@@ -112,28 +112,12 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
             # Build formula from components
             dependent = row['dependent']
             independent = row['independent']
-            
-            # Parse fixed effects (0 means none, otherwise column names)
-            fixed_effects = []
-            if pd.notna(row['fixed_effects']) and str(row['fixed_effects']) != '0':
-                fixed_effects = [fe.strip() for fe in str(row['fixed_effects']).split(',')]
-            
-            # Parse instruments (0 means OLS, otherwise IV formula)
-            instruments = []
-            if pd.notna(row['instruments']) and str(row['instruments']) != '0':
-                instruments = [inst.strip() for inst in str(row['instruments']).split(',')]
+            fixed_effects = row['fixed_effects']
+            instruments = row['instruments']
+            clustering = row['clustering']
             
             # Build formula
-            if instruments:
-                # IV formula: dependent ~ exog + [endog ~ instruments] | fixed_effects
-                formula = f"{dependent} ~ {independent}"
-                if fixed_effects:
-                    formula += " | " + " + ".join(fixed_effects)
-            else:
-                # OLS formula: dependent ~ independent | fixed_effects
-                formula = f"{dependent} ~ {independent}"
-                if fixed_effects:
-                    formula += " | " + " + ".join(fixed_effects)
+            formula = f"{dependent} ~ {independent} | {fixed_effects} | {instruments} | {clustering}"
             
             # Build clustering specification
             cluster_col = None
@@ -170,11 +154,6 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
             if dir_size > 0:
                 calculated_size = format_size_string(dir_size)
                 spec['settings']['_max_temp_directory_size'] = calculated_size
-            
-            # Add clustering if specified
-            if cluster_col:
-                spec['cluster1_col'] = cluster_col
-                spec['settings']['cluster_type'] = 'one_way'
             
             # Add query if specified
             if pd.notna(row.get('query')) and str(row['query']).strip():
@@ -799,7 +778,7 @@ def main():
             cleanup_analysis_results(output_dir, dry_run=args.dry_run)
             
         elif args.operation == "analysis":
-            logger.info("Starting GNT analysis system: DuckReg")
+            logger.debug("Starting GNT analysis system: DuckReg")
             
             # Load analysis configuration with environment variable expansion
             config = load_config_with_env_vars(args.config)
@@ -862,7 +841,7 @@ def main():
                 logger.info(f"Available models: {list(specs.keys())}")
                 return 1
             
-            logger.info(f"Running model: {args.model}")
+            logger.debug(f"Running model: {args.model}")
             run_duckreg(config, args.model, output_dir, verbose, args.dataset)
         elif args.operation == "tables":
             logger.info("Starting GNT table generation system")

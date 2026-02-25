@@ -1,43 +1,45 @@
 \begin{table}[htbp]
 \centering
-\caption{Instrumental Variable Estimates of Log Nighttime Lights Effects on Land Surface Temperature Using Regional Favoritism: Replication of Hodler \& Raschky (2014) at Multiple Resolutions}
-\begin{tabular}{lcccccc}
+\footnotesize
+\caption{Instrumental Variable Estimates of Nighttime Lights Effects on Land Surface Temperature Without Logs: Replication and Subsets}
+\begin{tabular}{lccccccc}
 \toprule
- & (RF.HR.5km) & (RF.HR.1km) & (RF.HR.500m) & (RF.HR.5km.2YFE) & (RF.HR.1km.2YFE) & (RF.HR.500m.2YFE) \\
+ & (RF50) & (RF5) & (RF1) & (RF500) & (RF5YFE) & (RF1YFE) & (RF500YFE) \\
 \midrule
 \midrule
-\multicolumn{7}{l}{\textit{First Stage: log(ntl\_harm+0.01)}} \\
-  Leader's Birthplace & 0.029 & 0.046 &  & -0.001 & 0.008 &  \\
- & (0.046) & (0.047) &  & (0.014) & (0.016) &  \\
+\multicolumn{8}{l}{\textit{First Stage: ntl\_harm}} \\
+  Leader's Birthplace & 0.1205 & 0.0378 & 0.0726 &  & -0.0186 & 0.0380 &  \\
+ & (0.1149) & (0.0994) & (0.0963) &  & (0.0822) & (0.0544) &  \\
 \midrule
-\multicolumn{7}{l}{\textit{First Stage: log(viirs\_annual+0.01)}} \\
-  Leader's Birthplace &  &  & 0.016 &  &  & -0.003 \\
- &  &  & (0.034) &  &  & (0.014) \\
+\multicolumn{8}{l}{\textit{First Stage: viirs\_annual}} \\
+  Leader's Birthplace &  &  &  & -0.0249 &  &  & -0.0029 \\
+ &  &  &  & (0.0551) &  &  & (0.0403) \\
 \midrule
-\multicolumn{7}{l}{\textit{Second Stage}} \\
-$\hat{\log(\text{HARM} + 0.01)}$ & -5.519 & -7.412 &  & -181.001 & -16.845 &  \\
- & (34.701) & (14.225) &  & (780.416) & (22.718) &  \\
-$\hat{\log(\text{VIIRS} + 0.01)}$ &  &  & -130.267 &  &  & -76.424* \\
- &  &  & (97.082) &  &  & (37.187) \\
+\multicolumn{8}{l}{\textit{Second Stage}} \\
+$\hat{\text{HARM}}$ & 0.1897 & 0.4774 & 0.7734 &  & 4.0288 & 1.9260 &  \\
+ & (5750.6476) & (61.9794) & (9.2288) &  & (4123.6989) & (110709.1199) &  \\
+$\hat{\text{VIIRS}}$ &  &  &  & -0.2478 &  &  & -0.9308 \\
+ &  &  &  & (105.6770) &  &  & (73391.5373) \\
 \midrule
-N Observations & 98,298,492 & 1,375,582,363 & 7,111,668,356 & 98,298,492 & 1,375,582,363 & 7,111,668,356 \\
-N Compressed Rows & 70,290 & 8,412 & 25,253 & 76,626 & 30,270 & 27,172 \\
-First Stage F (log(ntl\_harm+0.01)) & 0.398 & 0.939 &  & 0.007 & 0.274 &  \\
-First Stage F (log(viirs\_annual+0.01)) &  &  & 0.206 &  &  & 0.058 \\
-Weak Instruments & Yes & Yes & Yes & Yes & Yes & Yes \\
+Model Version & 0.2.0 & 0.2.0 & 0.2.0 & 0.2.0 & 0.2.0 & 0.2.0 & 0.2.0 \\
+Computed Date & 2025-12-19 & 2025-12-19 & 2025-12-19 & 2025-12-19 & 2025-12-19 & 2025-12-19 & 2025-12-19 \\
+N Observations & 851,709 & 87,404,691 & 1,222,185,263 & 6,316,334,731 & 87,404,691 & 1,222,185,263 & 6,316,334,731 \\
+N Compressed Rows & 4,654 & 383,850 & 75,827 & 99,489 & 470,599 & 83,044 & 122,678 \\
+First Stage F (ntl\_harm) & 1.1012 & 0.1443 & 0.5674 &  & 0.0514 & 0.4866 &  \\
+First Stage F (viirs\_annual) &  &  &  & 0.2035 &  &  & 0.0053 \\
 \midrule
-Nighttime Lights & DMSP & DMSP & VIIRS & DMSP & DMSP & VIIRS \\
-Fixed Effects & PX+CY & PX+CY & PX+CY & PX+YR & PX+YR & PX+YR \\
-Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
-\cmidrule(lr){1-7}
-Resolution & 5km & 1km & 500m & 5km & 1km & 500m \\
-Spatial Extent & H\&R & H\&R & H\&R & H\&R & H\&R & H\&R \\
-Temporal Extent & 1992-2009 & 2000-2009 & 2013-2020 & 1992-2009 & 2000-2009 & 2013-2020 \\
+Nighttime Lights & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+CY & PX+YR & PX+YR & PX+YR \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+\cmidrule(lr){1-8}
+Resolution & 50km & 5km & 1km & 500m & 5km & 1km & 500m \\
+Spatial Extent & H\&R & H\&R & H\&R & H\&R & H\&R & H\&R & H\&R \\
+Temporal Extent & 1992-2009 & 1992-2009 & 2000-2009 & 2013-2020 & 1992-2009 & 2000-2009 & 2013-2020 \\
 \bottomrule
 \end{tabular}
 \begin{threeparttable}
 \begin{tablenotes}\small
-\item \textit{Notes:} Dependent variable is log(nighttime lights + 0.01). Models use Mundlak fixed effects estimation with clustered standard errors. PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p<0.05, ** p<0.01, *** p<0.001
+\item \textit{Notes:} Dependent variable is nighttime lights (not logged). Models use regional favoritism as instrument with Mundlak fixed effects estimation. PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p<0.05, ** p<0.01, *** p<0.001
 \end{tablenotes}
 \end{threeparttable}
 \end{table}

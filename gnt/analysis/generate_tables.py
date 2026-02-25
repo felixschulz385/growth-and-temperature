@@ -89,6 +89,8 @@ class RegressionTableData:
     first_stage_rows: Optional[List[Dict[str, Any]]] = None  # For full first stage display
     show_first_stage: str = "default"  # "none", "default", "full"
     has_2sls: bool = False  # Indicates whether any loaded model is a 2SLS/IV model
+    table_environment: str = "table"  # LaTeX table environment (e.g., 'table', 'sidewaystable')
+    table_size: str = "footnotesize"  # LaTeX text size command (e.g., 'footnotesize', 'small', 'normalsize')
 
 
 class TableFormatter(ABC):
@@ -276,8 +278,9 @@ class LatexTableFormatter(TableFormatter):
         col_spec = 'l' + 'c' * len(data.model_names)
         
         parts = []
-        parts.append(r'\begin{table}[htbp]')
+        parts.append(f'\\begin{{{data.table_environment}}}[htbp]')
         parts.append(r'\centering')
+        parts.append(f'\\{data.table_size}')
         
         if data.caption:
             parts.append(f'\\caption{{{self._escape_latex(data.caption)}}}')
@@ -291,7 +294,7 @@ class LatexTableFormatter(TableFormatter):
         parts.append(r'\bottomrule')
         parts.append(r'\end{tabular}')
         parts.append(self._build_footer(data))
-        parts.append(r'\end{table}')
+        parts.append(f'\\end{{{data.table_environment}}}')
         
         return '\n'.join(parts)
     
@@ -548,6 +551,88 @@ def _load_models_by_name(model_specs: List[Dict[str, str]], base_path: Union[str
     return models
 
 
+def _get_model_metadata(model: Dict) -> Dict:
+    """
+    Get metadata from model, handling both 'metadata' and 'analysis_metadata' keys.
+    Returns the metadata dict, or empty dict if neither key exists.
+    """
+    return model.get('analysis_metadata', model.get('metadata', {}))
+
+
+def _get_model_version(model: Dict) -> str:
+    """
+    Extract version information from model.
+    Handles both old format (metadata/timestamp) and new format (version_info).
+    Returns version in x.x.x format, or 0.0.0 if not in valid format.
+    """
+    import re
+    
+    # Try new format first
+    version_info = model.get('version_info', {})
+    if version_info:
+        version = version_info.get('duckreg_version', '')
+        if version and re.match(r'^\d+\.\d+\.\d+$', str(version)):
+            return str(version)
+    
+    # Try old format - look in coefficients or model_statistics
+    coef_data = model.get('coefficients', {})
+    if isinstance(coef_data, dict) and 'duckreg_version' in coef_data:
+        version = coef_data.get('duckreg_version', '')
+        if version and re.match(r'^\d+\.\d+\.\d+$', str(version)):
+            return str(version)
+    
+    # Check model_statistics for estimator info
+    model_stats = model.get('model_statistics', {})
+    estimator_type = model_stats.get('estimator_type', '')
+    if estimator_type and re.match(r'^\d+\.\d+\.\d+$', str(estimator_type)):
+        return str(estimator_type)
+    
+    return '0.0.0'
+
+
+def _get_model_date(model: Dict) -> str:
+    """
+    Extract computation date from model.
+    Handles both old format (metadata/timestamp) and new format (version_info/computed_at).
+    Returns date in YYYY-MM-DD format.
+    """
+    # Try new format first
+    version_info = model.get('version_info', {})
+    if version_info and 'computed_at' in version_info:
+        timestamp = version_info['computed_at']
+        # Parse ISO format timestamp and extract date
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            return dt.strftime('%Y-%m-%d')
+        except:
+            return timestamp.split('T')[0] if 'T' in timestamp else timestamp
+    
+    # Try coefficients block
+    coef_data = model.get('coefficients', {})
+    if isinstance(coef_data, dict) and 'computed_at' in coef_data:
+        timestamp = coef_data['computed_at']
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            return dt.strftime('%Y-%m-%d')
+        except:
+            return timestamp.split('T')[0] if 'T' in timestamp else timestamp
+    
+    # Try old format in metadata
+    metadata = _get_model_metadata(model)
+    if 'timestamp' in metadata:
+        timestamp = metadata['timestamp']
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+            return dt.strftime('%Y-%m-%d')
+        except:
+            return timestamp.split('T')[0] if 'T' in timestamp else timestamp
+    
+    return 'N/A'
+
+
 def _is_2sls_model(model: Dict) -> bool:
     """Check if model is a 2SLS/IV model."""
     return 'first_stage' in model and model.get('first_stage')
@@ -563,7 +648,8 @@ def _get_coefficient_data(model: Dict) -> Dict:
         return model.get('coefficients', {})
     
     # For non-2SLS models, check for nested structure or direct coefficients
-    if model['metadata'].get('analysis_type') == 'online_2sls':
+    metadata = _get_model_metadata(model)
+    if metadata.get('analysis_type') == 'online_2sls':
         return model.get('second_stage', {}).get('coefficients', {})
     
     return model.get('coefficients', {})
@@ -762,39 +848,77 @@ def _extract_first_stage_data(models: List[Dict], model_names: List[str],
 
 def _extract_stat_rows(models: List[Dict], model_names: List[str],
                         show_stats: List[str], decimals: int,
-                        show_first_stage: str = "default") -> List[Dict]:
+                        show_first_stage: str = "default",
+                        include_version_info: bool = True) -> List[Dict]:
     """Extract model statistics rows, including first stage F-stats for 2SLS."""
     stat_mapping = {
         'n_obs': ['n_obs', 'n_observations'],
         'n_observations': ['n_obs', 'n_observations'],
         'r_squared': ['r_squared'],
         'adj_r_squared': ['adj_r_squared'],
-        'n_compressed_rows': ['n_compressed_rows'],
+        'n_compressed_rows': ['n_compressed', 'n_compressed_rows'],
+        'n_compressed': ['n_compressed', 'n_compressed_rows'],
         'compression_ratio': ['compression_ratio'],
         'df_model': ['df_model'],
         'df_resid': ['df_resid']
     }
     
     stat_rows = []
+    
+    # Add version and date rows if requested
+    if include_version_info:
+        # Version row
+        version_row = {'Variable': 'Model Version'}
+        for i, model in enumerate(models):
+            version = _get_model_version(model)
+            version_row[model_names[i]] = version
+        stat_rows.append(version_row)
+        
+        # Date row
+        date_row = {'Variable': 'Computed Date'}
+        for i, model in enumerate(models):
+            date = _get_model_date(model)
+            date_row[model_names[i]] = date
+        stat_rows.append(date_row)
+    
     for stat_key in show_stats:
         stat_row = {'Variable': stat_key.replace('_', ' ').title()}
         
         for i, model in enumerate(models):
-            stats = model.get('model_statistics', {})
+            # Check multiple locations for statistics
+            sample_info = model.get('sample_info', {})
+            model_stats = model.get('model_statistics', {})
+            coef_data = model.get('coefficients', {})
             
             val = None
             if stat_key in stat_mapping:
+                # Try each possible key in order of preference
                 for key in stat_mapping[stat_key]:
-                    if key in stats and stats[key] is not None:
-                        val = stats[key]
+                    # Check sample_info first (new format)
+                    if key in sample_info and sample_info[key] is not None:
+                        val = sample_info[key]
                         break
-            elif stat_key in stats and stats[stat_key] is not None:
-                val = stats[stat_key]
+                    # Check model_statistics (old format)
+                    if key in model_stats and model_stats[key] is not None:
+                        val = model_stats[key]
+                        break
+                    # Check coefficients block
+                    if key in coef_data and coef_data[key] is not None:
+                        val = coef_data[key]
+                        break
+            else:
+                # Check for exact key match
+                if stat_key in sample_info and sample_info[stat_key] is not None:
+                    val = sample_info[stat_key]
+                elif stat_key in model_stats and model_stats[stat_key] is not None:
+                    val = model_stats[stat_key]
+                elif stat_key in coef_data and coef_data[stat_key] is not None:
+                    val = coef_data[stat_key]
             
             if val is not None:
                 if stat_key in ['r_squared', 'adj_r_squared', 'compression_ratio']:
                     stat_row[model_names[i]] = f"{val:.{decimals}f}"
-                elif stat_key in ['n_obs', 'n_observations', 'n_compressed_rows', 'df_model', 'df_resid']:
+                elif stat_key in ['n_obs', 'n_observations', 'n_compressed', 'n_compressed_rows', 'df_model', 'df_resid']:
                     stat_row[model_names[i]] = f"{int(val):,}"
                 else:
                     stat_row[model_names[i]] = str(val)
@@ -835,20 +959,6 @@ def _extract_stat_rows(models: List[Dict], model_names: List[str],
                         f_stat_row[model_names[i]] = ""
                 
                 stat_rows.append(f_stat_row)
-            
-            # Add weak instrument indicator row
-            weak_row = {'Variable': 'Weak Instruments'}
-            for i, model in enumerate(models):
-                stats = model.get('model_statistics', {})
-                weak = stats.get('weak_instruments')
-                if weak is not None:
-                    weak_row[model_names[i]] = "Yes" if weak else "No"
-                else:
-                    weak_row[model_names[i]] = ""
-            
-            # Only add if at least one model has the indicator
-            if any(weak_row[name] for name in model_names):
-                stat_rows.append(weak_row)
     
     return stat_rows
 
@@ -1007,6 +1117,8 @@ def create_regression_table(model_specs: Union[List[str], List[Dict]],
                             notes: Union[str, List[str]] = None, 
                             header_rows: List[Dict] = None,
                             show_first_stage: str = "default",
+                            table_environment: str = "table",
+                            table_size: str = "footnotesize",
                             output_format: str = 'html') -> str:
     """
     Create a regression table in the specified format from model names.
@@ -1046,6 +1158,13 @@ def create_regression_table(model_specs: Union[List[str], List[Dict]],
         - "default": Show only F-statistics in the stats section
         - "full": Show full first stage coefficients above second stage + F-stats
         Default is "default".
+    table_environment : str, optional
+        LaTeX table environment to use. Examples: 'table', 'sidewaystable', 'table*'.
+        Default is 'table'.
+    table_size : str, optional
+        LaTeX text size command for the table. Examples: 'tiny', 'scriptsize', 'footnotesize', 
+        'small', 'normalsize', 'large', 'Large', 'LARGE', 'huge', 'Huge'.
+        Default is 'footnotesize'.
     output_format : str, optional
         Output format: 'html', 'latex', or 'tex'. Default is 'html'.
     
@@ -1076,11 +1195,11 @@ def create_regression_table(model_specs: Union[List[str], List[Dict]],
     
     # Set defaults for show_stats
     if show_stats is None:
-        show_stats = ['n_observations', 'n_compressed_rows']
+        show_stats = ['n_observations', 'n_compressed']
     
     # Extract data
     coefficient_rows = _extract_coefficient_data(models, model_names, select_coefs, decimals, stars, include_ci)
-    stat_rows = _extract_stat_rows(models, model_names, show_stats, decimals, show_first_stage)
+    stat_rows = _extract_stat_rows(models, model_names, show_stats, decimals, show_first_stage, include_version_info=True)
     custom_row_groups = _normalize_custom_rows(custom_rows, model_names)
     
     # Extract first stage data if needed
@@ -1103,7 +1222,9 @@ def create_regression_table(model_specs: Union[List[str], List[Dict]],
         decimals=decimals,
         first_stage_rows=first_stage_rows,
         show_first_stage=show_first_stage,
-        has_2sls=has_2sls
+        has_2sls=has_2sls,
+        table_environment=table_environment,
+        table_size=table_size
     )
     
     # Get formatter and format
@@ -1228,9 +1349,3 @@ def generate_main_table(config_path: Union[str, Path] = None,
         print(f"Generating table: {table_name}")
         generated_tables = generate_table_from_config(table_name, config_loader)
         save_generated_tables(table_name, generated_tables, output_dir)
-
-
-if __name__ == "__main__":
-    print("Generating table partials...")
-    generate_main_table()
-    print("Done!")
