@@ -3,8 +3,8 @@ Generate table partials for Jekyll site in multiple formats (HTML, LaTeX).
 Run this script to regenerate all tables from analysis results.
 """
 
+import argparse
 import json
-import yaml
 import pandas as pd
 from pathlib import Path
 from abc import ABC, abstractmethod
@@ -18,7 +18,11 @@ warnings.filterwarnings('ignore')
 # Configuration
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 RESULTS_DIR = PROJECT_ROOT / "output" / "analysis"
-OUTPUT_DIR = Path(__file__).parent / "_includes"
+# default location where generated table files are placed.  Updated to the
+# shared analysis output directory rather than the legacy `_includes` folder
+# under the Python package.  This makes the tables easier to find from outside
+# the `gnt` package and aligns with the new static output layout.
+OUTPUT_DIR = PROJECT_ROOT / "output" / "analysis" / "tables"
 CONFIG_DIR = Path(__file__).parent
 
 # Special marker for raw LaTeX content (won't be escaped)
@@ -42,35 +46,8 @@ def _extract_raw_latex(text: str) -> str:
     return text
 
 
-def expand_env_vars(value: str) -> str:
-    """Expand environment variables in ${VAR} format with optional defaults ${VAR:-default}."""
-    env_pattern = re.compile(r'\${([^}^{]+)}')
-    
-    def replace(match):
-        env_var = match.group(1)
-        # Handle default values in environment variables
-        if ':-' in env_var:
-            var_name, default_value = env_var.split(':-', 1)
-            return os.environ.get(var_name, default_value)
-        return os.environ.get(env_var, '')
-    
-    return env_pattern.sub(replace, value)
-
-
-def expand_paths_recursive(obj: Any) -> Any:
-    """Recursively expand environment variables in all string values."""
-    if isinstance(obj, dict):
-        return {k: expand_paths_recursive(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [expand_paths_recursive(i) for i in obj]
-    elif isinstance(obj, str):
-        return expand_env_vars(obj)
-    else:
-        return obj
-
-
-# Ensure output directory exists
-OUTPUT_DIR.mkdir(exist_ok=True)
+# Ensure output directory exists (create parent directories as needed)
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @dataclass
@@ -985,122 +962,121 @@ def _normalize_custom_rows(custom_rows: Optional[Union[Dict, List]],
     return custom_row_groups
 
 
-class ConfigLoader:
-    """Load and parse table configurations from YAML files."""
-    
-    def __init__(self, config_path: Union[str, Path] = None, analysis_config: Union[str, Path, Dict] = None):
-        """
-        Initialize the config loader.
-        
-        Parameters:
-        -----------
-        config_path : str or Path, optional
-            Path to the YAML config file for tables. If None, uses default 'table_configs.yaml'.
-        analysis_config : str, Path, or dict, optional
-            Path to analysis.yaml or loaded analysis config dict. 
-            Used to get base_path for finding model results.
-        """
-        if config_path is None:
-            config_path = CONFIG_DIR / "table_configs.yaml"
-        
-        self.config_path = Path(config_path)
-        self.table_config = self._load_config()
-        
-        # Load analysis config to get base_path
-        if analysis_config is None:
-            # Look for analysis.yaml in orchestration/configs directory first
-            orchestration_analysis_config = PROJECT_ROOT / "orchestration" / "configs" / "analysis.yaml"
-            if orchestration_analysis_config.exists():
-                analysis_config = orchestration_analysis_config
-            else:
-                # Fall back to gnt/analysis directory
-                analysis_config = CONFIG_DIR / "analysis.yaml"
-        
-        if isinstance(analysis_config, dict):
-            self.analysis_config = expand_paths_recursive(analysis_config)
-            self.base_path = self.analysis_config.get('output', {}).get('base_path', RESULTS_DIR)
-        else:
-            analysis_config = Path(analysis_config)
-            if not analysis_config.exists():
-                raise FileNotFoundError(f"Analysis config not found: {analysis_config}")
-            
-            with open(analysis_config, 'r') as f:
-                analysis_dict = yaml.safe_load(f)
-            
-            # Expand environment variables in loaded config
-            self.analysis_config = expand_paths_recursive(analysis_dict)
-            
-            # Get base_path (already expanded)
-            self.base_path = self.analysis_config.get('output', {}).get('base_path', RESULTS_DIR)
-        
-        # Ensure base_path is a Path object
-        self.base_path = Path(self.base_path)
-    
-    def _load_config(self) -> Dict[str, Any]:
-        """Load YAML configuration file."""
-        if not self.config_path.exists():
-            raise FileNotFoundError(f"Config file not found: {self.config_path}")
-        
-        # Create a custom YAML loader that handles the !raw tag
-        yaml_loader = yaml.SafeLoader
-        
-        def raw_constructor(loader, node):
-            """Constructor for !raw tag - marks string as raw LaTeX."""
-            value = loader.construct_scalar(node)
-            return _mark_raw_latex(value)
-        
-        yaml_loader.add_constructor('!raw', raw_constructor)
-        
-        with open(self.config_path, 'r') as f:
-            config = yaml.load(f, Loader=yaml_loader)
-        
-        if config is None:
-            raise ValueError(f"Config file is empty: {self.config_path}")
-        
-        return config
-    
-    def get_table_config(self, table_name: str) -> Dict[str, Any]:
-        """
-        Get configuration for a specific table.
-        
-        Parameters:
-        -----------
-        table_name : str
-            Name of the table as defined in the config file.
-        
-        Returns:
-        --------
-        dict : Table configuration
-        """
-        tables = self.table_config.get('tables', {})
-        
-        if table_name not in tables:
-            available = list(tables.keys())
-            raise KeyError(f"Table '{table_name}' not found. Available tables: {available}")
-        
-        return tables[table_name]
-    
+class ExcelConfigLoader:
+    """Load table configurations from the analysis Excel workbook.
+
+    Reads the following sheets from ``orchestration/configs/analysis.xlsx``:
+
+    * ``Models in Tables`` — columns ``table_name``, ``model_name``, ``order``
+    * ``Models``           — one row per model (provides model-level metadata)
+    * ``Tables`` (optional) — one row per table with display overrides:
+        ``table_name``, ``caption``, ``model_display_names`` (comma-separated),
+        ``output_formats`` (comma-separated), ``show_stats`` (comma-separated),
+        ``decimals``, ``stars``, ``include_ci``, ``notes``,
+        ``show_first_stage``, ``table_environment``, ``table_size``
+    """
+
+    DEFAULT_EXCEL = PROJECT_ROOT / 'orchestration' / 'configs' / 'analysis.xlsx'
+
+    def __init__(self, excel_path: Union[str, Path] = None):
+        self.excel_path = Path(excel_path) if excel_path else self.DEFAULT_EXCEL
+        if not self.excel_path.exists():
+            raise FileNotFoundError(f"Analysis Excel not found: {self.excel_path}")
+        self._df_mit, self._df_models, self._df_tables = self._load_sheets()
+        self.base_path = RESULTS_DIR
+
+    # ── sheet loading ────────────────────────────────────────────────────────
+
+    def _load_sheets(self):
+        xl = pd.ExcelFile(self.excel_path)
+        df_mit = pd.read_excel(xl, sheet_name='Models in Tables')
+        df_models = pd.read_excel(xl, sheet_name='Models')
+        df_tables = (
+            pd.read_excel(xl, sheet_name='Tables')
+            if 'Tables' in xl.sheet_names
+            else None
+        )
+        return df_mit, df_models, df_tables
+
+    # ── public API ───────────────────────────────────────────────────────────
+
     def get_all_table_names(self) -> List[str]:
-        """Get all available table names."""
-        return list(self.table_config.get('tables', {}).keys())
-    
-    @staticmethod
-    def _normalize_slice_format(header_rows: List[Dict]) -> List[Dict]:
-        """Convert list-based slice format [start, stop] to slice objects."""
-        if not header_rows:
+        """Return unique table names in sheet order."""
+        return list(self._df_mit['table_name'].dropna().unique())
+
+    def get_models_for_table(self, table_name: str) -> List[str]:
+        """Return model names for *table_name*, sorted by the ``order`` column."""
+        rows = self._df_mit[
+            self._df_mit['table_name'] == table_name
+        ].sort_values('order')
+        if rows.empty:
+            available = self.get_all_table_names()
+            raise KeyError(
+                f"Table '{table_name}' not found in 'Models in Tables'. "
+                f"Available: {available}"
+            )
+        return rows['model_name'].tolist()
+
+    def get_table_config(self, table_name: str) -> Dict[str, Any]:
+        """Return a ``create_regression_table``-compatible config dict."""
+        models = self.get_models_for_table(table_name)
+        config: Dict[str, Any] = {'model_paths': models}
+
+        if self._df_tables is None:
+            return config
+
+        trow = self._df_tables[self._df_tables['table_name'] == table_name]
+        if trow.empty:
+            return config
+
+        r = trow.iloc[0]
+
+        # Scalar overrides
+        for col in ('caption', 'notes', 'show_first_stage', 'table_environment', 'table_size'):
+            val = r.get(col)
+            if val is not None and pd.notna(val):
+                config[col] = str(val).strip()
+
+        # 'fontsize' is a user-friendly alias for 'table_size' (takes precedence)
+        fontsize_val = r.get('fontsize')
+        if fontsize_val is not None and pd.notna(fontsize_val):
+            config['table_size'] = str(fontsize_val).strip()
+
+        for col in ('decimals',):
+            val = r.get(col)
+            if val is not None and pd.notna(val):
+                config[col] = int(val)
+
+        for col in ('stars', 'include_ci'):
+            val = r.get(col)
+            if val is not None and pd.notna(val):
+                config[col] = bool(val)
+
+        # Comma-separated list columns
+        def _split(col_name: str) -> Optional[List[str]]:
+            val = r.get(col_name)
+            if val is not None and pd.notna(val):
+                return [s.strip() for s in str(val).split(',') if s.strip()]
             return None
-        
-        normalized = []
-        for row_def in header_rows:
-            normalized_row = {}
-            for key, val in row_def.items():
-                if isinstance(val, list) and len(val) == 2:
-                    normalized_row[key] = slice(val[0], val[1])
-                else:
-                    normalized_row[key] = val
-            normalized.append(normalized_row)
-        
-        return normalized
+
+        model_display_names = _split('model_display_names')
+        if model_display_names:
+            config['model_names'] = model_display_names
+
+        output_formats = _split('output_formats')
+        if output_formats:
+            config['output_formats'] = output_formats
+
+        show_stats = _split('show_stats')
+        if show_stats:
+            config['show_stats'] = show_stats
+
+        return config
+
+    @property
+    def models_df(self) -> pd.DataFrame:
+        """Raw ``Models`` sheet DataFrame."""
+        return self._df_models
 
 
 def create_regression_table(model_specs: Union[List[str], List[Dict]], 
@@ -1232,120 +1208,251 @@ def create_regression_table(model_specs: Union[List[str], List[Dict]],
     return formatter.format(table_data)
 
 
-def generate_table_from_config(table_name: str, config_loader: ConfigLoader = None, 
-                                analysis_config: Union[str, Path, Dict] = None,
-                                output_formats: List[str] = None) -> Dict[str, str]:
-    """
-    Generate a table from configuration using model names.
-    
-    Parameters:
-    -----------
-    table_name : str
-        Name of the table to generate (as defined in config).
-    config_loader : ConfigLoader, optional
-        Config loader instance. If None, creates a new one with default config.
-    analysis_config : str, Path, or dict, optional
-        Path to analysis.yaml or loaded analysis config dict.
-    output_formats : list, optional
-        Output formats to generate. If None, uses formats from config.
-    
-    Returns:
-    --------
-    dict : Dictionary mapping format to generated table string
+def generate_table_from_config(
+    table_name: str,
+    config_loader: ExcelConfigLoader = None,
+    output_formats: List[str] = None,
+) -> Dict[str, str]:
+    """Generate a table from the Excel config.
+
+    Parameters
+    ----------
+    table_name:
+        Name of the table as defined in the ``Models in Tables`` sheet.
+    config_loader:
+        ``ExcelConfigLoader`` instance.  If *None* a default one is created.
+    output_formats:
+        Override the output formats for this call (e.g. ``['html', 'latex']``).
+        If *None*, uses the value from the ``Tables`` sheet or falls back to
+        ``['html']``.
+
+    Returns
+    -------
+    dict
+        ``{format: rendered_string}``
     """
     if config_loader is None:
-        config_loader = ConfigLoader(analysis_config=analysis_config)
-    
-    # Get table config
+        config_loader = ExcelConfigLoader()
+
     table_config = config_loader.get_table_config(table_name)
-    
-    # Normalize header_rows format
-    if 'header_rows' in table_config and table_config['header_rows']:
-        table_config['header_rows'] = ConfigLoader._normalize_slice_format(table_config['header_rows'])
-    
+
     # Determine output formats
     if output_formats is None:
-        output_formats = table_config.get('output_formats', ['html'])
-    
-    # Replace model_paths with model specifications for name-based loading
+        output_formats = table_config.pop('output_formats', ['html'])
+    else:
+        table_config.pop('output_formats', None)
+
     model_specs = table_config.pop('model_paths', None)
-    
     if not model_specs:
-        raise ValueError(f"Table '{table_name}' config must have 'model_paths' with model names/specs")
-    
-    # Remove output_formats from table_config since it's not a parameter for create_regression_table
-    table_config.pop('output_formats', None)
-    
-    # Generate tables for each format
+        raise ValueError(
+            f"Table '{table_name}' has no models in 'Models in Tables' sheet"
+        )
+
     results = {}
     for fmt in output_formats:
-        table_html = create_regression_table(
+        results[fmt] = create_regression_table(
             model_specs=model_specs,
             base_path=config_loader.base_path,
             **table_config,
-            output_format=fmt
+            output_format=fmt,
         )
-        results[fmt] = table_html
-    
+
     return results
 
 
-def save_generated_tables(table_name: str, generated_tables: Dict[str, str], 
-                          output_dir: Optional[Union[str, Path]] = None) -> None:
+def save_generated_tables(
+    table_name: str,
+    generated_tables: Dict[str, str],
+    output_dir: Optional[Union[str, Path]] = None,
+) -> None:
+    """Save generated tables to files.
+
+    Parameters
+    ----------
+    table_name:
+        Name of the table (used in the output filename).
+    generated_tables:
+        ``{format: table_string}`` mapping returned by
+        :func:`generate_table_from_config`.
+    output_dir:
+        Output directory.  Defaults to ``output/analysis/tables``.
     """
-    Save generated tables to files.
-    
-    Parameters:
-    -----------
-    table_name : str
-        Name of the table.
-    generated_tables : dict
-        Dictionary mapping format to table string.
-    output_dir : str or Path, optional
-        Output directory. If None, uses default _includes directory.
-    """
-    if output_dir is None:
-        output_dir = OUTPUT_DIR
-    else:
-        output_dir = Path(output_dir)
-    
-    output_dir.mkdir(parents=True, exist_ok=True)
-    
-    format_extensions = {
-        'html': '.html',
-        'latex': '.tex',
-        'tex': '.tex'
-    }
-    
+    out = Path(output_dir) if output_dir else OUTPUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+
+    _extensions = {'html': '.html', 'latex': '.tex', 'tex': '.tex'}
+
     for fmt, table_str in generated_tables.items():
-        ext = format_extensions.get(fmt, f'.{fmt}')
-        output_file = output_dir / f"table_{table_name}{ext}"
-        
-        with open(output_file, 'w') as f:
-            f.write(table_str)
-        
-        print(f"Generated: {output_file}")
+        ext = _extensions.get(fmt, f'.{fmt}')
+        output_file = out / f"table_{table_name}{ext}"
+        output_file.write_text(table_str)
+        print(f"  Generated: {output_file}")
 
 
-def generate_main_table(config_path: Union[str, Path] = None, 
-                        analysis_config: Union[str, Path, Dict] = None,
-                        output_dir: Optional[Union[str, Path]] = None):
+# ── High-level entry points ──────────────────────────────────────────────────
+
+def summarize_tables(loader: ExcelConfigLoader = None) -> None:
+    """Print a status overview of every table defined in the Excel config.
+
+    For each model the function looks up the latest result file and reports:
+    - the computation date
+    - the duckreg version used
+    - whether results are present
     """
-    Generate all tables defined in the config file.
-    
-    Parameters:
-    -----------
-    config_path : str or Path, optional
-        Path to table config YAML. If None, uses default.
-    analysis_config : str, Path, or dict, optional
-        Path to analysis.yaml or loaded analysis config dict.
-    output_dir : str or Path, optional
-        Output directory for generated tables. If None, uses default _includes directory.
-    """
-    config_loader = ConfigLoader(config_path=config_path, analysis_config=analysis_config)
-    table_names = config_loader.get_all_table_names()
-    
+    if loader is None:
+        loader = ExcelConfigLoader()
+
+    table_names = loader.get_all_table_names()
+
+    print(f"\n{'=' * 80}")
+    print(f"  Analysis Tables Summary")
+    print(f"  Excel  : {loader.excel_path}")
+    print(f"  Results: {loader.base_path}")
+    print(f"{'=' * 80}")
+
+    col_w = 52
     for table_name in table_names:
+        models = loader.get_models_for_table(table_name)
+        print(f"\n  Table: {table_name}  ({len(models)} model{'s' if len(models) != 1 else ''})")
+        print(f"  {'Model':<{col_w}}  {'Last Run':<12}  {'Version':<12}  Status")
+        print(f"  {'-' * col_w}  {'-' * 12}  {'-' * 12}  ------")
+        for model_name in models:
+            try:
+                result_path = _find_latest_model_result(model_name, 'duckreg', loader.base_path)
+                with open(result_path) as fh:
+                    data = json.load(fh)
+                date = _get_model_date(data)
+                version = _get_model_version(data)
+                status = "ok"
+            except FileNotFoundError:
+                date = 'N/A'
+                version = 'N/A'
+                status = "missing"
+            except Exception as exc:
+                date = 'error'
+                version = 'error'
+                status = f"error: {exc}"
+            print(f"  {model_name:<{col_w}}  {date:<12}  {version:<12}  {status}")
+
+    print()
+
+
+def generate_all_tables(
+    loader: ExcelConfigLoader = None,
+    table_names: Optional[List[str]] = None,
+    output_dir: Optional[Union[str, Path]] = None,
+    output_formats: Optional[List[str]] = None,
+) -> None:
+    """Generate and save all (or a subset of) tables from the Excel config.
+
+    Parameters
+    ----------
+    loader:
+        ``ExcelConfigLoader`` instance.  Created with defaults when *None*.
+    table_names:
+        Specific tables to generate.  All tables when *None*.
+    output_dir:
+        Output directory for the generated files.
+    output_formats:
+        Override output formats for every table (e.g. ``['html', 'latex']``).
+    """
+    if loader is None:
+        loader = ExcelConfigLoader()
+
+    names = table_names or loader.get_all_table_names()
+
+    for table_name in names:
         print(f"Generating table: {table_name}")
-        generated_tables = generate_table_from_config(table_name, config_loader)
-        save_generated_tables(table_name, generated_tables, output_dir)
+        try:
+            generated = generate_table_from_config(
+                table_name, loader, output_formats=output_formats
+            )
+            save_generated_tables(table_name, generated, output_dir)
+        except Exception as exc:
+            print(f"  Error generating '{table_name}': {exc}")
+
+
+# Keep the old name as an alias for backward compatibility.
+generate_main_table = generate_all_tables
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────────
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Work with analysis tables defined in orchestration/configs/analysis.xlsx.\n\n"
+            "Modes:\n"
+            "  summary   Print a status overview of every table and model.\n"
+            "  generate  Render and save table files (default)."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        '--mode',
+        choices=['summary', 'generate'],
+        default='generate',
+        help="Operation mode (default: generate)",
+    )
+    parser.add_argument(
+        '--excel',
+        default=None,
+        metavar='PATH',
+        help="Path to analysis.xlsx (default: orchestration/configs/analysis.xlsx)",
+    )
+    parser.add_argument(
+        '--tables',
+        nargs='*',
+        metavar='TABLE',
+        default=None,
+        help="Specific table names to process (default: all tables)",
+    )
+    parser.add_argument(
+        '--output-dir',
+        default=None,
+        metavar='DIR',
+        help="Output directory for generated table files (default: output/analysis/tables)",
+    )
+    parser.add_argument(
+        '--formats',
+        nargs='*',
+        choices=['html', 'latex', 'tex'],
+        metavar='FMT',
+        default=None,
+        help="Output formats: html, latex, tex (default: from Tables sheet or html)",
+    )
+
+    args = parser.parse_args()
+
+    # Delegate to the canonical implementation in gnt.analysis.tables / config
+    try:
+        from gnt.analysis.config import AnalysisConfig
+        from gnt.analysis.tables import summarize_tables as _summarize, generate_all_tables as _gen_all
+    except ImportError:
+        # Fallback: use local ExcelConfigLoader when package isn't installed
+        from gnt.analysis.generate_tables import ExcelConfigLoader as AnalysisConfig  # type: ignore
+        _summarize = summarize_tables  # type: ignore
+        _gen_all = generate_all_tables  # type: ignore
+
+    try:
+        cfg = AnalysisConfig(args.excel)
+    except FileNotFoundError as exc:
+        print(f"Error: {exc}")
+        return 1
+
+    if args.mode == 'summary':
+        _summarize(cfg)
+        return 0
+
+    # generate mode
+    _gen_all(
+        config=cfg,
+        table_names=args.tables,
+        output_dir=args.output_dir,
+        output_formats=args.formats,
+    )
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

@@ -1,0 +1,32 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions}
+\begin{tabular}{lcccccccc}
+\toprule
+ & (lD.P) & (lV.P) & (lD.1FE) & (lV.1FE) & (lD.2FE) & (lV.2FE) & (lD.2FEY) & (lV.2FEY) \\
+\midrule
+$\log(\text{HARM} + 0.01)$ & 0.6086** &  & 0.0013 &  & 0.0041* &  & -0.0010 &  \\
+ & (0.2140) &  & (0.0025) &  & (0.0020) &  & (0.0023) &  \\
+$\log(\text{VIIRS} + 0.01)$ &  & 1.0808*** &  & -0.0125* &  & -0.0154*** &  & -0.0222** \\
+ &  & (0.2885) &  & (0.0061) &  & (0.0040) &  & (0.0084) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-08 & 2026-03-08 & 2026-03-08 & 2026-03-09 \\
+N Observations & 3,102,099,838 & 7,621,584,603 & 3,098,282,041 & 7,611,445,281 & 3,098,257,009 & 7,611,396,641 & 3,098,282,041 & 7,611,445,281 \\
+N Compressed Rows & 170,212,582 & 298,142,674 & 218,833,045 & 269,817,259 & 369,010,448 & 313,885,498 & 368,242,030 & 317,607,705 \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY & PX+YR & PX+YR \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 5km & 5km & 5km & 5km & 5km & 5km & 5km & 5km \\
+Spatial Extent & World & World & World & World & World & World & World & World \\
+Temporal Extent & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Independent variable is MODIS surface temperature from the GLASS product. Dependent variable is log(nighttime lights + 0.01). FE models use  fixed effects estimation with clustered standard errors. NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

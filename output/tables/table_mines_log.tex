@@ -1,0 +1,38 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Instrumental Variable Estimates of Log Nighttime Lights Effects on Land Surface Temperature Using Mining Occurrence: Africa Subset}
+\begin{tabular}{lcccccc}
+\toprule
+ & (lMi.1.2FE) & (lMi.2.2FE) & (lMi.3.2FE) & (lMi.1.2FEY) & (lMi.2.2FEY) & (lMi.3.2FEY) \\
+\midrule
+\midrule
+\multicolumn{7}{l}{\textit{First Stage: log(ntl\_harm+0.01)}} \\
+  Active Mines & 0.100** & 0.045 & 0.042* & 0.081* & 0.044 & 0.042* \\
+ & (0.038) & (0.023) & (0.018) & (0.038) & (0.023) & (0.019) \\
+\midrule
+\multicolumn{7}{l}{\textit{Second Stage}} \\
+$\hat{\log(HARM + 0.01)}$ & -1.329 & -0.798 & -0.839 & -2.962 & -2.669 & -2.892 \\
+ & (0.934) & (0.926) & (1.065) & (1.610) & (1.383) & (1.539) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-11 & 2026-03-09 & 2026-03-09 & 2026-03-11 & 2026-03-09 & 2026-03-09 \\
+N Observations & 72,234 & 7,073,558 & 175,958,092 & 72,245 & 7,073,558 & 175,958,092 \\
+N Compressed Rows & 72,234 & 7,073,558 & 175,958,290 & 72,245 & 7,073,558 & 175,958,290 \\
+First Stage F (log(ntl\_harm+0.01)) & 7.043 & 3.797 & 5.263 & 4.669 & 3.572 & 4.735 \\
+\midrule
+Nighttime Lights & DMSP & DMSP & DMSP & DMSP & DMSP & DMSP \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+YR & PX+YR & PX+YR \\
+Clustering & Country & ADM2 & ADM2 & Country & ADM2 & ADM2 \\
+Resolution & 50km & 5km & 1km & 50km & 5km & 1km \\
+Spatial Extent & Africa & Africa & Africa & Africa & Africa & Africa \\
+Temporal Extent & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 \\
+Instrument & Mines & Mines & Mines & Mines & Mines & Mines \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Dependent variable is log(nighttime lights + 0.01). Both models use  fixed effects estimation with clustered standard errors. PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

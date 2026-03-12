@@ -1,15 +1,11 @@
 import os
 import sys
-import yaml
 import json
 import logging
-import argparse
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import pandas as pd
-import openpyxl
-import shutil
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -20,230 +16,128 @@ streamreg_path = project_root.parent / "streamreg" / "src"
 if streamreg_path.exists():
     sys.path.insert(0, str(streamreg_path))
 
-
-def setup_logging(config: Dict[str, Any]) -> logging.Logger:
-    """Setup logging configuration."""
-    log_config = config.get('logging', {})
-    level = getattr(logging, log_config.get('level', 'INFO'))
-    format_str = log_config.get('format', '%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-    
-    log_file = log_config.get('file')
-    if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        logging.basicConfig(
-            level=level,
-            format=format_str,
-            handlers=[logging.FileHandler(log_file), logging.StreamHandler(sys.stdout)]
-        )
-    else:
-        logging.basicConfig(level=level, format=format_str)
-    
-    return logging.getLogger(__name__)
+# ---------------------------------------------------------------------------
+# New canonical API — prefer importing from gnt.analysis directly:
+#
+#   from gnt.analysis import AnalysisConfig, run_duckreg, cleanup_analysis_results
+#
+# The functions below are kept for backward compatibility with run.py and other
+# callers that import from this module directly.  New code should use the
+# package-level API instead.
+# ---------------------------------------------------------------------------
 
 
-def get_directory_size(path: Path) -> int:
-    """Get total size of a directory in bytes."""
-    try:
-        if not path.exists():
-            return 0
-        total_size = 0
-        for dirpath, dirnames, filenames in os.walk(path):
-            for filename in filenames:
-                filepath = os.path.join(dirpath, filename)
-                if os.path.exists(filepath):
-                    total_size += os.path.getsize(filepath)
-        return total_size
-    except Exception:
-        return 0
-
-
-def bytes_to_gb(bytes_size: int) -> float:
-    """Convert bytes to GB."""
-    return bytes_size / (1024 ** 3)
-
-
-def format_size_string(bytes_size: int, max_size_gb: int = 512) -> str:
-    """Format byte size as GB string with a maximum cap."""
-    size_gb = bytes_to_gb(bytes_size)
-    # Triple the size, but cap at max_size_gb
-    recommended_size_gb = min(size_gb * 3, max_size_gb)
-    return f"{int(recommended_size_gb)}GB"
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
-    """Load analysis configuration from Excel or YAML file."""
+    """Load analysis configuration from an Excel workbook.
+
+    Reads two sheets:
+    - ``Settings``: columns ``key`` / ``value`` — global default settings.
+    - ``Models``  : one row per model specification.
+    """
     config_path = Path(config_path)
-    
-    # Check file extension
-    if config_path.suffix.lower() in ['.xlsx', '.xls']:
-        # Load defaults from the YAML analysis configuration
-        yaml_config_path = config_path.parent / "analysis.yaml"
-        yaml_defaults = {
-            'se_method': 'analytical',
-            'fitter': 'duckdb',
-            'n_bootstraps': 100,
-            'seed': 42,
-            'fe_method': 'mundlak',
-            'round_strata': 5,
-            'n_jobs': 1,
-            'duckdb_kwargs': {}
-        }
-        
-        if yaml_config_path.exists():
+    if config_path.suffix.lower() not in ['.xlsx', '.xls']:
+        raise ValueError(f"Configuration must be an Excel .xlsx file; got: {config_path.suffix}")
+
+    # ── Settings sheet → defaults ───────────────────────────────────────────
+    settings_df = pd.read_excel(config_path, sheet_name='Settings')
+    defaults: Dict[str, Any] = {}
+    for _, row in settings_df.iterrows():
+        key = str(row['key']).strip()
+        val = row['value']
+        if pd.isna(val):
+            continue
+        expanded = os.path.expandvars(str(val).strip())
+        try:
+            defaults[key] = int(expanded)
+        except ValueError:
             try:
-                with open(yaml_config_path, 'r') as f:
-                    yaml_config = yaml.safe_load(f)
-                if 'analyses' in yaml_config and 'duckreg' in yaml_config['analyses']:
-                    yaml_defaults = yaml_config['analyses']['duckreg'].get('defaults', yaml_defaults)
-            except Exception:
-                pass  # Use hardcoded defaults if YAML loading fails
-        
-        # Load from Excel - read from "Models" sheet
-        df = pd.read_excel(config_path, sheet_name='Models')
-        
-        # Build config structure from Excel data
-        config = {
-            'analyses': {
-                'duckreg': {
-                    'description': 'DuckReg compressed OLS/2SLS analysis',
-                    'specifications': {},
-                    'defaults': yaml_defaults  # Use defaults from YAML
-                }
-            },
-            'output': {
-                'base_path': str(project_root / "output" / "analysis")
-            },
-            'logging': {
-                'level': 'INFO',
-                'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            }
+                defaults[key] = float(expanded)
+            except ValueError:
+                defaults[key] = expanded
+
+    # ── Models sheet → specifications ───────────────────────────────────────
+    df = pd.read_excel(config_path, sheet_name='Models')
+    specifications: Dict[str, Any] = {}
+    for _, row in df.iterrows():
+        model_name = str(row['model_name']).strip()
+
+        # Formula construction
+        dependent  = str(row['dependent']).strip()
+        independent = str(row['independent']).strip()
+
+        fixed_effects: List[str] = []
+        fe_raw = str(row.get('fixed_effects', '0')).strip()
+        if fe_raw not in ('0', 'nan', ''):
+            fixed_effects = [fe.strip() for fe in fe_raw.split(',')]
+
+        instruments_raw = str(row.get('instruments', '0')).strip()
+        has_iv = instruments_raw not in ('0', 'nan', '')
+
+        formula = f"{dependent} ~ {independent}"
+        if fixed_effects:
+            formula += " | " + " + ".join(fixed_effects)
+        if has_iv:
+            formula += f" | {instruments_raw}"
+
+        # Data source: bare name → assembled parquet path
+        data_source = str(row['data_source']).strip()
+        if not data_source.startswith('/') and not data_source.startswith('$'):
+            data_source = os.path.expandvars(
+                f"data_nobackup/assembled/{data_source}.parquet"
+            )
+        else:
+            data_source = os.path.expandvars(data_source)
+
+        # Per-model settings overrides (only columns explicitly present)
+        _SETTING_KEYS = (
+            'se_method', 'fitter', 'fe_method', 'round_strata', 'seed',
+            'n_bootstraps', 'threads', 'memory_limit', 'max_temp_directory_size',
+        )
+        model_settings: Dict[str, Any] = {}
+        for key in _SETTING_KEYS:
+            val = row.get(key)
+            if val is not None and pd.notna(val) and str(val).strip() not in ('', 'nan'):
+                if isinstance(val, float) and val == int(val):
+                    val = int(val)
+                model_settings[key] = val
+
+        spec: Dict[str, Any] = {
+            'description': (
+                f"{row.get('section', 'Analysis')} - {row.get('subsection', model_name)}"
+            ),
+            'data_source': data_source,
+            'formula': formula,
+            'settings': model_settings,
         }
-        
-        # Process each row as a specification
-        for _, row in df.iterrows():
-            model_name = row['model_name']
-            
-            # Build formula from components
-            dependent = row['dependent']
-            independent = row['independent']
-            
-            # Parse fixed effects (0 means none, otherwise column names)
-            fixed_effects = []
-            if pd.notna(row['fixed_effects']) and str(row['fixed_effects']) != '0':
-                fixed_effects = [fe.strip() for fe in str(row['fixed_effects']).split(',')]
-            
-            # Parse instruments (0 means OLS, otherwise IV formula)
-            instruments = []
-            if pd.notna(row['instruments']) and str(row['instruments']) != '0':
-                instruments = [inst.strip() for inst in str(row['instruments']).split(',')]
-            
-            # Build formula
-            if instruments:
-                # IV formula: dependent ~ exog + [endog ~ instruments] | fixed_effects
-                formula = f"{dependent} ~ {independent}"
-                if fixed_effects:
-                    formula += " | " + " + ".join(fixed_effects)
-            else:
-                # OLS formula: dependent ~ independent | fixed_effects
-                formula = f"{dependent} ~ {independent}"
-                if fixed_effects:
-                    formula += " | " + " + ".join(fixed_effects)
-            
-            # Build clustering specification
-            cluster_col = None
-            if pd.notna(row['clustering']) and str(row['clustering']) != '0':
-                cluster_col = str(row['clustering'])
-            
-            # Build specification
-            spec = {
-                'description': f"{row.get('section', 'Analysis')} - {row.get('subsection', model_name)}",
-                'data_source': str(row['data_source']),
-                'formula': formula,
-                'settings': {}
+
+        # Clustering
+        cluster = str(row.get('clustering', '0')).strip()
+        if cluster not in ('0', 'nan', ''):
+            spec['cluster1_col'] = cluster
+
+        # Optional SQL filter
+        query = str(row.get('query', '')).strip()
+        if query and query != 'nan':
+            spec['query'] = query
+
+        # Optional geographic subset (country list)
+        subset = str(row.get('subset', '')).strip()
+        if subset and subset != 'nan':
+            spec['subset'] = subset
+
+        specifications[model_name] = spec
+
+    return {
+        'analyses': {
+            'duckreg': {
+                'specifications': specifications,
+                'defaults': defaults,
             }
-            
-            # Expand data_source path
-            data_source_value = str(row['data_source'])
-            # Handle both direct paths and simple filenames
-            if not data_source_value.startswith('/') and not data_source_value.startswith('${'):
-                # If it's a simple filename like "5km", expand it
-                data_source_expanded = os.path.expandvars(f"${{WD}}/data_nobackup/assembled/{data_source_value}.parquet")
-            else:
-                # Otherwise expand as-is
-                data_source_expanded = os.path.expandvars(data_source_value)
-            
-            spec['data_source'] = data_source_expanded
-            
-            # Calculate directory size and set max_temp_directory_size
-            # First expand environment variables for size calculation
-            data_source_for_size = os.path.expandvars(data_source_expanded)
-            data_dir = Path(data_source_for_size.replace('.parquet', ''))
-            dir_size = get_directory_size(data_dir)
-            
-            # Store the calculated temp dir size in settings for later use
-            if dir_size > 0:
-                calculated_size = format_size_string(dir_size)
-                spec['settings']['_max_temp_directory_size'] = calculated_size
-                # Log this for debugging
-                logger.info(f"Model {model_name}: Data dir size ~{bytes_to_gb(dir_size):.1f}GB -> max_temp_directory_size: {calculated_size}")
-            
-            # Add clustering if specified
-            if cluster_col:
-                spec['cluster1_col'] = cluster_col
-                spec['settings']['cluster_type'] = 'one_way'
-            
-            # Add query if specified
-            if pd.notna(row.get('query')) and str(row['query']).strip():
-                spec['query'] = str(row['query'])
-            
-            # Add subset if specified
-            if pd.notna(row.get('subset')) and str(row['subset']).strip():
-                spec['subset'] = str(row['subset'])
-            
-            # Override defaults with row-specific settings
-            if pd.notna(row.get('se_method')):
-                spec['se_method'] = str(row['se_method'])
-            if pd.notna(row.get('fitter')):
-                spec['fitter'] = str(row['fitter'])
-            if pd.notna(row.get('n_bootstraps')):
-                spec['settings']['n_bootstraps'] = int(row['n_bootstraps'])
-            if pd.notna(row.get('seed')):
-                spec['settings']['seed'] = int(row['seed'])
-            if pd.notna(row.get('fe_method')):
-                spec['settings']['fe_method'] = str(row['fe_method'])
-            if pd.notna(row.get('round_strata')):
-                spec['settings']['round_strata'] = int(row['round_strata'])
-            if pd.notna(row.get('n_jobs')):
-                spec['settings']['n_jobs'] = int(row['n_jobs'])
-            
-            config['analyses']['duckreg']['specifications'][model_name] = spec
-        
-        return config
-    
-    else:
-        # Load from YAML (legacy support)
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        
-        def expand_env_vars(obj):
-            if isinstance(obj, str):
-                expanded = os.path.expandvars(obj)
-                if expanded != obj:
-                    try:
-                        if expanded.isdigit() or (expanded.startswith('-') and expanded[1:].isdigit()):
-                            return int(expanded)
-                        return float(expanded)
-                    except ValueError:
-                        return expanded
-                return expanded
-            elif isinstance(obj, dict):
-                return {k: expand_env_vars(v) for k, v in obj.items()}
-            elif isinstance(obj, list):
-                return [expand_env_vars(item) for item in obj]
-            return obj
-        
-        return expand_env_vars(config)
+        },
+        'output': {'base_path': str(project_root / 'output' / 'analysis')},
+    }
 
 
 def load_subset(subset_name: str) -> List[int]:
@@ -336,22 +230,25 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     db_name = str(scratch_path / f'duckreg_{spec_name}_{timestamp}.db')
     
-    # determine fitter and SE method
-    fitter = spec_config.get('fitter', settings.get('fitter', 'duckdb'))
-    se_method = spec_config.get('se_method', settings.get('se_method', 'analytical'))
-    
-    # Prepare duckdb_kwargs with environment variable expansion
-    duckdb_kwargs = settings.get('duckdb_kwargs', {}).copy()
-    
-    # Expand environment variables in duckdb_kwargs
-    for key, value in duckdb_kwargs.items():
-        if isinstance(value, str):
-            duckdb_kwargs[key] = os.path.expandvars(value)
-    
-    # If calculated max_temp_directory_size exists in settings, use it
-    if '_max_temp_directory_size' in spec_config.get('settings', {}):
-        duckdb_kwargs['max_temp_directory_size'] = spec_config['settings']['_max_temp_directory_size']
-        # summary block will show duckdb_kwargs
+    # Fitter and SE method (per-model settings override defaults)
+    fitter = settings.get('fitter', 'duckdb')
+    se_method_raw = settings.get('se_method', 'HC1')
+
+    # Build CRV se_method dict when a cluster column is configured
+    cluster_col = spec_config.get('cluster1_col')
+    if cluster_col and isinstance(se_method_raw, str) and se_method_raw.startswith('CRV'):
+        se_method = {se_method_raw: cluster_col}
+    else:
+        se_method = se_method_raw
+
+    # DuckDB resource kwargs
+    threads = int(settings.get('threads', 1))
+    memory_limit = settings.get('memory_limit')
+    if isinstance(memory_limit, str):
+        memory_limit = os.path.expandvars(memory_limit)
+    max_temp_directory_size = settings.get('max_temp_directory_size')
+    if isinstance(max_temp_directory_size, str):
+        max_temp_directory_size = os.path.expandvars(max_temp_directory_size)
     
     # Build a consolidated information block for logging
     info_lines = [
@@ -374,19 +271,29 @@ def run_duckreg(config: Dict[str, Any], spec_name: str,
     from duckreg import duckreg
     from duckreg.utils.summary import format_model_summary
     
+    # Build bootstrap config (only relevant when se_method='BS')
+    _n_bootstraps = settings.get('n_bootstraps', 0)
+    bootstrap_config = {'n': _n_bootstraps} if _n_bootstraps and _n_bootstraps > 0 else None
+
+    # Collect optional resource kwargs to avoid passing None values
+    resource_kwargs = {'threads': threads}
+    if memory_limit is not None:
+        resource_kwargs['memory_limit'] = memory_limit
+    if max_temp_directory_size is not None:
+        resource_kwargs['max_temp_directory_size'] = max_temp_directory_size
+
     model = duckreg(
         formula=formula,
         data=data_source,
         subset=sql_where,
-        n_bootstraps=settings.get('n_bootstraps', 0),
+        bootstrap=bootstrap_config,
         round_strata=settings.get('round_strata'),
         seed=settings.get('seed', 42),
         fe_method=settings.get('fe_method', 'demean'),
-        duckdb_kwargs=duckdb_kwargs,
         db_name=db_name,
-        n_jobs=settings.get('n_jobs', 1),
         se_method=se_method,
-        fitter=fitter
+        fitter=fitter,
+        **resource_kwargs,
     )
     
     logger.info("Analysis complete!")
@@ -579,94 +486,3 @@ def cleanup_analysis_results(output_dir: str, dry_run: bool = False) -> None:
         logger.info(f"Dry run complete: would delete {total_deleted} files, keep {total_kept} files")
     else:
         logger.info(f"Cleanup complete: deleted {total_deleted} files, kept {total_kept} files")
-
-
-def main():
-    """Main entrypoint."""
-    parser = argparse.ArgumentParser(description="GNT Analysis Pipeline (DuckReg)")
-    parser.add_argument("--config", default="orchestration/configs/analysis.xlsx", 
-                       help="Path to analysis config file (Excel or YAML)")
-    parser.add_argument("--model", "-m", help="Model name (specification) to run")
-    parser.add_argument("--list", "-l", action="store_true", help="List available models")
-    parser.add_argument("--output", "-o", help="Output directory for results")
-    parser.add_argument("--dataset", help="Override dataset path for analysis")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging")
-    parser.add_argument("--quiet", "-q", action="store_true", help="Disable verbose output")
-    parser.add_argument("--se-method", choices=['analytical', 'bootstrap', 'none'], 
-                       help="Standard error method (overrides config)")
-    parser.add_argument("--fitter", choices=['numpy', 'duckdb'], 
-                       help="Fitter type (overrides config)")
-    
-    args = parser.parse_args()
-    
-    config_path = Path(args.config)
-    if not config_path.exists():
-        config_path = project_root / args.config
-    if not config_path.exists():
-        print(f"Config not found: {args.config}")
-        sys.exit(1)
-    
-    config = load_config(str(config_path))
-    if args.debug:
-        config.setdefault('logging', {})['level'] = 'DEBUG'
-    
-    logger = setup_logging(config)
-    
-    # Handle --list option
-    if args.list:
-        specs = config['analyses']['duckreg']['specifications']
-        if not specs:
-            print("No models found in configuration")
-            sys.exit(0)
-        
-        print("\nAvailable models:")
-        print("=" * 80)
-        for model_name, spec in specs.items():
-            print(f"\n{model_name}")
-            print(f"  Description: {spec.get('description', 'N/A')}")
-            print(f"  Data source: {spec.get('data_source', 'N/A')}")
-            print(f"  Formula: {spec.get('formula', 'N/A')}")
-            print(f"  SE method: {spec.get('se_method', 'default')}")
-            print(f"  Fitter: {spec.get('fitter', 'default')}")
-        print("\n" + "=" * 80)
-        sys.exit(0)
-    
-    # Require --model for actual execution
-    if not args.model:
-        logger.error("Model name required. Use --model <model_name> or --list to see available models")
-        sys.exit(1)
-    
-    output_dir = args.output or config.get('output', {}).get('base_path', 
-                                                            str(project_root / "output" / "analysis"))
-    
-    if 'duckreg' not in config.get('analyses', {}):
-        logger.error("DuckReg analysis not configured in config file")
-        sys.exit(1)
-    
-    specs = config['analyses']['duckreg']['specifications']
-    if args.model not in specs:
-        logger.error(f"Unknown model: {args.model}. Available: {list(specs.keys())}")
-        sys.exit(1)
-    
-    # Apply CLI overrides
-    if args.se_method:
-        config['analyses']['duckreg']['defaults']['se_method'] = args.se_method
-        logger.info(f"Overriding se_method from CLI: {args.se_method}")
-    
-    if args.fitter:
-        config['analyses']['duckreg']['defaults']['fitter'] = args.fitter
-        logger.info(f"Overriding fitter from CLI: {args.fitter}")
-    
-    try:
-        logger.info(f"Running DuckReg model: {args.model}")
-        run_duckreg(config, args.model, output_dir, not args.quiet, args.dataset)
-    except Exception as e:
-        logger.error(f"Analysis failed: {e}")
-        if args.debug:
-            import traceback
-            logger.error(traceback.format_exc())
-        sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()
