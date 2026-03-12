@@ -370,9 +370,22 @@ class ACAGPreprocessor(AbstractPreprocessor):
 
     def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
         """
-        Open a raw ACAG .nc/.nc4 file, extract the PM2.5 variable, assign
-        a time coordinate, and normalise the spatial dimensions to
-        ``(latitude, longitude)``.
+        Open a raw ACAG .nc/.nc4 (or HDF5) file, extract the PM2.5 variable,
+        assign a time coordinate, normalise the spatial dimensions to
+        ``(latitude, longitude)``, and apply ACAG-specific coordinate
+        scaling.
+
+        The function will first attempt to read the file with
+        ``rioxarray.open_rasterio`` (which handles the HDF5 grid-style
+        layout used by some ACAG products) and fall back to the classic
+        ``xarray.open_dataset`` path otherwise.  In either case the
+        following additional transformations are applied:
+
+        * x/y grid indices are converted to degrees via ``lon = x*0.01 - 180``
+          and ``lat = y*0.01 - 60``
+        * dimensions/coords are renamed to ``latitude``/``longitude``
+        * spatial dims are registered with rioxarray and a CRS is written
+        * negative values are masked out and the array cast to ``float32``
 
         Returns an ``xr.Dataset`` with:
         - variable ``pm25``
@@ -384,52 +397,65 @@ class ACAGPreprocessor(AbstractPreprocessor):
             return None
 
         try:
-            raw = xr.open_dataset(file_path, engine="netcdf4", mask_and_scale=True, chunks="auto")
-            logger.debug("Opened %s  variables=%s", file_path, list(raw.data_vars))
+            da = rxr.open_rasterio(
+                file_path,
+                decode_coords="all",
+                mask_and_scale=True,
+                driver="HDF5",
+            )
+            logger.debug("Opened %s with rioxarray dims=%s", file_path, da.dims)
+            # if the raster has multiple bands choose the first one and
+            # drop the band dimension to match the single-variable API
+            if "band" in da.dims and da.sizes.get("band", 1) > 1:
+                da = da.isel(band=0)
+            var_name = "pm25"
+            # convert to a dataset immediately; this preserves the
+            # DataArray attributes automatically as dataset attrs
+            ds = da.to_dataset(name=var_name)
+            ds.attrs["source_year"] = year
+            ds.attrs["source_variable"] = var_name
 
-            # ---- Find the PM2.5 variable ---------------------------------
-            var_name = self._find_pm25_var(raw)
-            if var_name is None:
-                logger.error(
-                    "Could not identify PM2.5 variable in %s.  Available: %s",
-                    file_path, list(raw.data_vars),
-                )
-                return None
-            logger.info("Using variable '%s' from %s", var_name, os.path.basename(file_path))
-
-            da = raw[var_name]
+            # ---- ACAG-specific coordinate handling -----------------------
+            SP = 0.01
+            if "x" in ds.coords:
+                ds = ds.assign_coords(x=ds["x"] * SP - 180)
+            if "y" in ds.coords:
+                ds = ds.assign_coords(y=ds["y"] * SP - 60)
 
             # ---- Normalise spatial dim names ----------------------------
             dim_map = {}
-            for d in da.dims:
+            for d in ds.dims:
                 dl = d.lower()
                 if dl in ("lat", "latitude", "y"):
                     dim_map[d] = "latitude"
                 elif dl in ("lon", "longitude", "x"):
                     dim_map[d] = "longitude"
             if dim_map:
-                da = da.rename(dim_map)
+                ds = ds.rename(dim_map)
+
+            # set spatial dimensions explicitly and ensure CRS is known
+            try:
+                ds = ds.rio.set_spatial_dims(x_dim="longitude", y_dim="latitude")
+            except Exception:
+                pass
+            ds = ds.rio.write_crs("EPSG:4326")
+
+            # drop invalid / negative values and reduce precision
+            ds = ds.where(ds >= 0)
+            ds = ds.astype("float32")
 
             # ---- Add time coordinate (annual → Dec-31) ------------------
-            if "time" not in da.dims:
-                da = da.expand_dims(dim={"time": 1}).assign_coords(
+            if "time" not in ds.dims:
+                ds = ds.expand_dims(dim={"time": 1}).assign_coords(
                     time=[pd.Timestamp(f"{year}-12-31")]
                 )
 
             # ---- Add band dimension for consistency with other sources ---
-            if "band" not in da.dims:
-                da = da.expand_dims(dim={"band": 1}).assign_coords(band=[1])
+            if "band" not in ds.dims:
+                ds = ds.expand_dims(dim={"band": 1}).assign_coords(band=[1])
 
             # Ensure canonical dim order
-            da = da.transpose("time", "band", "latitude", "longitude")
-
-            # ---- Write CRS ----------------------------------------------
-            da = da.rio.write_crs("EPSG:4326")
-
-            ds = da.to_dataset(name="pm25")
-            ds.attrs.update(raw.attrs)
-            ds.attrs["source_year"] = year
-            ds.attrs["source_variable"] = var_name
+            ds = ds.transpose("time", "band", "latitude", "longitude")
 
             return ds
 

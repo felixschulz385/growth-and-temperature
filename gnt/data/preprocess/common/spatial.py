@@ -22,7 +22,7 @@ class SpatialProcessor:
     allowing source-specific customization through callback functions.
     """
     
-    def __init__(self, hpc_root: str, temp_dir: str = None, dask_client=None):
+    def __init__(self, hpc_root: str, temp_dir: str = None, dask_client=None, default_nodata: Optional[float] = None):
         """
         Initialize spatial processor.
         
@@ -30,10 +30,19 @@ class SpatialProcessor:
             hpc_root: HPC root directory for geobox
             temp_dir: Temporary directory for processing
             dask_client: Optional Dask client context manager
+            default_nodata: if provided, this value will be used as the
+                ``dst_nodata`` argument for every reprojection call made by
+                this processor unless overridden at method call time.
         """
         self.hpc_root = hpc_root
         self.temp_dir = temp_dir or tempfile.mkdtemp(prefix="spatial_processor_")
         self.dask_client = dask_client
+        # store a default nodata for downstream operations
+        self.default_nodata = default_nodata
+        # suppress verbose rasterio transformer warnings that crop up during
+        # reprojection (e.g. CPLE_NotSupported XSCALE).  we only care about
+        # errors.
+        logging.getLogger("rasterio._env").setLevel(logging.ERROR)
         
     def get_target_geobox(self):
         """Get or create the target geobox for reprojection."""
@@ -52,7 +61,9 @@ class SpatialProcessor:
         years: List[int],
         variables: List[str],
         sample_attrs: Dict[str, Any] = None,
-        variable_attrs_func: Callable[[str, Dict], Dict] = None
+        variable_attrs_func: Callable[[str, Dict], Dict] = None,
+        dst_nodata: Optional[float] = None,
+        packaging_attrs: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Create empty zarr file with target dimensions and metadata.
@@ -64,7 +75,10 @@ class SpatialProcessor:
             variables: List of variable names
             sample_attrs: Global attributes for the dataset
             variable_attrs_func: Function to get variable-specific attributes
-            
+            dst_nodata: Optional nodata value to use for the output arrays. If
+                provided the default `_FillValue` attribute will be set to this
+                value instead of the hard‑coded 65535.
+        
         Returns:
             bool: Success status
         """
@@ -82,11 +96,18 @@ class SpatialProcessor:
             # Create data variables with fill values and band dimension
             data_vars = {}
             
-            default_attrs = {"_FillValue": 65535}
-            packaging_attrs = {
-                "scale_factor": 0.01,
-                "add_offset": 0.0
-            }
+            # use provided nodata as fill value if given
+            default_attrs = {"_FillValue": dst_nodata if dst_nodata is not None else 65535}
+            if dst_nodata is not None:
+                # also expose the attribute under common name
+                default_attrs["nodata"] = dst_nodata
+            # packaging attributes control data scaling/offset in zarr encoding.
+            # zero-length dict disables packaging, leaving only fill values.
+            if packaging_attrs is None:
+                packaging_attrs = {
+                    "scale_factor": 0.01,
+                    "add_offset": 0.0,
+                }
             
             for var in variables:
                 # Get variable-specific attributes
@@ -181,7 +202,8 @@ class SpatialProcessor:
         output_path: str,
         year: int,
         target_geobox,
-        preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None
+        preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None,
+        dst_nodata: Optional[float] = None,
     ) -> bool:
         """
         Write a year's worth of data to zarr with reprojection.
@@ -192,7 +214,10 @@ class SpatialProcessor:
             year: Year being processed
             target_geobox: Target geobox for reprojection
             preprocess_func: Optional preprocessing function
-            
+            dst_nodata: Optional destination nodata value that will be passed
+                to :func:`odc.geo.xr.xr_reproject` as ``dst_nodata``. When
+                ``None`` the reprojection library default ("auto") is used.
+        
         Returns:
             bool: Success status
         """
@@ -203,8 +228,11 @@ class SpatialProcessor:
             if preprocess_func:
                 year_ds = preprocess_func(year_ds)
             
-            # Reproject to target geobox
-            reprojected_ds = xr_reproject(year_ds, target_geobox, resampling="nearest")
+            # Reproject to target geobox; propagate custom nodata if given
+            reproj_kwargs = {"resampling": "nearest"}
+            if dst_nodata is not None:
+                reproj_kwargs["dst_nodata"] = dst_nodata
+            reprojected_ds = xr_reproject(year_ds, target_geobox, **reproj_kwargs)
             
             # Clean up dataset
             reprojected_ds = reprojected_ds.drop_vars(['spatial_ref'], errors='ignore').drop_attrs()
@@ -239,7 +267,9 @@ class SpatialProcessor:
         years_to_process: List[int],
         year_pattern_func: Callable[[str], Optional[int]],
         preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None,
-        get_variables_func: Callable[[str], Tuple[List[str], Dict]] = None
+        get_variables_func: Callable[[str], Tuple[List[str], Dict]] = None,
+        dst_nodata: Optional[float] = None,
+        packaging_attrs: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Standard spatial processing workflow for simple cases.
@@ -274,8 +304,20 @@ class SpatialProcessor:
                 sample_attrs = sample_ds.attrs.copy()
                 sample_ds.close()
             
-            # Create empty target zarr
-            if not self.create_empty_target_zarr(output_path, target_geobox, years_to_process, variables, sample_attrs):
+            # Create empty target zarr, carrying nodata setting if requested
+            # If caller didn't supply a nodata value, fall back to the one
+            # configured on the processor instance (if any).
+            effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
+
+            if not self.create_empty_target_zarr(
+                output_path,
+                target_geobox,
+                years_to_process,
+                variables,
+                sample_attrs,
+                dst_nodata=effective_nodata,
+                packaging_attrs=packaging_attrs,
+            ):
                 return False
             
             # Process each year
@@ -292,8 +334,15 @@ class SpatialProcessor:
                 year_ds = xr.open_zarr(year_files[0], consolidated=False, decode_coords='all')
                 
                 # Write to output zarr
+                effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
+
                 success = self.write_year_to_zarr(
-                    year_ds, output_path, year, target_geobox, preprocess_func
+                    year_ds,
+                    output_path,
+                    year,
+                    target_geobox,
+                    preprocess_func,
+                    dst_nodata=effective_nodata,
                 )
                 
                 year_ds.close()

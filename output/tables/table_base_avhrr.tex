@@ -1,0 +1,32 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Regression Estimates of Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models for AVHRR at 5km Resolution}
+\begin{tabular}{lcccccccc}
+\toprule
+ & (D.P) & (V.P) & (D.1FE) & (V.1FE) & (D.2FE) & (V.2FE) & (D.2FEY) & (V.2FEY) \\
+\midrule
+$HARM$ & -0.0365 &  & -0.1295*** &  & 0.0090* &  & 0.0009 &  \\
+ & (0.0343) &  & (0.0075) &  & (0.0036) &  & (0.0038) &  \\
+$VIIRS$ &  & 0.0525 &  & -0.0031 &  & 0.0112*** &  & 0.0130** \\
+ &  & (0.0345) &  & (0.0062) &  & (0.0031) &  & (0.0047) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 \\
+N Observations & 175,802,039 & 58,436,260 & 175,653,450 & 58,385,746 & 175,651,878 & 58,385,238 & 175,653,450 & 58,385,746 \\
+N Compressed Rows & 32,936,099 & 10,299,492 & 34,631,706 & 9,455,416 & 54,891,094 & 10,812,224 & 56,670,929 & 10,578,757 \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY & PX+YR & PX+YR \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 5km & 5km & 5km & 5km & 5km & 5km & 5km & 5km \\
+Spatial Extent & World & World & World & World & World & World & World & World \\
+Temporal Extent & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Independent variable is AVHRR surface temperature. Dependent variable is nighttime lights. FE models use  fixed effects estimation with clustered standard errors. NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

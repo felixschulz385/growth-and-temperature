@@ -5,10 +5,10 @@ Two-stage pipeline:
   Stage 1 (annual)  – Convert raw .nc/.nc4 files to annual zarr archives.
   Stage 2 (spatial) – Reproject to the project-wide unified geobox.
 
-The raw ESA CCI NetCDF files carry several variables.  By default only
-``lccs_class`` (the LCCS land cover classification map) and
-``processed_flag`` are extracted.  This can be overridden via
-``variables_to_keep`` in the configuration.
+The raw ESA CCI NetCDF files are shipped as zip archives (despite the ``.nc``
+suffix) and carry several variables.  Only ``lccs_class`` (the LCCS land
+cover classification map, uint8) is extracted by default; this can be
+overridden via ``variables_to_keep`` in the configuration.
 
 Note on data type
 -----------------
@@ -18,8 +18,10 @@ information is lost.
 """
 import os
 import re
+import shutil
 import tempfile
 import logging
+import zipfile
 from typing import Dict, Any, List, Optional, Tuple
 
 import numpy as np
@@ -77,7 +79,7 @@ class ESACCIPreprocessor(AbstractPreprocessor):
         Default: ``"esacci/landcover"``.
     variables_to_keep : list[str]
         Names of NetCDF variables to extract and store.
-        Default: ``["lccs_class", "processed_flag"]``.
+        Default: ``["lccs_class"]``.
     override : bool
         Re-process even when output already exists (default ``False``).
     dask_threads / dask_memory_limit : int / str
@@ -87,7 +89,7 @@ class ESACCIPreprocessor(AbstractPreprocessor):
     """
 
     # Variables extracted by default
-    DEFAULT_VARIABLES = ["lccs_class", "processed_flag"]
+    DEFAULT_VARIABLES = ["lccs_class"]
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -382,47 +384,77 @@ class ESACCIPreprocessor(AbstractPreprocessor):
 
     def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
         """
-        Open a raw ESA CCI NetCDF file, extract the configured variables,
-        and return a normalised ``xr.Dataset`` with dimensions
-        ``(time=1, band=1, latitude, longitude)``.
+        Open a raw ESA CCI NetCDF file and return a normalised ``xr.Dataset``
+        with dimensions ``(time=1, band=1, latitude, longitude)``.
 
-        ESA CCI LC files use ``lat`` / ``lon`` dimension names and store data
-        as ``(lat, lon)``.  We rename, add time + band dims, and write CRS.
+        Raw files ship as zip archives (despite the ``.nc`` suffix) containing
+        a single ``.nc`` inside.  The archive is extracted to ``self.temp_dir``
+        and opened with the ``h5netcdf`` engine.  If the file is not a zip it
+        is read directly as a fallback.
 
-        Only the variables present in both the file and ``self.variables_to_keep``
-        are included; a warning is logged for any missing ones.
+        Only ``lccs_class`` (uint8) is retained; its variable attributes are
+        preserved.  The existing ``time`` coordinate is overridden to Dec-31 of
+        *year* for consistency with the rest of the pipeline.  A ``band``
+        dimension is added so downstream processors see a uniform layout.
         """
         if not os.path.exists(file_path):
             logger.error("File not found: %s", file_path)
             return None
 
         try:
+            # ----------------------------------------------------------
+            # Extract zip → temp .nc (ESA CCI ships .nc inside a zip)
+            # ----------------------------------------------------------
+            try:
+                with zipfile.ZipFile(file_path) as z:
+                    nc_name = next(
+                        (n for n in z.namelist() if n.endswith(".nc")), None
+                    )
+                    if nc_name is None:
+                        raise ValueError(
+                            f"No .nc entry found inside zip: {file_path}"
+                        )
+                    tmp_nc_path = os.path.join(
+                        self.temp_dir,
+                        f"esacci_{year}_{os.path.basename(nc_name)}",
+                    )
+                    with z.open(nc_name) as f_in, open(tmp_nc_path, "wb") as f_out:
+                        shutil.copyfileobj(f_in, f_out)
+                nc_path = tmp_nc_path
+                logger.debug("Extracted zip to temp nc: %s", nc_path)
+            except zipfile.BadZipFile:
+                # Plain NetCDF – read directly
+                logger.debug(
+                    "File is not a zip archive, reading directly: %s", file_path
+                )
+                nc_path = file_path
+
+            # ----------------------------------------------------------
+            # Open with h5netcdf, keep raw integer codes
+            # ----------------------------------------------------------
             raw = xr.open_dataset(
-                file_path,
-                engine="netcdf4",
-                mask_and_scale=False,   # keep raw integer codes
+                nc_path,
+                engine="h5netcdf",
+                mask_and_scale=False,
+                decode_coords="all",
                 chunks="auto",
             )
             logger.debug("Opened %s  variables=%s", file_path, list(raw.data_vars))
 
-            # ---- Select requested variables ------------------------------
-            available = set(raw.data_vars)
-            keep = [v for v in self.variables_to_keep if v in available]
-            missing_vars = [v for v in self.variables_to_keep if v not in available]
-            if missing_vars:
-                logger.warning(
-                    "Variables not found in %s (skipping): %s",
-                    os.path.basename(file_path), missing_vars,
-                )
-            if not keep:
+            # ---- Compute final lccs_class variable ---------------------
+            # the raw file ships several ancillary variables; a key one is
+            # `processed_flag` which indicates whether the pixel was
+            # processed.  We mask out unprocessed cells and drop the flag
+            # afterwards.  The result is converted to float16 for storage.
+            if "lccs_class" not in raw.data_vars:
                 logger.error(
-                    "None of the requested variables %s found in %s.  "
-                    "Available: %s",
-                    self.variables_to_keep, file_path, sorted(available),
+                    "Variable 'lccs_class' not found in %s. Available: %s",
+                    os.path.basename(file_path), sorted(raw.data_vars),
                 )
+                raw.close()
                 return None
 
-            ds = raw[keep]
+            ds = raw[["lccs_class"]]
 
             # ---- Normalise spatial dimension names ----------------------
             dim_map = {}
@@ -435,20 +467,23 @@ class ESACCIPreprocessor(AbstractPreprocessor):
             if dim_map:
                 ds = ds.rename(dim_map)
 
-            # ---- Add time coordinate (annual → Dec-31) ------------------
-            if "time" not in ds.dims:
+            # ---- Override time coordinate to Dec-31 of the file year ---
+            # (the raw file already has a time dim; we standardise it)
+            if "time" in ds.dims:
+                ds = ds.assign_coords(time=[pd.Timestamp(f"{year}-12-31")])
+            else:
                 ds = ds.expand_dims(dim={"time": 1}).assign_coords(
                     time=[pd.Timestamp(f"{year}-12-31")]
                 )
 
-            # ---- Add band dimension for consistency with other sources ---
+            # ---- Add band dimension for pipeline consistency ------------
             if "band" not in ds.dims:
                 ds = ds.expand_dims(dim={"band": 1}).assign_coords(band=[1])
 
-            # Ensure canonical dim order for every variable
+            # Ensure canonical dim order
             ds = ds.transpose("time", "band", "latitude", "longitude")
 
-            # ---- Write CRS (ESA CCI is always WGS-84) -------------------
+            # ---- Write CRS (ESA CCI is always WGS-84) ------------------
             ds = ds.rio.write_crs("EPSG:4326")
 
             ds.attrs["source_year"] = year
@@ -553,6 +588,10 @@ class ESACCIPreprocessor(AbstractPreprocessor):
 
                     # ESA CCI LC is a categorical map – always use nearest
                     # neighbour resampling to avoid blending class codes.
+                    # explicitly request that output pixels use 0 as the
+                    # "nodata" value.  this is needed for the ESA CCI land
+                    # cover product where 0 represents an unset/unknown class
+                    # and must not be treated as valid data during reprojection.
                     success = spatial_processor.process_spatial_standard(
                         source_files=source_files,
                         output_path=output_path,
@@ -560,6 +599,8 @@ class ESACCIPreprocessor(AbstractPreprocessor):
                         year_pattern_func=year_from_path,
                         preprocess_func=preprocess,
                         get_variables_func=get_vars_and_attrs,
+                        dst_nodata=0,
+                        packaging_attrs={},  # disable scale/offset for categorical data
                     )
 
                     if success:

@@ -1,0 +1,32 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models for AVHRR at 5km Resolution}
+\begin{tabular}{lcccccccc}
+\toprule
+ & (lD.P) & (lV.P) & (lD.1FE) & (lV.1FE) & (lD.2FE) & (lV.2FE) & (lD.2FEY) & (lV.2FEY) \\
+\midrule
+$\log(\text{HARM} + 0.01)$ & 0.0353 &  & -0.3323*** &  & 0.0043 &  & -0.0446*** &  \\
+ & (0.1616) &  & (0.0175) &  & (0.0070) &  & (0.0079) &  \\
+$\log(\text{VIIRS} + 0.01)$ &  & 0.3046 &  & -0.8094*** &  & 0.0066 &  & -0.0523 \\
+ &  & (0.2391) &  & (0.0677) &  & (0.0298) &  & (0.0758) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 & 2026-03-09 \\
+N Observations & 175,802,039 & 58,436,260 & 175,653,450 & 58,385,746 & 175,651,878 & 58,385,238 & 175,653,450 & 58,385,746 \\
+N Compressed Rows & 31,512,948 & 12,531,768 & 32,301,365 & 12,168,481 & 56,051,288 & 14,181,605 & 56,196,739 & 14,270,331 \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & NO & NO & PX & PX & PX+CY & PX+CY & PX+YR & PX+YR \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 5km & 5km & 5km & 5km & 5km & 5km & 5km & 5km \\
+Spatial Extent & World & World & World & World & World & World & World & World \\
+Temporal Extent & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 & 1991-2020 & 2012-2020 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Independent variable is AVHRR surface temperature. Dependent variable is log(nighttime lights + 0.01). FE models use  fixed effects estimation with clustered standard errors. NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

@@ -1,0 +1,44 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Instrumental Variable Estimates of Log Nighttime Lights Effects on Land Surface Temperature Using Regional Favoritism: Replication of Hodler \& Raschky (2014) at Multiple Resolutions}
+\begin{tabular}{lccccccc}
+\toprule
+ & (RFl50) & (RFl5) & (RFl1) & (RFl500) & (RFl5YFE) & (RFl1YFE) & (RFl500YFE) \\
+\midrule
+\midrule
+\multicolumn{8}{l}{\textit{First Stage: log(ntl\_harm+0.01)}} \\
+  Leader's Birthplace & -0.006 & 0.012 & 0.045* &  & 0.027 & 0.045* &  \\
+ & (0.043) & (0.025) & (0.018) &  & (0.029) & (0.023) &  \\
+\midrule
+\multicolumn{8}{l}{\textit{First Stage: log(viirs\_annual+0.01)}} \\
+  Leader's Birthplace &  &  &  & -0.005 &  &  & -0.004 \\
+ &  &  &  & (0.009) &  &  & (0.010) \\
+\midrule
+\multicolumn{8}{l}{\textit{Second Stage}} \\
+$\hat{\log(\text{HARM} + 0.01)}$ & 5.215 & -0.130 & 1.250 &  & -2.922 & 1.525 &  \\
+ & (22.098) & (10.032) & (1.872) &  & (9.476) & (3.879) &  \\
+$\hat{\log(\text{VIIRS} + 0.01)}$ &  &  &  & -1.141 &  &  & -0.639 \\
+ &  &  &  & (7.810) &  &  & (13.873) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-11 & 2026-03-06 & 2026-03-06 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-09 \\
+N Observations & 965,159 & 89,171,617 & 1,226,981,430 & 6,330,033,082 & 89,171,617 & 1,226,981,430 & 6,330,033,082 \\
+N Compressed Rows & 965,159 & 89,172,453 & 1,226,990,937 & 6,330,074,374 & 89,172,453 & 1,226,990,937 & 6,330,074,374 \\
+First Stage F (log(ntl\_harm+0.01)) & 0.018 & 0.222 & 6.249 &  & 0.862 & 4.032 &  \\
+First Stage F (log(viirs\_annual+0.01)) &  &  &  & 0.349 &  &  & 0.193 \\
+\midrule
+Nighttime Lights & DMSP & DMSP & DMSP & VIIRS & DMSP & DMSP & VIIRS \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+CY & PX+YR & PX+YR & PX+YR \\
+Clustering & Country & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 50km & 5km & 1km & 500m & 5km & 1km & 500m \\
+Spatial Extent & H\&R & H\&R & H\&R & H\&R & H\&R & H\&R & H\&R \\
+Temporal Extent & 1992-2009 & 1992-2009 & 2000-2009 & 2013-2020 & 1992-2009 & 2000-2009 & 2013-2020 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Dependent variable is log(nighttime lights + 0.01). Models use  fixed effects estimation with clustered standard errors. PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

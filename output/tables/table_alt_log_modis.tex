@@ -1,0 +1,29 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Regression Estimates of Log Nighttime Lights Effects on Alternative MODIS Land Surface Temperature Measures: Mean, Rolling Max, and $>$30°C Proportion}
+\begin{tabular}{lcccccc}
+\toprule
+ & (M.D) & (M.V) & (R.D) & (R.V) & (H.D) & (H.V) \\
+\midrule
+\midrule
+Model Version & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 \\
+Computed Date & N/A & N/A & N/A & N/A & N/A & N/A \\
+N Observations &  &  &  &  &  &  \\
+N Compressed Rows &  &  &  &  &  &  \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 1km & 500m & 1km & 500m & 1km & 500m \\
+Spatial Extent & World & World & World & World & World & World \\
+Temporal Extent & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 & 2000-2020 & 2012-2020 \\
+Dependent Variable & Mean Temp & Mean Temp & Roll Max Temp & Roll Max Temp & $>$30°C Prop & $>$30°C Prop \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Independent variables are alternative MODIS surface temperature measures from the GLASS product. Dependent variable is log(nighttime lights + 0.01). FE models use  fixed effects estimation with clustered standard errors. PX: Pixel fixed effects; CY: Country×Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

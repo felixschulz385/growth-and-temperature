@@ -6,20 +6,33 @@ This script provides a command-line interface to run both download and preproces
 workflows with a common configuration structure.
 
 Usage examples:
-  # Run download workflow for a specific source
+  # ── Download / preprocess ─────────────────────────────────────────────────
   python run.py download --config config.yaml --source glass
-  
-  # Build or update the index for a specific source
-  python run.py index --config config.yaml --source glass
-  
-  # Run preprocessing for a specific source
+  python run.py index    --config config.yaml --source glass
   python run.py preprocess --config config.yaml --source glass
-  
-  # Run validation for a specific source
-  python run.py validate --config config.yaml --source glass
-  
-  # Extract transferred batches for a specific source
-  python run.py extract --config config.yaml --source glass
+
+  # ── Analysis ──────────────────────────────────────────────────────────────
+  # List available models
+  python run.py analysis --list-models
+
+  # Run a single model on this machine (no SLURM)
+  python run.py analysis --model my_model
+
+  # Submit one or more tables/models as a SLURM batch job
+  python run.py submit --tables table_main table_robustness
+  python run.py submit --tables table_main --mem 64GB --time 4:00:00
+
+  # ── Tables ────────────────────────────────────────────────────────────────
+  # Status overview of all tables and their last results
+  python run.py summary
+
+  # Render table files (HTML + LaTeX) to output/analysis/tables
+  python run.py tables
+  python run.py tables --source table_main --formats html latex
+
+  # ── Maintenance ───────────────────────────────────────────────────────────
+  python run.py cleanup
+  python run.py cleanup --dry-run
 """
 
 import os
@@ -53,137 +66,13 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
     config_path = Path(config_path)
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found at {config_path}")
-    
-    # Check if it's an Excel file
+
+    # Analysis configs (Excel) are handled by workflow.load_config
     if config_path.suffix.lower() in ['.xlsx', '.xls']:
-        # Import Excel loading function from workflow
-        from gnt.analysis.workflow import (
-            get_directory_size, bytes_to_gb, format_size_string
-        )
-        import pandas as pd
-        
-        # Load defaults from the YAML analysis configuration
-        yaml_config_path = Path(config_path).parent / "analysis.yaml"
-        yaml_defaults = {
-            'se_method': 'analytical',
-            'fitter': 'duckdb',
-            'n_bootstraps': 100,
-            'seed': 42,
-            'fe_method': 'mundlak',
-            'round_strata': 5,
-            'n_jobs': 1,
-            'duckdb_kwargs': {}
-        }
-        
-        if yaml_config_path.exists():
-            try:
-                with open(yaml_config_path, 'r') as f:
-                    yaml_config = yaml.safe_load(f)
-                if 'analyses' in yaml_config and 'duckreg' in yaml_config['analyses']:
-                    yaml_defaults = yaml_config['analyses']['duckreg'].get('defaults', yaml_defaults)
-            except Exception:
-                pass  # Use hardcoded defaults if YAML loading fails
-        
-        # Load from Excel - read from "Models" sheet
-        df = pd.read_excel(config_path, sheet_name='Models')
-        
-        # Build config structure from Excel data
-        config = {
-            'analyses': {
-                'duckreg': {
-                    'description': 'DuckReg compressed OLS/2SLS analysis',
-                    'specifications': {},
-                    'defaults': yaml_defaults  # Use defaults from YAML
-                }
-            },
-            'output': {
-                'base_path': str(Path(project_root) / "output" / "analysis")
-            },
-            'logging': {
-                'level': 'INFO',
-                'format': '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-            }
-        }
-        
-        # Process each row as a specification
-        for _, row in df.iterrows():
-            model_name = row['model_name']
-            
-            # Build formula from components
-            dependent = row['dependent']
-            independent = row['independent']
-            fixed_effects = row['fixed_effects']
-            instruments = row['instruments']
-            clustering = row['clustering']
-            
-            # Build formula
-            formula = f"{dependent} ~ {independent} | {fixed_effects} | {instruments} | {clustering}"
-            
-            # Build clustering specification
-            cluster_col = None
-            if pd.notna(row['clustering']) and str(row['clustering']) != '0':
-                cluster_col = str(row['clustering'])
-            
-            # Build specification
-            spec = {
-                'description': f"{row.get('section', 'Analysis')} - {row.get('subsection', model_name)}",
-                'data_source': str(row['data_source']),
-                'formula': formula,
-                'settings': {}
-            }
-            
-            # Expand data_source path
-            data_source_value = str(row['data_source'])
-            # Handle both direct paths and simple filenames
-            if not data_source_value.startswith('/') and not data_source_value.startswith('${'):
-                # If it's a simple filename like "5km", expand it
-                data_source_expanded = os.path.expandvars(f"${{WD}}/data_nobackup/assembled/{data_source_value}.parquet")
-            else:
-                # Otherwise expand as-is
-                data_source_expanded = os.path.expandvars(data_source_value)
-            
-            spec['data_source'] = data_source_expanded
-            
-            # Calculate directory size and set max_temp_directory_size
-            # First expand environment variables for size calculation
-            data_source_for_size = os.path.expandvars(data_source_expanded)
-            data_dir = Path(data_source_for_size.replace('.parquet', ''))
-            dir_size = get_directory_size(data_dir)
-            
-            # Store the calculated temp dir size in settings for later use
-            if dir_size > 0:
-                calculated_size = format_size_string(dir_size)
-                spec['settings']['_max_temp_directory_size'] = calculated_size
-            
-            # Add query if specified
-            if pd.notna(row.get('query')) and str(row['query']).strip():
-                spec['query'] = str(row['query'])
-            
-            # Add subset if specified
-            if pd.notna(row.get('subset')) and str(row['subset']).strip():
-                spec['subset'] = str(row['subset'])
-            
-            # Override defaults with row-specific settings
-            if pd.notna(row.get('se_method')):
-                spec['se_method'] = str(row['se_method'])
-            if pd.notna(row.get('fitter')):
-                spec['fitter'] = str(row['fitter'])
-            if pd.notna(row.get('n_bootstraps')):
-                spec['settings']['n_bootstraps'] = int(row['n_bootstraps'])
-            if pd.notna(row.get('seed')):
-                spec['settings']['seed'] = int(row['seed'])
-            if pd.notna(row.get('fe_method')):
-                spec['settings']['fe_method'] = str(row['fe_method'])
-            if pd.notna(row.get('round_strata')):
-                spec['settings']['round_strata'] = int(row['round_strata'])
-            if pd.notna(row.get('n_jobs')):
-                spec['settings']['n_jobs'] = int(row['n_jobs'])
-            
-            config['analyses']['duckreg']['specifications'][model_name] = spec
-        
-        return config
-    
-    # Original YAML/JSON loading logic
+        from gnt.analysis.workflow import load_config as _load_analysis_config
+        return _load_analysis_config(config_path)
+
+    # YAML / JSON loading
     env_pattern = re.compile(r'\${([^}^{]+)}')
     
     # Function to replace environment variables in strings
@@ -318,61 +207,23 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         return
     
     elif operation_type == "tables":
-        # Handle table generation operations
         try:
-            import importlib
-            tables_module = importlib.import_module('gnt.analysis.generate_tables')
-            
-            # Get table names to generate (source is treated as table name(s))
+            from gnt.analysis import AnalysisConfig, generate_all_tables
+
+            excel_path = (cli_overrides or {}).get('analysis_config') or None
+            output_dir  = (cli_overrides or {}).get('output_dir')  or None
+            output_formats = (cli_overrides or {}).get('formats') or None
             table_names = [source] if source else None
-            
+
+            cfg = AnalysisConfig(excel_path)
             logger.info(f"Generating tables: {table_names or 'all'}")
-            
-            # Get table config path
-            config_path = cli_overrides.get('table_config') if cli_overrides else None
-            if not config_path:
-                config_path = config.get('tables', {}).get('config_path')
-            if not config_path:
-                # Default to orchestration/configs/table_configs.yaml
-                project_root_path = Path(__file__).parent
-                config_path = project_root_path / "orchestration" / "configs" / "table_configs.yaml"
-            
-            # Get analysis config path for base_path lookup
-            analysis_config_path = cli_overrides.get('analysis_config') if cli_overrides else None
-            if not analysis_config_path:
-                analysis_config_path = Path(__file__).parent / "orchestration" / "configs" / "analysis.yaml"
-            
-            logger.info(f"Using table config: {config_path}")
-            logger.info(f"Using analysis config: {analysis_config_path}")
-            
-            config_loader = tables_module.ConfigLoader(config_path=config_path, analysis_config=analysis_config_path)
-            
-            # Get output directory override if provided
-            output_dir = cli_overrides.get('output_dir') if cli_overrides else None
-            
-            # If specific table names provided, generate those; otherwise generate all
-            if table_names:
-                for table_name in table_names:
-                    logger.info(f"Generating table: {table_name}")
-                    generated_tables = tables_module.generate_table_from_config(table_name, config_loader)
-                    tables_module.save_generated_tables(table_name, generated_tables, output_dir)
-            else:
-                # Generate all tables
-                all_table_names = config_loader.get_all_table_names()
-                for table_name in all_table_names:
-                    logger.info(f"Generating table: {table_name}")
-                    generated_tables = tables_module.generate_table_from_config(table_name, config_loader)
-                    tables_module.save_generated_tables(table_name, generated_tables, output_dir)
-            
+            generate_all_tables(cfg, table_names=table_names, output_dir=output_dir,
+                                output_formats=output_formats)
             logger.info("Table generation completed successfully")
-                        
-        except ImportError as e:
-            logger.error(f"Error importing table generation module: {e}")
-            raise ValueError(f"Could not import table generation module: {e}") from e
         except Exception as e:
             logger.error(f"Error during table generation: {e}")
             raise
-        
+
         return
 
     # Ensure the source exists in configuration
@@ -533,8 +384,139 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
         raise ValueError(f"Unsupported operation type: {operation_type}")
 
 
+# ---------------------------------------------------------------------------
+# New-style command dispatch helpers (added during CLI refactor)
+# ---------------------------------------------------------------------------
+_NEW_DOMAINS = {"download", "preprocess", "assemble", "analysis"}
+_DOMAIN_SUBCMDS: dict = {
+    "download":   {"index", "run"},
+    "preprocess": {"run"},
+    "assemble":   {"create", "update", "demean"},
+    "analysis":   {"run", "submit", "summary", "tables", "cleanup"},
+}
+# Legacy top-level commands that map 1:1 to a new domain/subcommand
+_LEGACY_SIMPLE: dict = {
+    "index":   ("download",  "index"),
+    "demean":  ("assemble",  "demean"),
+    "submit":  ("analysis",  "submit"),
+    "summary": ("analysis",  "summary"),
+    "tables":  ("analysis",  "tables"),
+    "cleanup": ("analysis",  "cleanup"),
+}
+
+
+def _dispatch_new_cli(new_argv: list) -> int:
+    """Delegate to gnt.cli.main with the given argument list."""
+    from gnt.cli.main import main as _new_main
+    return _new_main(new_argv)
+
+
 def main():
-    """Main entry point for the unified data system."""
+    """Main entry point for the unified data system.
+
+    Supported command styles:
+
+    *Legacy* (still works, will print deprecation notice for some commands):
+      python run.py download   --config c.yaml --source s
+      python run.py preprocess --config c.yaml --source s
+      python run.py assemble   --config c.yaml --source s
+      python run.py analysis   --model m
+      python run.py submit     --tables t
+      python run.py summary
+      python run.py tables
+      python run.py cleanup
+
+    *New-style* (preferred):
+      python run.py download   run    --config c.yaml --source s
+      python run.py download   index  --config c.yaml --source s
+      python run.py preprocess run    --config c.yaml --source s
+      python run.py assemble   create --config c.yaml --source s
+      python run.py assemble   update --config c.yaml --source s --datasource d
+      python run.py assemble   demean --config c.yaml --source s
+      python run.py analysis   run    --model m
+      python run.py analysis   submit --tables t
+      python run.py analysis   summary
+      python run.py analysis   tables
+      python run.py analysis   cleanup
+    """
+    # ── New-style dispatch ──────────────────────────────────────────────────
+    # Detect domain/subcommand pairs and route to the new modular CLI.
+    _argv = sys.argv[1:]
+    if len(_argv) >= 1:
+        _cmd = _argv[0]
+
+        # Simple legacy remaps (single-verb → domain subcommand)
+        if _cmd in _LEGACY_SIMPLE:
+            import warnings
+            _domain, _subcmd = _LEGACY_SIMPLE[_cmd]
+            warnings.warn(
+                f"'run.py {_cmd}' is deprecated; "
+                f"use 'run.py {_domain} {_subcmd}' instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            return _dispatch_new_cli([_domain, _subcmd] + _argv[1:])
+
+        # Already new-style domain/subcommand
+        if _cmd in _NEW_DOMAINS and len(_argv) >= 2:
+            _subcmd = _argv[1]
+            if _subcmd in _DOMAIN_SUBCMDS.get(_cmd, set()):
+                return _dispatch_new_cli(_argv)
+
+        # Legacy 'assemble --update' → 'assemble update'
+        if _cmd == "assemble" and "--update" in _argv:
+            import warnings
+            warnings.warn(
+                "'run.py assemble --update' is deprecated; "
+                "use 'run.py assemble update' instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            new_tail = [a for a in _argv[1:] if a != "--update"]
+            return _dispatch_new_cli(["assemble", "update"] + new_tail)
+
+        # Legacy 'download --config …' (no subcommand) → 'download run'
+        if _cmd == "download" and (len(_argv) < 2 or _argv[1].startswith("-")):
+            import warnings
+            warnings.warn(
+                "'run.py download' is deprecated; "
+                "use 'run.py download run' instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            return _dispatch_new_cli(["download", "run"] + _argv[1:])
+
+        # Legacy 'assemble --config …' (create mode, no subcommand) → 'assemble create'
+        if _cmd == "assemble" and (len(_argv) < 2 or _argv[1].startswith("-")):
+            import warnings
+            warnings.warn(
+                "'run.py assemble' is deprecated; "
+                "use 'run.py assemble create' instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            new_tail = [a for a in _argv[1:] if a != "--create"]
+            return _dispatch_new_cli(["assemble", "create"] + new_tail)
+
+        # Legacy 'preprocess --config …' (no subcommand) → 'preprocess run'
+        if _cmd == "preprocess" and (len(_argv) < 2 or _argv[1].startswith("-")):
+            import warnings
+            warnings.warn(
+                "'run.py preprocess' is deprecated; "
+                "use 'run.py preprocess run' instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            return _dispatch_new_cli(["preprocess", "run"] + _argv[1:])
+
+        # Legacy 'analysis --model …' (no subcommand) → 'analysis run'
+        if _cmd == "analysis" and (len(_argv) < 2 or _argv[1].startswith("-")):
+            import warnings
+            warnings.warn(
+                "'run.py analysis' is deprecated; "
+                "use 'run.py analysis run' instead.",
+                DeprecationWarning, stacklevel=2,
+            )
+            return _dispatch_new_cli(["analysis", "run"] + _argv[1:])
+
+    # ── Legacy fallback ─────────────────────────────────────────────────────
+    # Commands that were not translated above fall through to the original
+    # implementation below (index, extract, validate_*).
     parser = argparse.ArgumentParser(
         description="GNT Data System - Unified entry point for download and preprocessing operations",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -543,7 +525,7 @@ def main():
     # Main operation type argument
     parser.add_argument(
         "operation",
-        choices=["index", "download", "preprocess", "validate_download", "extract", "assemble", "demean", "analysis", "tables", "cleanup"],
+        choices=["index", "download", "preprocess", "validate_download", "validate_preprocess", "extract", "assemble", "demean", "analysis", "submit", "summary", "tables", "cleanup"],
         help="Operation to perform"
     )
     
@@ -579,18 +561,6 @@ def main():
     parser.add_argument(
         "--output", "-o",
         help="Output directory for analysis results"
-    )
-    
-    parser.add_argument(
-        "--se-method",
-        choices=['analytical', 'bootstrap', 'none'],
-        help="Standard error method for duckreg analysis (overrides config)"
-    )
-    
-    parser.add_argument(
-        "--fitter",
-        choices=['numpy', 'duckdb'],
-        help="Fitter type for duckreg analysis (overrides config)"
     )
     
     parser.add_argument(
@@ -720,16 +690,38 @@ def main():
         "--table-config",
         help="Path to table configuration file (YAML) - overrides default"
     )
-    
+
     parser.add_argument(
         "--analysis-config",
-        help="Path to analysis configuration file (YAML) for table generation - overrides default"
+        help="Path to analysis.xlsx (overrides orchestration/configs/analysis.xlsx)"
     )
-    
+
     parser.add_argument(
         "--output-dir",
         help="Output directory for generated tables (overrides config default)"
     )
+
+    parser.add_argument(
+        "--formats",
+        nargs="+",
+        choices=["html", "latex", "tex"],
+        metavar="FMT",
+        help="Output formats for tables: html, latex, tex (default: from Excel or html)"
+    )
+
+    # Submit / SLURM arguments
+    parser.add_argument(
+        "--tables",
+        nargs="+",
+        metavar="TABLE_OR_MODEL",
+        help="Table or model names to submit as a SLURM job (submit operation)"
+    )
+
+    parser.add_argument("--mem",            default="128GB",   help="SLURM memory (default: 128GB)")
+    parser.add_argument("--time",           default=None,      help="SLURM time limit override (default: auto)")
+    parser.add_argument("--qos",            default="1week",   help="SLURM QOS (default: 1week)")
+    parser.add_argument("--partition",      default="scicore", help="SLURM partition (default: scicore)")
+    parser.add_argument("--cpus-per-task",  type=int, default=8, help="SLURM CPUs per task (default: 8)")
     
     # Parse arguments
     args = parser.parse_args()
@@ -738,15 +730,12 @@ def main():
     if args.operation == "analysis":
         if not args.list_models and not args.model:
             parser.error("Analysis operation requires --model <model_name> or --list-models")
-        # For analysis, config should point to analysis.xlsx by default
         if not args.config or args.config == "config.yaml":
             args.config = "orchestration/configs/analysis.xlsx"
-    elif args.operation == "tables":
-        # Tables operation: source is optional (table name) - if not provided, generates all tables
-        # Config is also optional for tables - we use table_config and analysis_config instead
-        logger.info("Table generation mode - source is optional (specify table name to generate specific table)")
-    elif args.operation == "cleanup":
-        # Cleanup operation: only requires output directory
+    elif args.operation == "submit":
+        if not args.tables and not args.source:
+            parser.error("submit operation requires --tables <table_or_model> [...]  (or --source for a single entry)")
+    elif args.operation in ("tables", "summary", "cleanup"):
         pass
     else:
         if not args.config:
@@ -760,114 +749,125 @@ def main():
         
         if args.operation == "cleanup":
             logger.info("Starting analysis results cleanup")
-            
-            # Import cleanup function from analysis workflow
-            from gnt.analysis.workflow import cleanup_analysis_results
-            
-            # Determine output directory
+
+            from gnt.analysis import cleanup_analysis_results
+
             output_dir = args.output or str(Path(project_root) / "output" / "analysis")
-            
             if not Path(output_dir).exists():
                 logger.error(f"Output directory not found: {output_dir}")
                 return 1
-            
+
             logger.info(f"Cleaning up results in: {output_dir}")
             if args.dry_run:
                 logger.info("DRY RUN MODE - no files will be deleted")
-            
+
             cleanup_analysis_results(output_dir, dry_run=args.dry_run)
             
         elif args.operation == "analysis":
             logger.debug("Starting GNT analysis system: DuckReg")
-            
-            # Load analysis configuration with environment variable expansion
-            config = load_config_with_env_vars(args.config)
-            
-            # Import and run analysis
-            from gnt.analysis.workflow import run_duckreg, setup_logging as analysis_setup_logging
-            
-            # Setup analysis-specific logging
-            if args.debug:
-                config.setdefault('logging', {})['level'] = 'DEBUG'
-            analysis_setup_logging(config)
-            
-            # Set default output directory
-            output_dir = args.output
-            if not output_dir:
-                output_dir = config.get('output', {}).get('base_path', 
-                                                          f"{project_root}/data_nobackup/analysis")
-            
-            # Apply CLI overrides
-            if args.se_method:
-                if 'duckreg' in config.get('analyses', {}):
-                    config['analyses']['duckreg']['defaults']['se_method'] = args.se_method
-                logger.info(f"Overriding se_method from CLI: {args.se_method}")
-            
-            if args.fitter:
-                if 'duckreg' in config.get('analyses', {}):
-                    config['analyses']['duckreg']['defaults']['fitter'] = args.fitter
-                logger.info(f"Overriding fitter from CLI: {args.fitter}")
-            
-            # Determine verbosity
-            verbose = args.verbose and not args.quiet
-            
+
+            from gnt.analysis import AnalysisConfig, run_duckreg
+
+            cfg = AnalysisConfig(args.config)
+            output_dir = args.output or str(cfg.base_path)
+
             # Handle --list-models
             if args.list_models:
-                specs = config['analyses']['duckreg']['specifications']
-                if not specs:
+                model_names = cfg.get_model_names()
+                if not model_names:
                     logger.info("No models found in configuration")
                     return 0
-                
                 print("\nAvailable models:")
                 print("=" * 80)
-                for model_name, spec in specs.items():
+                for model_name in model_names:
+                    spec = cfg.get_model_spec(model_name)
                     print(f"\n{model_name}")
                     print(f"  Description: {spec.get('description', 'N/A')}")
                     print(f"  Data source: {spec.get('data_source', 'N/A')}")
-                    print(f"  Formula: {spec.get('formula', 'N/A')}")
-                    print(f"  SE method: {spec.get('se_method', 'default')}")
-                    print(f"  Fitter: {spec.get('fitter', 'default')}")
+                    print(f"  Formula    : {spec.get('formula', 'N/A')}")
                 print("\n" + "=" * 80)
                 return 0
-            
-            # Validate specification exists
-            if 'duckreg' not in config.get('analyses', {}):
-                logger.error("DuckReg analysis not configured in config file")
-                return 1
-            
-            specs = config['analyses']['duckreg']['specifications']
-            if args.model not in specs:
+
+            model_names = cfg.get_model_names()
+            if args.model not in model_names:
                 logger.error(f"Unknown model: {args.model}")
-                logger.info(f"Available models: {list(specs.keys())}")
+                logger.info(f"Available models: {model_names}")
                 return 1
-            
+
             logger.debug(f"Running model: {args.model}")
-            run_duckreg(config, args.model, output_dir, verbose, args.dataset)
+            run_duckreg(cfg, args.model, output_dir, dataset_override=args.dataset)
+
+        elif args.operation == "submit":
+            from gnt.analysis import AnalysisConfig
+            from gnt.analysis.config import seconds_to_slurm_time, PROJECT_ROOT
+            from gnt.analysis.slurm import (
+                resolve_table_model_pairs, make_job_label,
+                write_job_script, submit_job, ONE_WEEK_SECONDS,
+            )
+            try:
+                from duckreg._version import __version__ as _duckreg_ver
+            except ImportError:
+                _duckreg_ver = "unknown"
+
+            identifiers = args.tables or [args.source]
+            cfg = AnalysisConfig(args.analysis_config or None)
+            pairs, total_secs = resolve_table_model_pairs(identifiers, cfg)
+
+            print(f"Total runtime across all identifiers: {seconds_to_slurm_time(total_secs)}")
+
+            if total_secs > ONE_WEEK_SECONDS:
+                logger.error(
+                    f"Combined runtime {seconds_to_slurm_time(total_secs)} exceeds the 1-week "
+                    "QOS limit. Split the tables across multiple jobs."
+                )
+                return 1
+
+            slurm_time   = args.time or seconds_to_slurm_time(total_secs)
+            job_label    = make_job_label(identifiers)
+            slurm_kwargs = {
+                'mem':           args.mem,
+                'time':          slurm_time,
+                'qos':           args.qos,
+                'partition':     args.partition,
+                'cpus_per_task': args.cpus_per_task,
+            }
+
+            print(f"Creating job script... (duckreg {_duckreg_ver})")
+            job_path = write_job_script(pairs, PROJECT_ROOT, job_label, _duckreg_ver)
+
+            print("Submitting job to SLURM...")
+            job_id = submit_job(job_path, slurm_kwargs)
+
+            total_models = sum(len(m) for _, m in pairs)
+            print(f"\nJob submitted successfully!")
+            print(f"  Job ID  : {job_id}")
+            print(f"  Labels  : {', '.join(identifiers)}")
+            print(f"  Models  : {total_models}")
+            print(f"  duckreg : {_duckreg_ver}")
+            print(f"  Memory  : {args.mem}")
+            print(f"  Time    : {slurm_time}")
+            print(f"  QOS     : {args.qos}")
+
+            import os; os.remove(job_path)
+
+        elif args.operation == "summary":
+            from gnt.analysis import AnalysisConfig, summarize_tables
+
+            cfg = AnalysisConfig(args.analysis_config or None)
+            summarize_tables(cfg)
+
         elif args.operation == "tables":
             logger.info("Starting GNT table generation system")
-            
-            # Load configuration if provided, otherwise use empty dict
-            config = load_config_with_env_vars(args.config) if args.config and Path(args.config).exists() else {}
-            
-            # Apply CLI overrides for tables operation
+
             cli_overrides = {}
-            
-            if hasattr(args, 'table_config') and args.table_config:
-                cli_overrides['table_config'] = args.table_config
-                config.setdefault('tables', {})['config_path'] = args.table_config
-                logger.info(f"Overriding table config from CLI: {args.table_config}")
-            
-            if hasattr(args, 'analysis_config') and args.analysis_config:
+            if args.analysis_config:
                 cli_overrides['analysis_config'] = args.analysis_config
-                logger.info(f"Overriding analysis config from CLI: {args.analysis_config}")
-            
-            if hasattr(args, 'output_dir') and args.output_dir:
+            if args.output_dir:
                 cli_overrides['output_dir'] = args.output_dir
-                config.setdefault('tables', {})['output_dir'] = args.output_dir
-                logger.info(f"Overriding output directory from CLI: {args.output_dir}")
-            
-            # Run table generation operation (source is optional - table name to generate)
-            run_operation(args.operation, args.source, config, None, None, None, cli_overrides)
+            if args.formats:
+                cli_overrides['formats'] = args.formats
+
+            run_operation(args.operation, args.source, {}, None, None, None, cli_overrides)
         else:
             logger.info(f"Starting GNT {args.operation} system for {args.source}")
             
