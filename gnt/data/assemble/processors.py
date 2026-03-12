@@ -275,7 +275,7 @@ class TileProcessor:
     
     def _merge_dataframes(
         self,
-        combined: Optional[pd.DataFrame],
+        combined: pd.DataFrame,
         df: pd.DataFrame,
         dataset_name: str,
         ix: int,
@@ -287,10 +287,6 @@ class TileProcessor:
         Uses all available common index columns from the unified set for merging.
         Uses outer join to preserve all rows, with land mask filtering applied later.
         """
-        if combined is None:
-            logger.debug(f"Tile [{ix}, {iy}]: {dataset_name} - initialized combined DataFrame")
-            return df
-        
         # Find common merge columns from the unified index set
         # Use all index columns that are present in both dataframes
         merge_cols = [col for col in self.all_index_cols if col in combined.columns and col in df.columns]
@@ -518,7 +514,7 @@ class TileProcessor:
         logger.info(f"Tile [{ix}, {iy}]: merging on index columns: {merge_cols}")
         
         # Identify columns to drop from existing data (excluding index columns)
-        cols_to_drop = [col for col in df.columns if col not in all_index_cols and col in existing_df.columns]
+        cols_to_drop = [col for col in df.columns if col not in self.all_index_cols and col in existing_df.columns]
         if cols_to_drop:
             logger.debug(f"Tile [{ix}, {iy}]: dropping existing columns: {cols_to_drop}")
             existing_df = existing_df.drop(columns=cols_to_drop)
@@ -591,8 +587,10 @@ class TileProcessor:
         if land_mask_ds is not None and land_mask is None:
             return False
         
+        # Initialize combined DataFrame with index columns only
+        combined = pd.DataFrame(columns=self.all_index_cols)
+        
         # Process each dataset
-        combined = None
         for dataset_name, ds, dataset_config in datasets:
             logger.debug(f"Tile [{ix}, {iy}]: processing '{dataset_name}'")
             
@@ -602,14 +600,22 @@ class TileProcessor:
                 land_mask=land_mask
             )
             
-            if df is not None and not df.empty:
+            # If no data, create skeleton with NaN columns
+            if df is None or df.empty:
+                df = pd.DataFrame(columns=self.all_index_cols + self.column_order_map[dataset_name])
+                logger.debug(
+                    f"Tile [{ix}, {iy}]: '{dataset_name}' - "
+                    f"no data, created skeleton with {len(self.column_order_map[dataset_name])} NaN columns"
+                )
+            else:
                 logger.debug(
                     f"Tile [{ix}, {iy}]: '{dataset_name}' - "
                     f"extracted {len(df)} rows, {len(df.columns)} columns"
                 )
-                combined = self._merge_dataframes(
-                    combined, df, dataset_name, ix, iy
-                )
+            
+            combined = self._merge_dataframes(
+                combined, df, dataset_name, ix, iy
+            )
         
         # Check for empty result
         if combined is None or combined.empty:
