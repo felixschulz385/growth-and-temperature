@@ -37,3 +37,4 @@ output/webpage/_includes/*.html
 output/webpage/Gemfile.lock
 .bundle/
 vendor/
+**/secrets
