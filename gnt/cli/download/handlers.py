@@ -138,3 +138,49 @@ def handle_run(args: argparse.Namespace) -> None:
         }
     ]
     _run_workflow(wf)
+
+
+# ---------------------------------------------------------------------------
+# SNF Mining scraper
+# ---------------------------------------------------------------------------
+
+def handle_snf_mining(args: argparse.Namespace) -> None:
+    """``download snf-mining`` — run the S&P Global SNF Mining Selenium scraper.
+
+    Invokes :func:`~gnt.data.download.sources.snf_mining.run_full_workflow`
+    directly because the scraper is Selenium-based, not HTTP-batch.
+    """
+    from gnt.cli.common import setup_logging
+    from gnt.data.download.sources.snf_mining import Stage, run_full_workflow
+    from gnt.data.download.sources.snf_mining.config import DEFAULT_DB_PATH
+
+    setup_logging(args.log_level, debug=args.debug)
+
+    stages = {Stage(stage) for stage in args.stages} if args.stages else None
+    force_stages = {Stage(stage) for stage in args.force_stages} if args.force_stages else None
+    db_path = args.db or DEFAULT_DB_PATH
+    mine_ids = [str(mine_id) for mine_id in args.mine_ids] if args.mine_ids else None
+
+    logger.info(
+        "Starting SNF Mining scraper | stages=%s | headless=%s | db=%s",
+        [stage.value for stage in stages] if stages else "all",
+        args.headless,
+        db_path,
+    )
+
+    results = run_full_workflow(
+        credentials_path=args.credentials,
+        db_path=db_path,
+        stages=stages,
+        headless=args.headless,
+        wait=args.wait,
+        download_wait=args.download_wait,
+        mine_ids=mine_ids,
+        subsections=args.subsections,
+        max_attempts=args.max_attempts,
+        sidebar_reload_attempts=args.sidebar_reload_attempts,
+        continue_on_error=not args.fail_fast,
+        force_stages=force_stages,
+        step_sleep_seconds=args.step_sleep_seconds,
+    )
+    logger.info("SNF Mining scraper finished: %s", results)
