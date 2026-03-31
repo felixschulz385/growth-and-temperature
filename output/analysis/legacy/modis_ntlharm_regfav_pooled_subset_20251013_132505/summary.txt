@@ -1,0 +1,55 @@
+================================================================================
+GNT Analysis Results: 2SLS: Growth effect on temperature using regional favoritism as instrument
+================================================================================
+
+Analysis Type: Online 2SLS Regression
+Specification: modis_ntlharm_regfav_pooled_subset
+Timestamp: 20251013_132505
+Standard Errors: two_way
+
+Instrument Specification:
+  Exogenous variables: []
+  Endogenous variables: ['ntl_harm']
+  Instruments: ['reg_fav']
+  Identification: Just-identified
+
+Sample Information:
+  Observations: 44,512,567
+  Features: 2
+  Clusters (Dim 1): 52
+  Clusters (Dim 2): 21
+
+FIRST STAGE RESULTS
+================================================================================
+
+First Stage 1: ntl_harm
+--------------------------------------------------
+Dependent Variable: ntl_harm
+R-squared: 0.000000
+Adjusted R-squared: -0.000000
+Observations: 45,907,365
+RMSE: 0.079700
+RSS: 291608.870582
+
+Coefficient Estimates:
+Variable                  Coeff        Std Err      t-stat     P>|t|      Sig  
+--------------------------------------------------------------------------------
+intercept                 2.279120     0.519416     4.388      0.000011   ***  
+reg_fav                   1.710781     2.670745     0.641      0.521807        
+
+SECOND STAGE RESULTS
+================================================================================
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.018501
+  RSS: 15235.789208
+
+Coefficient Estimates:
+Variable                  Coeff        Std Err      t-stat     P>|t|      Sig  
+--------------------------------------------------------------------------------
+intercept                 297.638769   1.268242     234.686    0.000000   ***  
+ntl_harm                  -0.104302    0.332049     -0.314     0.753432        
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

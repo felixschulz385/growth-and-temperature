@@ -1,0 +1,45 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS NTLHARM analysis for mining occurence
+Formula:     modis_median ~ 1 | pixel_id + country*year | log(ntl_harm + 0.01) (nb_mines_a) | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet
+Timestamp:   2025-12-05T11:22:26.124846
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    198,398,025
+Compressed Rows:       2,273
+Compression Ratio:     1.0000 (100.00%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+FIRST STAGE DIAGNOSTICS
+--------------------------------------------------------------------------------
+  log(ntl_harm+0.01): F-stat = 5.23
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                                     Coefficient  Std. Error    t-stat         P>|t|       [0.025     0.975]
+Intercept                            -495.313771  263.130569 -1.882388  5.978338e-02 -1011.049686  20.422144
+"fitted_log(ntl_harm+0.01)"             4.042044    2.325491  1.738146  8.218502e-02    -0.515919   8.600007
+"avg_fitted_log(ntl_harm+0.01)_fe0"   -23.994754    4.457264 -5.383292  7.313585e-08   -32.730992 -15.258516
+"avg_fitted_log(ntl_harm+0.01)_fe1"  -159.615918   61.073618 -2.613500  8.962001e-03  -279.320209 -39.911627
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

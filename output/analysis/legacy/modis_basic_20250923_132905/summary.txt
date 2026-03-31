@@ -1,0 +1,28 @@
+================================================================================
+GNT Analysis Results: Basic MODIS temperature analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_basic
+Timestamp: 20250923_132905
+Standard Errors: one_way
+
+Sample Information:
+  Observations: 17,205,924,828
+  Features: 2
+  Clusters (Dim 1): 3205
+  Clusters (Dim 2): 21
+
+Model Fit:
+  R-squared: 1.000000
+  Adj. R-squared: 1.000000
+  RMSE: 0.021551
+  RSS: 7991128.167152
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+intercept            283.874809   0.147326     1926.846   0.000000   ***  
+ntl_harm             0.128728     0.003871     33.256     0.000000   ***  
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

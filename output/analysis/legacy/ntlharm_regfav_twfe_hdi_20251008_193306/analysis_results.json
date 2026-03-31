@@ -1,0 +1,296 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "ntlharm_regfav_twfe_hdi",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "20251008_193306",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "ntl_harm_twoway_demeaned",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav_twoway_demeaned"
+    ],
+    "formula": "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH - 1",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "reg_fav_twoway_demeaned",
+        "reg_fav_twoway_demeaned_x_HDI_ME",
+        "reg_fav_twoway_demeaned_x_HDI_HI",
+        "reg_fav_twoway_demeaned_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 17825197929,
+    "n_features": 7,
+    "n_clusters_1": 3628,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 76209,
+    "feature_names": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav_twoway_demeaned",
+      "reg_fav_twoway_demeaned_x_HDI_ME",
+      "reg_fav_twoway_demeaned_x_HDI_HI",
+      "reg_fav_twoway_demeaned_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 4611494.065556119,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -3.366020795425584e-10,
+    "root_mean_squared_error": 0.016084354877074217,
+    "degrees_of_freedom": 17825197922
+  },
+  "coefficients": {
+    "estimates": {
+      "HDI_HI": {
+        "coefficient": 1.0919832469423755e-10,
+        "std_error": 0.046685283251738346,
+        "t_statistic": 2.3390309983858028e-09,
+        "p_value": 0.9999999981337233,
+        "ci_lower_95": -0.09150315506420882,
+        "ci_upper_95": 0.09150315528260548,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_ME": {
+        "coefficient": -8.000743444086378e-11,
+        "std_error": 0.1324921256057793,
+        "t_statistic": -6.038655812566558e-10,
+        "p_value": 0.999999999518185,
+        "ci_lower_95": -0.2596845662673349,
+        "ci_upper_95": 0.25968456610732,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 1.531961830111986e-10,
+        "std_error": 0.042794626771801736,
+        "t_statistic": 3.579799488101687e-09,
+        "p_value": 0.9999999971437332,
+        "ci_lower_95": -0.08387746831953523,
+        "ci_upper_95": 0.08387746862592758,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned": {
+        "coefficient": -0.1638285912841334,
+        "std_error": 0.08831476822655784,
+        "t_statistic": -1.8550531759745614,
+        "p_value": 0.06358863337413534,
+        "ci_lower_95": -0.3369255370081868,
+        "ci_upper_95": 0.009268354439919968,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_ME": {
+        "coefficient": 0.507008009425238,
+        "std_error": 0.3877708264361395,
+        "t_statistic": 1.3074939496737392,
+        "p_value": 0.19104500841612593,
+        "ci_lower_95": -0.2530228103895954,
+        "ci_upper_95": 1.2670388292400716,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_HI": {
+        "coefficient": 0.4313464092355483,
+        "std_error": 0.15579846396590205,
+        "t_statistic": 2.768617855757246,
+        "p_value": 0.0056294621083665675,
+        "ci_lower_95": 0.12598141986238026,
+        "ci_upper_95": 0.7367113986087164,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "reg_fav_twoway_demeaned_x_HDI_VH": {
+        "coefficient": 0.2220513280654437,
+        "std_error": 0.09526768341504577,
+        "t_statistic": 2.3308148167941574,
+        "p_value": 0.019763126489253935,
+        "ci_lower_95": 0.03532666857195399,
+        "ci_upper_95": 0.4087759875589334,
+        "significant_5pct": true,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        0.002179515672295041,
+        0.005857293246303916,
+        0.00017907995790422015,
+        -0.00034063719465578837,
+        0.004150334264212005,
+        0.0015116142647561724,
+        -0.00012016898896923378
+      ],
+      [
+        0.005857293246303916,
+        0.017554163347537597,
+        0.0007840099252893174,
+        -0.0014411142883570163,
+        0.012468549289802278,
+        0.005919962836793319,
+        0.0006764699021823279
+      ],
+      [
+        0.00017907995790422015,
+        0.0007840099252893175,
+        0.0018313800805378096,
+        0.0007068279362976588,
+        2.6839413445816962e-05,
+        0.0008185080619829145,
+        -0.0008274390336893335
+      ],
+      [
+        -0.00034063719465578837,
+        -0.001441114288357016,
+        0.0007068279362976589,
+        0.007799498286910632,
+        -0.008087711288810487,
+        -0.007224749794206647,
+        -0.00789505464871603
+      ],
+      [
+        0.004150334264212004,
+        0.012468549289802278,
+        2.683941344581663e-05,
+        -0.008087711288810487,
+        0.15036621383496665,
+        0.010111155148038465,
+        0.008578013217443552
+      ],
+      [
+        0.0015116142647561724,
+        0.0059199628367933195,
+        0.0008185080619829143,
+        -0.007224749794206648,
+        0.010111155148038465,
+        0.024273161374134482,
+        0.00734601505031977
+      ],
+      [
+        -0.0001201689889692338,
+        0.0006764699021823279,
+        -0.0008274390336893335,
+        -0.00789505464871603,
+        0.008578013217443548,
+        0.00734601505031977,
+        0.009075931503269387
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "HDI_HI",
+        "coefficient": 1.0919832469423755e-10,
+        "std_error": 0.046685283251738346,
+        "t_statistic": 2.3390309983858028e-09,
+        "p_value": 0.9999999981337233,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": -8.000743444086378e-11,
+        "std_error": 0.1324921256057793,
+        "t_statistic": -6.038655812566558e-10,
+        "p_value": 0.999999999518185,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 1.531961830111986e-10,
+        "std_error": 0.042794626771801736,
+        "t_statistic": 3.579799488101687e-09,
+        "p_value": 0.9999999971437332,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned",
+        "coefficient": -0.1638285912841334,
+        "std_error": 0.08831476822655784,
+        "t_statistic": -1.8550531759745614,
+        "p_value": 0.06358863337413534,
+        "significance": "*"
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_ME",
+        "coefficient": 0.507008009425238,
+        "std_error": 0.3877708264361395,
+        "t_statistic": 1.3074939496737392,
+        "p_value": 0.19104500841612593,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_HI",
+        "coefficient": 0.4313464092355483,
+        "std_error": 0.15579846396590205,
+        "t_statistic": 2.768617855757246,
+        "p_value": 0.0056294621083665675,
+        "significance": "***"
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_VH",
+        "coefficient": 0.2220513280654437,
+        "std_error": 0.09526768341504577,
+        "t_statistic": 2.3308148167941574,
+        "p_value": 0.019763126489253935,
+        "significance": "**"
+      }
+    ]
+  }
+}

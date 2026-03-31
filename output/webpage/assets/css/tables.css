@@ -1,0 +1,98 @@
+.regression-table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 20px 0;
+    font-size: 14px;
+    font-family: "Times New Roman", Times, serif;
+    border: none;
+}
+
+/* Top rule - thick */
+.regression-table thead {
+    border-top: 1.5pt solid #000;
+    border-bottom: none;
+}
+
+.regression-table thead th {
+    padding: 6px 8px;
+    text-align: center;
+    font-weight: normal;
+    border: none;
+    background: none;
+}
+
+/* Header span rows - thin bottom border */
+.regression-table .header-span {
+    border-bottom: 0.75pt solid #000;
+}
+
+/* Model names row - thin bottom border */
+.regression-table .model-names-row th {
+    border-bottom: 0.75pt solid #000;
+}
+
+/* Body cells */
+.regression-table tbody td {
+    padding: 3px 8px;
+    text-align: center;
+    border: none;
+    background: none;
+}
+
+.regression-table tbody td:first-child {
+    text-align: left;
+    font-style: normal;
+}
+
+/* No borders between coefficient rows */
+.regression-table .coef-row {
+    border: none;
+}
+
+/* Stats section - thin top border */
+.regression-table .stats-section {
+    border-top: 0.75pt solid #000;
+}
+
+/* Custom section - thin top border */
+.regression-table .custom-section {
+    border-top: 0.75pt solid #000;
+}
+
+/* Custom group section - no border, just spacing */
+.regression-table .custom-group-section {
+    border: none;
+    padding-top: 8px;
+}
+
+/* Footer - thick top border */
+.regression-table tfoot {
+    border-top: 1.5pt solid #000;
+    border-bottom: none;
+}
+
+.regression-table tfoot td {
+    padding: 8px;
+    text-align: left;
+    font-size: 12px;
+    border: none;
+    background: none;
+}
+
+.table-caption {
+    text-align: left;
+    font-weight: bold;
+    margin-bottom: 10px;
+    font-size: 14px;
+}
+
+/* Remove all other borders and backgrounds */
+.regression-table tr {
+    background: none !important;
+    border: none;
+}
+
+.regression-table th,
+.regression-table td {
+    background: none !important;
+}

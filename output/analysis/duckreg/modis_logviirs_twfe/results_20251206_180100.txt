@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS VIIRS analysis with logged night lights
+Formula:     modis_median ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet
+Timestamp:   2025-12-06T18:37:37.789500
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    8,558,938,909
+Compressed Rows:       761,053,544
+Compression Ratio:     0.9111 (91.11%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                               Coefficient  Std. Error     t-stat     P>|t|      [0.025      0.975]
+Intercept                       298.967120    5.205222  57.436000  0.000000  288.764885  309.169355
+log_viirs_annual_0_01            -0.063706    0.029135  -2.186555  0.028775   -0.120811   -0.006601
+avg_log_viirs_annual_0_01_fe0     0.740731    0.225990   3.277718  0.001046    0.297791    1.183670
+avg_log_viirs_annual_0_01_fe1     2.758718    1.464248   1.884051  0.059558   -0.111208    5.628643
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

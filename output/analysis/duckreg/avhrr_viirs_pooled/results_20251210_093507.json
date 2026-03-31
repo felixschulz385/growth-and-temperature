@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "avhrr_viirs_pooled",
+    "description": "Pooled regression model estimating the effect of annual VIIRS nighttime lights on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision.",
+    "timestamp": "2025-12-10T09:35:32.052547",
+    "formula": "avhrr_median ~ viirs_annual | 0 | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/64204691",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "avhrr_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 64107236,
+    "n_compressed_rows": 6235784,
+    "compression_ratio": 0.9027288588763989,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 2,
+    "estimator_type": "DuckRegression"
+  },
+  "coefficients": {
+    "coefficients": [
+      295.91659236860755,
+      0.02439341812641181
+    ],
+    "coef_names": [
+      "Intercept",
+      "viirs_annual"
+    ],
+    "n_obs": 64107236,
+    "n_compressed": 6235784,
+    "vcov": [
+      [
+        0.7532735751962787,
+        -0.013404683749827076
+      ],
+      [
+        -0.013404683749827076,
+        0.00029759790481913463
+      ]
+    ],
+    "std_errors": [
+      0.8679133454419736,
+      0.01725102619611757
+    ],
+    "t_statistics": [
+      340.95177119083917,
+      1.414027075786464
+    ],
+    "p_values": [
+      0.0,
+      0.15735395280495057
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      0.7532735751962787,
+      -0.013404683749827076
+    ],
+    [
+      -0.013404683749827076,
+      0.00029759790481913463
+    ]
+  ]
+}

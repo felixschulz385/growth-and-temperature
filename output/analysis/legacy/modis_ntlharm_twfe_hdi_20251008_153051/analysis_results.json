@@ -1,0 +1,333 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "modis_ntlharm_twfe_hdi",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "20251008_153051",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "target_variable": "median_twoway_demeaned",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "ntl_harm_twoway_demeaned"
+    ],
+    "formula": "median_twoway_demeaned ~ ntl_harm_twoway_demeaned:HDI_ME + ntl_harm_twoway_demeaned:HDI_HI + ntl_harm_twoway_demeaned:HDI_VH",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "intercept",
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "ntl_harm_twoway_demeaned",
+        "ntl_harm_twoway_demeaned_x_HDI_ME",
+        "ntl_harm_twoway_demeaned_x_HDI_HI",
+        "ntl_harm_twoway_demeaned_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 44512567,
+    "n_features": 8,
+    "n_clusters_1": 52,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 1113,
+    "feature_names": [
+      "intercept",
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "ntl_harm_twoway_demeaned",
+      "ntl_harm_twoway_demeaned_x_HDI_ME",
+      "ntl_harm_twoway_demeaned_x_HDI_HI",
+      "ntl_harm_twoway_demeaned_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 1229.6887579387057,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -1.5725898849794362e-07,
+    "root_mean_squared_error": 0.005256011189660224,
+    "degrees_of_freedom": 44512559
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": -1.6756924887864527e-06,
+        "std_error": 0.09101839610554946,
+        "t_statistic": -1.8410481402498416e-05,
+        "p_value": 0.9999853105611329,
+        "ci_lower_95": -0.17839773205936574,
+        "ci_upper_95": 0.17839438067438815,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_HI": {
+        "coefficient": 1.5538791428962689e-06,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_ME": {
+        "coefficient": 1.668634413660747e-06,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": 0.0,
+        "ci_upper_95": 0.0,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned": {
+        "coefficient": -0.0049048575906881185,
+        "std_error": 0.008672015346227956,
+        "t_statistic": -0.5655960460011837,
+        "p_value": 0.5716684163421997,
+        "ci_lower_95": -0.021902007669294912,
+        "ci_upper_95": 0.012092292487918675,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_x_HDI_ME": {
+        "coefficient": 0.0062583719494666516,
+        "std_error": 0.006366720250687835,
+        "t_statistic": 0.9829820854450958,
+        "p_value": 0.3256162556984852,
+        "ci_lower_95": -0.006220399741881506,
+        "ci_upper_95": 0.01873714364081481,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_x_HDI_HI": {
+        "coefficient": 0.003231326784596654,
+        "std_error": 0.006581893336054563,
+        "t_statistic": 0.4909418338483185,
+        "p_value": 0.6234675877629585,
+        "ci_lower_95": -0.009669184154070289,
+        "ci_upper_95": 0.016131837723263598,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "ntl_harm_twoway_demeaned_x_HDI_VH": {
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": 0.0,
+        "ci_upper_95": 0.0,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        0.008284348429626701,
+        0.0005872245146803215,
+        -0.00045066111525101716,
+        0.0,
+        -0.00010819190731582593,
+        -9.127130475866504e-05,
+        1.4305015344316515e-05,
+        0.0
+      ],
+      [
+        0.0005872245146803111,
+        -0.0007123034454835702,
+        0.0007923713547109782,
+        0.0,
+        7.2707500003626815e-06,
+        -4.761213490831683e-05,
+        1.0287361098190559e-06,
+        0.0
+      ],
+      [
+        -0.00045066111525102605,
+        0.00079237135471098,
+        -0.0016607382334332473,
+        0.0,
+        -0.0001083880551895387,
+        0.00010903782139159624,
+        6.944547885540664e-05,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.00010819190731582617,
+        7.270750000362864e-06,
+        -0.00010838805518953855,
+        0.0,
+        7.520385016521316e-05,
+        -5.2417727646244795e-05,
+        -5.671561924616143e-05,
+        0.0
+      ],
+      [
+        -9.127130475866492e-05,
+        -4.761213490831719e-05,
+        0.00010903782139159597,
+        0.0,
+        -5.2417727646244795e-05,
+        4.053512675051857e-05,
+        4.287452992446451e-05,
+        0.0
+      ],
+      [
+        1.4305015344316591e-05,
+        1.0287361098189627e-06,
+        6.944547885540656e-05,
+        0.0,
+        -5.6715619246161444e-05,
+        4.287452992446453e-05,
+        4.3321319887199467e-05,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": -1.6756924887864527e-06,
+        "std_error": 0.09101839610554946,
+        "t_statistic": -1.8410481402498416e-05,
+        "p_value": 0.9999853105611329,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_HI",
+        "coefficient": 1.5538791428962689e-06,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": 1.668634413660747e-06,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned",
+        "coefficient": -0.0049048575906881185,
+        "std_error": 0.008672015346227956,
+        "t_statistic": -0.5655960460011837,
+        "p_value": 0.5716684163421997,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_x_HDI_ME",
+        "coefficient": 0.0062583719494666516,
+        "std_error": 0.006366720250687835,
+        "t_statistic": 0.9829820854450958,
+        "p_value": 0.3256162556984852,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_x_HDI_HI",
+        "coefficient": 0.003231326784596654,
+        "std_error": 0.006581893336054563,
+        "t_statistic": 0.4909418338483185,
+        "p_value": 0.6234675877629585,
+        "significance": ""
+      },
+      {
+        "variable": "ntl_harm_twoway_demeaned_x_HDI_VH",
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      }
+    ]
+  }
+}

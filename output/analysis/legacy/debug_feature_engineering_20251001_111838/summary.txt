@@ -1,0 +1,29 @@
+================================================================================
+GNT Analysis Results: DEBUG: Feature engineering test with quadratic and interaction terms
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: debug_feature_engineering
+Timestamp: 20251001_111838
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 19,072,085
+  Features: 8
+  Clusters (Dim 1): 52
+  Clusters (Dim 2): 9
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.021930
+  RSS: 9172.300923
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+intercept            297.572848   0.573175     519.165    0.000000   ***  
+ntl_harm             -0.077213    0.080165     -0.963     0.335458        
+viirs_annual         0.004838     0.011032     0.438      0.661026        
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

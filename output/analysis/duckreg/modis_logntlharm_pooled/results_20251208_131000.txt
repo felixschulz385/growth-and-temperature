@@ -1,0 +1,39 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Pooled MODIS NTLHARM analysis
+Formula:     modis_median ~ log(ntl_harm + 0.01) | 0 | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet
+Timestamp:   2025-12-08T13:31:21.319853
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    3,477,251,380
+Compressed Rows:       70,090,044
+Compression Ratio:     0.9798 (97.98%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 2
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                   Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept           286.443767    0.641879  446.258257  0.000000  285.185685  287.701850
+log_ntl_harm_0_01     0.574105    0.207328    2.769075  0.005622    0.167743    0.980467
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

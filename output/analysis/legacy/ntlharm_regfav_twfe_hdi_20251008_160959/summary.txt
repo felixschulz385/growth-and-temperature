@@ -1,0 +1,33 @@
+================================================================================
+GNT Analysis Results: TWFE MODIS NTLHARM analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: ntlharm_regfav_twfe_hdi
+Timestamp: 20251008_160959
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 45,907,365
+  Features: 7
+  Clusters (Dim 1): 57
+  Clusters (Dim 2): 21
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.090148
+  RSS: 373072.775360
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+HDI_HI               2.616390     0.880188     2.973      0.002954   ***  
+HDI_ME               0.543895     0.273007     1.992      0.046345   **   
+HDI_VH               0.000000     0.000000     nan        nan             
+reg_fav              1.450000     0.301401     4.811      0.000002   ***  
+reg_fav_x_HDI_ME     -1.981234    0.404181     -4.902     0.000001   ***  
+reg_fav_x_HDI_HI     7.517322     6.762647     1.112      0.266312        
+reg_fav_x_HDI_VH     0.000000     0.000000     nan        nan             
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

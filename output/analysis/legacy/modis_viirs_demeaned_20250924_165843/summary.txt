@@ -1,0 +1,28 @@
+================================================================================
+GNT Analysis Results: Demeaned MODIS temperature analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_viirs_demeaned
+Timestamp: 20250924_165843
+Standard Errors: one_way
+
+Sample Information:
+  Observations: 7,373,605,893
+  Features: 2
+  Clusters (Dim 1): 3204
+  Clusters (Dim 2): 9
+
+Model Fit:
+  R-squared: -37.708339
+  Adj. R-squared: -37.708339
+  RMSE: 0.007177
+  RSS: 379768.423714
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+intercept            -0.002768    nan          nan        nan             
+viirs_annual_twoway_demeaned -0.000685    0.000774     -0.885     0.376026        
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

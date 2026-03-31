@@ -1,0 +1,39 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Pooled regression model estimating the effect of logged harmonized nighttime lights (log(NTL + 0.01)) on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(ntl_harm + 0.01) | 0 | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-10T09:35:31.979564
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    193,444,195
+Compressed Rows:       7,996,408
+Compression Ratio:     0.9587 (95.87%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 2
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                   Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept           298.101861    0.458958  649.518668  0.000000  297.202303  299.001419
+log_ntl_harm_0_01    -0.037736    0.138594   -0.272281  0.785406   -0.309381    0.233908
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

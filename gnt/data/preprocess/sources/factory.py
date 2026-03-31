@@ -27,7 +27,7 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         if preprocessor_name == 'eog':
             from gnt.data.preprocess.sources.eog import EOGPreprocessor
             return EOGPreprocessor
-        elif preprocessor_name == 'glass':
+        elif preprocessor_name.startswith('glass'):
             class_name = 'GlassPreprocessor'
             module_path = f"gnt.data.preprocess.sources.glass"
         elif preprocessor_name in ['ntl_harm', 'ntlharm', 'harmonized_ntl']:
@@ -39,9 +39,19 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif preprocessor_name == 'plad':
             from gnt.data.preprocess.sources.plad import PLADPreprocessor
             return PLADPreprocessor
-        # By convention, the class name is expected to be CamelCase
-        class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
-        module_path = f"gnt.data.preprocess.sources.{preprocessor_name.lower()}"
+        elif preprocessor_name == 'berman_mining':
+            from gnt.data.preprocess.sources.berman_mining import BermanMiningPreprocessor
+            return BermanMiningPreprocessor
+        elif preprocessor_name in ['acag', 'acag_pm25', 'pm25']:
+            from gnt.data.preprocess.sources.acag import ACAGPreprocessor
+            return ACAGPreprocessor
+        elif preprocessor_name in ['esacci', 'esa_cci', 'esacci_lc', 'landcover']:
+            from gnt.data.preprocess.sources.esacci import ESACCIPreprocessor
+            return ESACCIPreprocessor
+        else:
+            # By convention, the class name is expected to be CamelCase
+            class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
+            module_path = f"gnt.data.preprocess.sources.{preprocessor_name.lower()}"
 
         module = importlib.import_module(module_path)
         
@@ -69,46 +79,6 @@ def create_preprocessor(preprocessor_name: str, config: Dict[str, Any]) -> Any:
     config.pop('tabular_batch_size', None)
     return PreprocessorClass.from_config(config)
 
-def get_source_class(source_name: str) -> Type:
-    """
-    Dynamically import and return the data source class.
-    
-    Args:
-        source_name: Name of the data source class to import
-        
-    Returns:
-        The data source class
-    """
-    try:
-        # Map source names to their modules and classes
-        source_mapping = {
-            'eog_dmsp': ('gnt.data.download.sources.eog', 'EOGDataSource'),
-            'eog_viirs': ('gnt.data.download.sources.eog', 'EOGDataSource'),
-            'eog_dvnl': ('gnt.data.download.sources.eog', 'EOGDataSource'),
-            'glass_modis': ('gnt.data.download.sources.glass', 'GlassLSTDataSource'),
-            'glass_avhrr': ('gnt.data.download.sources.glass', 'GlassLSTDataSource'),
-            'ntl_harm': ('gnt.data.download.sources.ntl_harm', 'NTLHarmDataSource'),
-            'ntlharm': ('gnt.data.download.sources.ntl_harm', 'NTLHarmDataSource'),
-            'harmonized_ntl': ('gnt.data.download.sources.ntl_harm', 'NTLHarmDataSource'),
-            'misc': ('gnt.data.download.sources.misc', 'MiscDataSource'),
-        }
-        
-        if source_name.lower() in source_mapping:
-            module_path, class_name = source_mapping[source_name.lower()]
-        else:
-            # Fallback to convention-based mapping
-            class_name = ''.join(word.capitalize() for word in source_name.split('_')) + 'DataSource'
-            module_path = f"gnt.data.download.sources.{source_name.lower()}"
-
-        module = importlib.import_module(module_path)
-        
-        if not hasattr(module, class_name):
-            raise AttributeError(f"Module {module_path} does not have class {class_name}")
-        
-        return getattr(module, class_name)
-    except (ImportError, AttributeError) as e:
-        logger.error(f"Failed to import data source {source_name}: {str(e)}")
-        raise
 
 def create_source(source_name: str, config: Dict[str, Any]):
     """Create a data source instance for the given source name and configuration."""
@@ -122,6 +92,9 @@ def create_source(source_name: str, config: Dict[str, Any]):
         return MiscDataSource(**config)
     elif source_name_lower == 'plad':
         # PLAD doesn't need a separate data source as it works with local files
+        return None
+    elif source_name_lower == 'berman_mining':
+        # Berman mining doesn't need a separate data source as it works with local files
         return None
     # GLASSLSTDataSource
     elif source_name_lower == "glasslstdatasource":

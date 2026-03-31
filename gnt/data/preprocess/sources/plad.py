@@ -124,6 +124,15 @@ class PLADPreprocessor(AbstractPreprocessor):
             return re.sub(r"^[^@]+@[^:]+:", "", path)
         return path
     
+    def get_hpc_output_path(self, stage: str) -> str:
+        """Get HPC output path for a given stage."""
+        if stage == "spatial":
+            base_path = os.path.join(self.hpc_root, "plad", "processed", "stage_2")
+        else:
+            raise ValueError(f"Unknown stage: {stage}")
+        
+        return self._strip_remote_prefix(base_path)
+    
     def get_preprocessing_targets(self, stage: str, year_range: Tuple[int, int] = None) -> List[Dict[str, Any]]:
         """Generate list of preprocessing targets by reading from parquet index when available."""
         if stage == 'spatial':

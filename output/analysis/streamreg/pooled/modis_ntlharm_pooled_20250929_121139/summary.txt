@@ -1,0 +1,28 @@
+================================================================================
+GNT Analysis Results: Pooled MODIS NTLHARM analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_ntlharm_pooled
+Timestamp: 20250929_121139
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 1,679,588,747
+  Features: 2
+  Clusters (Dim 1): 25
+  Clusters (Dim 2): 21
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.030293
+  RSS: 1541269.913689
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat     P>|t|      Sig  
+---------------------------------------------------------------------------
+intercept            262.767454   0.345128     761.362    0.000000   ***  
+ntl_harm             0.243853     0.010705     22.780     0.000000   ***  
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

@@ -1,0 +1,32 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\begin{tabular}{lcccccc}
+\toprule
+ & (M.D) & (M.V) & (R.D) & (R.V) & (H.D) & (H.V) \\
+\midrule
+$\hat{\log(\text{HARM} + 0.01)}$ &  &  &  &  &  &  \\
+ &  &  &  &  &  &  \\
+$\hat{\log(\text{VIIRS} + 0.01)}$ &  &  &  &  &  &  \\
+ &  &  &  &  &  &  \\
+\midrule
+Model Version & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 & 0.0.0 \\
+Computed Date & N/A & N/A & N/A & N/A & N/A & N/A \\
+N Observations &  &  &  &  &  &  \\
+N Compressed Rows &  &  &  &  &  &  \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS & DMSP/VIIRS & VIIRS \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 5km & 5km & 5km & 5km & 5km & 5km \\
+Spatial Extent & World & World & World & World & World & World \\
+Temporal Extent & 1981-2005 & 2012-2020 & 1981-2005 & 2012-2020 & 1981-2005 & 2012-2020 \\
+Dependent Variable & Mean Temp & Mean Temp & Roll Max Temp & Roll Max Temp & $>$30°C Prop & $>$30°C Prop \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Independent variables are alternative AVHRR surface temperature measures. Dependent variable is log(nighttime lights + 0.01). Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

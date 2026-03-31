@@ -1,0 +1,33 @@
+================================================================================
+GNT Analysis Results: DEUG MODIS temperature subset analysis
+================================================================================
+
+Analysis Type: Online RLS Regression
+Specification: modis_viirs_basic_subset
+Timestamp: 20250925_133930
+Standard Errors: two_way
+
+Sample Information:
+  Observations: 2,357,761
+  Features: 1
+  Clusters (Dim 1): 2
+  Clusters (Dim 2): 9
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: 0.000000
+  RMSE: 0.038161
+  RSS: 3433.572003
+
+Wild Cluster Bootstrap Information:
+  Clustering: two_way
+  Bootstrap iterations: 999
+  Number of clusters: 27
+  Confidence level: 0.95
+
+Coefficient Estimates:
+Variable             Coeff        Std Err      t-stat   P>|t|    Boot P   Boot CI              Sig  
+-----------------------------------------------------------------------------------------------
+viirs_annual_twoway_demeaned 0.380096     0.665582     0.571    0.568    1.000    [-701725153368.942, 705031760043.246]      
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

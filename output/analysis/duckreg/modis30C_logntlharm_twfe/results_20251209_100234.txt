@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE gt30C MODIS HARM analysis with logged night lights
+Formula:     modis_gt30C ~ log(ntl_harm + 0.01) | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet
+Timestamp:   2025-12-09T10:08:47.033479
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    1,264,438,202
+Compressed Rows:       272,058,072
+Compression Ratio:     0.7848 (78.48%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                           Coefficient  Std. Error    t-stat         P>|t|     [0.025     0.975]
+Intercept                    35.029267    8.579155  4.083067  4.444518e-05  18.214123  51.844411
+log_ntl_harm_0_01             0.851148    0.170185  5.001299  5.694529e-07   0.517584   1.184711
+avg_log_ntl_harm_0_01_fe0    -2.696216    0.618634 -4.358340  1.310530e-05  -3.908738  -1.483694
+avg_log_ntl_harm_0_01_fe1   -10.232179    2.519561 -4.061096  4.884296e-05 -15.170519  -5.293839
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

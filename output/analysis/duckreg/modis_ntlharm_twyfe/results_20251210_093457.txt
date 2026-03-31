@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Two-way fixed effects (TWFE) regression model estimating the effect of harmonized nighttime lights on median MODIS land surface temperature at 1km resolution, with pixel and year fixed effects, clustered by subdivision.
+Formula:     modis_median ~ ntl_harm | pixel_id + year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/1km.parquet
+Timestamp:   2025-12-10T09:51:29.215598
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    3,477,251,380
+Compressed Rows:       690,410,123
+Compression Ratio:     0.8014 (80.14%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                  Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept          283.319251    1.548218  182.996955  0.000000  280.284743  286.353759
+ntl_harm            -0.005882    0.001352   -4.352082  0.000013   -0.008531   -0.003233
+avg_ntl_harm_fe0     0.141915    0.052312    2.712871  0.006670    0.039384    0.244445
+avg_ntl_harm_fe1     0.444263    0.156483    2.839051  0.004525    0.137556    0.750969
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

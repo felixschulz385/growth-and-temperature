@@ -1,0 +1,61 @@
+================================================================================
+REGRESSION ANALYSIS RESULTS
+================================================================================
+
+Analysis: TWFE MODIS NTLHARM analysis for replication of Hodler & Raschky (2014)
+Model Type: OLS
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/__modis.parquet
+Date: 2025-11-04 13:34:53
+
+--------------------------------------------------------------------------------
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Observations:            14,798,601,216
+Features:                             2
+R-squared:                     0.000001
+Adjusted R-squared:            0.000001
+Residual Sum of Squares: 53891457750.85
+Root MSE:                      1.908313
+F-statistic:                 10768.2177
+F-test p-value:                0.000000
+Degrees of freedom:           1 (model), 14,798,601,214 (resid)
+Standard Error Type:            two_way
+
+--------------------------------------------------------------------------------
+
+COEFFICIENT ESTIMATES
+--------------------------------------------------------------------------------
+                          coefficient  std_error   t_statistic   p_value sig
+intercept               -1.117244e-17   0.018221 -6.131769e-16  1.000000    
+reg_fav_twoway_demeaned -1.082450e-02   0.094410 -1.146545e-01  0.908719    
+
+Significance levels: *** p<0.01, ** p<0.05, * p<0.10
+
+--------------------------------------------------------------------------------
+
+CLUSTER DIAGNOSTICS
+--------------------------------------------------------------------------------
+
+DIM1:
+  Number of clusters:       2,419
+  Min cluster size:            21
+  Max cluster size:    730,665,117
+  Mean cluster size:    6117553.8
+  Median cluster size:  1055334.0
+
+  Warnings:
+    ⚠  Unbalanced clusters (max/mean=119.4).
+
+DIM2:
+  Number of clusters:          21
+  Min cluster size:    704,695,296
+  Max cluster size:    704,695,296
+  Mean cluster size:   704695296.0
+  Median cluster size: 704695296.0
+
+--------------------------------------------------------------------------------
+
+================================================================================
+End of Report
+================================================================================

@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        Two-way fixed effects (TWFE) regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, with pixel and country-year fixed effects, clustered by subdivision.
+Formula:     avhrr_median ~ log(viirs_annual + 0.01) | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet
+Timestamp:   2025-12-10T09:35:31.979028
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    64,106,449
+Compressed Rows:       8,700,334
+Compression Ratio:     0.8643 (86.43%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                               Coefficient  Std. Error     t-stat     P>|t|      [0.025      0.975]
+Intercept                       296.965153    3.524013  84.269040  0.000000  290.058088  303.872218
+log_viirs_annual_0_01            -0.467399    0.046310 -10.092935  0.000000   -0.558166   -0.376632
+avg_log_viirs_annual_0_01_fe0     0.754070    0.183604   4.107049  0.000040    0.394207    1.113934
+avg_log_viirs_annual_0_01_fe1    -0.038371    0.993184  -0.038635  0.969182   -1.985013    1.908270
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

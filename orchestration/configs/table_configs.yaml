@@ -1,0 +1,539 @@
+tables:
+  base_modis:
+    model_paths:
+      - name: "modis_ntlharm_pooled"
+        analysis_type: "duckreg"
+      - name: "modis_viirs_pooled"
+        analysis_type: "duckreg"
+      - name: "modis_ntlharm_ufe"
+        analysis_type: "duckreg"
+      - name: "modis_viirs_ufe"
+        analysis_type: "duckreg"
+      - name: "modis_ntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modis_viirs_twfe"
+        analysis_type: "duckreg"
+      - name: "modis_ntlharm_twyfe"
+        analysis_type: "duckreg"
+      - name: "modis_viirs_twyfe"
+        analysis_type: "duckreg"
+    model_names: ["(D.P)", "(V.P)", "(D.1FE)", "(V.1FE)", "(D.2FE)", "(V.2FE)", "(D.2FEY)", "(V.2FEY)"]
+    caption: "Regression Estimates of Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions"
+    select_coefs:
+      ntl_harm: $HARM$
+      viirs_annual: $VIIRS$
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["NO", "NO", "PX", "PX", "PX+CY", "PX+CY", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["1km", "500m", "1km", "500m", "1km", "500m", "1km", "500m"]
+        Spatial Extent: "World"
+        Temporal Extent: ["2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020"]
+    notes:
+      - "Independent variable is MODIS surface temperature from the GLASS product"
+      - "Dependent variable is nighttime lights"
+      - "FE models use Mundlak fixed effects estimation with clustered standard errors"
+      - "NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  base_log_modis:
+    model_paths:
+      - name: "modis_logntlharm_pooled"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_pooled"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_ufe"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_ufe"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twyfe"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_twyfe"
+        analysis_type: "duckreg"
+    model_names: ["(lD.P)", "(lV.P)", "(lD.1FE)", "(lV.1FE)", "(lD.2FE)", "(lV.2FE)", "(lD.2FEY)", "(lV.2FEY)"]
+    caption: "Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models at Multiple Resolutions"
+    select_coefs:
+      log_ntl_harm_0_01: "$\\log(\\text{HARM} + 0.01)$"
+      log_viirs_annual_0_01: "$\\log(\\text{VIIRS} + 0.01)$"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["NO", "NO", "PX", "PX", "PX+CY", "PX+CY", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["5km", "5km", "5km", "5km", "5km", "5km", "5km", "5km"]
+        Spatial Extent: "World"
+        Temporal Extent: ["1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020"]
+    notes:
+      - "Independent variable is MODIS surface temperature from the GLASS product"
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "FE models use Mundlak fixed effects estimation with clustered standard errors."
+      - "NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  alt_log_modis:
+    model_paths:
+      - name: "modisMean_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modisMean_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "modisRollMax_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modisRollMax_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "modis30C_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "modis30C_logviirs_twfe"
+        analysis_type: "duckreg"
+    model_names: ["(M.D)", "(M.V)", "(R.D)", "(R.V)", "(H.D)", "(H.V)"]
+    caption: "Regression Estimates of Log Nighttime Lights Effects on Alternative MODIS Land Surface Temperature Measures: Mean, Rolling Max, and >30°C Proportion"
+    select_coefs:
+      log_ntl_harm_0_01: "$\\hat{\\log(\\text{HARM} + 0.01)}$"
+      log_viirs_annual_0_01: "$\\hat{\\log(\\text{VIIRS} + 0.01)}$"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+CY"]
+        Clustering: "ADM2"
+      - Resolution: ["1km", "500m", "1km", "500m", "1km", "500m"]
+        Spatial Extent: "World"
+        Temporal Extent: ["2000-2020", "2012-2020", "2000-2020", "2012-2020", "2000-2020", "2012-2020"]
+      - Dependent Variable: ["Mean Temp", "Mean Temp", "Roll Max Temp", "Roll Max Temp", ">30°C Prop", ">30°C Prop"]
+    notes:
+      - "Independent variables are alternative MODIS surface temperature measures from the GLASS product"
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "FE models use Mundlak fixed effects estimation with clustered standard errors"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  base_avhrr:
+    model_paths:
+      - name: "avhrr_ntlharm_pooled"
+        analysis_type: "duckreg"
+      - name: "avhrr_viirs_pooled"
+        analysis_type: "duckreg"
+      - name: "avhrr_ntlharm_ufe"
+        analysis_type: "duckreg"
+      - name: "avhrr_viirs_ufe"
+        analysis_type: "duckreg"
+      - name: "avhrr_ntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrr_viirs_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrr_ntlharm_twyfe"
+        analysis_type: "duckreg"
+      - name: "avhrr_viirs_twyfe"
+        analysis_type: "duckreg"
+    model_names: ["(D.P)", "(V.P)", "(D.1FE)", "(V.1FE)", "(D.2FE)", "(V.2FE)", "(D.2FEY)", "(V.2FEY)"]
+    caption: "Regression Estimates of Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models for AVHRR at 5km Resolution"
+    select_coefs:
+      ntl_harm: $HARM$
+      viirs_annual: $VIIRS$
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["NO", "NO", "PX", "PX", "PX+CY", "PX+CY", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: "5km"
+        Spatial Extent: "World"
+        Temporal Extent: ["1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020"]
+    notes:
+      - "Independent variable is AVHRR surface temperature"
+      - "Dependent variable is nighttime lights"
+      - "FE models use Mundlak fixed effects estimation with clustered standard errors"
+      - "NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  base_log_avhrr:
+    model_paths:
+      - name: "avhrr_logntlharm_pooled"
+        analysis_type: "duckreg"
+      - name: "avhrr_logviirs_pooled"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_ufe"
+        analysis_type: "duckreg"
+      - name: "avhrr_logviirs_ufe"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrr_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_twyfe"
+        analysis_type: "duckreg"
+      - name: "avhrr_logviirs_twyfe"
+        analysis_type: "duckreg"
+    model_names: ["(lD.P)", "(lV.P)", "(lD.1FE)", "(lV.1FE)", "(lD.2FE)", "(lV.2FE)", "(lD.2FEY)", "(lV.2FEY)"]
+    caption: "Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: Pooled and Fixed Effects Models for AVHRR at 5km Resolution"
+    select_coefs:
+      log_ntl_harm_0_01: "$\\hat{\\log(\\text{HARM} + 0.01)}$"
+      log_viirs_annual_0_01: "$\\hat{\\log(\\text{VIIRS} + 0.01)}$"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["NO", "NO", "PX", "PX", "PX+CY", "PX+CY", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: "5km"
+        Spatial Extent: "World"
+        Temporal Extent: ["1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020", "1991-2020", "2012-2020"]
+    notes:
+      - "Independent variable is AVHRR surface temperature"
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "FE models use Mundlak fixed effects estimation with clustered standard errors."
+      - "NO: No fixed effects; PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  alt_log_avhrr:
+    model_paths:
+      - name: "avhrrMean_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrrMean_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrrRollMax_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrrRollMax_logviirs_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrr30C_logntlharm_twfe"
+        analysis_type: "duckreg"
+      - name: "avhrr30C_logviirs_twfe"
+        analysis_type: "duckreg"
+    model_names: ["(M.D)", "(M.V)", "(R.D)", "(R.V)", "(H.D)", "(H.V)"]
+    select_coefs:
+      log_ntl_harm_0_01: "$\\hat{\\log(\\text{HARM} + 0.01)}$"
+      log_viirs_annual_0_01: "$\\hat{\\log(\\text{VIIRS} + 0.01)}$"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "VIIRS"]  
+        Fixed Effects: ["PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+CY"]
+        Clustering: "ADM2"
+      - Resolution: ["5km", "5km", "5km", "5km", "5km", "5km"]
+        Spatial Extent: "World"
+        Temporal Extent: ["1981-2005", "2012-2020", "1981-2005", "2012-2020", "1981-2005", "2012-2020"]
+      - Dependent Variable: ["Mean Temp", "Mean Temp", "Roll Max Temp", "Roll Max Temp", ">30°C Prop", ">30°C Prop"]
+    notes:
+      - "Independent variables are alternative AVHRR surface temperature measures"
+      - "Dependent variable is log(nighttime lights + 0.01)"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+
+  regfav:
+    model_paths:
+      - name: "avhrr_ntlharm_regfav_twfe_replicate_50km"
+        analysis_type: "duckreg"
+      - name: "avhrr_ntlharm_regfav_twfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_ntlharm_regfav_twfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_viirs_regfav_twfe_replicate"
+        analysis_type: "duckreg"
+      - name: "avhrr_ntlharm_regfav_twyfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_ntlharm_regfav_twyfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_viirs_regfav_twyfe_replicate"
+        analysis_type: "duckreg"
+    model_names: ["(RF50)", "(RF5)", "(RF1)", "(RF500)", "(RF5YFE)", "(RF1YFE)", "(RF500YFE)"]
+    caption: "Instrumental Variable Estimates of Nighttime Lights Effects on Land Surface Temperature Without Logs: Replication and Subsets"
+    select_coefs:
+      ntl_harm: "$\\hat{\\text{HARM}}$"
+      viirs_annual: "$\\hat{\\text{VIIRS}}$"
+    select_instruments:
+      adm2_reg_fav: "Leader's Birthplace"
+    show_first_stage: "full"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "VIIRS"]
+        Fixed Effects: ["PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+YR", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["50km", "5km", "1km", "500m", "5km", "1km", "500m"]
+        Spatial Extent: "H&R"
+        Temporal Extent: ["1992-2009", "1992-2009", "2000-2009", "2013-2020", "1992-2009", "2000-2009", "2013-2020"]
+    notes:
+      - "Dependent variable is nighttime lights (not logged)"
+      - "Models use regional favoritism as instrument with Mundlak fixed effects estimation"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  regfav_log:
+    model_paths:
+      - name: "avhrr_logntlharm_regfav_twfe_replicate_50km"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_regfav_twfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_regfav_twfe_replicate"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_regfav_twyfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twyfe_replicate"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_regfav_twyfe_replicate"
+        analysis_type: "duckreg"
+    model_names: ["(RFl50)", "(RFl5)", "(RFl1)", "(RFl500)", "(RFl5YFE)", "(RFl1YFE)", "(RFl500YFE)"]
+    caption: "Instrumental Variable Estimates of Log Nighttime Lights Effects on Land Surface Temperature Using Regional Favoritism: Replication of Hodler & Raschky (2014) at Multiple Resolutions"
+    select_coefs:
+      log(ntl_harm+0.01): "$\\hat{\\log(\\text{HARM} + 0.01)}$"
+      log(viirs_annual+0.01): "$\\hat{\\log(\\text{VIIRS} + 0.01)}$"
+    # Optionally select specific instruments to display in first stage
+    select_instruments:
+      adm2_reg_fav: "Leader's Birthplace"
+    show_first_stage: "full"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP", "DMSP", "DMSP", "VIIRS", "DMSP", "DMSP", "VIIRS"]  
+        Fixed Effects: ["PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+YR", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["50km", "5km", "1km", "500m", "5km", "1km", "500m"]
+        Spatial Extent: "H&R"
+        Temporal Extent: ["1992-2009", "1992-2009", "2000-2009", "2013-2020", "1992-2009", "2000-2009", "2013-2020"]
+    notes:
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "Models use Mundlak fixed effects estimation with clustered standard errors"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 3
+    output_formats:
+      - latex
+
+  reduced_form_regfav:
+    model_paths:
+      - name: "avhrr_logntlharm_regfav_twfe_replicate_50km_rf"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_regfav_twfe_replicate_rf"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_replicate_rf"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_regfav_twfe_replicate_rf"
+        analysis_type: "duckreg"
+      - name: "avhrr_logntlharm_regfav_twyfe_replicate_rf"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twyfe_replicate_rf"
+        analysis_type: "duckreg"
+      - name: "modis_logviirs_regfav_twyfe_replicate_rf"
+        analysis_type: "duckreg"
+    model_names: ["(rfRFl50)", "(rfRFl5)", "(rfRFl1)", "(rfRFl500)", "(rfRFl5YFE)", "(rfRFl1YFE)", "(rfRFl500YFE)"]
+    caption: "Reduced Form Estimates of Regional Favoritism Effects on Land Surface Temperature"
+    select_coefs:
+      adm2_reg_fav: "Leader's Birthplace"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Instrument: ["Reg Fav", "Reg Fav", "Reg Fav", "Reg Fav", "Reg Fav", "Reg Fav", "Reg Fav"]
+        Fixed Effects: ["PX+CY", "PX+CY", "PX+CY", "PX+CY", "PX+YR", "PX+YR", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["50km", "5km", "1km", "500m", "5km", "1km", "500m"]
+        Spatial Extent: "H&R"
+        Temporal Extent: ["1992-2009", "1992-2009", "2000-2009", "2013-2020", "1992-2009", "2000-2009", "2013-2020"]
+    notes:
+      - "Reduced form regressions estimating direct effects of regional favoritism instrument on temperature"
+      - "Models use Mundlak fixed effects estimation with clustered standard errors"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  mines:
+    model_paths:
+      - name: "modis_logntlharm_mines_twfe"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_mines_twyfe"
+        analysis_type: "duckreg"
+    model_names: ["(M.1)", "(M.2)"]
+    caption: "Instrumental Variable Estimates of Log Nighttime Lights Effects on Land Surface Temperature Using Mining Occurrence: Africa Subset"
+    select_coefs:
+      log(ntl_harm+0.01): "$\\hat{\\log(HARM + 0.01)}$"
+    # Show only major mining instruments
+    select_instruments:
+      nb_mines_a: "Active Mines"
+    show_first_stage: "full"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP", "DMSP"]  
+        Fixed Effects: ["PX+CY", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: "1km"
+        Spatial Extent: "Africa"
+        Temporal Extent: "2000-2009"
+    notes:
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "Both models use Mundlak fixed effects estimation with clustered standard errors"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 3
+    output_formats:
+      - latex
+
+
+  reduced_form_mines:
+    model_paths:
+      - name: "modis_logntlharm_mines_twfe_rf"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_mines_twyfe_rf"
+        analysis_type: "duckreg"
+    model_names: ["(RF.MINES.TWFE)", "(RF.MINES.TWYFE)"]
+    caption: "Reduced Form Estimates of Mining Effects on Land Surface Temperature"
+    select_coefs:
+      nb_mines_a: "Active Mines"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Instrument: ["Mines", "Mines"]
+        Fixed Effects: ["PX+CY", "PX+YR"]
+        Clustering: "ADM2"
+      - Resolution: ["1km", "1km"]
+        Spatial Extent: ["Africa", "Africa"]
+        Temporal Extent: ["2000-2020", "2000-2020"]
+    notes:
+      - "Reduced form regressions estimating direct effects of mining instrument on temperature"
+      - "Models use Mundlak fixed effects estimation with clustered standard errors"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  hdi_twfe_iv:
+    model_paths:
+      - name: "modis_logntlharm_twfe_HDI_LO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_HDI_LO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_HDI_GTLO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_HDI_GTLO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_HDI_ME"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_HDI_ME"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_HDI_HI"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_HDI_HI"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_HDI_VH"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_HDI_VH"
+        analysis_type: "duckreg"
+    model_names: ["(LO.OLS)", "(LO.IV)", "(GTLO.OLS)", "(GTLO.IV)", "(ME.OLS)", "(ME.IV)", "(HI.OLS)", "(HI.IV)", "(VH.OLS)", "(VH.IV)"]
+    caption: "Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: HDI Subsets (TWFE and IV Pairs)"
+    select_coefs:
+      log_ntl_harm_0_01: "$\\log(\\text{HARM} + 0.01)$"
+      log(ntl_harm+0.01): "$\\hat{\\log(\\text{HARM} + 0.01)}$"
+    select_instruments:
+      adm2_reg_fav: "Leader's Birthplace"
+    show_first_stage: "full"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: "DMSP/VIIRS"
+        Fixed Effects: "PX+CY"
+        Clustering: "ADM2"
+      - Resolution: "1km"
+        Spatial Extent: ["Low HDI", "Low HDI", ">Low HDI", ">Low HDI", "Medium HDI", "Medium HDI", "High HDI", "High HDI", "Very High HDI", "Very High HDI"]
+        Temporal Extent: "2000-2020"
+    notes:
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "TWFE models use Mundlak fixed effects estimation with clustered standard errors"
+      - "IV models use regional favoritism as instrument"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex
+
+  wb_twfe_iv:
+    model_paths:
+      - name: "modis_logntlharm_twfe_WB_LO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_WB_LO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_WB_GTLO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_WB_GTLO"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_WB_LM"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_WB_LM"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_WB_UM"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_WB_UM"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_twfe_WB_HI"
+        analysis_type: "duckreg"
+      - name: "modis_logntlharm_regfav_twfe_WB_HI"
+        analysis_type: "duckreg"
+    model_names: ["(LO.OLS)", "(LO.IV)", "(GTLO.OLS)", "(GTLO.IV)", "(LM.OLS)", "(LM.IV)", "(UM.OLS)", "(UM.IV)", "(HI.OLS)", "(HI.IV)"]
+    caption: "Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: WB Income Subsets (TWFE and IV Pairs)"
+    select_coefs:
+      log_ntl_harm_0_01: "$\\log(\\text{HARM} + 0.01)$"
+      log(ntl_harm+0.01): "$\\hat{\\log(\\text{HARM} + 0.01)}$"
+    select_instruments:
+      adm2_reg_fav: "Leader's Birthplace"
+    show_first_stage: "full"
+    show_stats:
+      - n_observations
+      - n_compressed_rows
+    custom_rows:
+      - Nighttime Lights: ["DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS", "DMSP/VIIRS"]
+        Fixed Effects: "PX+CY"
+        Clustering: "ADM2"
+      - Resolution: "1km"
+        Spatial Extent: ["LI", "LI", ">LI", ">LI", "LMI", "LMI", "UMI", "UMI", "HI", "HI"]
+        Temporal Extent: "2000-2020"
+    notes:
+      - "Dependent variable is log(nighttime lights + 0.01)"
+      - "TWFE models use Mundlak fixed effects estimation with clustered standard errors"
+      - "IV models use regional favoritism as instrument"
+      - "PX: Pixel fixed effects; CY: Country×Year fixed effects"
+    include_ci: false
+    decimals: 4
+    output_formats:
+      - latex

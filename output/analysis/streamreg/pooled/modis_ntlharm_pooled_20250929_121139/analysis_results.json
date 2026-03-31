@@ -1,0 +1,129 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "modis_ntlharm_pooled",
+    "description": "Pooled MODIS NTLHARM analysis",
+    "timestamp": "20250929_121139",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis.parquet",
+    "target_variable": "median",
+    "feature_variables": [
+      "ntl_harm"
+    ],
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 4
+  },
+  "sample_statistics": {
+    "n_observations": 1679588747,
+    "n_features": 2,
+    "n_clusters_1": 25,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 546,
+    "feature_names": [
+      "intercept",
+      "ntl_harm"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 1541269.9136889982,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -5.953837423078312e-10,
+    "root_mean_squared_error": 0.03029269221608727,
+    "degrees_of_freedom": 1679588745
+  },
+  "coefficients": {
+    "estimates": {
+      "intercept": {
+        "coefficient": 262.76745394686054,
+        "std_error": 0.3451283502933141,
+        "t_statistic": 761.3615448384419,
+        "p_value": 0.0,
+        "ci_lower_95": 262.09100238028566,
+        "ci_upper_95": 263.4439055134354,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "ntl_harm": {
+        "coefficient": 0.24385323278038065,
+        "std_error": 0.010704656463895117,
+        "t_statistic": 22.780108226999513,
+        "p_value": 0.0,
+        "ci_lower_95": 0.22287210611114622,
+        "ci_upper_95": 0.2648343594496151,
+        "significant_5pct": true,
+        "significant_1pct": true
+      }
+    },
+    "covariance_matrix": [
+      [
+        0.11911357817618454,
+        -0.0030962456268961627
+      ],
+      [
+        -0.003096245626896162,
+        0.0001145896700100115
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "intercept",
+        "coefficient": 262.76745394686054,
+        "std_error": 0.3451283502933141,
+        "t_statistic": 761.3615448384419,
+        "p_value": 0.0,
+        "significance": "***"
+      },
+      {
+        "variable": "ntl_harm",
+        "coefficient": 0.24385323278038065,
+        "std_error": 0.010704656463895117,
+        "t_statistic": 22.780108226999513,
+        "p_value": 0.0,
+        "significance": "***"
+      }
+    ]
+  }
+}

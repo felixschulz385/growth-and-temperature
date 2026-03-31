@@ -1,0 +1,296 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "ntlharm_regfav_twfe_hdi",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "20251008_161423",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "target_variable": "ntl_harm_twoway_demeaned",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav_twoway_demeaned"
+    ],
+    "formula": "ntl_harm_twoway_demeaned ~ reg_fav_twoway_demeaned:HDI_ME + reg_fav_twoway_demeaned:HDI_HI + reg_fav_twoway_demeaned:HDI_VH - 1",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "reg_fav_twoway_demeaned",
+        "reg_fav_twoway_demeaned_x_HDI_ME",
+        "reg_fav_twoway_demeaned_x_HDI_HI",
+        "reg_fav_twoway_demeaned_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 45907365,
+    "n_features": 7,
+    "n_clusters_1": 57,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 1218,
+    "feature_names": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav_twoway_demeaned",
+      "reg_fav_twoway_demeaned_x_HDI_ME",
+      "reg_fav_twoway_demeaned_x_HDI_HI",
+      "reg_fav_twoway_demeaned_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 49629.41118025158,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -1.3069800264275955e-07,
+    "root_mean_squared_error": 0.03287974028575704,
+    "degrees_of_freedom": 45907358
+  },
+  "coefficients": {
+    "estimates": {
+      "HDI_HI": {
+        "coefficient": 6.813030807349239e-10,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": NaN,
+        "ci_upper_95": NaN,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_ME": {
+        "coefficient": -6.938906170893693e-12,
+        "std_error": 0.011032353104925766,
+        "t_statistic": -6.289597608868759e-10,
+        "p_value": 0.9999999994981628,
+        "ci_lower_95": -0.02162341209259341,
+        "ci_upper_95": 0.021623412078715595,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": 0.0,
+        "ci_upper_95": 0.0,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned": {
+        "coefficient": 0.07416039319069279,
+        "std_error": 0.04271707418684536,
+        "t_statistic": 1.7360831611807892,
+        "p_value": 0.08254913130450792,
+        "ci_lower_95": -0.00956507221552412,
+        "ci_upper_95": 0.15788585859690968,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_ME": {
+        "coefficient": 0.5661978490959728,
+        "std_error": 2.059400511335858,
+        "t_statistic": 0.2749333342297273,
+        "p_value": 0.7833674566100268,
+        "ci_lower_95": -3.470227153122309,
+        "ci_upper_95": 4.602622851314255,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_HI": {
+        "coefficient": 3.7073981630272135,
+        "std_error": 3.332563233842502,
+        "t_statistic": 1.112476464175751,
+        "p_value": 0.265933344122512,
+        "ci_lower_95": -2.824425775304091,
+        "ci_upper_95": 10.239222101358518,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_twoway_demeaned_x_HDI_VH": {
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": 0.0,
+        "ci_upper_95": 0.0,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        -0.00011553469122279323,
+        0.0004960758447066472,
+        0.0,
+        -0.00014045874944809957,
+        0.012280954119822402,
+        -0.0208114781997363,
+        0.0
+      ],
+      [
+        0.0004960758447066472,
+        0.00012171281503176518,
+        0.0,
+        0.00012118968955597487,
+        0.0008926479237318984,
+        -0.0017472781019594564,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.0001404587494480986,
+        0.0001211896895559746,
+        0.0,
+        0.00182474842708445,
+        -0.00459236509560303,
+        -0.039827333339745134,
+        0.0
+      ],
+      [
+        0.012280954119822406,
+        0.0008926479237318983,
+        0.0,
+        -0.0045923650956034845,
+        4.241130466090394,
+        -0.09211535275006433,
+        0.0
+      ],
+      [
+        -0.0208114781997363,
+        -0.0017472781019594564,
+        0.0,
+        -0.03982733333974782,
+        -0.09211535275006465,
+        11.105977707558797,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "HDI_HI",
+        "coefficient": 6.813030807349239e-10,
+        "std_error": NaN,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": -6.938906170893693e-12,
+        "std_error": 0.011032353104925766,
+        "t_statistic": -6.289597608868759e-10,
+        "p_value": 0.9999999994981628,
+        "significance": ""
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned",
+        "coefficient": 0.07416039319069279,
+        "std_error": 0.04271707418684536,
+        "t_statistic": 1.7360831611807892,
+        "p_value": 0.08254913130450792,
+        "significance": "*"
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_ME",
+        "coefficient": 0.5661978490959728,
+        "std_error": 2.059400511335858,
+        "t_statistic": 0.2749333342297273,
+        "p_value": 0.7833674566100268,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_HI",
+        "coefficient": 3.7073981630272135,
+        "std_error": 3.332563233842502,
+        "t_statistic": 1.112476464175751,
+        "p_value": 0.265933344122512,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_twoway_demeaned_x_HDI_VH",
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      }
+    ]
+  }
+}

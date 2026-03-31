@@ -1,0 +1,114 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "avhrr_viirs_ufe",
+    "description": "Unit fixed effects (UFE) regression model estimating the effect of annual VIIRS nighttime lights on median AVHRR land surface temperature at 5km resolution, with pixel-level fixed effects, clustered by subdivision.",
+    "timestamp": "2025-12-10T09:35:32.002953",
+    "formula": "avhrr_median ~ viirs_annual | pixel_id | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/64204695",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "avhrr_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 64107236,
+    "n_compressed_rows": 6667086,
+    "compression_ratio": 0.8960010380107482,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 3,
+    "estimator_type": "DuckMundlak"
+  },
+  "coefficients": {
+    "coefficients": [
+      295.9128849756774,
+      -0.001621049423226133,
+      0.039371900206243246
+    ],
+    "coef_names": [
+      "Intercept",
+      "viirs_annual",
+      "avg_viirs_annual_fe0"
+    ],
+    "n_obs": 64107236,
+    "n_compressed": 6667086,
+    "vcov": [
+      [
+        0.7567516065027505,
+        1.3489524490382416e-05,
+        -0.02029679834111376
+      ],
+      [
+        1.3489524490382416e-05,
+        1.7354613446525204e-06,
+        -5.9209502382470014e-06
+      ],
+      [
+        -0.02029679834111376,
+        -5.9209502382470014e-06,
+        0.0006913023595525551
+      ]
+    ],
+    "std_errors": [
+      0.8699147122004263,
+      0.0013173690996271775,
+      0.0262926293769291
+    ],
+    "t_statistics": [
+      340.16309969878955,
+      -1.2305203026888203,
+      1.4974500892174278
+    ],
+    "p_values": [
+      0.0,
+      0.21850232900936062,
+      0.134276183253228
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      0.7567516065027505,
+      1.3489524490382416e-05,
+      -0.02029679834111376
+    ],
+    [
+      1.3489524490382416e-05,
+      1.7354613446525204e-06,
+      -5.9209502382470014e-06
+    ],
+    [
+      -0.02029679834111376,
+      -5.9209502382470014e-06,
+      0.0006913023595525551
+    ]
+  ]
+}

@@ -1,0 +1,39 @@
+\begin{table}[htbp]
+\centering
+\tiny
+\caption{Regression Estimates of Log Nighttime Lights Effects on Land Surface Temperature: WB Income Subsets (TWFE and IV Pairs)}
+\begin{tabular}{lcccccccccc}
+\toprule
+ & (LO.OLS) & (LO.IV) & (GTLO.OLS) & (GTLO.IV) & (LM.OLS) & (LM.IV) & (UM.OLS) & (UM.IV) & (HI.OLS) & (HI.IV) \\
+\midrule
+\midrule
+\multicolumn{11}{l}{\textit{First Stage: log(ntl\_harm+0.01)}} \\
+  Leader's Birthplace &  & 0.0205 &  & 0.0095 &  & -0.0178 &  & 0.0403 &  & 0.0156 \\
+ &  & (0.0283) &  & (0.0405) &  & (0.0408) &  & (0.0238) &  & (0.1239) \\
+\midrule
+\multicolumn{11}{l}{\textit{Second Stage}} \\
+$\log(\text{HARM} + 0.01)$ &  &  &  &  &  &  &  &  &  &  \\
+ &  &  &  &  &  &  &  &  &  &  \\
+$\hat{\log(\text{HARM} + 0.01)}$ & 0.0002 & -0.4368 & 0.0050* & 3.8579 & 0.0092** & -4.9507 & -0.0051*** & 2.0424 & 0.0044 & -5.3037 \\
+ & (0.0016) & (2.0949) & (0.0023) & (17.3130) & (0.0029) & (11.2661) & (0.0012) & (1.8446) & (0.0053) & (41.5410) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 & 2026-03-07 \\
+N Observations & 550,771,032 & 461,162,084 & 2,453,946,747 & 2,109,102,851 & 1,195,219,220 & 949,317,912 & 430,430,487 & 341,263,378 & 828,296,977 & 818,521,519 \\
+N Compressed Rows & 65,289,750 & 461,162,505 & 298,099,503 & 2,109,112,533 & 138,908,578 & 949,320,291 & 68,902,139 & 341,264,644 & 90,288,618 & 818,527,556 \\
+First Stage F (log(ntl\_harm+0.01)) &  & 0.5274 &  & 0.0555 &  & 0.1907 &  & 2.8672 &  & 0.0159 \\
+\midrule
+Nighttime Lights & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS & DMSP/VIIRS \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY & PX+CY \\
+Clustering & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 & ADM2 \\
+Resolution & 1km & 1km & 1km & 1km & 1km & 1km & 1km & 1km & 1km & 1km \\
+Spatial Extent & LI & LI & $>$LI & $>$LI & LMI & LMI & UMI & UMI & HI & HI \\
+Temporal Extent & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 & 2000-2020 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Dependent variable is log(nighttime lights + 0.01). TWFE models use  fixed effects estimation with clustered standard errors. IV models use regional favoritism as instrument. PX: Pixel fixed effects; CY: Country×Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

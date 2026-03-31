@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_viirs_pooled",
+    "description": "Pooled MODIS VIIRS analysis",
+    "timestamp": "2025-12-06T18:09:20.528399",
+    "formula": "modis_median ~ viirs_annual | 0 | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/63638786",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 8558990698,
+    "n_compressed_rows": 93477698,
+    "compression_ratio": 0.989078420423819,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 2,
+    "estimator_type": "DuckRegression"
+  },
+  "coefficients": {
+    "coefficients": [
+      284.3742691199382,
+      0.0811872956054211
+    ],
+    "coef_names": [
+      "Intercept",
+      "viirs_annual"
+    ],
+    "n_obs": 8558990698,
+    "n_compressed": 93477698,
+    "vcov": [
+      [
+        1.825099910349247,
+        -0.0273335734037077
+      ],
+      [
+        -0.0273335734037077,
+        0.00047124693949308254
+      ]
+    ],
+    "std_errors": [
+      1.3509625865838206,
+      0.02170822285432602
+    ],
+    "t_statistics": [
+      210.49751632207335,
+      3.739932842510048
+    ],
+    "p_values": [
+      0.0,
+      0.00018406942722437591
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      1.825099910349247,
+      -0.0273335734037077
+    ],
+    [
+      -0.0273335734037077,
+      0.00047124693949308254
+    ]
+  ]
+}

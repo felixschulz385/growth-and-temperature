@@ -1,0 +1,93 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "avhrr_logviirs_pooled",
+    "description": "Pooled regression model estimating the effect of logged annual VIIRS nighttime lights (log(VIIRS + 0.01)) on median AVHRR land surface temperature at 5km resolution, without fixed effects, clustered by subdivision.",
+    "timestamp": "2025-12-10T09:35:32.053257",
+    "formula": "avhrr_median ~ log(viirs_annual + 0.01) | 0 | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/5km.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/64204692",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "avhrr_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 64107236,
+    "n_compressed_rows": 6100663,
+    "compression_ratio": 0.9048365928613737,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 2,
+    "estimator_type": "DuckRegression"
+  },
+  "coefficients": {
+    "coefficients": [
+      296.8554760804689,
+      0.2222006238250575
+    ],
+    "coef_names": [
+      "Intercept",
+      "log_viirs_annual_0_01"
+    ],
+    "n_obs": 64107236,
+    "n_compressed": 6100663,
+    "vcov": [
+      [
+        0.14783456255853172,
+        0.00910037616944596
+      ],
+      [
+        0.00910037616944596,
+        0.03790203980584652
+      ]
+    ],
+    "std_errors": [
+      0.38449260403619173,
+      0.19468446215824858
+    ],
+    "t_statistics": [
+      772.0707055590758,
+      1.141337225178466
+    ],
+    "p_values": [
+      0.0,
+      0.25372961687088624
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      0.14783456255853172,
+      0.00910037616944596
+    ],
+    [
+      0.00910037616944596,
+      0.03790203980584652
+    ]
+  ]
+}

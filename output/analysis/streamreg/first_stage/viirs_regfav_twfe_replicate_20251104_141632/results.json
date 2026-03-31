@@ -1,0 +1,52 @@
+{
+  "model_type": "ols",
+  "cluster_type": "two_way",
+  "n_obs": 6342201366,
+  "n_features": 2,
+  "r_squared": 2.1161228325183856e-10,
+  "adj_r_squared": 5.393829827227137e-11,
+  "rss": 55406860907.57133,
+  "rmse": 2.9557095816740686,
+  "f_statistic": 1.3420877117629673,
+  "f_pvalue": 0.24666613141770521,
+  "df_model": 1,
+  "df_resid": 6342201364,
+  "coefficients": {
+    "intercept": {
+      "estimate": 1.65976451730928e-06,
+      "std_error": 0.004045139838499109,
+      "t_statistic": 0.0004103107886438635,
+      "p_value": 0.9996726193657963
+    },
+    "reg_fav_twoway_demeaned": {
+      "estimate": 0.0003246290687233179,
+      "std_error": 0.003798938397449367,
+      "t_statistic": 0.08545257510394906,
+      "p_value": 0.9319015970855253
+    }
+  },
+  "cluster_diagnostics": {
+    "dim1": {
+      "n_clusters": 2419,
+      "min_size": 9,
+      "max_size": 313142193,
+      "mean_size": 2621785.521289789,
+      "median_size": 452286.0,
+      "total_obs": 6342099176,
+      "warnings": [
+        "Unbalanced clusters (max/mean=119.4)."
+      ]
+    },
+    "dim2": {
+      "n_clusters": 9,
+      "min_size": 704668051,
+      "max_size": 704695295,
+      "mean_size": 704689040.6666666,
+      "median_size": 704693811.0,
+      "total_obs": 6342201366,
+      "warnings": [
+        "Few clusters (9). Cluster-robust SEs may be unreliable."
+      ]
+    }
+  }
+}

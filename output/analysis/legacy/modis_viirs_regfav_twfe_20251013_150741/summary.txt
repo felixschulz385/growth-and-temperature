@@ -1,0 +1,55 @@
+================================================================================
+GNT Analysis Results: 2SLS TWFE: Growth effect on temperature using regional favoritism as instrument
+================================================================================
+
+Analysis Type: Online 2SLS Regression
+Specification: modis_viirs_regfav_twfe
+Timestamp: 20251013_150741
+Standard Errors: two_way
+
+Instrument Specification:
+  Exogenous variables: []
+  Endogenous variables: ['viirs_annual_twoway_demeaned']
+  Instruments: ['reg_fav_twoway_demeaned']
+  Identification: Just-identified
+
+Sample Information:
+  Observations: 7,592,407,246
+  Features: 2
+  Clusters (Dim 1): 3380
+  Clusters (Dim 2): 9
+
+FIRST STAGE RESULTS
+================================================================================
+
+First Stage 1: viirs_annual_twoway_demeaned
+--------------------------------------------------
+Dependent Variable: viirs_annual_twoway_demeaned
+R-squared: 0.000000
+Adjusted R-squared: -0.000000
+Observations: 7,639,312,837
+RMSE: 0.088904
+RSS: 60380849.728774
+
+Coefficient Estimates:
+Variable                  Coeff        Std Err      t-stat     P>|t|      Sig  
+--------------------------------------------------------------------------------
+intercept                 0.000003     0.003122     0.001      0.999120        
+reg_fav_twoway_demeaned   0.000832     nan          nan        nan             
+
+SECOND STAGE RESULTS
+================================================================================
+
+Model Fit:
+  R-squared: 0.000000
+  Adj. R-squared: -0.000000
+  RMSE: 0.007764
+  RSS: 457615.959187
+
+Coefficient Estimates:
+Variable                  Coeff        Std Err      t-stat     P>|t|      Sig  
+--------------------------------------------------------------------------------
+intercept                 0.000405     nan          nan        nan             
+viirs_annual_twoway_demeaned 142.749328   nan          nan        nan             
+
+Significance codes: *** p<0.01, ** p<0.05, * p<0.10

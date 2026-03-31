@@ -4,8 +4,6 @@ import logging
 import re  # Added for _strip_remote_prefix regex
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Union, Tuple
-from dask.distributed import Client, LocalCluster
-from functools import partial
 import xarray as xr
 import numpy as np
 import dask.array as da
@@ -37,6 +35,7 @@ from gnt.data.common.geobox import get_or_create_geobox
 
 from odc.geo import CRS
 from odc.geo.xr import ODCExtensionDa, assign_crs, xr_reproject
+from odc.geo.geom import clip_lon180
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +83,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                 temp_dir (str): Directory for temporary files
                 override (bool): Whether to reprocess existing outputs
                 dask_threads (int): Number of Dask threads
-                dask_memory_limit (str): Dask memory limit
+                dask_memory_limit (str): Dask memory limit per worker (e.g., "4GB", "32GiB")
         """
         super().__init__(**kwargs)
         
@@ -626,7 +625,7 @@ class GlassPreprocessor(AbstractPreprocessor):
         """Initialize Dask client for parallel processing using the context manager."""
         dask_params = {
             'threads': self.dask_threads,
-            'memory_limit': self.dask_memory_limit,
+            'memory_limit': self.dask_memory_limit,  # Accept "XGB" format (e.g., "4GB", "32GB")
             'dashboard_port': self.dashboard_port,
             'temp_dir': os.path.join(self.temp_dir, "dask_workspace")
         }
@@ -867,9 +866,6 @@ class GlassPreprocessor(AbstractPreprocessor):
         
         try:
             with self._initialize_dask_client() as client:
-                if client is None:
-                    logger.error("Failed to initialize Dask client")
-                    return False
                     
                 dashboard_link = getattr(client, "dashboard_link", None)
                 if dashboard_link:
@@ -892,9 +888,10 @@ class GlassPreprocessor(AbstractPreprocessor):
                         logger.error(f"Failed to get target geobox: {e}")
                         return False
                     
-                    # Step 1: Create empty zarr file with target dimensions
-                    if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
-                        return False
+                    if not os.path.exists(output_path):
+                        # Step 1: Create empty zarr file with target dimensions
+                        if not self._create_empty_target_zarr(output_path, target_geobox, source_files):
+                            return False
                     
                     # Step 2: Process by year with aggregation and reprojection
                     success = self._process_years_chunked(source_files, output_path, target_geobox)
@@ -1007,6 +1004,10 @@ class GlassPreprocessor(AbstractPreprocessor):
             
             # Process each year
             for year in sorted(files_by_year.keys()):
+                
+                if year not in self.years_to_process:
+                    continue
+                
                 year_files = files_by_year[year]
                 logger.info(f"Processing year {year} with {len(year_files)} files")
                 
@@ -1211,7 +1212,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                 for iy in range(tiles.shape[1]):
 
                     try:
-                        logger.info(f"Reprojecting tile [{ix}, {iy}] for year {year} to: {year_source}")
+                        logger.info(f"Reprojecting tile [{ix}, {iy}] for year {year} to: {output_path}")
                         
                         # Get the tile index
                         tile_geobox = tiles[ix, iy]
@@ -1220,7 +1221,7 @@ class GlassPreprocessor(AbstractPreprocessor):
                             """Extract slice for the given tile using native xarray slicing."""
                             # Calculate the slice bounds in the source dataset
                             
-                            bbox = tile_geobox.footprint(year_ds.rio.crs).boundingbox
+                            bbox = clip_lon180(tile_geobox.pad(32, 32).extent).to_crs(year_ds.rio.crs).boundingbox
                         
                             return ds.sel(
                                 y = slice(bbox.bottom, bbox.top),
@@ -1234,8 +1235,15 @@ class GlassPreprocessor(AbstractPreprocessor):
                             # No data in this tile, skip
                             continue
                         
+                        # I have stored some values as uint during annual processing
+                        # This is unpractical since nans are required
+                        # I convert them back here although future data sources shouldn't store ints to begin with
+                        int_vars = [key for key, val in clipped_ds.dtypes.items() if np.issubdtype(val, np.integer)]
+                        if int_vars:
+                            clipped_ds[int_vars] = clipped_ds[int_vars].astype("float32").where(clipped_ds.valid_count > 0, np.nan)
+                        
                         # Reproject to target geobox for this tile
-                        reprojected_ds = xr_reproject(clipped_ds, tile_geobox)
+                        reprojected_ds = xr_reproject(clipped_ds, tile_geobox, resampling="mode", dst_nodata=np.nan)
                         
                         # Remove attributes and spatial reference
                         reprojected_ds = reprojected_ds.drop_vars(['spatial_ref']).drop_attrs()

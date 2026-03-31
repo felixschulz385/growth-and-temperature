@@ -1,0 +1,296 @@
+{
+  "metadata": {
+    "analysis_type": "online_rls",
+    "specification": "ntlharm_regfav_twfe_hdi",
+    "description": "TWFE MODIS NTLHARM analysis",
+    "timestamp": "20251008_160959",
+    "cluster_type": "two_way",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/modis_subset.parquet",
+    "target_variable": "ntl_harm",
+    "feature_variables": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav"
+    ],
+    "formula": "ntl_harm ~ reg_fav:HDI_ME + reg_fav:HDI_HI + reg_fav:HDI_VH - 1",
+    "feature_engineering": {
+      "enabled": false,
+      "transformations": [],
+      "transformed_feature_names": [
+        "HDI_HI",
+        "HDI_ME",
+        "HDI_VH",
+        "reg_fav",
+        "reg_fav_x_HDI_ME",
+        "reg_fav_x_HDI_HI",
+        "reg_fav_x_HDI_VH"
+      ]
+    },
+    "cluster_variables": {
+      "cluster1": "subdivisions",
+      "cluster2": "year"
+    }
+  },
+  "model_specification": {
+    "add_intercept": true,
+    "alpha": 0.001,
+    "forget_factor": 1.0,
+    "chunk_size": 10000,
+    "n_workers": 8
+  },
+  "sample_statistics": {
+    "n_observations": 45907365,
+    "n_features": 7,
+    "n_clusters_1": 57,
+    "n_clusters_2": 21,
+    "n_cluster_intersections": 1218,
+    "feature_names": [
+      "HDI_HI",
+      "HDI_ME",
+      "HDI_VH",
+      "reg_fav",
+      "reg_fav_x_HDI_ME",
+      "reg_fav_x_HDI_HI",
+      "reg_fav_x_HDI_VH"
+    ]
+  },
+  "model_fit": {
+    "residual_sum_squares": 373072.77535991115,
+    "r_squared": 0.0,
+    "adjusted_r_squared": -1.3069800264275955e-07,
+    "root_mean_squared_error": 0.0901478962295516,
+    "degrees_of_freedom": 45907358
+  },
+  "coefficients": {
+    "estimates": {
+      "HDI_HI": {
+        "coefficient": 2.616390251138194,
+        "std_error": 0.8801882745093851,
+        "t_statistic": 2.972534771150597,
+        "p_value": 0.002953517539845407,
+        "ci_lower_95": 0.8912212330997991,
+        "ci_upper_95": 4.341559269176589,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "HDI_ME": {
+        "coefficient": 0.5438950066800718,
+        "std_error": 0.27300666792300765,
+        "t_statistic": 1.9922407420226789,
+        "p_value": 0.04634464999558441,
+        "ci_lower_95": 0.008801937550976913,
+        "ci_upper_95": 1.0789880758091668,
+        "significant_5pct": true,
+        "significant_1pct": false
+      },
+      "HDI_VH": {
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": 0.0,
+        "ci_upper_95": 0.0,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav": {
+        "coefficient": 1.450000145018806,
+        "std_error": 0.30140096311022646,
+        "t_statistic": 4.810867656346941,
+        "p_value": 1.5027650090981837e-06,
+        "ci_lower_95": 0.8592542573227622,
+        "ci_upper_95": 2.04074603271485,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "reg_fav_x_HDI_ME": {
+        "coefficient": -1.9812337889871872,
+        "std_error": 0.4041812036640769,
+        "t_statistic": -4.901845437210955,
+        "p_value": 9.494052384262375e-07,
+        "ci_lower_95": -2.7734289481687777,
+        "ci_upper_95": -1.1890386298055966,
+        "significant_5pct": true,
+        "significant_1pct": true
+      },
+      "reg_fav_x_HDI_HI": {
+        "coefficient": 7.517322144433356,
+        "std_error": 6.762646526965897,
+        "t_statistic": 1.1115947158347266,
+        "p_value": 0.266312445541651,
+        "ci_lower_95": -5.737465048419802,
+        "ci_upper_95": 20.772109337286516,
+        "significant_5pct": false,
+        "significant_1pct": false
+      },
+      "reg_fav_x_HDI_VH": {
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "ci_lower_95": 0.0,
+        "ci_upper_95": 0.0,
+        "significant_5pct": false,
+        "significant_1pct": false
+      }
+    },
+    "covariance_matrix": [
+      [
+        0.7747313985838086,
+        0.016958054264005852,
+        0.0,
+        -0.01344225302037255,
+        -0.004309464317309531,
+        -2.1803791595877966,
+        0.0
+      ],
+      [
+        0.01695805426400585,
+        0.07453264073042339,
+        0.0,
+        -0.001210602308514891,
+        -0.07354438055667445,
+        0.009215501055181936,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      [
+        -0.013442253020372507,
+        -0.0012106023085148912,
+        0.0,
+        0.09084254056377208,
+        -0.08953995489383695,
+        -0.5713827052019699,
+        0.0
+      ],
+      [
+        -0.004309464317309442,
+        -0.07354438055667446,
+        0.0,
+        -0.08953995489383629,
+        0.163362445395342,
+        0.5628681417378909,
+        0.0
+      ],
+      [
+        -2.180379159587796,
+        0.009215501055181936,
+        0.0,
+        -0.5713827052019687,
+        0.562868141737893,
+        45.733388048683906,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ]
+    ]
+  },
+  "inference": {
+    "standard_error_type": "two_way",
+    "cluster_robust": true,
+    "hypothesis_tests": {
+      "joint_significance": {
+        "description": "F-test for joint significance of all coefficients (excluding intercept)",
+        "test_statistic": null,
+        "p_value": null,
+        "critical_value_5pct": null
+      }
+    }
+  },
+  "diagnostics": {
+    "convergence": {
+      "converged": true,
+      "regularization_applied": true,
+      "numerical_issues": false
+    },
+    "data_quality": {
+      "missing_values_handled": true,
+      "infinite_values_handled": true,
+      "outlier_detection": false
+    }
+  },
+  "computational_details": {
+    "algorithm": "Online Recursive Least Squares",
+    "implementation": "Vectorized batch processing with parallel partition handling",
+    "memory_efficient": true,
+    "processing_time_seconds": null,
+    "partitions_processed": null,
+    "partitions_failed": null
+  },
+  "summary_table": {
+    "coefficient_table": [
+      {
+        "variable": "HDI_HI",
+        "coefficient": 2.616390251138194,
+        "std_error": 0.8801882745093851,
+        "t_statistic": 2.972534771150597,
+        "p_value": 0.002953517539845407,
+        "significance": "***"
+      },
+      {
+        "variable": "HDI_ME",
+        "coefficient": 0.5438950066800718,
+        "std_error": 0.27300666792300765,
+        "t_statistic": 1.9922407420226789,
+        "p_value": 0.04634464999558441,
+        "significance": "**"
+      },
+      {
+        "variable": "HDI_VH",
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav",
+        "coefficient": 1.450000145018806,
+        "std_error": 0.30140096311022646,
+        "t_statistic": 4.810867656346941,
+        "p_value": 1.5027650090981837e-06,
+        "significance": "***"
+      },
+      {
+        "variable": "reg_fav_x_HDI_ME",
+        "coefficient": -1.9812337889871872,
+        "std_error": 0.4041812036640769,
+        "t_statistic": -4.901845437210955,
+        "p_value": 9.494052384262375e-07,
+        "significance": "***"
+      },
+      {
+        "variable": "reg_fav_x_HDI_HI",
+        "coefficient": 7.517322144433356,
+        "std_error": 6.762646526965897,
+        "t_statistic": 1.1115947158347266,
+        "p_value": 0.266312445541651,
+        "significance": ""
+      },
+      {
+        "variable": "reg_fav_x_HDI_VH",
+        "coefficient": 0.0,
+        "std_error": 0.0,
+        "t_statistic": NaN,
+        "p_value": NaN,
+        "significance": ""
+      }
+    ]
+  }
+}

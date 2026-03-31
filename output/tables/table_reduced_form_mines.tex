@@ -1,0 +1,30 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Reduced Form Estimates of Mining Effects on Land Surface Temperature}
+\begin{tabular}{lcccccc}
+\toprule
+ & (rfMi.1.2FE) & (rfMi.2.2FE) & (rfMi.3.2FE) & (rfMi.1.2YFE) & (rfMi.2.2YFE) & (rfMi.3.2YFE) \\
+\midrule
+Active Mines & -0.1325 & -0.0357 & -0.0351 & -0.2408** & -0.1184 & -0.1205* \\
+ & (0.0761) & (0.0474) & (0.0480) & (0.0922) & (0.0608) & (0.0614) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-11 & 2026-03-09 & 2026-03-09 & 2026-03-11 & 2026-03-09 & 2026-03-09 \\
+N Observations & 72,234 & 7,073,558 & 175,958,092 & 72,245 & 7,073,558 & 175,958,092 \\
+N Compressed Rows & 238 & 1,789 & 2,467 & 698 & 7,061 & 10,390 \\
+\midrule
+Nighttime Lights & DMSP & DMSP & DMSP & DMSP & DMSP & DMSP \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+YR & PX+YR & PX+YR \\
+Clustering & Country & ADM2 & ADM2 & Country & ADM2 & ADM2 \\
+Resolution & 50km & 5km & 1km & 50km & 5km & 1km \\
+Spatial Extent & Africa & Africa & Africa & Africa & Africa & Africa \\
+Temporal Extent & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Reduced form regressions estimating direct effects of mining instrument on temperature. Models use  fixed effects estimation with clustered standard errors. PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}

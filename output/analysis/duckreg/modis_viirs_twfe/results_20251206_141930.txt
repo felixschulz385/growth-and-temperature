@@ -1,0 +1,41 @@
+================================================================================
+DUCKREG REGRESSION ANALYSIS RESULTS
+================================================================================
+
+SPECIFICATION
+--------------------------------------------------------------------------------
+Name:        TWFE MODIS VIIRS analysis
+Formula:     modis_median ~ viirs_annual | pixel_id + country*year | 0 | subdivision
+Data Source: /scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet
+Timestamp:   2025-12-06T14:54:13.678701
+
+ANALYSIS SETTINGS
+--------------------------------------------------------------------------------
+Fixed Effects Method:  mundlak
+SE Computation Method: analytical
+SE Type:               cluster
+Random Seed:           42
+Round Strata Decimals: 5
+
+DATA COMPRESSION STATISTICS
+--------------------------------------------------------------------------------
+Total Observations:    8,558,938,909
+Compressed Rows:       559,014,978
+Compression Ratio:     0.9347 (93.47%)
+
+MODEL STATISTICS
+--------------------------------------------------------------------------------
+Number of Coefficients: 4
+Standard Errors:        Available (Cluster-Robust)
+
+REGRESSION RESULTS
+--------------------------------------------------------------------------------
+                      Coefficient  Std. Error      t-stat     P>|t|      [0.025      0.975]
+Intercept              283.521042    1.615280  175.524429  0.000000  280.355094  286.686991
+viirs_annual            -0.004165    0.001725   -2.414823  0.015743   -0.007546   -0.000784
+avg_viirs_annual_fe0     0.083043    0.026135    3.177482  0.001486    0.031819    0.134267
+avg_viirs_annual_fe1     3.253023    1.529035    2.127500  0.033379    0.256114    6.249931
+
+================================================================================
+ANALYSIS COMPLETE
+================================================================================

@@ -1,0 +1,138 @@
+{
+  "metadata": {
+    "analysis_type": "duckreg",
+    "spec_name": "modis_viirs_twyfe",
+    "description": "Two-way fixed effects (TWFE) regression model estimating the effect of annual VIIRS nighttime lights on median MODIS land surface temperature at 500m resolution, with pixel and year fixed effects, clustered by subdivision.",
+    "timestamp": "2025-12-10T10:22:31.490060",
+    "formula": "modis_median ~ viirs_annual | pixel_id + year | 0 | subdivision",
+    "data_source": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/data_nobackup/assembled/500m.parquet",
+    "query": null
+  },
+  "specification": {
+    "settings": {
+      "se_method": "analytical",
+      "fitter": "duckdb",
+      "n_bootstraps": 0,
+      "seed": 42,
+      "fe_method": "mundlak",
+      "round_strata": 5,
+      "n_jobs": 4,
+      "duckdb_kwargs": {
+        "temp_directory": "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scratch_nobackup/64204688",
+        "memory_limit": "96GB",
+        "max_temp_directory_size": "512GB",
+        "enable_progress_bar": "true"
+      }
+    },
+    "fe_method": "mundlak",
+    "se_method": "analytical",
+    "outcome_vars": [
+      "modis_median"
+    ],
+    "covariates": [
+      "viirs_annual"
+    ],
+    "fe_cols": [
+      "pixel_id",
+      "year"
+    ],
+    "cluster_col": "subdivision"
+  },
+  "model_statistics": {
+    "n_observations": 8558990698,
+    "n_compressed_rows": 657671854,
+    "compression_ratio": 0.9231601158120571,
+    "has_standard_errors": true,
+    "se_type": "cluster",
+    "se_method": "analytical",
+    "n_coefficients": 4,
+    "estimator_type": "DuckMundlak"
+  },
+  "coefficients": {
+    "coefficients": [
+      282.8003497076584,
+      -0.0006931955419081723,
+      0.14036008354976245,
+      5.937734372687958
+    ],
+    "coef_names": [
+      "Intercept",
+      "viirs_annual",
+      "avg_viirs_annual_fe0",
+      "avg_viirs_annual_fe1"
+    ],
+    "n_obs": 8558990698,
+    "n_compressed": 657671854,
+    "vcov": [
+      [
+        2.3912697582065814,
+        3.326471907320573e-05,
+        -0.05156738136908752,
+        -1.4290586219580537
+      ],
+      [
+        3.326471907320573e-05,
+        9.756521310366701e-09,
+        -5.725937001749333e-07,
+        -2.8925641605584652e-05
+      ],
+      [
+        -0.05156738136908752,
+        -5.725937001749333e-07,
+        0.0013216993463175594,
+        0.02044432483306525
+      ],
+      [
+        -1.4290586219580537,
+        -2.8925641605584652e-05,
+        0.02044432483306525,
+        2.782065539413867
+      ]
+    ],
+    "std_errors": [
+      1.54637309799627,
+      9.87751047094697e-05,
+      0.036355183211167555,
+      1.6679524991479424
+    ],
+    "t_statistics": [
+      182.87976561031752,
+      -7.017917560776979,
+      3.860799785672563,
+      3.559894167082811
+    ],
+    "p_values": [
+      0.0,
+      2.2519763831496675e-12,
+      0.000113016483952455,
+      0.0003710042815359138
+    ],
+    "se_type": "cluster"
+  },
+  "vcov_matrix": [
+    [
+      2.3912697582065814,
+      3.326471907320573e-05,
+      -0.05156738136908752,
+      -1.4290586219580537
+    ],
+    [
+      3.326471907320573e-05,
+      9.756521310366701e-09,
+      -5.725937001749333e-07,
+      -2.8925641605584652e-05
+    ],
+    [
+      -0.05156738136908752,
+      -5.725937001749333e-07,
+      0.0013216993463175594,
+      0.02044432483306525
+    ],
+    [
+      -1.4290586219580537,
+      -2.8925641605584652e-05,
+      0.02044432483306525,
+      2.782065539413867
+    ]
+  ]
+}

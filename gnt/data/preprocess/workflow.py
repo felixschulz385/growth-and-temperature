@@ -85,8 +85,8 @@ def process_task(task_config: Dict[str, Any]) -> None:
             import resource
             # Convert to bytes (assuming memory_limit is in MB)
             resource.setrlimit(resource.RLIMIT_AS, 
-                              (memory_limit * 1024 * 1024, 
-                               memory_limit * 1024 * 1024))
+                              (int(memory_limit) * 1024 * 1024, 
+                               int(memory_limit) * 1024 * 1024))
             logger.info(f"Memory limit set to {memory_limit}MB")
         except (ImportError, ValueError, resource.error) as e:
             logger.warning(f"Could not set memory limit: {str(e)}")
@@ -393,7 +393,12 @@ class PreprocessTaskHandlers:
             if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
                 preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
             
-            # 10. Create data source instance if possible (skip for misc preprocessor)
+            # 10. Pass admin_level if specified (for PLAD and other preprocessors)
+            if 'admin_level' in source_config:
+                preprocessor_config['admin_level'] = source_config['admin_level']
+                logger.debug(f"Passing admin_level to preprocessor: {source_config['admin_level']}")
+            
+            # 11. Create data source instance if possible (skip for misc preprocessor)
             if source_name.lower() != 'misc':
                 try:
                     if 'source_class' in source_config:

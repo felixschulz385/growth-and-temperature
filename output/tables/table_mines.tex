@@ -1,0 +1,38 @@
+\begin{table}[htbp]
+\centering
+\footnotesize
+\caption{Instrumental Variable Estimates of Nighttime Lights Effects on Land Surface Temperature Using Mining Occurrence: Africa Subset}
+\begin{tabular}{lcccccc}
+\toprule
+ & (Mi.1.2FE) & (Mi.2.2FE) & (Mi.3.2FE) & (Mi.1.2FEY) & (Mi.2.2FEY) & (Mi.3.2FEY) \\
+\midrule
+\midrule
+\multicolumn{7}{l}{\textit{First Stage: ntl\_harm}} \\
+  Active Mines & 0.085 & 0.092* & 0.091* & 0.063 & 0.072 & 0.071 \\
+ & (0.046) & (0.037) & (0.036) & (0.052) & (0.038) & (0.036) \\
+\midrule
+\multicolumn{7}{l}{\textit{Second Stage}} \\
+$\hat{HARM + 0.01}$ & -1.562** & -0.386 & -0.386 & -3.799 & -1.647 & -1.697 \\
+ & (0.484) & (0.499) & (0.511) & (2.168) & (0.994) & (1.002) \\
+\midrule
+Model Version & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 & 0.4.2 \\
+Computed Date & 2026-03-11 & 2026-03-09 & 2026-03-09 & 2026-03-11 & 2026-03-09 & 2026-03-09 \\
+N Observations & 72,234 & 7,073,558 & 175,958,092 & 72,245 & 7,073,558 & 175,958,092 \\
+N Compressed Rows & 72,234 & 7,073,558 & 175,958,290 & 72,245 & 7,073,558 & 175,958,290 \\
+First Stage F (ntl\_harm) & 3.454 & 6.263 & 6.533 & 1.486 & 3.625 & 3.789 \\
+\midrule
+Nighttime Lights & DMSP & DMSP & DMSP & DMSP & DMSP & DMSP \\
+Fixed Effects & PX+CY & PX+CY & PX+CY & PX+YR & PX+YR & PX+YR \\
+Clustering & Country & ADM2 & ADM2 & Country & ADM2 & ADM2 \\
+Resolution & 50km & 5km & 1km & 50km & 5km & 1km \\
+Spatial Extent & Africa & Africa & Africa & Africa & Africa & Africa \\
+Temporal Extent & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 & 2000-2009 \\
+Instrument & Mines & Mines & Mines & Mines & Mines & Mines \\
+\bottomrule
+\end{tabular}
+\begin{threeparttable}
+\begin{tablenotes}\small
+\item \textit{Notes:} Dependent variable is nighttime lights. Both models use  fixed effects estimation with clustered standard errors. PX: Pixel fixed effects; CY: Country×Year fixed effects; YR: Year fixed effects. Standard errors in parentheses. * p$<$0.05, ** p$<$0.01, *** p$<$0.001
+\end{tablenotes}
+\end{threeparttable}
+\end{table}
