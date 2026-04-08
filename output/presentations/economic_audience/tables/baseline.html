@@ -1,0 +1,73 @@
+<style>
+.booktabs-table { border-collapse: collapse; margin: 25px 0; font-size: 0.9em; font-family: sans-serif; min-width: 400px; }
+.booktabs-table thead tr { border-bottom: 2px solid #000; }
+.booktabs-table thead th { padding: 24px 15px 12px; text-align: left; font-weight: bold; }
+.booktabs-table tbody tr { border-bottom: 0.5px solid #ddd; }
+.booktabs-table tbody tr.separator { border-top: 1px solid #000; border-bottom: none; }
+.booktabs-table tbody tr:last-of-type { border-bottom: 2px solid #000; }
+.booktabs-table tbody td { padding: 8px 15px; }
+.booktabs-table tbody td:first-child { font-style: italic; }
+.note { font-size: 0.85em; margin-top: 10px; font-style: italic; }
+</style>
+<table class="booktabs-table">
+<thead>
+<tr>
+<th></th>
+<th colspan="2" style="text-align: center">Pooled</th>
+<th colspan="2" style="text-align: center">TWFE</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Intercept</td>
+<td>284.0101***</td>
+<td>284.2944***</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td>(1.3851)</td>
+<td>(1.2792)</td>
+<td></td>
+<td></td>
+</tr>
+<tr>
+<td>DMSP</td>
+<td>0.1238***</td>
+<td></td>
+<td>-0.0055*</td>
+<td></td>
+</tr>
+<tr>
+<td></td>
+<td>(0.04612)</td>
+<td></td>
+<td>(0.0028)</td>
+<td></td>
+</tr>
+<tr>
+<td>VIIRS</td>
+<td></td>
+<td>0.07687***</td>
+<td></td>
+<td>-0.0006***</td>
+</tr>
+<tr>
+<td></td>
+<td></td>
+<td>(0.0254)</td>
+<td></td>
+<td>(0.0002)</td>
+</tr>
+<tr class="separator"><td colspan="4"></td></tr>
+<tr>
+<td>Observations</td>
+<td>17,716,471,755</td>
+<td>7,592,407,261</td>
+<td>17,760,984,303</td>
+<td>7,611,479,331</td>
+</tr>
+</tbody>
+</table>
+<div class="note" style="padding-top: 12px">Note: °C = °K - 273.15. Standard Errors are clustered on Subregion and Year. * p&lt;0.10, ** p&lt;0.05, *** p&lt;0.01</div>

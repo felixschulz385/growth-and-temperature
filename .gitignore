@@ -7,6 +7,8 @@
 /.vscode
 data.yaml
 _data.yaml
+**/presentation_files
+**/secrets
 
 sqlite_*
 index_*
@@ -37,3 +39,4 @@ output/webpage/_includes/*.html
 output/webpage/Gemfile.lock
 .bundle/
 vendor/
+**/secrets

@@ -4,11 +4,13 @@ Data source for ACAG (Atmospheric Composition Analysis Group) PM2.5 data.
 Downloads annual global PM2.5 estimates from the ACAG Box shared folder
 hosted at Washington University in St. Louis (WashU).
 
-Data: https://wustl.app.box.com/s/y143mciw7jz7ft2qe3hccjw65m3xe8f2/folder/327753085334
+Data: https://wustl.app.box.com/s/y143mciw7jz7ft2qe3hccjw65m3xe8f2/folder/327763146804
+
+The file inventory is hardcoded from the Box shared-folder HTML (V6.GL.02.04 > EU > Annual).
+Downloads use Box's public shared-link download endpoint – no API token required.
 """
 import os
 import re
-import time
 import hashlib
 import logging
 import asyncio
@@ -27,8 +29,8 @@ class ACAGDataSource(BaseDataSource):
     """
     Data source for ACAG PM2.5 annual global surface concentration estimates.
 
-    Uses the Box content API with a shared-link bearer token to enumerate
-    folder/file items without requiring an OAuth access token.
+    The file inventory is a hardcoded list derived from the Box shared-folder
+    HTML pages. Downloads use Box's public shared-link download URL.
 
     References
     ----------
@@ -38,20 +40,45 @@ class ACAGDataSource(BaseDataSource):
 
     DATA_SOURCE_NAME = "acag"
 
-    # ------------------------------------------------------------------ #
-    # Box API constants
-    # ------------------------------------------------------------------ #
-    BOX_API_BASE = "https://api.box.com/2.0"
     # Public shared-link URL (no trailing slash)
     SHARED_LINK_URL = "https://wustl.app.box.com/s/y143mciw7jz7ft2qe3hccjw65m3xe8f2"
-    # Root folder ID exposed by the shared link
-    ROOT_FOLDER_ID = "327753085334"
+    # Shared-link name token (the alphanumeric slug in the URL)
+    SHARED_NAME = "y143mciw7jz7ft2qe3hccjw65m3xe8f2"
 
-    # How many items to request per page from the Box API
-    PAGE_LIMIT = 1000
-
-    # File extensions we are interested in
-    DEFAULT_EXTENSIONS = [".nc4", ".nc", ".tif", ".tiff", ".h5"]
+    # ------------------------------------------------------------------ #
+    # Hardcoded file inventory
+    # Sourced from Box shared-folder HTML: V6.GL.02.04 > EU > Annual
+    # Each entry: (relative_path, box_file_id)
+    # ------------------------------------------------------------------ #
+    KNOWN_FILES: List[Tuple[str, str]] = [
+        # Global files mirror the EU inventory with GL prefix
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.202301-202312.nc", "1904197590429"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.202201-202212.nc", "1904188293336"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.202101-202112.nc", "1904194844985"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.202001-202012.nc", "1904199632848"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201901-201912.nc", "1904190302370"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201801-201812.nc", "1904195082233"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201701-201712.nc", "1904185892742"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201601-201612.nc", "1904190764908"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201501-201512.nc", "1904198007631"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201401-201412.nc", "1904191060231"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201301-201312.nc", "1904192466892"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201201-201212.nc", "1904186701348"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201101-201112.nc", "1904188948328"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.201001-201012.nc", "1904198202419"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200901-200912.nc", "1904198860116"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200801-200812.nc", "1904186910032"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200701-200712.nc", "1904198384848"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200601-200612.nc", "1904187236528"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200501-200512.nc", "1904203088683"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200401-200412.nc", "1904186071064"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200301-200312.nc", "1904186044649"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200201-200212.nc", "1904186910887"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.200101-200112.nc", "1904187033101"),
+        ("GL/Annual/V6GL02.04.CNNPM25.EU.200001-200012.nc", "1904252406135"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.199901-199912.nc", "1904185160609"),
+        ("GL/Annual/V6GL02.04.CNNPM25.GL.199801-199812.nc", "1904192358328"),
+    ]
 
     # ------------------------------------------------------------------ #
 
@@ -71,21 +98,18 @@ class ACAGDataSource(BaseDataSource):
         base_url:
             Ignored; kept for API compatibility with the factory.
         file_extensions:
-            List of file suffixes to include (default: .nc4, .nc, .tif, .tiff, .h5).
+            Ignored; the hardcoded inventory already contains only .nc files.
         output_path:
             Sub-path under the HPC data root where files are stored
             (default: ``acag/pm25``).
         root_folder_id:
-            Box folder ID at the top of the shared tree.
-            Defaults to :attr:`ROOT_FOLDER_ID`.
+            Ignored; kept for API compatibility.
         shared_link_url:
-            Full Box shared-link URL.
-            Defaults to :attr:`SHARED_LINK_URL`.
+            Full Box shared-link URL. Defaults to :attr:`SHARED_LINK_URL`.
         """
-        self.file_extensions = file_extensions or self.DEFAULT_EXTENSIONS
         self.data_path = output_path or "acag/pm25"
-        self.root_folder_id = root_folder_id or self.ROOT_FOLDER_ID
         self.shared_link_url = shared_link_url or self.SHARED_LINK_URL
+        self.shared_name = self.shared_link_url.rstrip("/").split("/")[-1]
 
         # Schema dtypes for Parquet consistency (matches other sources)
         self.schema_dtypes = {
@@ -97,147 +121,50 @@ class ACAGDataSource(BaseDataSource):
             "status_category": "string",
         }
 
-        # In-memory cache: list of (relative_path, file_id) tuples
-        self._file_cache: Optional[List[Tuple[str, str]]] = None
-        self._cache_timestamp: Optional[float] = None
-        self._cache_ttl = 3600  # seconds
-
         logger.info(
-            "Initialised ACAG data source – root folder %s, output path: %s",
-            self.root_folder_id,
+            "Initialised ACAG data source – %d known files, output path: %s",
+            len(self.KNOWN_FILES),
             self.data_path,
         )
 
     # ------------------------------------------------------------------ #
-    # Internal Box API helpers
+    # Internal helpers
     # ------------------------------------------------------------------ #
 
-    def _box_headers(self) -> Dict[str, str]:
-        """Return HTTP headers for anonymous Box API access via shared link."""
+    @staticmethod
+    def _browser_headers() -> Dict[str, str]:
+        """Minimal browser-like headers for Box download requests."""
         return {
-            "BoxApi": f"shared_link={self.shared_link_url}",
-            # Box requires the Authorization header even for public links;
-            # an empty bearer token is accepted for purely public items.
-            "Authorization": "Bearer ",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
         }
-
-    def _list_folder(self, folder_id: str) -> List[Dict[str, Any]]:
-        """
-        Return all items (files and sub-folders) inside a Box folder, handling
-        pagination automatically.
-
-        Parameters
-        ----------
-        folder_id:
-            Box folder ID to list.
-
-        Returns
-        -------
-        List of item dicts as returned by the Box Items API.
-        """
-        items: List[Dict[str, Any]] = []
-        offset = 0
-        headers = self._box_headers()
-
-        while True:
-            url = (
-                f"{self.BOX_API_BASE}/folders/{folder_id}/items"
-                f"?limit={self.PAGE_LIMIT}&offset={offset}"
-                f"&fields=id,name,type,size,modified_at"
-            )
-            try:
-                resp = requests.get(url, headers=headers, timeout=30)
-                resp.raise_for_status()
-                data = resp.json()
-            except requests.RequestException as exc:
-                logger.error("Box API error listing folder %s: %s", folder_id, exc)
-                break
-            except ValueError as exc:
-                logger.error("Box API returned non-JSON for folder %s: %s", folder_id, exc)
-                break
-
-            batch = data.get("entries", [])
-            items.extend(batch)
-
-            total = data.get("total_count", 0)
-            offset += len(batch)
-
-            if offset >= total or not batch:
-                break
-
-        return items
-
-    def _walk_folder(
-        self, folder_id: str, prefix: str = ""
-    ) -> List[Tuple[str, str]]:
-        """
-        Recursively walk a Box folder tree and collect all matching files.
-
-        Parameters
-        ----------
-        folder_id:
-            Starting Box folder ID.
-        prefix:
-            Path prefix accumulated from parent folders.
-
-        Returns
-        -------
-        List of ``(relative_path, file_id)`` tuples for every matching file.
-        """
-        results: List[Tuple[str, str]] = []
-        items = self._list_folder(folder_id)
-
-        for item in items:
-            item_type = item.get("type")
-            item_name = item.get("name", "")
-            item_id = item.get("id", "")
-
-            rel_path = f"{prefix}/{item_name}" if prefix else item_name
-
-            if item_type == "folder":
-                # Recurse into sub-folder
-                logger.debug("Descending into Box sub-folder: %s (id=%s)", rel_path, item_id)
-                results.extend(self._walk_folder(item_id, prefix=rel_path))
-
-            elif item_type == "file":
-                # Check extension
-                if any(item_name.lower().endswith(ext.lower()) for ext in self.file_extensions):
-                    results.append((rel_path, item_id))
-                else:
-                    logger.debug("Skipping file with unsupported extension: %s", item_name)
-
-        return results
-
-    def _get_all_files(self) -> List[Tuple[str, str]]:
-        """
-        Return a cached list of ``(relative_path, file_id)`` for all matching
-        files reachable from the root shared folder.
-        """
-        now = time.time()
-        if (
-            self._file_cache is not None
-            and self._cache_timestamp is not None
-            and now - self._cache_timestamp < self._cache_ttl
-        ):
-            logger.debug("Using cached ACAG file list (%d entries)", len(self._file_cache))
-            return self._file_cache
-
-        logger.info("Scanning Box shared folder %s for ACAG files …", self.root_folder_id)
-        files = self._walk_folder(self.root_folder_id)
-        logger.info("Found %d matching files in ACAG Box folder", len(files))
-
-        self._file_cache = files
-        self._cache_timestamp = now
-        return files
 
     def _file_download_url(self, file_id: str) -> str:
         """
-        Return the direct-download URL for a Box file ID.
+        Return the shared-link download URL for a Box file ID.
 
-        The Box content endpoint returns a 302 redirect to a pre-signed CDN
-        URL; ``requests`` follows the redirect automatically.
+        Box responds with a 302 redirect to a pre-signed CDN URL which
+        ``requests`` follows automatically.
         """
-        return f"{self.BOX_API_BASE}/files/{file_id}/content"
+        return (
+            f"https://wustl.app.box.com/index.php"
+            f"?rm=box_download_shared_file"
+            f"&shared_name={self.shared_name}"
+            f"&file_id=f_{file_id}"
+        )
+
+    def _get_all_files(self) -> List[Tuple[str, str]]:
+        """Return the hardcoded list of ``(relative_path, file_id)`` tuples."""
+        return list(self.KNOWN_FILES)
+
+    def get_file_hash(self, file_url: str) -> str:
+        """Return a stable unique hash for a file URL."""
+        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
 
     # ------------------------------------------------------------------ #
     # BaseDataSource interface
@@ -245,7 +172,7 @@ class ACAGDataSource(BaseDataSource):
 
     def list_remote_files(self, entrypoint: dict = None) -> List[Tuple[str, str]]:
         """
-        List files available in the ACAG shared Box folder.
+        List files in the ACAG inventory.
 
         Parameters
         ----------
@@ -255,23 +182,19 @@ class ACAGDataSource(BaseDataSource):
 
         Returns
         -------
-        List of ``(relative_path, source_url)`` tuples where ``source_url``
-        is a Box API content URL that yields the file bytes (with redirect).
+        List of ``(relative_path, source_url)`` tuples.
         """
-        all_files = self._get_all_files()
         results = []
 
-        for rel_path, file_id in all_files:
+        for rel_path, file_id in self._get_all_files():
             if entrypoint:
                 year_filter = entrypoint.get("year")
                 if year_filter is not None:
-                    filename = os.path.basename(rel_path)
-                    file_year = self._extract_year(filename)
+                    file_year = self._extract_year(os.path.basename(rel_path))
                     if file_year != int(year_filter):
                         continue
 
-            source_url = self._file_download_url(file_id)
-            results.append((rel_path, source_url))
+            results.append((rel_path, self._file_download_url(file_id)))
 
         logger.info(
             "list_remote_files returned %d files (entrypoint=%s)",
@@ -296,18 +219,19 @@ class ACAGDataSource(BaseDataSource):
         Parameters
         ----------
         source_url:
-            Box API content URL (``/files/<id>/content``).
+            Box shared-link download URL.
         output_path:
             Local filesystem path to write the file to.
         session:
             Optional ``requests.Session`` for connection reuse.
         """
         s = session or requests.Session()
-        headers = self._box_headers()
 
         try:
             logger.info("Downloading %s", os.path.basename(output_path))
-            resp = s.get(source_url, headers=headers, stream=True, timeout=300)
+            resp = s.get(
+                source_url, headers=self._browser_headers(), stream=True, timeout=300
+            )
             resp.raise_for_status()
 
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -335,7 +259,7 @@ class ACAGDataSource(BaseDataSource):
         """Asynchronous download with retry logic."""
         await asyncio.sleep(0.2)  # polite rate-limiting
 
-        headers = self._box_headers()
+        headers = self._browser_headers()
 
         async def _do_download(sess: aiohttp.ClientSession):
             max_retries = 3
@@ -390,11 +314,10 @@ class ACAGDataSource(BaseDataSource):
         return None
 
     def get_all_entrypoints(self) -> List[Dict[str, Any]]:
-        """Return one entrypoint per year found in the shared folder."""
-        all_files = self._get_all_files()
+        """Return one entrypoint per year present in the known file list."""
         years: set = set()
 
-        for rel_path, _ in all_files:
+        for rel_path, _ in self.KNOWN_FILES:
             year = self._extract_year(os.path.basename(rel_path))
             if year is not None:
                 years.add(year)
@@ -408,9 +331,9 @@ class ACAGDataSource(BaseDataSource):
         return entrypoints
 
     def get_authenticated_session(self) -> requests.Session:
-        """Return a requests.Session pre-loaded with Box shared-link headers."""
+        """Return a requests.Session pre-loaded with browser-like headers."""
         s = requests.Session()
-        s.headers.update(self._box_headers())
+        s.headers.update(self._browser_headers())
         return s
 
     # ------------------------------------------------------------------ #

@@ -1,0 +1,154 @@
+/*-- scss:defaults --*/
+
+// Citation colors
+$citation-paren-color: #1f2933; // charcoal — clear, neutral for body text
+$citation-link-color:  #2b6ca3; // muted navy — professional and readable
+$citation-link-hover:   darken($citation-link-color, 10%);
+
+// Button styles
+$citation-paren:    #262626;    // charcoal for parentheses/plain text
+$citation-link:     #2f4a63;    // muted slate (professional, not bright blue)
+$citation-hover:    lighten($citation-link, 10%);
+
+$btn-radius:        6px;
+$btn-padding:       0.45rem 0.9rem;
+$btn-transition:    160ms ease;
+
+/*-- scss:rules --*/
+
+// --- Title slide adjustments ---
+
+#title-slide {
+    top: unset !important;
+    bottom: 30px !important;
+}
+    
+h1.title {
+    color: white;
+    text-align: left;
+    font-size: 2em;
+}
+
+p.author {
+    color: white !important;
+    text-align: left;
+    font-size: 1em;
+}
+    
+// --- Table border customization ---
+
+.reveal table th,
+.reveal table td {
+    border-bottom: 0px solid #000 !important; // Example of changing the border
+}
+
+// --- Citation styles ---
+
+.reveal .slide span.citation {
+  /* parentheses and any plain text inside the citation span */
+  color: $citation-paren-color;
+}
+
+.reveal .slide span.citation a[role="doc-biblioref"],
+.reveal .slide span.citation a.citation {
+  color: $citation-link-color;
+  text-decoration: none;
+  border-bottom: 1px dotted rgba(43,108,163,0.12); /* subtle affordance */
+}
+
+.reveal .slide span.citation a[role="doc-biblioref"]:hover,
+.reveal .slide span.citation a.citation:hover {
+  color: $citation-link-hover;
+  text-decoration: underline;
+}
+
+// --- Button styles ---
+/* citations: dark parentheses, muted slate links with subtle hover underline */
+.reveal .slide span.citation {
+  color: $citation-paren;
+  font-style: normal;      /* keep consistent with body text */
+}
+
+.reveal .slide span.citation a[role="doc-biblioref"],
+.reveal .slide span.citation a.citation {
+  color: $citation-link;
+  text-decoration: none;
+  border-bottom: 1px solid rgba($citation-link, 0.06); /* soft baseline */
+  font-weight: 500;
+  transition: color $btn-transition, border-color $btn-transition;
+}
+
+.reveal .slide span.citation a[role="doc-biblioref"]:hover,
+.reveal .slide span.citation a.citation:hover {
+  color: $citation-hover;
+  border-bottom-color: rgba($citation-link, 0.18);
+  text-decoration: none;
+}
+
+/* Button - Variant A: Minimal (light, unobtrusive) */
+.reveal .slide a.btn--minimal,
+.reveal .slide a.btn.btn--minimal {
+  background: transparent;
+  color: $citation-link;
+  padding: $btn-padding;
+  border: 1px solid rgba(47,74,99,0.10);
+  border-radius: $btn-radius;
+  font-weight: 600;
+  font-size: 0.95rem;
+  box-shadow: none;
+  transition: transform $btn-transition, background $btn-transition, border-color $btn-transition;
+}
+
+.reveal .slide a.btn--minimal:hover {
+  background: rgba(47,74,99,0.04);
+  transform: translateY(-2px);
+  border-color: rgba(47,74,99,0.16);
+}
+
+/* Button - Variant B: Flat Accent (subtle solid accent for emphasis) */
+$accent-bg: #25455f; /* deep slate */
+$accent-color: #fff;
+
+.reveal .slide a.btn--accent,
+.reveal .slide a.btn.btn--accent {
+  background: $accent-bg;
+  color: $accent-color;
+  padding: $btn-padding;
+  border-radius: $btn-radius;
+  border: none;
+  font-weight: 600;
+  box-shadow: 0 6px 18px rgba(18,30,40,0.13);
+  transition: transform $btn-transition, box-shadow $btn-transition, background $btn-transition;
+}
+
+.reveal .slide a.btn--accent:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 26px rgba(18,30,40,0.16);
+  background: darken($accent-bg, 4%);
+}
+
+/* small / tight variant */
+.reveal .slide a.btn--sm { padding: 0.28rem 0.6rem; font-size: 0.88rem; }
+
+/* keep focus visible and subtle */
+.reveal .slide a.btn:focus {
+  outline: none;
+  box-shadow: 0 0 0 4px rgba(47,74,99,0.12);
+}
+
+// --- Text alignment utilities ---
+
+/* Utility: right-aligned block for markdown container (:::) */
+.reveal .slide .text-end,
+.reveal .slide .text-right {
+  display: block;            /* ensure container behaves as a block */
+  text-align: right !important;
+}
+
+/* Keep child spacing sensible when the container wraps a single element (like a button) */
+.reveal .slide .text-end > :first-child {
+  margin-top: 0;
+}
+.reveal .slide .text-end > :last-child {
+  margin-bottom: 0;
+}

@@ -903,7 +903,7 @@ class UnifiedDataIndex:
                 if mask.any():
                     # Update download status
                     df_updated.loc[mask, 'download_status'] = status
-                    df_updated.loc[mask, 'last_updated'] = pd.Timestamp.now()
+                    df_updated.loc[mask, 'last_updated'] = pd.Timestamp.now().floor('ms')
                     
                     # Update status category for faster future queries
                     if 'status_category' in df_updated.columns:

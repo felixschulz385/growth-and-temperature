@@ -255,6 +255,16 @@ class ESACCIDataSource(BaseDataSource):
         """Return the destination path relative to the HPC data root."""
         return f"{self.data_path}/{relative_path}"
 
+    def get_file_hash(self, file_url: str) -> str:
+        """Return a stable hash for a file URL.
+
+        The unified index requires a ``get_file_hash`` method on every data
+        source.  For ESACCI the URL string (which may be a ``cdsapi://``
+        virtual URI) is hashed using MD5, matching the pattern used in other
+        sources.
+        """
+        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+
     def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
         """Derive a year-based entrypoint from a file path."""
         year = self._extract_year(os.path.basename(relative_path))
