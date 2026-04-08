@@ -42,6 +42,9 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif preprocessor_name == 'berman_mining':
             from gnt.data.preprocess.sources.berman_mining import BermanMiningPreprocessor
             return BermanMiningPreprocessor
+        elif preprocessor_name in ['snl_mining', 'snf_mining']:
+            from gnt.data.preprocess.sources.snl_mining import SnlMiningPreprocessor
+            return SnlMiningPreprocessor
         elif preprocessor_name in ['acag', 'acag_pm25', 'pm25']:
             from gnt.data.preprocess.sources.acag import ACAGPreprocessor
             return ACAGPreprocessor

@@ -20,7 +20,7 @@ from gnt.data.common.dask.client import DaskClientContextManager
 
 # Import assembly submodules
 from gnt.data.assemble.config import (
-    derive_hpc_root,
+    derive_data_root,
     apply_cli_overrides,
     validate_assembly_config,
     ProcessingConfig,
@@ -164,16 +164,16 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     os.makedirs(output_path, exist_ok=True)
     logger.info(f"Output will be written to: {output_path}")
     
-    # Derive HPC root from configuration
-    hpc_root = derive_hpc_root(assembly_config, full_config)
-    if not hpc_root:
-        logger.error("hpc_root must be specified in config or derivable from HPC settings")
+    # Derive local project data root from configuration
+    data_root = derive_data_root(assembly_config, full_config)
+    if not data_root:
+        logger.error("data_root must be specified in config or derivable from runtime settings")
         return
     
-    logger.info(f"Using hpc_root: {hpc_root}")
+    logger.info(f"Using data_root: {data_root}")
     
     # Get target geobox and adjust tile size for reprojection
-    target_geobox = get_or_create_geobox(hpc_root)
+    target_geobox = get_or_create_geobox(data_root)
     processing_config.setdefault('tile_size', DEFAULT_TILE_SIZE)
     native_res = abs(target_geobox.resolution.x)
     processing_config['tile_size'] = adjust_tile_size_for_reprojection(
@@ -202,7 +202,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         land_mask_ds = None
         if processing_config.get('apply_land_mask', False):
             land_mask_path = processing_config.get('land_mask_path')
-            land_mask_ds = load_land_mask(hpc_root, land_mask_path)
+            land_mask_ds = load_land_mask(data_root, land_mask_path)
             if land_mask_ds is not None:
                 land_mask_ds = prepare_land_mask(land_mask_ds)
         

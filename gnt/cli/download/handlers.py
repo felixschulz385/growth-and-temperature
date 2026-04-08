@@ -15,6 +15,11 @@ import logging
 
 from gnt.cli.config import load_config_with_env_vars
 from gnt.cli.common import setup_logging
+from gnt.config.runtime import (
+    get_legacy_hpc_compat_config,
+    get_paths_config,
+    get_remote_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,32 +40,36 @@ def _load_and_validate(args: argparse.Namespace):
     return config, config["sources"][source].copy()
 
 
-def _build_hpc_workflow_config(
+def _build_download_workflow_config(
     config: dict,
     source: str,
     source_config: dict,
     operation: str,
 ) -> dict:
     """Build the workflow configuration dict consumed by workflow_unified."""
+    paths_config = get_paths_config(config)
+    remote_config = get_remote_config(config)
     return {
         "source": source_config,
         "index": {
-            "local_dir": config.get("hpc", {}).get("local_index_dir"),
+            "local_dir": paths_config.get("local_index_dir"),
             "rebuild": operation == "index",
             "only_missing_entrypoints": True,
             "sync_direction": "auto",
         },
         "workflow": {"tasks": []},
-        "hpc": config.get("hpc", {}),
+        "paths": paths_config,
+        "remote": remote_config,
+        "hpc": get_legacy_hpc_compat_config(config),
         "source_name": source,
     }
 
 
-def _run_workflow(hpc_workflow_config: dict) -> None:
+def _run_workflow(workflow_config: dict) -> None:
     """Dispatch to workflow_unified.run_workflow_with_config."""
     mod = importlib.import_module("gnt.data.download.workflow_unified")
     logger.info("Running unified download workflow")
-    mod.run_workflow_with_config(hpc_workflow_config)
+    mod.run_workflow_with_config(workflow_config)
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +79,7 @@ def _run_workflow(hpc_workflow_config: dict) -> None:
 def handle_index(args: argparse.Namespace) -> None:
     """``download index`` — build / sync the remote file index."""
     config, source_config = _load_and_validate(args)
-    wf = _build_hpc_workflow_config(config, args.source, source_config, "index")
+    wf = _build_download_workflow_config(config, args.source, source_config, "index")
     wf["workflow"]["tasks"] = [
         {
             "type": "index",
@@ -105,7 +114,7 @@ def handle_run(args: argparse.Namespace) -> None:
             f"Will download {len(filtered)} misc files: {list(filtered.keys())}"
         )
 
-    wf = _build_hpc_workflow_config(config, args.source, source_config, "download")
+    wf = _build_download_workflow_config(config, args.source, source_config, "download")
 
     # Try to report pending count before starting
     try:
@@ -117,8 +126,8 @@ def handle_run(args: argparse.Namespace) -> None:
             bucket_name="",
             data_source=ds,
             local_index_dir=wf["index"]["local_dir"],
-            key_file=wf["hpc"].get("key_file"),
-            hpc_mode=True,
+            key_file=wf["remote"].get("key_file"),
+            hpc_mode=bool(wf["remote"].get("ssh_target")),
         )
         pending = idx.count_pending_files()
         logger.info(f"Found {pending} files pending download for {args.source}")

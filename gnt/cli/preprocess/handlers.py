@@ -10,6 +10,11 @@ import logging
 
 from gnt.cli.config import load_config_with_env_vars
 from gnt.cli.common import setup_logging
+from gnt.config.runtime import (
+    get_legacy_hpc_compat_config,
+    get_paths_config,
+    get_remote_config,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +83,9 @@ def handle_run(args: argparse.Namespace) -> None:
                 {"type": "preprocess", "config": task_config}
             ]
         },
-        "hpc": config.get("hpc", {}),
+        "paths": get_paths_config(config),
+        "remote": get_remote_config(config),
+        "hpc": get_legacy_hpc_compat_config(config),
         "gcs": config.get("gcs", {}),
         "sources": config.get("sources", {}),
         "source_name": source,

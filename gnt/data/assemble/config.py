@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
-from gnt.data.assemble.utils import strip_remote_prefix
+from gnt.config.runtime import resolve_data_root
 from gnt.data.assemble.constants import (
     DEFAULT_TILE_SIZE,
     DEFAULT_COMPRESSION,
@@ -108,27 +108,29 @@ class DatasetConfig:
         )
 
 
-def derive_hpc_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def derive_data_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
-    Derive hpc_root from assembly configuration, checking multiple sources.
+    Derive the local project data root from configuration.
     
     Args:
         assembly_config: Assembly configuration dictionary
-        full_config: Full configuration dictionary containing HPC settings
+        full_config: Full configuration dictionary containing runtime settings
         
     Returns:
-        HPC root path or None if not found
+        Local project data root or None if not found
     """
-    # Check full config for hpc settings
     if full_config:
-        hpc_config = full_config.get('hpc', {})
-        hpc_target = hpc_config.get('target')
-        
-        if hpc_target:
-            return strip_remote_prefix(hpc_target)
+        data_root = resolve_data_root(full_config)
+        if data_root:
+            return data_root
     
-    logger.warning("Could not derive hpc_root from configuration")
+    logger.warning("Could not derive data_root from configuration")
     return None
+
+
+def derive_hpc_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Backward-compatible alias for older callers."""
+    return derive_data_root(assembly_config, full_config)
 
 
 def apply_cli_overrides(assembly_config: Dict[str, Any], cli_overrides: Dict[str, Any]) -> None:

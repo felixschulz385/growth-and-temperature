@@ -45,6 +45,12 @@ import yaml
 import json
 import tempfile
 from typing import Dict, Any, Optional, Union
+from gnt.config.runtime import (
+    get_legacy_hpc_compat_config,
+    get_paths_config,
+    get_remote_config,
+    resolve_local_index_dir,
+)
 
 # Add the project root directory to Python's module search path
 project_root = str(Path(__file__).resolve().parent)
@@ -59,6 +65,19 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger("main")
+
+
+def _deep_merge_dicts(base: Any, override: Any) -> Any:
+    """Recursively merge dictionaries, preferring values from *override*."""
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            if key in merged:
+                merged[key] = _deep_merge_dicts(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+    return override
 
 
 def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
@@ -116,6 +135,15 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
             config = yaml.safe_load(f)
         else:
             raise ValueError(f"Unsupported configuration format: {config_path.suffix}")
+
+    if config_path.suffix.lower() in ['.yaml', '.yml']:
+        local_config_path = config_path.with_name(
+            f"{config_path.stem}.local{config_path.suffix}"
+        )
+        if local_config_path.exists():
+            with open(local_config_path, 'r') as f:
+                local_config = yaml.safe_load(f) or {}
+            config = _deep_merge_dicts(config, local_config)
     
     # Expand all environment variables
     return process_item(config)
@@ -253,10 +281,12 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
     # Determine which module to use
     if operation_type in ["download", "index", "extract", "validate_download"]:
         # Build HPC workflow configuration structure
+        paths_config = get_paths_config(config)
+        remote_config = get_remote_config(config)
         hpc_workflow_config = {
             'source': source_config,
             'index': {
-                'local_dir': config.get('hpc', {}).get('local_index_dir'),
+                'local_dir': resolve_local_index_dir(config),
                 'rebuild': operation_type == 'index',
                 'only_missing_entrypoints': True,
                 'sync_direction': 'auto'
@@ -264,7 +294,9 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             'workflow': {
                 'tasks': []
             },
-            'hpc': config.get('hpc', {}),
+            'paths': paths_config,
+            'remote': remote_config,
+            'hpc': get_legacy_hpc_compat_config(config),
             'source_name': source
         }
         
@@ -297,8 +329,8 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
                     bucket_name="",
                     data_source=temp_data_source,
                     local_index_dir=temp_hpc_config['index']['local_dir'],
-                    key_file=temp_hpc_config['hpc'].get('key_file'),
-                    hpc_mode=True
+                    key_file=temp_hpc_config['remote'].get('key_file'),
+                    hpc_mode=bool(temp_hpc_config['remote'].get('ssh_target'))
                 )
                 
                 pending_count = temp_index.count_pending_files()
@@ -348,7 +380,9 @@ def run_operation(operation_type: str, source: str, config: Dict[str, Any], mode
             'workflow': {
                 'tasks': []
             },
-            'hpc': config.get('hpc', {}),
+            'paths': get_paths_config(config),
+            'remote': get_remote_config(config),
+            'hpc': get_legacy_hpc_compat_config(config),
             'gcs': config.get('gcs', {}),
             'sources': config.get('sources', {}),  # Add sources configuration
             'source_name': source
