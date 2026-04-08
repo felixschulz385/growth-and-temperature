@@ -9,6 +9,7 @@ data.yaml
 _data.yaml
 **/presentation_files
 **/secrets
+.codex
 
 sqlite_*
 index_*
