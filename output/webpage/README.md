@@ -10,7 +10,7 @@ bundle install
 pip install pandas
 ```
 
-2. Generate table partials:
+2. Generate table partials (they will appear under `output/analysis/tables` by default):
 ```bash
 python generate_tables.py
 ```
@@ -27,7 +27,7 @@ Visit http://localhost:4000
 The site automatically deploys via GitHub Actions when you push to main/master branch.
 
 The workflow:
-1. Runs `generate_tables.py` to create HTML table partials in `_includes/`
+1. Runs `generate_tables.py` to create HTML table partials in `output/analysis/tables/`
 2. Builds the Jekyll site
 3. Deploys to GitHub Pages
 
@@ -35,7 +35,8 @@ The workflow:
 
 1. Edit `generate_tables.py`
 2. Add a new function like `generate_my_table()`
-3. Save output to `_includes/table_my_name.html`
+3. Save output to `output/analysis/tables/table_my_name.html` (or whatever
+   directory you specify via the CLI)
 4. Include in `index.md` with `{% include table_my_name.html %}`
 
 ## File Structure
@@ -43,7 +44,7 @@ The workflow:
 ```
 output/webpage/
 ├── _config.yml           # Jekyll configuration
-├── _includes/            # Generated HTML partials (git-ignored)
+├── output/analysis/tables/ # Generated HTML partials (git-ignored)
 │   └── table_main.html
 ├── Gemfile              # Ruby dependencies
 ├── generate_tables.py   # Python script to generate tables

@@ -61,6 +61,15 @@ logging.basicConfig(
 logger = logging.getLogger("main")
 
 
+_NOISY_GEO_LOGGERS = (
+    "rasterio",
+    "rasterio.env",
+    "rasterio._env",
+    "rasterio._warp",
+    "rasterio._base",
+)
+
+
 def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load YAML/JSON/Excel configuration file with environment variable expansion."""
     config_path = Path(config_path)
@@ -144,10 +153,9 @@ def setup_logging(level: str, log_file: Optional[str] = None, debug: bool = Fals
     stdout_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     root_logger.addHandler(stdout_handler)
 
-    # Suppress rasterio debug logging
-    logging.getLogger('rasterio').setLevel(logging.WARNING)
-    logging.getLogger('rasterio.env').setLevel(logging.WARNING)
-    logging.getLogger('rasterio._env').setLevel(logging.WARNING)
+    # Keep rasterio/GDAL chatter quiet even in debug mode.
+    for name in _NOISY_GEO_LOGGERS:
+        logging.getLogger(name).setLevel(logging.ERROR)
     
     logger.debug("Logging configured successfully")
 

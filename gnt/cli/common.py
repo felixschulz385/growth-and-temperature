@@ -10,6 +10,15 @@ import sys
 from typing import Optional
 
 
+_NOISY_GEO_LOGGERS = (
+    "rasterio",
+    "rasterio.env",
+    "rasterio._env",
+    "rasterio._warp",
+    "rasterio._base",
+)
+
+
 def setup_logging(
     level: str = "INFO",
     log_file: Optional[str] = None,
@@ -47,10 +56,9 @@ def setup_logging(
     )
     root.addHandler(handler)
 
-    # Keep rasterio quiet unless we are in DEBUG
-    if numeric_level > logging.DEBUG:
-        for name in ("rasterio", "rasterio.env", "rasterio._env"):
-            logging.getLogger(name).setLevel(logging.WARNING)
+    # Keep rasterio/GDAL chatter quiet even in debug mode so package debug logs remain usable.
+    for name in _NOISY_GEO_LOGGERS:
+        logging.getLogger(name).setLevel(logging.ERROR)
 
 
 def add_logging_args(parser: argparse.ArgumentParser) -> None:

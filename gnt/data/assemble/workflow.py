@@ -10,6 +10,7 @@ import os
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
 
 import logging
+import importlib
 from typing import Dict, Any, List, Optional, Tuple
 
 from odc.geo import GeoboxTiles
@@ -40,6 +41,103 @@ from gnt.data.assemble.tiles import (
 from gnt.data.assemble.constants import DEFAULT_TILE_SIZE
 
 logger = logging.getLogger(__name__)
+
+
+def _load_geometry_aggregator(import_path: str):
+    """
+    Load a geometry aggregation callable from an import path.
+
+    Supported formats:
+    - ``package.module:function``
+    - ``package.module.function``
+    """
+    if ":" in import_path:
+        module_name, attr_name = import_path.split(":", 1)
+    else:
+        module_name, attr_name = import_path.rsplit(".", 1)
+
+    module = importlib.import_module(module_name)
+    aggregator = getattr(module, attr_name)
+
+    if not callable(aggregator):
+        raise TypeError(f"Geometry aggregator '{import_path}' is not callable")
+
+    return aggregator
+
+
+def _run_geometry_assembly(
+    assembly_config: Dict[str, Any],
+    full_config: Optional[Dict[str, Any]],
+    hpc_root: str,
+    target_geobox,
+    output_path: str,
+):
+    """
+    Run geometry-based assembly instead of tiled grid assembly.
+
+    The heavy lifting is delegated to a user-specified aggregator callable so
+    geometry assembly can evolve independently from the grid backend.
+    """
+    processing_config = assembly_config.get("processing", {})
+    geometry_source = assembly_config["geometry_source"]
+    aggregator_path = assembly_config["geometry_aggregator"]
+
+    logger.info(
+        "GEOMETRY mode: aggregating datasets to %s using %s",
+        geometry_source.get("path"),
+        aggregator_path,
+    )
+
+    dask_kwargs = _setup_dask_cluster(processing_config)
+    logger.info("Creating Dask cluster for geometry assembly...")
+
+    with DaskClientContextManager(**dask_kwargs) as client:
+        logger.info(f"Dask client initialized: {client.dashboard_link}")
+
+        land_mask_ds = None
+        if processing_config.get("apply_land_mask", False):
+            land_mask_path = processing_config.get("land_mask_path")
+            land_mask_ds = load_land_mask(hpc_root, land_mask_path)
+            if land_mask_ds is not None:
+                land_mask_ds = prepare_land_mask(land_mask_ds)
+
+        assembly_mode = processing_config.get("assembly_mode", "create")
+        target_datasource = processing_config.get("datasource")
+
+        if assembly_mode == "update":
+            if not target_datasource:
+                logger.error("Update mode requires datasource to be specified")
+                return
+            logger.info(
+                "UPDATE mode: Loading only datasource '%s' for geometry assembly",
+                target_datasource,
+            )
+            datasets = load_all_datasets(
+                assembly_config,
+                target_geobox,
+                datasource_filter=target_datasource,
+            )
+        else:
+            logger.info("CREATE mode: Loading all datasets for geometry assembly")
+            datasets = load_all_datasets(assembly_config, target_geobox)
+
+        logger.info("Creating assembly metadata...")
+        if not create_assembly_metadata(output_path, assembly_config):
+            logger.warning("Failed to create assembly metadata")
+
+        aggregator = _load_geometry_aggregator(aggregator_path)
+        aggregator(
+            datasets=datasets,
+            geometry_source=geometry_source,
+            assembly_config=assembly_config,
+            output_path=output_path,
+            target_geobox=target_geobox,
+            land_mask_ds=land_mask_ds,
+            hpc_root=hpc_root,
+            full_config=full_config,
+            dask_client=client,
+        )
+        logger.info("Geometry assembly completed successfully")
 
 
 def _setup_dask_cluster(processing_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,7 +258,8 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     
     output_path = assembly_config['output_path']
     processing_config = assembly_config.get('processing', {})
-    
+    spatial_partition = processing_config.get("spatial_partition", "grid")
+
     os.makedirs(output_path, exist_ok=True)
     logger.info(f"Output will be written to: {output_path}")
     
@@ -174,6 +273,17 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     
     # Get target geobox and adjust tile size for reprojection
     target_geobox = get_or_create_geobox(hpc_root)
+
+    if spatial_partition == "geometry":
+        _run_geometry_assembly(
+            assembly_config=assembly_config,
+            full_config=full_config,
+            hpc_root=hpc_root,
+            target_geobox=target_geobox,
+            output_path=output_path,
+        )
+        return
+
     processing_config.setdefault('tile_size', DEFAULT_TILE_SIZE)
     native_res = abs(target_geobox.resolution.x)
     processing_config['tile_size'] = adjust_tile_size_for_reprojection(

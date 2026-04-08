@@ -212,6 +212,37 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 logger.debug(f"Dataset '{name}' using default index_cols: ['pixel_id']")
     
     processing = assembly_config.get('processing', {})
+    spatial_partition = processing.get('spatial_partition', 'grid')
+
+    if spatial_partition not in {'grid', 'geometry'}:
+        errors.append(
+            f"'spatial_partition' must be either 'grid' or 'geometry', got '{spatial_partition}'"
+        )
+
+    if spatial_partition == 'geometry':
+        geometry_source = assembly_config.get('geometry_source')
+        if not isinstance(geometry_source, dict):
+            errors.append(
+                "Geometry assembly requires a 'geometry_source' mapping in the assembly configuration"
+            )
+        else:
+            geometry_path = geometry_source.get('path')
+            geometry_id_column = geometry_source.get('id_column')
+
+            if not geometry_path:
+                errors.append("Geometry assembly requires 'geometry_source.path'")
+            elif not os.path.exists(geometry_path):
+                logger.warning(f"Geometry source path does not exist: {geometry_path}")
+
+            if not geometry_id_column:
+                errors.append("Geometry assembly requires 'geometry_source.id_column'")
+
+        if not assembly_config.get('geometry_aggregator'):
+            errors.append(
+                "Geometry assembly requires 'geometry_aggregator' "
+                "(import path to callable, e.g. 'pkg.module:function')"
+            )
+
     year_range = processing.get('year_range')
     if year_range:
         if not isinstance(year_range, (list, tuple)) or len(year_range) != 2:
