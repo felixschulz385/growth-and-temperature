@@ -54,11 +54,19 @@ def setup_logging(
     handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
+    rasterio_noise_filter = _RasterioWarpNoiseFilter()
+    handler.addFilter(rasterio_noise_filter)
     root.addHandler(handler)
 
     # Keep rasterio/GDAL chatter quiet even in debug mode so package debug logs remain usable.
     for name in _NOISY_GEO_LOGGERS:
         logging.getLogger(name).setLevel(logging.ERROR)
+
+    rasterio_env_logger = logging.getLogger("rasterio._env")
+    for log_filter in rasterio_env_logger.filters[:]:
+        if isinstance(log_filter, _RasterioWarpNoiseFilter):
+            rasterio_env_logger.removeFilter(log_filter)
+    rasterio_env_logger.addFilter(rasterio_noise_filter)
 
 
 def add_logging_args(parser: argparse.ArgumentParser) -> None:

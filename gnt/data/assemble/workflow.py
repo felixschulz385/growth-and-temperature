@@ -13,25 +13,22 @@ import logging
 import importlib
 from typing import Dict, Any, List, Optional, Tuple
 
-from odc.geo import GeoboxTiles
-
 # Import common utilities
 from gnt.data.common.geobox import get_or_create_geobox
 from gnt.data.common.dask.client import DaskClientContextManager
 
 # Import assembly submodules
 from gnt.data.assemble.config import (
-    derive_hpc_root,
+    derive_data_root,
     apply_cli_overrides,
     validate_assembly_config,
-    ProcessingConfig,
 )
 from gnt.data.assemble.loaders import (
     load_land_mask,
     load_all_datasets,
     prepare_land_mask,
 )
-from gnt.data.assemble.processors import TileProcessor
+from gnt.data.assemble.processors import TileProcessor, uses_geometry_aggregation
 from gnt.data.assemble.metadata import create_assembly_metadata
 from gnt.data.assemble.tiles import (
     get_available_tiles,
@@ -189,6 +186,7 @@ def _process_all_tiles(
     processing_config = assembly_config.get('processing', {})
     tile_size = processing_config.get('tile_size', DEFAULT_TILE_SIZE)
     assembly_mode = processing_config.get('assembly_mode', 'create')
+    uses_geometry_output = uses_geometry_aggregation(assembly_config)
     
     processor = TileProcessor(assembly_config, output_path)
     processed_count = 0
@@ -199,8 +197,13 @@ def _process_all_tiles(
         tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
         output_file = os.path.join(tile_output_path, "data.parquet")
         
-        # In update mode, skip tiles that don't exist yet
-        if assembly_mode == 'update' and not os.path.exists(output_file):
+        # Geometry-aggregated assemblies do not materialize ix/iy parquet files on disk,
+        # so update mode cannot use file existence as a skip criterion for them.
+        if (
+            assembly_mode == 'update'
+            and not uses_geometry_output
+            and not os.path.exists(output_file)
+        ):
             logger.warning(f"Tile ix={ix}, iy={iy} does not exist, skipping in update mode")
             skipped_count += 1
             continue
@@ -263,13 +266,13 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     os.makedirs(output_path, exist_ok=True)
     logger.info(f"Output will be written to: {output_path}")
     
-    # Derive HPC root from configuration
-    hpc_root = derive_hpc_root(assembly_config, full_config)
-    if not hpc_root:
-        logger.error("hpc_root must be specified in config or derivable from HPC settings")
+    # Derive local project data root from configuration
+    data_root = derive_data_root(assembly_config, full_config)
+    if not data_root:
+        logger.error("data_root must be specified in config or derivable from runtime settings")
         return
     
-    logger.info(f"Using hpc_root: {hpc_root}")
+    logger.info(f"Using data_root: {data_root}")
     
     # Get target geobox and adjust tile size for reprojection
     target_geobox = get_or_create_geobox(hpc_root)
@@ -312,7 +315,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         land_mask_ds = None
         if processing_config.get('apply_land_mask', False):
             land_mask_path = processing_config.get('land_mask_path')
-            land_mask_ds = load_land_mask(hpc_root, land_mask_path)
+            land_mask_ds = load_land_mask(data_root, land_mask_path)
             if land_mask_ds is not None:
                 land_mask_ds = prepare_land_mask(land_mask_ds)
         
@@ -341,17 +344,30 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         if not create_assembly_metadata(output_path, assembly_config):
             logger.warning("Failed to create assembly metadata")
         
-        # Step 3: Process tiles
-        logger.info("Step 3: Processing tiles (source-by-source)...")
-        processed_count, skipped_count = _process_all_tiles(
-            datasets, land_mask_ds, all_tiles, target_geobox, 
-            assembly_config, output_path
-        )
-        
-        logger.info(
-            f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
-            f"skipped {skipped_count} existing tiles"
-        )
+        # Step 3: Process pixel tiles or geometry-aggregated output
+        processor = TileProcessor(assembly_config, output_path)
+        if uses_geometry_aggregation(assembly_config):
+            logger.info(
+                f"Step 3: Geometry-aggregated {assembly_mode.upper()} mode: building grid-cell tables, "
+                "aggregating appended rows, and merging into the top-level output table"
+            )
+            processed_count, skipped_count = processor.process_geometry_output(
+                datasets, land_mask_ds, all_tiles, target_geobox
+            )
+            logger.info(
+                f"Geometry {assembly_mode} completed. Processed {processed_count} tile-dataset chunks and "
+                f"skipped {skipped_count} chunks without usable source rows"
+            )
+        else:
+            logger.info("Step 3: Processing tiles (source-by-source)...")
+            processed_count, skipped_count = _process_all_tiles(
+                datasets, land_mask_ds, all_tiles, target_geobox,
+                assembly_config, output_path
+            )
+            logger.info(
+                f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
+                f"skipped {skipped_count} tiles"
+            )
 
 
 def run_workflow_with_config(config: Dict[str, Any]):
@@ -383,3 +399,4 @@ def run_workflow_with_config(config: Dict[str, Any]):
     
     # Run the assembly
     run_assembly(assembly_config, config)
+
