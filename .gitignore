@@ -6,9 +6,13 @@
 .DS_Store
 /.vscode
 data.yaml
+data.backup.yaml
 _data.yaml
 **/presentation_files
 **/secrets
+.codex
+orchestration/configs/*.local.yaml
+orchestration/configs/**/*.local.yaml
 
 sqlite_*
 index_*
