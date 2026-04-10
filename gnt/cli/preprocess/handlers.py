@@ -93,4 +93,6 @@ def handle_run(args: argparse.Namespace) -> None:
 
     mod = importlib.import_module("gnt.data.preprocess.workflow")
     logger.info("Running unified preprocessing workflow")
-    mod.run_workflow_with_config(wf_config)
+    success = mod.run_workflow_with_config(wf_config)
+    if not success:
+        raise RuntimeError(f"Preprocessing workflow failed for source '{source}'")

@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 class SnlMiningPreprocessor(AbstractPreprocessor):
     """
-    Stage 2 preprocessor for SNL/SNF mining property tables.
+    Stage 2 preprocessor for SNL mining property tables.
 
     The workflow has two phases:
     1. Prepare year-specific vector features in DuckDB.
@@ -48,7 +48,7 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
             raise ValueError("hpc_target is required for HPC mode")
 
         self.source_name = kwargs.get("name", kwargs.get("preprocessor", "snl_mining"))
-        self.data_path = kwargs.get("data_path", "snf_mining")
+        self.data_path = kwargs.get("data_path", "snl_mining")
         self.index_dir = os.path.join(self.hpc_root, "hpc_data_index")
         os.makedirs(self.index_dir, exist_ok=True)
 
@@ -73,7 +73,7 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
         self.metric_crs = kwargs.get(
             "metric_crs", aggregation.get("metric_crs", "ESRI:54009")
         )
-        self.tile_size = int(kwargs.get("tile_size", aggregation.get("tile_size", 512)))
+        self.tile_size = int(kwargs.get("tile_size", aggregation.get("tile_size", 2048)))
 
         self.output_filename = kwargs.get(
             "output_filename",
@@ -108,7 +108,7 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
         self.admin_tables = {
             variable: {
                 "table_name": spec["table_name"],
-                "geometry_path": spec["geometry_path"],
+                "geometry_path": self._resolve_path_with_root(spec["geometry_path"]),
                 "code_column": spec["code_column"],
             }
             for variable, spec in admin_variables.items()
@@ -137,28 +137,30 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
 
     def _resolve_duckdb_path(self, configured_path: Optional[str]) -> str:
         path = configured_path or os.path.join(
-            self.hpc_root,
             self.data_path,
             "processed",
             "stage_0",
             "manual_xls",
-            "snf_mining_manual_export.duckdb",
+            "snl_mining_manual_export.duckdb",
         )
-        if not os.path.isabs(path):
-            path = os.path.join(self.hpc_root, path)
-        return self._strip_remote_prefix(path)
+        return self._resolve_path_with_root(path)
 
     def _resolve_prepared_db_path(self, configured_path: Optional[str]) -> str:
         path = configured_path or os.path.join(
-            self.hpc_root,
             self.data_path,
             "processed",
             "stage_1",
             "snl_mining_prepared.duckdb",
         )
-        if not os.path.isabs(path):
-            path = os.path.join(self.hpc_root, path)
-        return self._strip_remote_prefix(path)
+        return self._resolve_path_with_root(path)
+
+    def _resolve_path_with_root(self, path: str) -> str:
+        clean_path = self._strip_remote_prefix(path)
+        if os.path.isabs(clean_path):
+            return clean_path
+        if clean_path == self.hpc_root or clean_path.startswith(f"{self.hpc_root}{os.sep}"):
+            return clean_path
+        return os.path.join(self.hpc_root, clean_path)
 
     def _init_parquet_index_path(self) -> None:
         safe_data_path = self.data_path.replace("/", "_").replace("\\", "_")
@@ -243,22 +245,20 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
         import duckdb
 
         con = duckdb.connect(path)
-        extension_dir = os.path.join(self.temp_dir, "duckdb_extensions")
-        os.makedirs(extension_dir, exist_ok=True)
-        try:
-            escaped_extension_dir = extension_dir.replace("'", "''")
-            con.execute(f"SET extension_directory='{escaped_extension_dir}';")
-        except Exception:
-            logger.debug("DuckDB extension_directory setting unavailable; continuing")
         try:
             con.execute("LOAD spatial;")
         except Exception:
+            try:
+                extension_dir = os.path.join(self.temp_dir, "duckdb_extensions")
+                os.makedirs(extension_dir, exist_ok=True)
+            except Exception:
+                logger.debug("DuckDB extension_directory setting unavailable; continuing")
             con.execute("INSTALL spatial;")
-            con.execute("LOAD spatial;")
-        try:
-            con.execute("SET geometry_always_xy = true;")
-        except Exception:
-            logger.debug("DuckDB geometry_always_xy setting unavailable; continuing")
+            con.execute("LOAD spatial;")                
+            try:
+                con.execute("SET geometry_always_xy = true;")
+            except Exception:
+                logger.debug("DuckDB geometry_always_xy setting unavailable; continuing")
         return con
 
     def _prepare_duckdb_features(self, raster_crs: str) -> List[int]:
@@ -422,9 +422,16 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
         con.execute(query)
 
     def _raw_table_exists(self, con, table_name: str) -> bool:
-        rows = con.execute("SHOW TABLES FROM raw_db").fetchall()
-        available_tables = {str(row[0]) for row in rows}
-        return table_name in available_tables
+        query = """
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_catalog = 'raw_db'
+              AND table_schema = 'main'
+              AND table_name = ?
+            LIMIT 1
+        """
+        row = con.execute(query, [table_name]).fetchone()
+        return row is not None
 
     def _create_buffer_table(self, con, table_name: str, radius_m: int, raster_crs: str) -> None:
         query = f"""
@@ -535,21 +542,20 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
             plan_rows = con.execute(sample_sql).fetchall()
             plan_text = "\n".join(str(row) for row in plan_rows)
             if "RTREE_INDEX_SCAN" not in plan_text:
-                logger.warning(
+                logger.info(
                     "DuckDB EXPLAIN did not report RTREE_INDEX_SCAN for SNL mining tile fetch. "
                     "Queries will still run, but spatial tile fetches may be slower."
                 )
-        except Exception as e:
-            logger.warning("Could not verify DuckDB R-tree plan usage: %s", e)
+        except Exception:
+            logger.debug(
+                "Skipping DuckDB R-tree plan verification because EXPLAIN is not stable on this DuckDB build."
+            )
 
     def _resolve_relative_to_hpc(self, path: str) -> str:
-        clean_path = self._strip_remote_prefix(path)
-        if os.path.isabs(clean_path):
-            return clean_path
-        return os.path.join(self.hpc_root, clean_path)
+        return self._resolve_path_with_root(path)
 
     def _get_or_create_geobox(self):
-        misc_level1_dir = os.path.join(self.hpc_root, "misc", "processed", "stage_1", "misc")
+        misc_level1_dir = self._resolve_path_with_root("misc/processed/stage_1/misc")
         os.makedirs(misc_level1_dir, exist_ok=True)
         return get_or_create_geobox(self.hpc_root, misc_level1_dir)
 
@@ -637,6 +643,14 @@ class SnlMiningPreprocessor(AbstractPreprocessor):
                 logger.info("Rasterizing SNL mining year %s", year)
                 for ix in range(tiles.shape[0]):
                     for iy in range(tiles.shape[1]):
+                        logger.info(
+                            "Processing SNL mining tile year=%s tile=(%s,%s) progress=%s/%s",
+                            year,
+                            ix,
+                            iy,
+                            processed_tiles + 1,
+                            total_tiles,
+                        )
                         tile_geobox = tiles[ix, iy]
                         tile_bounds = tile_geobox.boundingbox
                         tile_wkt = (

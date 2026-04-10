@@ -1,10 +1,10 @@
-# SNF Mining Notebooks
+# SNL Mining Notebooks
 
-This folder contains the SNF mining download-side notebooks that replace the older combined experiment notebook.
+This folder contains the SNL mining download-side notebooks that replace the older combined experiment notebook.
 
 ## Notebooks
 
-### `snf_mining_manual_xls_to_duckdb.ipynb`
+### `snl_mining_manual_xls_to_duckdb.ipynb`
 
 Purpose:
 - ingest the manually exported S&P Global mining `.xls`
@@ -12,7 +12,7 @@ Purpose:
 - write the cleaned result to DuckDB
 
 Expected output:
-- `data/snf_mining/processed/stage_0/manual_xls/snf_mining_manual_export.duckdb`
+- `data/snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb`
 
 Tables written:
 - `source_files`
@@ -24,7 +24,7 @@ Tables written:
 Status:
 - transitional / likely to be deprecated later once the richer scraper is the main ingestion path
 
-### `snf_mining_openai_enrichment.ipynb`
+### `snl_mining_openai_enrichment.ipynb`
 
 Purpose:
 - load standardized mining property text from the manual-export DuckDB
@@ -33,10 +33,10 @@ Purpose:
 - write model-imputed opening and closing years into the DuckDB table `property_llm_years`
 
 Expected outputs:
-- `data/snf_mining/processed/stage_0/llm/mine_year_extract_manifest.parquet`
-- `data/snf_mining/processed/stage_0/manual_xls/snf_mining_manual_export.duckdb` table `property_llm_years`
-- `data/snf_mining/processed/stage_0/llm/batch_requests/*.jsonl`
-- `data/snf_mining/processed/stage_0/llm/batch_outputs/*.jsonl`
+- `data/snl_mining/processed/stage_0/llm/mine_year_extract_manifest.parquet`
+- `data/snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb` table `property_llm_years`
+- `data/snl_mining/processed/stage_0/llm/batch_requests/*.jsonl`
+- `data/snl_mining/processed/stage_0/llm/batch_outputs/*.jsonl`
 
 Stored fields in `property_llm_years`:
 - `property_id`
@@ -51,8 +51,8 @@ Stored fields in `property_llm_years`:
 
 ## Recommended order
 
-1. Run `snf_mining_manual_xls_to_duckdb.ipynb`
-2. Run the one-row probe in `snf_mining_openai_enrichment.ipynb`
+1. Run `snl_mining_manual_xls_to_duckdb.ipynb`
+2. Run the one-row probe in `snl_mining_openai_enrichment.ipynb`
 3. Build the manifest and submit batches incrementally
 4. Either rerun the refresh/ingest/submit cells periodically or use the periodic monitor helper
 5. Query `property_llm_years` from the DuckDB database when ingestion is complete

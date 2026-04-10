@@ -42,7 +42,7 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif preprocessor_name == 'berman_mining':
             from gnt.data.preprocess.sources.berman_mining import BermanMiningPreprocessor
             return BermanMiningPreprocessor
-        elif preprocessor_name in ['snl_mining', 'snf_mining']:
+        elif preprocessor_name == 'snl_mining':
             from gnt.data.preprocess.sources.snl_mining import SnlMiningPreprocessor
             return SnlMiningPreprocessor
         elif preprocessor_name in ['acag', 'acag_pm25', 'pm25']:
@@ -98,6 +98,9 @@ def create_source(source_name: str, config: Dict[str, Any]):
         return None
     elif source_name_lower == 'berman_mining':
         # Berman mining doesn't need a separate data source as it works with local files
+        return None
+    elif source_name_lower == 'snl_mining':
+        # SNL mining preprocessing works directly from local DuckDB inputs
         return None
     # GLASSLSTDataSource
     elif source_name_lower == "glasslstdatasource":

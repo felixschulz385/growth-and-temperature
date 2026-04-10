@@ -144,6 +144,23 @@ def _select_columns(
         return ds
 
 
+def _apply_fillna(
+    ds: xr.Dataset,
+    dataset_name: str,
+    dataset_config: Dict[str, Any],
+) -> xr.Dataset:
+    """Apply per-dataset NA filling when configured or required by convention."""
+    fillna_value = dataset_config.get("fillna")
+    if fillna_value is None and dataset_name == "snl_mining":
+        fillna_value = 0
+
+    if fillna_value is not None:
+        logger.info(f"Filling NA values in dataset {dataset_name} with {fillna_value}")
+        ds = ds.fillna(fillna_value)
+
+    return ds
+
+
 def load_single_dataset(
     dataset_name: str,
     dataset_config: Dict[str, Any],
@@ -193,6 +210,9 @@ def load_single_dataset(
         ds = _select_columns(ds, dataset_config.get('columns'), dataset_name)
         if ds is None:
             return None
+
+        # Fill missing values for datasets that need explicit defaults during assembly.
+        ds = _apply_fillna(ds, dataset_name, dataset_config)
         
         # Apply column prefix
         column_prefix = dataset_config.get('column_prefix')

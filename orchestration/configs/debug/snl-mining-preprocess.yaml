@@ -1,6 +1,6 @@
 paths:
-  data_root: "data"
-  local_index_dir: "data/hpc_data_index"
+  data_root: "${DATA_NOBACKUP:-data_nobackup}"
+  local_index_dir: "${DATA_NOBACKUP:-data_nobackup}/hpc_data_index"
 
 preprocess:
   stage: "spatial"
@@ -10,8 +10,9 @@ preprocess:
 sources:
   snl_mining:
     type: "snl_mining"
-    data_path: "snf_mining"
-    duckdb_path: "snf_mining/processed/stage_0/manual_xls/snf_mining_manual_export.duckdb"
+    data_path: "snl_mining"
+    year_range: [1992, 2024]
+    duckdb_path: "snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb"
     properties_table: "properties"
     llm_years_table: "property_llm_years"
     work_history_table: "property_work_history_events"
@@ -22,10 +23,10 @@ sources:
     llm_opening_year_column: "llm_opening_year"
     llm_closing_year_column: "llm_closing_year"
     aggregation:
-      prepared_db_path: "snf_mining/processed/stage_1/snl_mining_prepared_debug.duckdb"
+      prepared_db_path: "snl_mining/processed/stage_1/snl_mining_prepared_debug.duckdb"
       output_filename: "snl_mining_timeseries_reprojected_debug.zarr"
       metric_crs: "ESRI:54009"
-      tile_size: 512
+      tile_size: 2048
       semantics:
         radius: "count of active mine buffers covering pixel center"
         admin: "count of active mines in containing ADM polygon"

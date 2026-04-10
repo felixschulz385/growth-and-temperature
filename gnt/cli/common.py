@@ -10,6 +10,22 @@ import sys
 from typing import Optional
 
 
+class _RasterioWarpNoiseFilter(logging.Filter):
+    """Suppress known benign GDAL warp-option chatter from rasterio."""
+
+    _NOISY_OPTIONS = ("DTYPE", "XSCALE", "YSCALE")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.name != "rasterio._env":
+            return True
+
+        message = record.getMessage()
+        if "CPLE_NotSupported" not in message or "does not support option" not in message:
+            return True
+
+        return not any(f"option {option}" in message for option in self._NOISY_OPTIONS)
+
+
 def setup_logging(
     level: str = "INFO",
     log_file: Optional[str] = None,
@@ -45,12 +61,19 @@ def setup_logging(
     handler.setFormatter(
         logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
     )
+    rasterio_noise_filter = _RasterioWarpNoiseFilter()
+    handler.addFilter(rasterio_noise_filter)
     root.addHandler(handler)
 
-    # Keep rasterio quiet unless we are in DEBUG
-    if numeric_level > logging.DEBUG:
-        for name in ("rasterio", "rasterio.env", "rasterio._env"):
-            logging.getLogger(name).setLevel(logging.WARNING)
+    # Keep rasterio internals quiet even when the application runs in DEBUG.
+    for name in ("rasterio", "rasterio.env", "rasterio._env", "rasterio._base"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
+    rasterio_env_logger = logging.getLogger("rasterio._env")
+    for log_filter in rasterio_env_logger.filters[:]:
+        if isinstance(log_filter, _RasterioWarpNoiseFilter):
+            rasterio_env_logger.removeFilter(log_filter)
+    rasterio_env_logger.addFilter(rasterio_noise_filter)
 
 
 def add_logging_args(parser: argparse.ArgumentParser) -> None:

@@ -12,8 +12,6 @@ os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
-from odc.geo import GeoboxTiles
-
 # Import common utilities
 from gnt.data.common.geobox import get_or_create_geobox
 from gnt.data.common.dask.client import DaskClientContextManager
@@ -23,14 +21,13 @@ from gnt.data.assemble.config import (
     derive_data_root,
     apply_cli_overrides,
     validate_assembly_config,
-    ProcessingConfig,
 )
 from gnt.data.assemble.loaders import (
     load_land_mask,
     load_all_datasets,
     prepare_land_mask,
 )
-from gnt.data.assemble.processors import TileProcessor
+from gnt.data.assemble.processors import TileProcessor, uses_geometry_aggregation
 from gnt.data.assemble.metadata import create_assembly_metadata
 from gnt.data.assemble.tiles import (
     get_available_tiles,
@@ -91,6 +88,7 @@ def _process_all_tiles(
     processing_config = assembly_config.get('processing', {})
     tile_size = processing_config.get('tile_size', DEFAULT_TILE_SIZE)
     assembly_mode = processing_config.get('assembly_mode', 'create')
+    uses_geometry_output = uses_geometry_aggregation(assembly_config)
     
     processor = TileProcessor(assembly_config, output_path)
     processed_count = 0
@@ -101,8 +99,13 @@ def _process_all_tiles(
         tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
         output_file = os.path.join(tile_output_path, "data.parquet")
         
-        # In update mode, skip tiles that don't exist yet
-        if assembly_mode == 'update' and not os.path.exists(output_file):
+        # Geometry-aggregated assemblies do not materialize ix/iy parquet files on disk,
+        # so update mode cannot use file existence as a skip criterion for them.
+        if (
+            assembly_mode == 'update'
+            and not uses_geometry_output
+            and not os.path.exists(output_file)
+        ):
             logger.warning(f"Tile ix={ix}, iy={iy} does not exist, skipping in update mode")
             skipped_count += 1
             continue
@@ -231,17 +234,30 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         if not create_assembly_metadata(output_path, assembly_config):
             logger.warning("Failed to create assembly metadata")
         
-        # Step 3: Process tiles
-        logger.info("Step 3: Processing tiles (source-by-source)...")
-        processed_count, skipped_count = _process_all_tiles(
-            datasets, land_mask_ds, all_tiles, target_geobox, 
-            assembly_config, output_path
-        )
-        
-        logger.info(
-            f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
-            f"skipped {skipped_count} existing tiles"
-        )
+        # Step 3: Process pixel tiles or geometry-aggregated output
+        processor = TileProcessor(assembly_config, output_path)
+        if uses_geometry_aggregation(assembly_config):
+            logger.info(
+                f"Step 3: Geometry-aggregated {assembly_mode.upper()} mode: building grid-cell tables, "
+                "aggregating appended rows, and merging into the top-level output table"
+            )
+            processed_count, skipped_count = processor.process_geometry_output(
+                datasets, land_mask_ds, all_tiles, target_geobox
+            )
+            logger.info(
+                f"Geometry {assembly_mode} completed. Processed {processed_count} tile-dataset chunks and "
+                f"skipped {skipped_count} chunks without usable source rows"
+            )
+        else:
+            logger.info("Step 3: Processing tiles (source-by-source)...")
+            processed_count, skipped_count = _process_all_tiles(
+                datasets, land_mask_ds, all_tiles, target_geobox,
+                assembly_config, output_path
+            )
+            logger.info(
+                f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
+                f"skipped {skipped_count} tiles"
+            )
 
 
 def run_workflow_with_config(config: Dict[str, Any]):

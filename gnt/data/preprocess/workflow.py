@@ -72,7 +72,7 @@ def expand_env_vars(config: Dict[str, Any]) -> Dict[str, Any]:
         return config
 
 
-def process_task(task_config: Dict[str, Any]) -> None:
+def process_task(task_config: Dict[str, Any]) -> bool:
     """
     Process a single preprocessing task.
     
@@ -112,6 +112,7 @@ def process_task(task_config: Dict[str, Any]) -> None:
         if mode == "validate":
             # Handle validation task
             handle_validate_task(preprocessor_name, task_config)
+            return True
         elif mode == "preprocess":
             # Create preprocessor instance using the factory
             preprocessor = create_preprocessor(preprocessor_name, task_config)
@@ -131,13 +132,25 @@ def process_task(task_config: Dict[str, Any]) -> None:
             logger.info(f"Processing {len(targets)} targets (bypassing cache validation)")
             
             # Process each ready target
+            all_targets_succeeded = True
             for target in targets:
                 try:
-                    preprocessor.process_target(target)
+                    target_success = preprocessor.process_target(target)
+                    if target_success is False:
+                        logger.error(
+                            "Target processing reported failure for %s/%s",
+                            target.get('year', 'unknown'),
+                            target.get('grid_cell', 'global'),
+                        )
+                        all_targets_succeeded = False
                 except Exception as e:
                     logger.error(f"Error processing target {target.get('year', 'unknown')}/{target.get('grid_cell', 'global')}: {e}")
-                    # Continue with next target instead of failing entire task
-                    continue
+                    all_targets_succeeded = False
+
+            return all_targets_succeeded
+
+        logger.error("Unknown preprocessing mode: %s", mode)
+        return False
         
     except Exception as e:
         logger.error(f"Error processing task with {preprocessor_name}: {str(e)}")
@@ -433,8 +446,11 @@ class PreprocessTaskHandlers:
                 logger.debug("Skipping data source creation for misc preprocessor (handles internally)")
             
             # Run the preprocessing task
-            process_task(preprocessor_config)
-            
+            success = process_task(preprocessor_config)
+            if not success:
+                logger.error(f"Preprocessing task failed for {source_name}")
+                return False
+
             logger.info(f"Preprocessing task completed successfully")
             return True
             
@@ -515,8 +531,11 @@ class PreprocessTaskHandlers:
                 logger.debug("Skipping data source creation for misc preprocessor (handles internally)")
             
             # Run the validation task
-            process_task(preprocessor_config)
-            
+            success = process_task(preprocessor_config)
+            if not success:
+                logger.error(f"Validation task failed for {source_name}")
+                return False
+
             logger.info(f"Validation task completed successfully")
             return True
             
