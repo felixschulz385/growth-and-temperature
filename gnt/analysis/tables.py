@@ -12,6 +12,7 @@ Public API
 * :func:`create_regression_table` — build a table string from model names
 * :func:`generate_table_from_config` — build a table from :class:`AnalysisConfig`
 * :func:`save_generated_tables` — write table files to disk
+* :func:`create_tables_download_zip` — zip every file in the tables directory
 * :func:`generate_all_tables` — generate and save every table in the config
 * :func:`summarize_tables` — print a status overview of all tables
 """
@@ -20,6 +21,7 @@ from __future__ import annotations
 
 import json
 import warnings
+import zipfile
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -483,17 +485,14 @@ def _extract_first_stage_data(
     select_coefs: Optional[Dict[str, str]] = None,
     select_instruments: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Build first-stage coefficient rows for 2SLS models."""
+    """Build one merged first-stage coefficient block for 2SLS models."""
     instrument_filter = select_instruments or select_coefs
 
     all_vars: List[str] = []
-    endog_vars: List[str] = []
     for m in models:
         if not is_2sls_model(m):
             continue
-        for endog, fs_data in m.get('first_stage', {}).items():
-            if endog not in endog_vars:
-                endog_vars.append(endog)
+        for fs_data in m.get('first_stage', {}).values():
             for inst in fs_data.get('instrument_names', []):
                 if (not instrument_filter or inst in instrument_filter) and inst not in all_vars:
                     all_vars.append(inst)
@@ -501,46 +500,48 @@ def _extract_first_stage_data(
     if not all_vars:
         return []
 
-    rows: List[Dict[str, Any]] = []
-    for endog in endog_vars:
-        hdr: Dict[str, Any] = {'Variable': f'First Stage: {endog}', '_is_header': True}
-        for name in model_names:
-            hdr[name] = ''
-        rows.append(hdr)
+    hdr: Dict[str, Any] = {'Variable': 'First Stage', '_is_header': True}
+    for name in model_names:
+        hdr[name] = ''
 
-        for var in all_vars:
-            if instrument_filter and var in instrument_filter:
-                disp = instrument_filter[var]
-                if any(c in disp for c in ('$', '\\', '{', '}')):
-                    disp = _mark_raw_latex(disp)
-            else:
-                disp = var
-            coef_row: Dict[str, Any] = {'Variable': f'  {disp}'}
-            se_row:   Dict[str, Any] = {'Variable': ''}
+    rows: List[Dict[str, Any]] = [hdr]
+    for var in all_vars:
+        if instrument_filter and var in instrument_filter:
+            disp = instrument_filter[var]
+            if any(c in disp for c in ('$', '\\', '{', '}')):
+                disp = _mark_raw_latex(disp)
+        else:
+            disp = var
+        coef_row: Dict[str, Any] = {'Variable': f'  {disp}'}
+        se_row:   Dict[str, Any] = {'Variable': ''}
 
-            for i, model in enumerate(models):
-                if not is_2sls_model(model):
-                    coef_row[model_names[i]] = se_row[model_names[i]] = ""
-                    continue
-                fs_data = model.get('first_stage', {}).get(endog, {})
+        for i, model in enumerate(models):
+            if not is_2sls_model(model):
+                coef_row[model_names[i]] = se_row[model_names[i]] = ""
+                continue
+
+            coef_entries: List[str] = []
+            se_entries: List[str] = []
+            for fs_data in model.get('first_stage', {}).values():
                 coef_names = fs_data.get('coef_names', [])
-                if var in coef_names:
-                    idx = coef_names.index(var)
-                    c = fs_data['coefficients'][idx]
-                    cs = f"{c:.{decimals}f}"
-                    if stars and 'p_values' in fs_data:
-                        p = fs_data['p_values'][idx]
-                        cs += '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
-                    coef_row[model_names[i]] = cs
-                    se_row[model_names[i]] = (
-                        f"({fs_data['std_errors'][idx]:.{decimals}f})"
-                        if 'std_errors' in fs_data and not include_ci
-                        else ""
-                    )
-                else:
-                    coef_row[model_names[i]] = se_row[model_names[i]] = ""
+                if var not in coef_names:
+                    continue
 
-            rows.extend([coef_row, se_row])
+                idx = coef_names.index(var)
+                c = fs_data['coefficients'][idx]
+                cs = f"{c:.{decimals}f}"
+                if stars and 'p_values' in fs_data:
+                    p = fs_data['p_values'][idx]
+                    cs += '***' if p < 0.001 else '**' if p < 0.01 else '*' if p < 0.05 else ''
+                coef_entries.append(cs)
+
+                if 'std_errors' in fs_data and not include_ci:
+                    se_entries.append(f"({fs_data['std_errors'][idx]:.{decimals}f})")
+
+            coef_row[model_names[i]] = "; ".join(coef_entries)
+            se_row[model_names[i]] = "; ".join(se_entries)
+
+        rows.extend([coef_row, se_row])
 
     return rows
 
@@ -807,6 +808,28 @@ def save_generated_tables(
         print(f"  Generated: {path}")
 
 
+def create_tables_download_zip(
+    output_dir: Optional[Union[str, Path]] = None,
+    zip_name: str = "download.zip",
+) -> Path:
+    """Create a zip archive containing every file in the tables directory."""
+    out = Path(output_dir) if output_dir else OUTPUT_DIR
+    out.mkdir(parents=True, exist_ok=True)
+
+    zip_path = out / zip_name
+    files = sorted(
+        path for path in out.rglob("*")
+        if path.is_file() and path.resolve() != zip_path.resolve()
+    )
+
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for path in files:
+            archive.write(path, path.relative_to(out).as_posix())
+
+    print(f"  Generated: {zip_path}")
+    return zip_path
+
+
 # ---------------------------------------------------------------------------
 # High-level orchestration
 # ---------------------------------------------------------------------------
@@ -858,7 +881,7 @@ def generate_all_tables(
     output_dir: Optional[Union[str, Path]] = None,
     output_formats: Optional[List[str]] = None,
 ) -> None:
-    """Generate and save all (or a named subset of) tables.
+    """Generate, save, and archive all (or a named subset of) tables.
 
     Parameters
     ----------
@@ -879,6 +902,7 @@ def generate_all_tables(
             save_generated_tables(name, generated, output_dir)
         except Exception as exc:
             print(f"  Error generating '{name}': {exc}")
+    create_tables_download_zip(output_dir)
 
 
 # Backward-compatible alias

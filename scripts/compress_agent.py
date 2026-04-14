@@ -19,6 +19,7 @@ Notes:
     - Only directories containing at least one .hdf file are archived.
     - Archives are written as: OUTPUT_ROOT/YYYY/DOY.tar.zst
     - A SHA-256 sidecar file can optionally be written for each archive.
+    - Existing archives are treated as completed work unless --overwrite is passed.
     - Originals are NOT deleted unless --delete-source is passed.
 """
 
@@ -34,7 +35,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
 
 @dataclass
@@ -96,12 +97,20 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing archive if present.",
+        help="Overwrite existing archive if present instead of resuming past it.",
     )
     p.add_argument(
         "--delete-source",
         action="store_true",
         help="Delete the source YYYY/DOY directory after successful archival.",
+    )
+    p.add_argument(
+        "--delete-source-existing",
+        action="store_true",
+        help=(
+            "When resuming past an existing archive, verify the archive and delete "
+            "the matching source YYYY/DOY directory if it still exists. Requires --delete-source."
+        ),
     )
     p.add_argument(
         "--min-hdf-count",
@@ -202,18 +211,92 @@ def build_zstd_command(archive_path: Path, level: int, long_window_log: int) -> 
     return cmd
 
 
+def build_zstd_test_command(archive_path: Path) -> List[str]:
+    return [
+        "zstd",
+        "--long=31",
+        "-t",
+        str(archive_path),
+    ]
+
+
 def write_sha256_sidecar(path: Path) -> None:
     digest = sha256_file(path)
     sidecar = path.with_suffix(path.suffix + ".sha256")
     sidecar.write_text(f"{digest}  {path.name}\n", encoding="utf-8")
 
 
+def checksum_sidecar_path(path: Path) -> Path:
+    return path.with_suffix(path.suffix + ".sha256")
+
+
+def verify_checksum_sidecar(path: Path) -> str | None:
+    sidecar = checksum_sidecar_path(path)
+    if not sidecar.exists():
+        return None
+
+    expected = sidecar.read_text(encoding="utf-8").split()[0]
+    actual = sha256_file(path)
+    if actual != expected:
+        return f"checksum mismatch: expected {expected}, got {actual}"
+
+    return None
+
+
+def verify_existing_archive(path: Path) -> str | None:
+    proc = subprocess.run(
+        build_zstd_test_command(path),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        return f"zstd integrity check failed with code {proc.returncode}: {detail}"
+
+    return verify_checksum_sidecar(path)
+
+
+def complete_existing_archive(
+    task: Task,
+    write_checksum: bool,
+    delete_source_existing: bool,
+) -> Result:
+    if write_checksum and not checksum_sidecar_path(task.archive_path).exists():
+        logging.info(
+            "Archive exists for %s/%s; writing missing checksum sidecar",
+            task.year,
+            task.doy,
+        )
+        write_sha256_sidecar(task.archive_path)
+        message = "archive exists; checksum sidecar written"
+    else:
+        message = "archive exists"
+
+    if delete_source_existing and task.source_dir.exists():
+        integrity_error = verify_existing_archive(task.archive_path)
+        if integrity_error is not None:
+            return Result(
+                task=task,
+                success=False,
+                skipped=True,
+                message=f"{message}; source kept because {integrity_error}",
+            )
+
+        shutil.rmtree(task.source_dir)
+        message = f"{message}; verified archive and deleted existing source"
+
+    return Result(task=task, success=True, skipped=True, message=message)
+
+
 def archive_one(task: Task, overwrite: bool, level: int, long_window_log: int,
-                write_checksum: bool, delete_source: bool) -> Result:
+                write_checksum: bool, delete_source: bool,
+                delete_source_existing: bool) -> Result:
     task.archive_path.parent.mkdir(parents=True, exist_ok=True)
 
     if task.archive_path.exists() and not overwrite:
-        return Result(task=task, success=True, skipped=True, message="archive exists")
+        return complete_existing_archive(task, write_checksum, delete_source_existing)
 
     tmp_archive = task.archive_path.with_name(task.archive_path.name + ".partial")
 
@@ -326,6 +409,10 @@ def main() -> int:
     args = parse_args()
     setup_logging(args.log_file)
 
+    if args.delete_source_existing and not args.delete_source:
+        logging.error("--delete-source-existing requires --delete-source.")
+        return 2
+
     try:
         check_dependencies()
     except Exception as exc:
@@ -342,11 +429,37 @@ def main() -> int:
         logging.warning("No matching YYYY/DOY directories with .hdf files found.")
         return 0
 
-    logging.info("Found %d DOY directories to process.", len(tasks))
+    logging.info("Found %d candidate DOY directories.", len(tasks))
     logging.info("Compression level=%d, jobs=%d, long-window-log=%d",
                  args.level, args.jobs, args.long_window_log)
 
     results: List[Result] = []
+    if not args.overwrite:
+        remaining_tasks: List[Task] = []
+        for task in tasks:
+            if task.archive_path.exists():
+                res = complete_existing_archive(
+                    task,
+                    args.checksum,
+                    args.delete_source_existing,
+                )
+                results.append(res)
+                if res.success:
+                    logging.info("SKIP %s/%s: %s", res.task.year, res.task.doy, res.message)
+                else:
+                    logging.error("FAIL %s/%s: %s", res.task.year, res.task.doy, res.message)
+            else:
+                remaining_tasks.append(task)
+        tasks = remaining_tasks
+
+    if not tasks:
+        skipped = sum(1 for r in results if r.success and r.skipped)
+        failed = sum(1 for r in results if not r.success)
+        logging.info("Summary: 0 archived, %d skipped, %d failed", skipped, failed)
+        return 1 if failed else 0
+
+    logging.info("Processing %d DOY directories.", len(tasks))
+
     with cf.ThreadPoolExecutor(max_workers=args.jobs) as executor:
         futures = [
             executor.submit(
@@ -357,6 +470,7 @@ def main() -> int:
                 args.long_window_log,
                 args.checksum,
                 args.delete_source,
+                args.delete_source_existing,
             )
             for task in tasks
         ]

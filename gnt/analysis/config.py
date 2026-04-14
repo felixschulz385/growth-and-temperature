@@ -42,6 +42,30 @@ _SETTING_KEYS = (
     'n_bootstraps', 'threads', 'memory_limit', 'max_temp_directory_size',
 )
 
+# Default wall-clock budgets by assembled dataset and estimation method.
+# These replace the deprecated per-model ``max_runtime`` workbook column.
+# Values are derived from the 0.4.2 log screen summary as padded, rounded
+# observed maxima by dataset/method.
+DEFAULT_MODEL_MAX_RUNTIMES = {
+    '500m': {
+        'OLS': '0-20:15:00',
+        'IV': '0-17:30:00',
+    },
+    '1km': {
+        'OLS': '0-07:15:00',
+        'IV': '0-02:45:00',
+    },
+    '5km': {
+        'OLS': '0-00:30:00',
+        'IV': '0-00:10:00',
+    },
+    '50km': {
+        'OLS': '0-00:10:00',
+        'IV': '0-00:05:00',
+    },
+}
+DEFAULT_MODEL_MAX_RUNTIME = '0-20:15:00'
+
 
 # ---------------------------------------------------------------------------
 # Runtime helpers (used by both config.py and slurm.py)
@@ -74,6 +98,40 @@ def seconds_to_slurm_time(seconds: int) -> str:
     hours, remainder = divmod(remainder, 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{days}-{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def normalize_runtime_dataset(data_source: Any) -> str:
+    """Return the dataset key used by ``DEFAULT_MODEL_MAX_RUNTIMES``."""
+    if data_source is None or pd.isna(data_source):
+        return ''
+
+    data_source_str = os.path.expandvars(str(data_source).strip())
+    if not data_source_str or data_source_str == 'nan':
+        return ''
+
+    path = Path(data_source_str)
+    if path.suffix == '.parquet':
+        return path.stem
+    return data_source_str
+
+
+def infer_runtime_method(instruments: Any) -> str:
+    """Infer whether a model should use the OLS or IV runtime budget."""
+    if instruments is None or pd.isna(instruments):
+        return 'OLS'
+
+    instruments_str = str(instruments).strip()
+    return 'IV' if instruments_str not in ('', '0', 'nan') else 'OLS'
+
+
+def get_default_model_runtime(data_source: Any, instruments: Any) -> str:
+    """Return the configured runtime for a model's dataset and method."""
+    dataset = normalize_runtime_dataset(data_source)
+    method = infer_runtime_method(instruments)
+    return DEFAULT_MODEL_MAX_RUNTIMES.get(dataset, {}).get(
+        method,
+        DEFAULT_MODEL_MAX_RUNTIME,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -307,16 +365,20 @@ class AnalysisConfig:
     # ── Runtime budgets (SLURM) ─────────────────────────────────────────────
 
     def get_model_runtime_seconds(self, model_name: str) -> int:
-        """Return the ``max_runtime`` for *model_name* converted to seconds."""
+        """Return the derived runtime budget for *model_name* in seconds."""
         df = self.df_models
         rows = df[df['model_name'].str.strip() == model_name]
         if rows.empty:
             raise KeyError(f"Model '{model_name}' not found in 'Models' sheet")
-        runtime_str = rows.iloc[0]['max_runtime']
+        row = rows.iloc[0]
+        runtime_str = get_default_model_runtime(
+            row.get('data_source'),
+            row.get('instruments'),
+        )
         return parse_runtime_to_seconds(runtime_str)
 
     def get_table_runtime_seconds(self, table_name: str) -> int:
-        """Return the sum of ``max_runtime`` for all models in *table_name*."""
+        """Return the summed derived runtime for all models in *table_name*."""
         models = self.get_models_for_table(table_name)
         return sum(self.get_model_runtime_seconds(m) for m in models)
 

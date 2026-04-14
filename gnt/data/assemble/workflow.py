@@ -275,13 +275,13 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     logger.info(f"Using data_root: {data_root}")
     
     # Get target geobox and adjust tile size for reprojection
-    target_geobox = get_or_create_geobox(hpc_root)
+    target_geobox = get_or_create_geobox(data_root)
 
     if spatial_partition == "geometry":
         _run_geometry_assembly(
             assembly_config=assembly_config,
             full_config=full_config,
-            hpc_root=hpc_root,
+            hpc_root=data_root,
             target_geobox=target_geobox,
             output_path=output_path,
         )
@@ -399,4 +399,3 @@ def run_workflow_with_config(config: Dict[str, Any]):
     
     # Run the assembly
     run_assembly(assembly_config, config)
-

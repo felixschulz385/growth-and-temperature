@@ -16,7 +16,6 @@ from typing import Dict, List, Optional, Tuple
 from .config import (
     AnalysisConfig,
     PROJECT_ROOT,
-    parse_runtime_to_seconds,
     seconds_to_slurm_time,
 )
 
@@ -233,7 +232,7 @@ def resolve_table_model_pairs(
     table_model_pairs:
         List of ``(label, [model_names])`` in input order.
     grand_total_seconds:
-        Sum of ``max_runtime`` for every resolved model.
+        Sum of derived runtime budgets for every resolved model.
     """
     table_model_pairs: List[Tuple[str, List[str]]] = []
     grand_total_seconds = 0
@@ -277,7 +276,7 @@ def resolve_explicit_pairs(
         Tables first (in the order given), then individual models.  Each
         entry is a ``(label, [model_names])`` tuple.
     grand_total_seconds:
-        Sum of ``max_runtime`` for every resolved model.
+        Sum of derived runtime budgets for every resolved model.
     """
     pairs: List[Tuple[str, List[str]]] = []
     total_secs = 0

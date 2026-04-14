@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from typing import Any, Optional
 
 import geopandas as gpd
@@ -43,6 +44,25 @@ _XR_REDUCERS = {
 }
 
 _SUPPORTED_PARTIAL_AGGS = {"mean", "sum", "count", "min", "max", "first"}
+
+
+@dataclass(frozen=True)
+class GeometrySource:
+    """Geometry index table used internally for rasterization."""
+
+    gdf: gpd.GeoDataFrame
+    id_col: str
+    geometry_col: str
+    all_touched: bool
+
+
+@dataclass(frozen=True)
+class TilePlan:
+    """Tile metadata needed by geometry aggregation."""
+
+    tiles: list[tuple[int, int]]
+    tile_size: int
+    native_res: float
 
 
 def zonal_reduce_odc(
@@ -207,8 +227,27 @@ def _select_columns(ds: xr.Dataset, columns: Optional[list[str]]) -> xr.Dataset:
     return ds[vars_to_keep]
 
 
+def _get_fillna_value(dataset_name: str, dataset_config: dict[str, Any]) -> Any:
+    fillna_value = dataset_config.get("fillna")
+    if fillna_value is None and dataset_name == "snl_mining":
+        fillna_value = 0
+    return fillna_value
+
+
+def _fill_dataset_vars(
+    ds: xr.Dataset,
+    dataset_name: str,
+    dataset_config: dict[str, Any],
+) -> xr.Dataset:
+    fillna_value = _get_fillna_value(dataset_name, dataset_config)
+    if fillna_value is None:
+        return ds
+    return ds.fillna(fillna_value)
+
+
 def _extract_spatial_tile(
     ds: xr.Dataset,
+    dataset_name: str,
     dataset_config: dict[str, Any],
     padded_tile_geobox,
     target_geobox_zoomed,
@@ -240,6 +279,7 @@ def _extract_spatial_tile(
         dst_nodata=np.nan,
     )
     tile_ds = convert_int_to_float32(tile_ds)
+    tile_ds = _fill_dataset_vars(tile_ds, dataset_name, dataset_config)
 
     if tile_ds.sizes.get(LATITUDE_COORD, 0) == 0 or tile_ds.sizes.get(LONGITUDE_COORD, 0) == 0:
         return None
@@ -277,11 +317,15 @@ def _get_geometry_agg(dataset_config: dict[str, Any]) -> str:
     return agg
 
 
-def _rasterize_geometry_labels(tile_geobox, tile_geometries: gpd.GeoDataFrame) -> xr.DataArray:
+def _rasterize_geometry_labels(
+    tile_geobox,
+    tile_geometries: gpd.GeoDataFrame,
+    all_touched: bool,
+) -> xr.DataArray:
     labels = np.zeros(tile_geobox.shape, dtype=np.int32)
     for label_value, (_, row) in enumerate(tile_geometries.iterrows(), start=1):
         geom = Geometry(row.geometry, crs=str(tile_geometries.crs))
-        mask = rasterize(geom, tile_geobox)
+        mask = rasterize(geom, tile_geobox, all_touched=all_touched)
         labels = np.where(mask, label_value, labels)
 
     return xr.DataArray(
@@ -454,7 +498,31 @@ def _merge_dataset_results(
         if not merge_cols:
             logger.warning("Skipping dataset '%s' because no merge columns were found", dataset_name)
             continue
+        logger.info(
+            "Merging geometry dataset '%s': rows=%s, columns=%s, merge_cols=%s",
+            dataset_name,
+            len(df),
+            len(df.columns),
+            merge_cols,
+        )
         combined = pd.merge(combined, df, on=merge_cols, how="outer")
+
+    for dataset_name, df, dataset_config in results:
+        fillna_value = _get_fillna_value(dataset_name, dataset_config)
+        if fillna_value is None or combined.empty:
+            continue
+        data_cols = [
+            col for col in df.columns
+            if col not in set(all_index_cols) and col in combined.columns
+        ]
+        if data_cols:
+            logger.info(
+                "Filling missing values for geometry dataset '%s': columns=%s, fillna=%r",
+                dataset_name,
+                data_cols,
+                fillna_value,
+            )
+            combined.loc[:, data_cols] = combined.loc[:, data_cols].fillna(fillna_value)
 
     ordered_cols = [col for col in all_index_cols if col in combined.columns]
     for _, df, _ in results:
@@ -483,6 +551,368 @@ def _geometry_output_index_cols(id_col: str, ds: xr.Dataset) -> list[str]:
     return cols
 
 
+def _load_geometry_source(
+    geometry_source: dict[str, Any],
+    target_geobox,
+) -> GeometrySource:
+    geometry_path = geometry_source["path"]
+    id_col = geometry_source["id_column"]
+    all_touched = geometry_source.get("all_touched", True)
+    logger.info("Loading geometry source from %s", geometry_path)
+
+    gdf = gpd.read_file(geometry_path)
+    logger.info("Loaded %s geometries from %s", len(gdf), geometry_path)
+
+    if id_col not in gdf.columns:
+        raise ValueError(f"Geometry source id column '{id_col}' not found in {geometry_path}")
+    if gdf.crs is None:
+        raise ValueError("Geometry source must have a CRS")
+
+    geometry_col = gdf.geometry.name
+    gdf = gdf[[id_col, geometry_col]].copy()
+
+    target_crs = str(target_geobox.crs)
+    if str(gdf.crs) != target_crs:
+        logger.info("Reprojecting geometry source from %s to %s", gdf.crs, target_crs)
+        gdf = gdf.to_crs(target_crs)
+
+    duplicate_ids = int(gdf[id_col].duplicated().sum())
+    if duplicate_ids:
+        logger.warning(
+            "Geometry source contains %s duplicate '%s' values; output rows may duplicate keys",
+            duplicate_ids,
+            id_col,
+        )
+
+    logger.info(
+        "Geometry source ready: id_col=%s, geometry_col=%s, crs=%s, all_touched=%s",
+        id_col,
+        geometry_col,
+        gdf.crs,
+        all_touched,
+    )
+    return GeometrySource(
+        gdf=gdf,
+        id_col=id_col,
+        geometry_col=geometry_col,
+        all_touched=all_touched,
+    )
+
+
+def _create_tile_plan(processing_config: dict[str, Any], target_geobox) -> TilePlan:
+    configured_tile_size = processing_config.get("tile_size", 2048)
+    native_res = abs(target_geobox.resolution.x)
+    tile_size = adjust_tile_size_for_reprojection(
+        native_res,
+        processing_config.get("resolution"),
+        configured_tile_size,
+    )
+    tiles = get_available_tiles(
+        {"processing": {"tile_size": tile_size}},
+        target_geobox,
+    )
+    logger.info(
+        "Geometry tile plan: %s tiles, tile_size=%s, native_res=%s, target_res=%s",
+        len(tiles),
+        tile_size,
+        native_res,
+        processing_config.get("resolution"),
+    )
+    return TilePlan(tiles=tiles, tile_size=tile_size, native_res=native_res)
+
+
+def _find_overlapping_geometries(
+    gdf: gpd.GeoDataFrame,
+    geometry_bounds: pd.DataFrame,
+    tile_geobox,
+) -> gpd.GeoDataFrame:
+    bbox = tile_geobox.boundingbox
+    tile_polygon = box(bbox.left, bbox.bottom, bbox.right, bbox.top)
+    overlap_mask = (
+        (geometry_bounds.maxx >= bbox.left)
+        & (geometry_bounds.minx <= bbox.right)
+        & (geometry_bounds.maxy >= bbox.bottom)
+        & (geometry_bounds.miny <= bbox.top)
+    )
+    overlapping = gdf.loc[overlap_mask]
+    if overlapping.empty:
+        return overlapping
+    return overlapping[overlapping.geometry.intersects(tile_polygon)]
+
+
+def _target_tile_geobox(tile_geobox, processing_config: dict[str, Any], native_res: float):
+    target_resolution = processing_config.get("resolution")
+    if target_resolution is not None and abs(native_res - target_resolution) >= 1e-10:
+        return tile_geobox.zoom_to(resolution=target_resolution)
+    return tile_geobox
+
+
+def _log_dataset_progress(
+    dataset_name: str,
+    tile_position: int,
+    total_tiles: int,
+    processed_tiles: int,
+    skipped_tiles: int,
+    partial_rows: int,
+) -> None:
+    if total_tiles == 0:
+        return
+    interval = max(1, min(50, total_tiles // 10))
+    if tile_position % interval != 0 and tile_position != total_tiles:
+        return
+    logger.info(
+        "Geometry dataset '%s' progress: %s/%s tiles scanned, %s processed, %s skipped, %s partial rows",
+        dataset_name,
+        tile_position,
+        total_tiles,
+        processed_tiles,
+        skipped_tiles,
+        partial_rows,
+    )
+
+
+def _build_dataset_partials(
+    *,
+    dataset_name: str,
+    ds: xr.Dataset,
+    dataset_config: dict[str, Any],
+    geometry_source: GeometrySource,
+    geometry_bounds: pd.DataFrame,
+    tile_plan: TilePlan,
+    processing_config: dict[str, Any],
+    target_geobox,
+    land_mask_ds: Optional[xr.Dataset],
+) -> pd.DataFrame:
+    logger.info(
+        "Geometry dataset '%s': starting aggregation with vars=%s, agg=%s, resampling=%s",
+        dataset_name,
+        list(ds.data_vars),
+        _get_geometry_agg(dataset_config),
+        dataset_config.get("resampling", "average"),
+    )
+
+    dataset_partials: list[pd.DataFrame] = []
+    processed_tiles = 0
+    skipped_tiles = 0
+    partial_rows = 0
+    total_tiles = len(tile_plan.tiles)
+
+    for tile_position, (ix, iy) in enumerate(tile_plan.tiles, start=1):
+        tile_geobox = create_tile_geobox(target_geobox, tile_plan.tile_size, ix, iy)
+        overlapping = _find_overlapping_geometries(
+            geometry_source.gdf,
+            geometry_bounds,
+            tile_geobox,
+        )
+        if overlapping.empty:
+            skipped_tiles += 1
+            _log_dataset_progress(
+                dataset_name, tile_position, total_tiles, processed_tiles, skipped_tiles, partial_rows
+            )
+            continue
+
+        padded_tile_geobox = tile_geobox.pad(DEFAULT_TILE_PADDING, DEFAULT_TILE_PADDING)
+        target_geobox_zoomed = _target_tile_geobox(
+            tile_geobox,
+            processing_config,
+            tile_plan.native_res,
+        )
+
+        land_mask = _load_land_mask_tile(land_mask_ds, padded_tile_geobox)
+        if land_mask_ds is not None and land_mask is None:
+            skipped_tiles += 1
+            _log_dataset_progress(
+                dataset_name, tile_position, total_tiles, processed_tiles, skipped_tiles, partial_rows
+            )
+            continue
+
+        tile_ds = _extract_spatial_tile(
+            ds,
+            dataset_name,
+            dataset_config,
+            padded_tile_geobox,
+            target_geobox_zoomed,
+            land_mask,
+        )
+        if tile_ds is None:
+            skipped_tiles += 1
+            _log_dataset_progress(
+                dataset_name, tile_position, total_tiles, processed_tiles, skipped_tiles, partial_rows
+            )
+            continue
+
+        tile_geometries = overlapping.copy()
+        if str(tile_geometries.crs) != str(target_geobox_zoomed.crs):
+            tile_geometries = tile_geometries.to_crs(str(target_geobox_zoomed.crs))
+
+        label_da = _rasterize_geometry_labels(
+            target_geobox_zoomed,
+            tile_geometries,
+            geometry_source.all_touched,
+        )
+        if not bool((label_da > 0).any().item()):
+            skipped_tiles += 1
+            _log_dataset_progress(
+                dataset_name, tile_position, total_tiles, processed_tiles, skipped_tiles, partial_rows
+            )
+            continue
+
+        partial = _compute_tile_partials(
+            tile_ds=tile_ds,
+            label_da=label_da,
+            tile_geometries=tile_geometries,
+            id_col=geometry_source.id_col,
+            dataset_config=dataset_config,
+        )
+        if partial.empty:
+            skipped_tiles += 1
+        else:
+            processed_tiles += 1
+            partial_rows += len(partial)
+            dataset_partials.append(partial)
+
+        _log_dataset_progress(
+            dataset_name, tile_position, total_tiles, processed_tiles, skipped_tiles, partial_rows
+        )
+
+    logger.info(
+        "Geometry dataset '%s': scanned %s tiles, processed %s, skipped %s, collected %s partial rows",
+        dataset_name,
+        total_tiles,
+        processed_tiles,
+        skipped_tiles,
+        partial_rows,
+    )
+
+    if dataset_partials:
+        return pd.concat(dataset_partials, ignore_index=True)
+    return pd.DataFrame(columns=_geometry_output_index_cols(geometry_source.id_col, ds))
+
+
+def _build_dataset_result(
+    *,
+    dataset_name: str,
+    ds: xr.Dataset,
+    dataset_config: dict[str, Any],
+    geometry_source: GeometrySource,
+    geometry_bounds: pd.DataFrame,
+    tile_plan: TilePlan,
+    processing_config: dict[str, Any],
+    target_geobox,
+    land_mask_ds: Optional[xr.Dataset],
+) -> pd.DataFrame:
+    partials = _build_dataset_partials(
+        dataset_name=dataset_name,
+        ds=ds,
+        dataset_config=dataset_config,
+        geometry_source=geometry_source,
+        geometry_bounds=geometry_bounds,
+        tile_plan=tile_plan,
+        processing_config=processing_config,
+        target_geobox=target_geobox,
+        land_mask_ds=land_mask_ds,
+    )
+    logger.info(
+        "Geometry dataset '%s': finalizing %s partial rows",
+        dataset_name,
+        len(partials),
+    )
+    return _finalize_dataset_partials(
+        partials=partials,
+        dataset_name=dataset_name,
+        dataset_config=dataset_config,
+        loaded_ds=ds,
+        id_col=geometry_source.id_col,
+    )
+
+
+def _drop_geometry_source_columns(
+    existing: pd.DataFrame,
+    geometry_source_config: dict[str, Any],
+    geometry_col: str,
+    id_col: str,
+) -> pd.DataFrame:
+    geometry_source_columns = set(geometry_source_config.get("columns", []))
+    geometry_source_columns.add(geometry_col)
+    geometry_source_columns.add("geometry")
+    geometry_source_columns.discard(id_col)
+    cols_to_drop = [col for col in geometry_source_columns if col in existing.columns]
+    if cols_to_drop:
+        logger.info("Dropping legacy geometry-source columns from existing output: %s", cols_to_drop)
+        return existing.drop(columns=cols_to_drop)
+    return existing
+
+
+def _merge_update_output(
+    *,
+    combined: pd.DataFrame,
+    output_file: str,
+    target_datasource: Optional[str],
+    assembly_config: dict[str, Any],
+    geometry_source_config: dict[str, Any],
+    geometry_source: GeometrySource,
+) -> pd.DataFrame:
+    if not target_datasource:
+        raise ValueError("Geometry update mode requires 'datasource'")
+
+    logger.info("Geometry update: reading existing output from %s", output_file)
+    existing = pd.read_parquet(output_file)
+    logger.info(
+        "Geometry update: existing output has %s rows and %s columns",
+        len(existing),
+        len(existing.columns),
+    )
+
+    existing = _drop_geometry_source_columns(
+        existing,
+        geometry_source_config,
+        geometry_source.geometry_col,
+        geometry_source.id_col,
+    )
+
+    dataset_columns = _existing_dataset_columns(target_datasource, assembly_config)
+    cols_to_drop = [col for col in dataset_columns if col in existing.columns]
+    if cols_to_drop:
+        logger.info(
+            "Geometry update: replacing %s columns for datasource '%s': %s",
+            len(cols_to_drop),
+            target_datasource,
+            cols_to_drop,
+        )
+        existing = existing.drop(columns=cols_to_drop)
+    else:
+        logger.info(
+            "Geometry update: no existing columns found for datasource '%s'; adding new columns",
+            target_datasource,
+        )
+
+    merge_cols = [geometry_source.id_col]
+    if YEAR_COORD in combined.columns and YEAR_COORD in existing.columns:
+        merge_cols.append(YEAR_COORD)
+    logger.info("Geometry update: merging datasource '%s' on %s", target_datasource, merge_cols)
+
+    value_columns = [col for col in combined.columns if col not in set(merge_cols)]
+    updated = existing.merge(combined[merge_cols + value_columns], on=merge_cols, how="left")
+
+    fillna_value = _get_fillna_value(target_datasource, assembly_config["datasets"][target_datasource])
+    fill_columns = [col for col in dataset_columns if col in updated.columns]
+    if fillna_value is not None and fill_columns:
+        logger.info(
+            "Geometry update: filling %s columns for datasource '%s' with %r",
+            len(fill_columns),
+            target_datasource,
+            fillna_value,
+        )
+        updated.loc[:, fill_columns] = updated.loc[:, fill_columns].fillna(fillna_value)
+
+    logger.info(
+        "Geometry update: merged output has %s rows and %s columns",
+        len(updated),
+        len(updated.columns),
+    )
+    return updated
+
+
 def assemble_geometry_weighted(
     *,
     datasets: list[tuple[str, xr.Dataset, dict[str, Any]]],
@@ -504,141 +934,65 @@ def assemble_geometry_weighted(
     """
     del hpc_root, full_config, dask_client
 
-    geometry_path = geometry_source["path"]
-    id_col = geometry_source["id_column"]
-    keep_columns = list(geometry_source.get("columns", []))
-    all_touched = geometry_source.get("all_touched", True)
-
-    gdf = gpd.read_file(geometry_path)
-    if id_col not in gdf.columns:
-        raise ValueError(f"Geometry source id column '{id_col}' not found in {geometry_path}")
-    gdf = gdf[[id_col, *[c for c in keep_columns if c in gdf.columns], gdf.geometry.name]].copy()
-
-    target_crs = str(target_geobox.crs)
-    if gdf.crs is None:
-        raise ValueError("Geometry source must have a CRS")
-    if str(gdf.crs) != target_crs:
-        gdf = gdf.to_crs(target_crs)
-
     processing_config = assembly_config.get("processing", {})
-    tile_size = processing_config.get("tile_size", 2048)
-    native_res = abs(target_geobox.resolution.x)
-    tile_size = adjust_tile_size_for_reprojection(
-        native_res,
-        processing_config.get("resolution"),
-        tile_size,
+    assembly_mode = processing_config.get("assembly_mode", "create")
+    target_datasource = processing_config.get("datasource")
+    output_file = os.path.join(output_path, "data.parquet")
+
+    logger.info(
+        "Starting weighted geometry assembly: mode=%s, datasets=%s, output=%s",
+        assembly_mode,
+        [name for name, _, _ in datasets],
+        output_file,
     )
 
-    all_tiles = get_available_tiles(
-        {"processing": {"tile_size": tile_size}},
-        target_geobox,
-    )
+    loaded_geometry = _load_geometry_source(geometry_source, target_geobox)
+    tile_plan = _create_tile_plan(processing_config, target_geobox)
+    geometry_bounds = loaded_geometry.gdf.geometry.bounds
 
     dataset_results: list[tuple[str, pd.DataFrame, dict[str, Any]]] = []
-    geometry_bounds = gdf.geometry.bounds
-
     for dataset_name, ds, dataset_config in datasets:
-        logger.info("Geometry assembly: processing dataset '%s'", dataset_name)
-        dataset_partials: list[pd.DataFrame] = []
-
-        for ix, iy in all_tiles:
-            tile_geobox = create_tile_geobox(target_geobox, tile_size, ix, iy)
-            bbox = tile_geobox.boundingbox
-            tile_polygon = box(bbox.left, bbox.bottom, bbox.right, bbox.top)
-
-            overlap_mask = (
-                (geometry_bounds.maxx >= bbox.left)
-                & (geometry_bounds.minx <= bbox.right)
-                & (geometry_bounds.maxy >= bbox.bottom)
-                & (geometry_bounds.miny <= bbox.top)
-            )
-            overlapping = gdf.loc[overlap_mask]
-            if overlapping.empty:
-                continue
-
-            overlapping = overlapping[overlapping.geometry.intersects(tile_polygon)]
-            if overlapping.empty:
-                continue
-
-            padded_tile_geobox = tile_geobox.pad(DEFAULT_TILE_PADDING, DEFAULT_TILE_PADDING)
-            target_resolution = processing_config.get("resolution")
-            if target_resolution is not None and abs(native_res - target_resolution) >= 1e-10:
-                target_geobox_zoomed = tile_geobox.zoom_to(resolution=target_resolution)
-            else:
-                target_geobox_zoomed = tile_geobox
-
-            land_mask = _load_land_mask_tile(land_mask_ds, padded_tile_geobox)
-            if land_mask_ds is not None and land_mask is None:
-                continue
-
-            tile_ds = _extract_spatial_tile(
-                ds,
-                dataset_config,
-                padded_tile_geobox,
-                target_geobox_zoomed,
-                land_mask,
-            )
-            if tile_ds is None:
-                continue
-
-            tile_geometries = overlapping.copy()
-            if str(tile_geometries.crs) != str(target_geobox_zoomed.crs):
-                tile_geometries = tile_geometries.to_crs(str(target_geobox_zoomed.crs))
-
-            label_da = _rasterize_geometry_labels(target_geobox_zoomed, tile_geometries)
-            if not bool((label_da > 0).any().item()):
-                continue
-
-            partial = _compute_tile_partials(
-                tile_ds=tile_ds,
-                label_da=label_da,
-                tile_geometries=tile_geometries,
-                id_col=id_col,
-                dataset_config=dataset_config,
-            )
-            if not partial.empty:
-                dataset_partials.append(partial)
-
-        if dataset_partials:
-            partials_df = pd.concat(dataset_partials, ignore_index=True)
-        else:
-            partials_df = pd.DataFrame(columns=_geometry_output_index_cols(id_col, ds))
-
-        finalized_df = _finalize_dataset_partials(
-            partials=partials_df,
+        finalized_df = _build_dataset_result(
             dataset_name=dataset_name,
+            ds=ds,
             dataset_config=dataset_config,
-            loaded_ds=ds,
-            id_col=id_col,
+            geometry_source=loaded_geometry,
+            geometry_bounds=geometry_bounds,
+            tile_plan=tile_plan,
+            processing_config=processing_config,
+            target_geobox=target_geobox,
+            land_mask_ds=land_mask_ds,
         )
         dataset_results.append((dataset_name, finalized_df, dataset_config))
 
-    combined = _merge_dataset_results(dataset_results, id_col=id_col)
-
-    base_geom = gdf[[id_col, *[c for c in keep_columns if c in gdf.columns], gdf.geometry.name]].drop_duplicates(id_col)
-    combined = pd.merge(base_geom, combined, on=id_col, how="right")
-    combined = gpd.GeoDataFrame(combined, geometry=gdf.geometry.name, crs=gdf.crs)
-
-    output_file = os.path.join(output_path, "data.parquet")
-    assembly_mode = processing_config.get("assembly_mode", "create")
-    target_datasource = processing_config.get("datasource")
+    logger.info("Merging %s finalized geometry dataset tables", len(dataset_results))
+    combined = _merge_dataset_results(dataset_results, id_col=loaded_geometry.id_col)
+    logger.info(
+        "Merged geometry table has %s rows and %s columns before output handling",
+        len(combined),
+        len(combined.columns),
+    )
 
     if assembly_mode == "update" and os.path.exists(output_file):
-        existing = gpd.read_parquet(output_file)
-        if not target_datasource:
-            raise ValueError("Geometry update mode requires 'datasource'")
+        combined = _merge_update_output(
+            combined=combined,
+            output_file=output_file,
+            target_datasource=target_datasource,
+            assembly_config=assembly_config,
+            geometry_source_config=geometry_source,
+            geometry_source=loaded_geometry,
+        )
+    elif assembly_mode == "update":
+        logger.warning(
+            "Geometry update requested but existing output does not exist at %s; writing new output",
+            output_file,
+        )
 
-        dataset_columns = _existing_dataset_columns(target_datasource, assembly_config)
-        cols_to_drop = [col for col in dataset_columns if col in existing.columns]
-        if cols_to_drop:
-            existing = existing.drop(columns=cols_to_drop)
-
-        merge_cols = [id_col]
-        if YEAR_COORD in combined.columns and YEAR_COORD in existing.columns:
-            merge_cols.append(YEAR_COORD)
-        value_columns = [col for col in combined.columns if col not in {gdf.geometry.name, *merge_cols}]
-        combined = existing.merge(combined[merge_cols + value_columns], on=merge_cols, how="left")
-        combined = gpd.GeoDataFrame(combined, geometry=gdf.geometry.name, crs=gdf.crs)
-
+    logger.info(
+        "Writing geometry assembly output to %s with %s rows and %s columns",
+        output_file,
+        len(combined),
+        len(combined.columns),
+    )
     combined.to_parquet(output_file, index=False)
     logger.info("Geometry assembly written to %s", output_file)

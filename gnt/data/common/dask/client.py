@@ -236,6 +236,21 @@ def _cleanup_zombie_processes():
     except Exception as e:
         logger.debug(f"Error in zombie process cleanup: {e}")
 
+
+def _is_dask_object_closed(obj):
+    """Return True when a Dask client or cluster is already closed."""
+    closed = getattr(obj, "closed", None)
+    if closed is not None:
+        return bool(closed)
+
+    status = getattr(obj, "status", None)
+    if status is None:
+        return False
+
+    status_name = getattr(status, "name", str(status)).lower()
+    return status_name in {"closed", "closing", "closing_gracefully"}
+
+
 class DaskClientContextManager:
     """
     Context manager for Dask client to ensure proper cleanup with improved shutdown handling.
@@ -270,7 +285,7 @@ class DaskClientContextManager:
         logger.debug("Exiting Dask client context")
         
         try:
-            if self.client and not self.client.closed:
+            if self.client and not _is_dask_object_closed(self.client):
                 # Try to retire workers gracefully before closing
                 try:
                     logger.debug("Retiring workers gracefully...")
@@ -289,7 +304,7 @@ class DaskClientContextManager:
                 logger.debug("Closing Dask client...")
                 self.client.close()
                 
-            if self.cluster and not self.cluster.closed:
+            if self.cluster and not _is_dask_object_closed(self.cluster):
                 logger.debug("Closing Dask cluster...")
                 self.cluster.close()
                 

@@ -167,6 +167,32 @@ class TileProcessor:
         except Exception as e:
             logger.warning(f"Tile exists but appears corrupted ({e}), will reprocess")
             return False
+
+    def _get_fillna_value(self, dataset_name: str, dataset_config: Dict[str, Any]) -> Optional[Any]:
+        """Return configured fill value, including legacy defaults."""
+        fillna_value = dataset_config.get("fillna")
+        if fillna_value is None and dataset_name == "snl_mining":
+            fillna_value = 0
+        return fillna_value
+
+    def _fill_dataset_columns(
+        self,
+        df: pd.DataFrame,
+        dataset_name: str,
+        dataset_config: Dict[str, Any],
+    ) -> pd.DataFrame:
+        """Fill configured datasource columns after dataframe alignment/merges."""
+        fillna_value = self._get_fillna_value(dataset_name, dataset_config)
+        if fillna_value is None or df is None or df.empty:
+            return df
+
+        data_cols = [
+            col for col in self.column_order_map.get(dataset_name, [])
+            if col in df.columns
+        ]
+        if data_cols:
+            df.loc[:, data_cols] = df.loc[:, data_cols].fillna(fillna_value)
+        return df
     
     def _create_tile_geoboxes(self, tile_geobox) -> Tuple[Any, Optional[Any]]:
         """
@@ -605,6 +631,7 @@ class TileProcessor:
         combined = self._merge_update_table(existing_df, df, self.all_index_cols, context)
         if combined is None:
             return False
+        combined = self._fill_dataset_columns(combined, dataset_name, dataset_config)
         
         rows_before = len(existing_df)
         logger.info(
@@ -1089,6 +1116,7 @@ class TileProcessor:
                     f"no data, created skeleton with {len(self.column_order_map[dataset_name])} NaN columns"
                 )
             else:
+                df = self._fill_dataset_columns(df, dataset_name, dataset_config)
                 logger.debug(
                     f"Tile [{ix}, {iy}]: '{dataset_name}' - "
                     f"extracted {len(df)} rows, {len(df.columns)} columns"
@@ -1097,6 +1125,8 @@ class TileProcessor:
             dataset_tables.append((dataset_name, df))
 
         combined = self._combine_dataset_tables(dataset_tables, ix, iy)
+        for dataset_name, _, dataset_config in datasets:
+            combined = self._fill_dataset_columns(combined, dataset_name, dataset_config)
         
         # Check for empty result
         if combined is None or combined.empty:

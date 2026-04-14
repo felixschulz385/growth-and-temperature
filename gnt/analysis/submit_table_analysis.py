@@ -23,6 +23,8 @@ try:
 except ImportError:
     _DUCKREG_VERSION = "unknown"
 
+from gnt.analysis.config import get_default_model_runtime
+
 ONE_WEEK_SECONDS = 7 * 24 * 3600
 
 
@@ -99,15 +101,18 @@ def get_models_for_table(
 
     models = table_models['model_name'].tolist()
 
-    # Look up max_runtime for each model
-    model_runtime_map = df_models.set_index('model_name')['max_runtime']
+    model_rows = df_models.set_index('model_name')
     total_seconds = 0
     for model in models:
-        if model not in model_runtime_map.index:
+        if model not in model_rows.index:
             raise ValueError(
                 f"Model {model!r} (from table {table_id!r}) not found in 'Models' sheet"
             )
-        runtime_str = model_runtime_map[model]
+        model_row = model_rows.loc[model]
+        runtime_str = get_default_model_runtime(
+            model_row.get('data_source'),
+            model_row.get('instruments'),
+        )
         total_seconds += parse_runtime_to_seconds(runtime_str)
 
     return models, total_seconds
@@ -238,7 +243,7 @@ def main():
         help='Individual model names to submit'
     )
     parser.add_argument('--mem', default='128GB', help='Memory allocation (default: 128GB)')
-    parser.add_argument('--time', default=None, help='Time limit override (default: auto from max_runtime sum)')
+    parser.add_argument('--time', default=None, help='Time limit override (default: auto from dataset/method runtime sum)')
     parser.add_argument('--qos', default='1week', help='QOS (default: 1week)')
     parser.add_argument('--partition', default='scicore', help='SLURM partition (default: scicore)')
     parser.add_argument('--cpus-per-task', default=8, type=int, help='CPUs per task (default: 8)')

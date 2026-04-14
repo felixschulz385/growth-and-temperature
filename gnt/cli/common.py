@@ -9,7 +9,6 @@ import logging
 import sys
 from typing import Optional
 
-
 _NOISY_GEO_LOGGERS = (
     "rasterio",
     "rasterio.env",
@@ -18,6 +17,21 @@ _NOISY_GEO_LOGGERS = (
     "rasterio._base",
 )
 
+
+class _RasterioWarpNoiseFilter(logging.Filter):
+    """Filter out known noisy Rasterio/GDAL debug messages."""
+
+    _SUPPRESSED_SUBSTRINGS = (
+        "CPLE_AppDefined",
+        "GDAL",
+        "Warp",
+        "warp",
+        "Nodata success",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        message = record.getMessage()
+        return not any(s in message for s in self._SUPPRESSED_SUBSTRINGS)
 
 def setup_logging(
     level: str = "INFO",

@@ -3,8 +3,8 @@
 #SBATCH --output=./log/compress/%x-%j.log
 #SBATCH --error=./log/compress/%x-%j.err
 #SBATCH --partition=scicore
-#SBATCH --time=1-00:00:00
-#SBATCH --qos=1day
+#SBATCH --time=3-00:00:00
+#SBATCH --qos=1week
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 
@@ -47,6 +47,8 @@ echo "Python:       $PYTHON_BIN"
     --jobs 1 \
     --level 19 \
     --checksum \
+    --delete-source \
+    --delete-source-existing \
     --log-file "./log/compress/${DATASET_NAME}/compress-${SLURM_JOB_ID}.log"
 
 rm -rf "$TMPDIR"
