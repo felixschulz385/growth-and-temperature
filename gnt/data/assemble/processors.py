@@ -168,12 +168,12 @@ class TileProcessor:
             logger.warning(f"Tile exists but appears corrupted ({e}), will reprocess")
             return False
 
-    def _get_fillna_value(self, dataset_name: str, dataset_config: Dict[str, Any]) -> Optional[Any]:
-        """Return configured fill value, including legacy defaults."""
-        fillna_value = dataset_config.get("fillna")
-        if fillna_value is None and dataset_name == "snl_mining":
-            fillna_value = 0
-        return fillna_value
+    def _get_fillna_config(self, dataset_name: str, dataset_config: Dict[str, Any]) -> Optional[Any]:
+        """Return configured fill behavior, including legacy defaults."""
+        fillna_config = dataset_config.get("fillna")
+        if fillna_config is None and dataset_name == "snl_mining":
+            fillna_config = 0
+        return fillna_config
 
     def _fill_dataset_columns(
         self,
@@ -182,16 +182,33 @@ class TileProcessor:
         dataset_config: Dict[str, Any],
     ) -> pd.DataFrame:
         """Fill configured datasource columns after dataframe alignment/merges."""
-        fillna_value = self._get_fillna_value(dataset_name, dataset_config)
-        if fillna_value is None or df is None or df.empty:
+        fillna_config = self._get_fillna_config(dataset_name, dataset_config)
+        if fillna_config is None or df is None or df.empty:
             return df
 
         data_cols = [
             col for col in self.column_order_map.get(dataset_name, [])
             if col in df.columns
         ]
-        if data_cols:
-            df.loc[:, data_cols] = df.loc[:, data_cols].fillna(fillna_value)
+        if not data_cols:
+            return df
+
+        if isinstance(fillna_config, dict):
+            column_prefix = dataset_config.get("column_prefix", "")
+            for var_name, fill_value in fillna_config.items():
+                candidate_cols = []
+                if column_prefix:
+                    candidate_cols.append(f"{column_prefix}{var_name}")
+                candidate_cols.append(var_name)
+                target_cols = [
+                    col for col in candidate_cols
+                    if col in data_cols and col in df.columns
+                ]
+                if target_cols:
+                    df.loc[:, target_cols] = df.loc[:, target_cols].fillna(fill_value)
+            return df
+
+        df.loc[:, data_cols] = df.loc[:, data_cols].fillna(fillna_config)
         return df
     
     def _create_tile_geoboxes(self, tile_geobox) -> Tuple[Any, Optional[Any]]:

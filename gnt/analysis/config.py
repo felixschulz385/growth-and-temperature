@@ -63,6 +63,10 @@ DEFAULT_MODEL_MAX_RUNTIMES = {
         'OLS': '0-00:10:00',
         'IV': '0-00:05:00',
     },
+    'adm2_1km': {
+        'OLS': '0-00:00:10',
+        'IV': '0-00:00:30',
+    }
 }
 DEFAULT_MODEL_MAX_RUNTIME = '0-20:15:00'
 

@@ -227,11 +227,11 @@ def _select_columns(ds: xr.Dataset, columns: Optional[list[str]]) -> xr.Dataset:
     return ds[vars_to_keep]
 
 
-def _get_fillna_value(dataset_name: str, dataset_config: dict[str, Any]) -> Any:
-    fillna_value = dataset_config.get("fillna")
-    if fillna_value is None and dataset_name == "snl_mining":
-        fillna_value = 0
-    return fillna_value
+def _get_fillna_config(dataset_name: str, dataset_config: dict[str, Any]) -> Any:
+    fillna_config = dataset_config.get("fillna")
+    if fillna_config is None and dataset_name == "snl_mining":
+        fillna_config = 0
+    return fillna_config
 
 
 def _fill_dataset_vars(
@@ -239,10 +239,15 @@ def _fill_dataset_vars(
     dataset_name: str,
     dataset_config: dict[str, Any],
 ) -> xr.Dataset:
-    fillna_value = _get_fillna_value(dataset_name, dataset_config)
-    if fillna_value is None:
+    fillna_config = _get_fillna_config(dataset_name, dataset_config)
+    if fillna_config is None:
         return ds
-    return ds.fillna(fillna_value)
+    if isinstance(fillna_config, dict):
+        for var_name, fill_value in fillna_config.items():
+            if var_name in ds.data_vars:
+                ds[var_name] = ds[var_name].fillna(fill_value)
+        return ds
+    return ds.fillna(fillna_config)
 
 
 def _extract_spatial_tile(
@@ -508,21 +513,47 @@ def _merge_dataset_results(
         combined = pd.merge(combined, df, on=merge_cols, how="outer")
 
     for dataset_name, df, dataset_config in results:
-        fillna_value = _get_fillna_value(dataset_name, dataset_config)
-        if fillna_value is None or combined.empty:
+        fillna_config = _get_fillna_config(dataset_name, dataset_config)
+        if fillna_config is None or combined.empty:
             continue
         data_cols = [
             col for col in df.columns
             if col not in set(all_index_cols) and col in combined.columns
         ]
+        if not data_cols:
+            continue
+
+        if isinstance(fillna_config, dict):
+            column_prefix = dataset_config.get("column_prefix", "")
+            filled_cols = []
+            for var_name, fill_value in fillna_config.items():
+                candidate_cols = []
+                if column_prefix:
+                    candidate_cols.append(f"{column_prefix}{var_name}")
+                candidate_cols.append(var_name)
+                target_cols = [
+                    col for col in candidate_cols
+                    if col in data_cols and col in combined.columns
+                ]
+                if target_cols:
+                    combined.loc[:, target_cols] = combined.loc[:, target_cols].fillna(fill_value)
+                    filled_cols.extend(target_cols)
+            if filled_cols:
+                logger.info(
+                    "Filling missing values for geometry dataset '%s': columns=%s",
+                    dataset_name,
+                    filled_cols,
+                )
+            continue
+
         if data_cols:
             logger.info(
                 "Filling missing values for geometry dataset '%s': columns=%s, fillna=%r",
                 dataset_name,
                 data_cols,
-                fillna_value,
+                fillna_config,
             )
-            combined.loc[:, data_cols] = combined.loc[:, data_cols].fillna(fillna_value)
+            combined.loc[:, data_cols] = combined.loc[:, data_cols].fillna(fillna_config)
 
     ordered_cols = [col for col in all_index_cols if col in combined.columns]
     for _, df, _ in results:
@@ -894,16 +925,43 @@ def _merge_update_output(
     value_columns = [col for col in combined.columns if col not in set(merge_cols)]
     updated = existing.merge(combined[merge_cols + value_columns], on=merge_cols, how="left")
 
-    fillna_value = _get_fillna_value(target_datasource, assembly_config["datasets"][target_datasource])
+    fillna_config = _get_fillna_config(
+        target_datasource,
+        assembly_config["datasets"][target_datasource],
+    )
     fill_columns = [col for col in dataset_columns if col in updated.columns]
-    if fillna_value is not None and fill_columns:
-        logger.info(
-            "Geometry update: filling %s columns for datasource '%s' with %r",
-            len(fill_columns),
-            target_datasource,
-            fillna_value,
-        )
-        updated.loc[:, fill_columns] = updated.loc[:, fill_columns].fillna(fillna_value)
+    if fillna_config is not None and fill_columns:
+        if isinstance(fillna_config, dict):
+            dataset_config = assembly_config["datasets"][target_datasource]
+            column_prefix = dataset_config.get("column_prefix", "")
+            filled_cols = []
+            for var_name, fill_value in fillna_config.items():
+                candidate_cols = []
+                if column_prefix:
+                    candidate_cols.append(f"{column_prefix}{var_name}")
+                candidate_cols.append(var_name)
+                target_cols = [
+                    col for col in candidate_cols
+                    if col in fill_columns and col in updated.columns
+                ]
+                if target_cols:
+                    updated.loc[:, target_cols] = updated.loc[:, target_cols].fillna(fill_value)
+                    filled_cols.extend(target_cols)
+            if filled_cols:
+                logger.info(
+                    "Geometry update: filling %s columns for datasource '%s': %s",
+                    len(filled_cols),
+                    target_datasource,
+                    filled_cols,
+                )
+        else:
+            logger.info(
+                "Geometry update: filling %s columns for datasource '%s' with %r",
+                len(fill_columns),
+                target_datasource,
+                fillna_config,
+            )
+            updated.loc[:, fill_columns] = updated.loc[:, fill_columns].fillna(fillna_config)
 
     logger.info(
         "Geometry update: merged output has %s rows and %s columns",
