@@ -4,16 +4,14 @@ Unified configuration reader for ``orchestration/configs/analysis.xlsx``.
 This is the single source of truth for all three concerns that previously
 read the workbook independently:
 
-* **Model execution** (workflow.py / run.py) — formula, data source,
-  per-model settings overrides.
-* **SLURM submission** (submit_table_analysis.py) — table membership,
+* **Model execution** (workflow.py / run.py) — formula and data source.
+* **SLURM submission** (submit.py) — table membership,
   wall-clock time budgets.
 * **Table rendering** (generate_tables.py) — table display configuration,
   output formats.
 
 Sheets consumed
 ---------------
-Settings         key / value  → global defaults (threads, memory_limit, …)
 Models           one row per model specification
 Models in Tables table_name / model_name / order
 Tables           (optional) per-table display overrides for generate_tables
@@ -35,12 +33,6 @@ _ANALYSIS_DIR = Path(__file__).parent           # gnt/analysis/
 PROJECT_ROOT = _ANALYSIS_DIR.parent.parent       # project root
 RESULTS_DIR = PROJECT_ROOT / "output" / "analysis"
 DEFAULT_EXCEL = PROJECT_ROOT / "orchestration" / "configs" / "analysis.xlsx"
-
-# Column names in the Models sheet that map to per-model DuckReg settings
-_SETTING_KEYS = (
-    'se_method', 'fitter', 'fe_method', 'round_strata', 'seed',
-    'n_bootstraps', 'threads', 'memory_limit', 'max_temp_directory_size',
-)
 
 # Default wall-clock budgets by assembled dataset and estimation method.
 # These replace the deprecated per-model ``max_runtime`` workbook column.
@@ -69,6 +61,200 @@ DEFAULT_MODEL_MAX_RUNTIMES = {
     }
 }
 DEFAULT_MODEL_MAX_RUNTIME = '0-20:15:00'
+
+RESOLUTION_DATA_SOURCE_MAP = {
+    '500m': '500m',
+    '1km': '1km',
+    '5km': '5km',
+    '50km': '50km',
+    'ADM2': 'adm2_1km',
+}
+
+DEFAULT_TEMPORAL_EXTENTS = {
+    '500m': '2012-2020',
+    '1km': '2000-2020',
+    '5km': '1991-2020',
+    '50km': '2000-2020',
+    'ADM2': '1992-2020',
+}
+
+FIXED_EFFECT_LABELS = {
+    '0': 'NO',
+    'NO': 'NO',
+    'pixel_id': 'PX',
+    'PX': 'PX',
+    'pixel_id + country*year': 'PX+CY',
+    'PX+CY': 'PX+CY',
+    'pixel_id + year': 'PX+YR',
+    'PX+YR': 'PX+YR',
+    'pixel_id_1km': 'PX1K',
+    'PX1K': 'PX1K',
+    'pixel_id_1km + country*year': 'PX1K+CY',
+    'PX1K+CY': 'PX1K+CY',
+    'pixel_id_1km + year': 'PX1K+YR',
+    'PX1K+YR': 'PX1K+YR',
+    'pixel_id_5km': 'PX5K',
+    'PX5K': 'PX5K',
+    'pixel_id_5km + country*year': 'PX5K+CY',
+    'PX5K+CY': 'PX5K+CY',
+    'pixel_id_5km + year': 'PX5K+YR',
+    'PX5K+YR': 'PX5K+YR',
+    'GID_2': 'ADM2',
+    'subdivision': 'ADM2',
+    'ADM2': 'ADM2',
+    'GID_2 + country*year': 'ADM2+CY',
+    'subdivision + country*year': 'ADM2+CY',
+    'ADM2+CY': 'ADM2+CY',
+    'GID_2 + year': 'ADM2+YR',
+    'subdivision + year': 'ADM2+YR',
+    'ADM2+YR': 'ADM2+YR',
+}
+
+FIXED_EFFECT_TERMS = {
+    'NO': [],
+    'PX': ['pixel_id'],
+    'PX+CY': ['pixel_id', 'country*year'],
+    'PX+YR': ['pixel_id', 'year'],
+    'PX1K': ['pixel_id_1km'],
+    'PX1K+CY': ['pixel_id_1km', 'country*year'],
+    'PX1K+YR': ['pixel_id_1km', 'year'],
+    'PX5K': ['pixel_id_5km'],
+    'PX5K+CY': ['pixel_id_5km', 'country*year'],
+    'PX5K+YR': ['pixel_id_5km', 'year'],
+    'ADM2': ['subdivision'],
+    'ADM2+CY': ['subdivision', 'country*year'],
+    'ADM2+YR': ['subdivision', 'year'],
+}
+
+CLUSTERING_LABELS = {
+    'subdivision': 'ADM2',
+    'ADM2': 'ADM2',
+    'country': 'Country',
+    'Country': 'Country',
+}
+
+CLUSTERING_COLUMNS = {
+    'ADM2': 'subdivision',
+    'Country': 'country',
+}
+
+
+def normalize_resolution_label(resolution: Any) -> str:
+    """Return canonical resolution label used in table metadata and paths."""
+    if resolution is None or pd.isna(resolution):
+        return ''
+
+    raw = str(resolution).strip()
+    if raw == 'adm2_1km':
+        return 'ADM2'
+    if raw in RESOLUTION_DATA_SOURCE_MAP:
+        return raw
+    raise ValueError(f"Unsupported resolution: {resolution!r}")
+
+
+def resolve_data_source_from_resolution(resolution: Any) -> str:
+    """Map a resolution label to the assembled parquet dataset stem."""
+    label = normalize_resolution_label(resolution)
+    return RESOLUTION_DATA_SOURCE_MAP[label]
+
+
+def normalize_temporal_extent_label(temporal_extent: Any, resolution: Any) -> str:
+    """Return canonical ``YYYY-YYYY`` temporal extent."""
+    if temporal_extent is None or pd.isna(temporal_extent) or not str(temporal_extent).strip():
+        return DEFAULT_TEMPORAL_EXTENTS[normalize_resolution_label(resolution)]
+    return str(temporal_extent).strip()
+
+
+def build_temporal_extent_sql(temporal_extent: str) -> str:
+    """Convert ``YYYY-YYYY`` to an inclusive SQL year filter."""
+    match = re.fullmatch(r'(\d{4})\s*-\s*(\d{4})', str(temporal_extent).strip())
+    if not match:
+        raise ValueError(f"Invalid temporal extent: {temporal_extent!r}")
+    start_year, end_year = match.groups()
+    return f"(year >= {start_year}) AND (year <= {end_year})"
+
+
+def normalize_fixed_effects_label(fixed_effects: Any) -> str:
+    """Return canonical FE label used in table metadata and paths."""
+    if fixed_effects is None or pd.isna(fixed_effects):
+        return 'NO'
+
+    raw = str(fixed_effects).strip()
+    if raw == '' or raw == 'nan':
+        return 'NO'
+    try:
+        return FIXED_EFFECT_LABELS[raw]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported fixed effects specification: {fixed_effects!r}") from exc
+
+
+def fixed_effect_terms_from_label(label: str) -> List[str]:
+    """Return formula FE terms for a canonical FE label."""
+    try:
+        return FIXED_EFFECT_TERMS[label]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported fixed effects label: {label!r}") from exc
+
+
+def normalize_clustering_label(clustering: Any, resolution: Any) -> str:
+    """Return canonical clustering label, applying resolution-based defaults."""
+    if clustering is None or pd.isna(clustering) or not str(clustering).strip():
+        resolution_label = normalize_resolution_label(resolution)
+        return 'Country' if resolution_label in ('50km', 'ADM2') else 'ADM2'
+
+    raw = str(clustering).strip()
+    try:
+        return CLUSTERING_LABELS[raw]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported clustering specification: {clustering!r}") from exc
+
+
+def cluster_column_from_label(label: str) -> str:
+    """Return the physical clustering column for a canonical label."""
+    try:
+        return CLUSTERING_COLUMNS[label]
+    except KeyError as exc:
+        raise ValueError(f"Unsupported clustering label: {label!r}") from exc
+
+
+def normalize_sql_query(query: str) -> str:
+    """Convert workbook query syntax to SQL."""
+    sql = str(query).strip()
+    sql = sql.replace(' & ', ' AND ').replace(' | ', ' OR ')
+    sql = re.sub(r'(?<![<>=!])==', '=', sql)
+    return sql
+
+
+def strip_temporal_conditions(query: str) -> str:
+    """Remove simple year predicates from a workbook query string."""
+    cleaned = str(query).strip()
+    if not cleaned or cleaned == 'nan':
+        return ''
+
+    patterns = [
+        r'\(\s*year\s*>=\s*\d{4}\s*\)\s*AND\s*\(\s*year\s*<=\s*\d{4}\s*\)',
+        r'\(\s*year\s*>=\s*\d{4}\s*\)\s*AND\s*\(\s*year\s*<\s*\d{4}\s*\)',
+        r'year\s*>=\s*\d{4}\s*AND\s*year\s*<=\s*\d{4}',
+        r'year\s*>=\s*\d{4}\s*AND\s*year\s*<\s*\d{4}',
+        r'\(?\s*year\s*[<>]=?\s*\d{4}\s*\)?',
+    ]
+    for pattern in patterns:
+        cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+    cleaned = re.sub(r'\(\s*\)', '', cleaned)
+    cleaned = re.sub(r'\s+(AND|OR)\s+(AND|OR)\s+', r' \1 ', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'^\s*(AND|OR)\s+', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s+(AND|OR)\s*$', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+    return cleaned
+
+
+def expand_data_source_path(data_source: str) -> str:
+    """Resolve a dataset stem or explicit path to a parquet path."""
+    data_source = str(data_source).strip()
+    if not data_source.startswith('/') and not data_source.startswith('$'):
+        return os.path.expandvars(f"data_nobackup/assembled/{data_source}.parquet")
+    return os.path.expandvars(data_source)
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +298,9 @@ def normalize_runtime_dataset(data_source: Any) -> str:
     data_source_str = os.path.expandvars(str(data_source).strip())
     if not data_source_str or data_source_str == 'nan':
         return ''
+
+    if data_source_str == 'ADM2':
+        return 'adm2_1km'
 
     path = Path(data_source_str)
     if path.suffix == '.parquet':
@@ -190,14 +379,6 @@ class AnalysisConfig:
     # ── convenience properties ──────────────────────────────────────────────
 
     @property
-    def df_settings(self) -> pd.DataFrame:
-        """``Settings`` sheet as a raw DataFrame."""
-        df = self._sheet('Settings')
-        if df is None:
-            raise ValueError("'Settings' sheet not found in workbook")
-        return df
-
-    @property
     def df_models(self) -> pd.DataFrame:
         """``Models`` sheet as a raw DataFrame."""
         df = self._sheet('Models')
@@ -218,38 +399,33 @@ class AnalysisConfig:
         """``Tables`` sheet, or *None* if the sheet does not exist."""
         return self._sheet('Tables')
 
-    # ── Settings / defaults ─────────────────────────────────────────────────
-
-    def get_defaults(self) -> Dict[str, Any]:
-        """Return global setting defaults from the ``Settings`` sheet."""
-        if '_defaults' in self._cache:
-            return self._cache['_defaults']
-
-        defaults: Dict[str, Any] = {}
-        for _, row in self.df_settings.iterrows():
-            key = str(row['key']).strip()
-            val = row['value']
-            if pd.isna(val):
-                continue
-            expanded = os.path.expandvars(str(val).strip())
-            try:
-                defaults[key] = int(expanded)
-            except ValueError:
-                try:
-                    defaults[key] = float(expanded)
-                except ValueError:
-                    defaults[key] = expanded
-
-        self._cache['_defaults'] = defaults
-        return defaults
-
     # ── Model specs ─────────────────────────────────────────────────────────
 
     def get_model_names(self) -> List[str]:
         """Return all model names defined in the ``Models`` sheet."""
         return self.df_models['model_name'].dropna().str.strip().tolist()
 
-    def get_model_spec(self, model_name: str) -> Dict[str, Any]:
+    def _get_model_row(self, model_name: str) -> pd.Series:
+        """Return the workbook row for *model_name* from the ``Models`` sheet."""
+        df = self.df_models
+        rows = df[df['model_name'].str.strip() == model_name]
+        if rows.empty:
+            available = df['model_name'].str.strip().tolist()
+            raise KeyError(
+                f"Model '{model_name}' not found in 'Models' sheet. "
+                f"Available: {available}"
+            )
+        return rows.iloc[0]
+
+    def get_model_spec(
+        self,
+        model_name: str,
+        *,
+        fixed_effects: Optional[str] = None,
+        resolution: Optional[str] = None,
+        clustering: Optional[str] = None,
+        temporal_extent: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Return the full specification dict for *model_name*.
 
         The returned dict mirrors the structure expected by
@@ -261,80 +437,74 @@ class AnalysisConfig:
                 'description': str,
                 'data_source': str,           # expanded path
                 'formula': str,               # patsy-style
-                'settings': dict,             # per-model overrides
                 'cluster1_col': str,          # optional
                 'query': str,                 # optional SQL WHERE
                 'subset': str,               # optional subset name
             }
         """
-        df = self.df_models
-        rows = df[df['model_name'].str.strip() == model_name]
-        if rows.empty:
-            available = df['model_name'].str.strip().tolist()
-            raise KeyError(
-                f"Model '{model_name}' not found in 'Models' sheet. "
-                f"Available: {available}"
-            )
-        row = rows.iloc[0]
+        row = self._get_model_row(model_name)
 
         # ── formula ─────────────────────────────────────────────────────────
         dependent = str(row['dependent']).strip()
         independent = str(row['independent']).strip()
 
-        fe_raw = str(row.get('fixed_effects', '0')).strip()
-        fixed_effects: List[str] = (
-            [fe.strip() for fe in fe_raw.split(',')]
-            if fe_raw not in ('0', 'nan', '')
-            else []
+        fe_label = normalize_fixed_effects_label(
+            fixed_effects if fixed_effects is not None else row.get('fixed_effects', '0')
         )
+        fe_terms = fixed_effect_terms_from_label(fe_label)
 
         instruments_raw = str(row.get('instruments', '0')).strip()
         has_iv = instruments_raw not in ('0', 'nan', '')
 
         formula = f"{dependent} ~ {independent}"
-        if fixed_effects:
-            formula += " | " + " + ".join(fixed_effects)
+        if fe_terms:
+            formula += " | " + " + ".join(fe_terms)
         if has_iv:
             formula += f" | {instruments_raw}"
 
         # ── data source ──────────────────────────────────────────────────────
-        data_source = str(row['data_source']).strip()
-        if not data_source.startswith('/') and not data_source.startswith('$'):
-            data_source = os.path.expandvars(
-                f"data_nobackup/assembled/{data_source}.parquet"
-            )
-        else:
-            data_source = os.path.expandvars(data_source)
-
-        # ── per-model settings overrides ─────────────────────────────────────
-        model_settings: Dict[str, Any] = {}
-        for key in _SETTING_KEYS:
-            val = row.get(key)
-            if val is not None and pd.notna(val) and str(val).strip() not in ('', 'nan'):
-                if isinstance(val, float) and val == int(val):
-                    val = int(val)
-                model_settings[key] = val
+        resolution_label = normalize_resolution_label(
+            resolution if resolution is not None else row.get('data_source')
+        )
+        data_source = expand_data_source_path(
+            resolve_data_source_from_resolution(resolution_label)
+        )
+        temporal_label = normalize_temporal_extent_label(temporal_extent, resolution_label)
 
         spec: Dict[str, Any] = {
             'description': (
                 f"{row.get('section', 'Analysis')} - {row.get('subsection', model_name)}"
             ),
+            'model_name': model_name,
             'data_source': data_source,
             'formula': formula,
-            'settings': model_settings,
+            'fixed_effects_label': fe_label,
+            'resolution': resolution_label,
+            'temporal_extent': temporal_label,
         }
 
-        cluster = str(row.get('clustering', '0')).strip()
-        if cluster not in ('0', 'nan', ''):
-            spec['cluster1_col'] = cluster
+        cluster_label = normalize_clustering_label(
+            clustering if clustering is not None else row.get('clustering'),
+            resolution_label,
+        )
+        spec['clustering'] = cluster_label
+        spec['cluster1_col'] = cluster_column_from_label(cluster_label)
 
-        query = str(row.get('query', '')).strip()
+        query = strip_temporal_conditions(str(row.get('query', '')).strip())
         if query and query != 'nan':
             spec['query'] = query
 
         subset = str(row.get('subset', '')).strip()
         if subset and subset != 'nan':
             spec['subset'] = subset
+
+        spec['variant_path'] = [
+            model_name,
+            fe_label,
+            resolution_label,
+            temporal_label,
+            cluster_label,
+        ]
 
         return spec
 
@@ -366,25 +536,57 @@ class AnalysisConfig:
             )
         return rows['model_name'].tolist()
 
+    def get_table_model_specs(self, table_name: str) -> List[Dict[str, Any]]:
+        """Return ordered variant-aware model specs for *table_name*."""
+        rows = self.df_models_in_tables[
+            self.df_models_in_tables['table_name'] == table_name
+        ].sort_values('order')
+        if rows.empty:
+            available = self.get_all_table_names()
+            raise KeyError(
+                f"Table '{table_name}' not found in 'Models in Tables'. "
+                f"Available: {available}"
+            )
+
+        specs: List[Dict[str, Any]] = []
+        for _, row in rows.iterrows():
+            specs.append(
+                self.get_model_spec(
+                    str(row['model_name']).strip(),
+                    fixed_effects=row.get('Fixed Effects'),
+                    resolution=row.get('Resolution'),
+                    clustering=row.get('Clustering'),
+                    temporal_extent=row.get('Temporal Extent'),
+                )
+            )
+        return specs
+
     # ── Runtime budgets (SLURM) ─────────────────────────────────────────────
 
     def get_model_runtime_seconds(self, model_name: str) -> int:
         """Return the derived runtime budget for *model_name* in seconds."""
-        df = self.df_models
-        rows = df[df['model_name'].str.strip() == model_name]
-        if rows.empty:
-            raise KeyError(f"Model '{model_name}' not found in 'Models' sheet")
-        row = rows.iloc[0]
+        row = self._get_model_row(model_name)
         runtime_str = get_default_model_runtime(
             row.get('data_source'),
             row.get('instruments'),
         )
         return parse_runtime_to_seconds(runtime_str)
 
+    def get_model_runtime_seconds_for_spec(self, spec: Dict[str, Any]) -> int:
+        """Return the derived runtime budget for a fully resolved model spec."""
+        row = self._get_model_row(spec['model_name'])
+        runtime_str = get_default_model_runtime(
+            resolve_data_source_from_resolution(spec.get('resolution', row.get('data_source'))),
+            row.get('instruments'),
+        )
+        return parse_runtime_to_seconds(runtime_str)
+
     def get_table_runtime_seconds(self, table_name: str) -> int:
         """Return the summed derived runtime for all models in *table_name*."""
-        models = self.get_models_for_table(table_name)
-        return sum(self.get_model_runtime_seconds(m) for m in models)
+        return sum(
+            self.get_model_runtime_seconds_for_spec(spec)
+            for spec in self.get_table_model_specs(table_name)
+        )
 
     def get_table_runtime_slurm(self, table_name: str) -> str:
         """Return SLURM-formatted combined runtime for *table_name*."""
@@ -444,7 +646,18 @@ class AnalysisConfig:
         model_label_pairs = self.get_models_for_table_with_labels(table_name)
         models = [name for name, _ in model_label_pairs]
         labels = [label for _, label in model_label_pairs]
-        config: Dict[str, Any] = {'model_paths': models}
+        config: Dict[str, Any] = {
+            'model_paths': [
+                {
+                    'model_name': spec['model_name'],
+                    'fixed_effects': spec['fixed_effects_label'],
+                    'resolution': spec['resolution'],
+                    'temporal_extent': spec['temporal_extent'],
+                    'clustering': spec['clustering'],
+                }
+                for spec in self.get_table_model_specs(table_name)
+            ]
+        }
 
         # Use model_label column from Models in Tables as default display names
         if any(lbl is not None for lbl in labels):
@@ -582,8 +795,9 @@ class AnalysisConfig:
         missing: Dict[str, List[str]] = {}
         for table in self.get_all_table_names():
             absent = [
-                m for m in self.get_models_for_table(table)
-                if not (self.base_path / analysis_type / m).exists()
+                spec['model_name']
+                for spec in self.get_table_model_specs(table)
+                if not (self.base_path / analysis_type / Path(*spec['variant_path'])).exists()
             ]
             if absent:
                 missing[table] = absent
@@ -613,7 +827,7 @@ class AnalysisConfig:
             'analyses': {
                 'duckreg': {
                     'specifications': self.get_all_model_specs(),
-                    'defaults': self.get_defaults(),
+                    'defaults': {},
                 }
             },
             'output': {'base_path': str(self.base_path)},

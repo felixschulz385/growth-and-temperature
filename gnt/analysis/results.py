@@ -15,13 +15,52 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+def _variant_parts_from_spec(model_spec: Union[str, Dict[str, Any]]) -> List[str]:
+    """Extract nested variant path parts from a model spec."""
+    if isinstance(model_spec, str):
+        return [model_spec]
+
+    model_name = model_spec.get('name') or model_spec.get('model_name')
+    if not model_name:
+        raise ValueError(f"Model spec dict must have a 'name' key: {model_spec}")
+
+    parts = [str(model_name).strip()]
+    key_aliases = {
+        'fixed_effects': ('fixed_effects', 'fixed_effects_label'),
+        'resolution': ('resolution',),
+        'temporal_extent': ('temporal_extent',),
+        'clustering': ('clustering',),
+    }
+    for key in ('fixed_effects', 'resolution', 'temporal_extent', 'clustering'):
+        val = None
+        for alias in key_aliases[key]:
+            if model_spec.get(alias) is not None:
+                val = model_spec.get(alias)
+                break
+        if val is not None and str(val).strip():
+            parts.append(str(val).strip())
+    return parts
+
+
+def _result_dir_from_spec(
+    model_spec: Union[str, Dict[str, Any]],
+    base_path: Union[str, Path],
+    analysis_type: str = 'duckreg',
+) -> Path:
+    """Return the result directory for a legacy or variant-aware model spec."""
+    base_path = Path(base_path)
+    result_dir = base_path / analysis_type
+    for part in _variant_parts_from_spec(model_spec):
+        result_dir /= part
+    return result_dir
+
 
 # ---------------------------------------------------------------------------
 # File discovery
 # ---------------------------------------------------------------------------
 
 def find_latest_model_result(
-    model_name: str,
+    model_name: Union[str, Dict[str, Any]],
     base_path: Union[str, Path],
     analysis_type: str = 'duckreg',
 ) -> Path:
@@ -30,7 +69,7 @@ def find_latest_model_result(
     Parameters
     ----------
     model_name:
-        Model specification name (e.g. ``'ntlharm_twfe_replicate'``).
+        Model name or variant-aware model spec dict.
     base_path:
         Base output directory (``output/analysis``).
     analysis_type:
@@ -41,12 +80,15 @@ def find_latest_model_result(
     FileNotFoundError
         When the model directory or any result file is absent.
     """
-    base_path = Path(base_path)
-    model_dir = base_path / analysis_type / model_name
+    model_dir = _result_dir_from_spec(model_name, base_path, analysis_type)
+    model_label = (
+        model_name if isinstance(model_name, str)
+        else (model_name.get('name') or model_name.get('model_name'))
+    )
 
     if not model_dir.exists():
         raise FileNotFoundError(
-            f"No results found for model '{model_name}' "
+            f"No results found for model '{model_label}' "
             f"(analysis_type={analysis_type!r}) at {model_dir}"
         )
 
@@ -61,7 +103,7 @@ def find_latest_model_result(
 
 
 def load_model_result(
-    model_name: str,
+    model_name: Union[str, Dict[str, Any]],
     base_path: Union[str, Path],
     analysis_type: str = 'duckreg',
 ) -> Dict[str, Any]:
@@ -78,16 +120,50 @@ def load_model_result(
 
 
 def list_model_result_files(
-    model_name: str,
+    model_name: Union[str, Dict[str, Any]],
     base_path: Union[str, Path],
     analysis_type: str = 'duckreg',
 ) -> List[Path]:
     """Return all ``results_*.json`` paths for *model_name*, oldest first."""
-    base_path = Path(base_path)
-    model_dir = base_path / analysis_type / model_name
+    model_dir = _result_dir_from_spec(model_name, base_path, analysis_type)
     if not model_dir.exists():
         return []
     return sorted(model_dir.glob("results_*.json"))
+
+
+def get_model_result_status(
+    model_name: Union[str, Dict[str, Any]],
+    base_path: Union[str, Path],
+    analysis_type: str = 'duckreg',
+) -> Dict[str, Any]:
+    """Return a compact status summary for the latest result of *model_name*."""
+    try:
+        path = find_latest_model_result(model_name, base_path, analysis_type)
+        with open(path) as fh:
+            data = json.load(fh)
+        return {
+            'exists': True,
+            'status': 'ok',
+            'path': path,
+            'date': get_model_date(data),
+            'version': get_model_version(data),
+        }
+    except FileNotFoundError:
+        return {
+            'exists': False,
+            'status': 'missing',
+            'path': None,
+            'date': 'N/A',
+            'version': 'N/A',
+        }
+    except Exception as exc:
+        return {
+            'exists': False,
+            'status': f'error: {exc}',
+            'path': None,
+            'date': 'error',
+            'version': 'error',
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -122,16 +198,18 @@ def load_models_by_name(
         if isinstance(spec, str):
             model_name = spec
             analysis_type = 'duckreg'
+            load_spec: Union[str, Dict[str, Any]] = spec
         elif isinstance(spec, dict):
             model_name = spec.get('name') or spec.get('model_name')
             analysis_type = spec.get('analysis_type', 'duckreg')
             if not model_name:
                 raise ValueError(f"Model spec dict must have a 'name' key: {spec}")
+            load_spec = spec
         else:
             raise TypeError(f"Expected str or dict, got {type(spec)}: {spec!r}")
 
         try:
-            models.append(load_model_result(model_name, base_path, analysis_type))
+            models.append(load_model_result(load_spec, base_path, analysis_type))
         except FileNotFoundError:
             unavailable.append(f"{model_name}")
             models.append({

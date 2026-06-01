@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 
 from gnt.cli.common import setup_logging
+from gnt.analysis.runtime_settings import resolve_slurm_partition, scale_memory_limit
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,19 @@ def handle_run(args: argparse.Namespace) -> None:
         model,
         output_dir,
         dataset_override=getattr(args, "dataset", None),
+        fixed_effects=getattr(args, "fe", None),
+        resolution=getattr(args, "resolution", None),
+        clustering=getattr(args, "clustering", None),
+        temporal_extent=getattr(args, "temporal_extent", None),
+        se_method=getattr(args, "se_method"),
+        fitter=getattr(args, "fitter"),
+        fe_method=getattr(args, "fe_method"),
+        round_strata=getattr(args, "round_strata"),
+        seed=getattr(args, "seed"),
+        n_bootstraps=getattr(args, "n_bootstraps"),
+        threads=getattr(args, "threads"),
+        memory_limit=getattr(args, "memory_limit"),
+        max_temp_directory_size=getattr(args, "max_temp_directory_size"),
     )
 
 
@@ -80,10 +94,10 @@ def handle_submit(args: argparse.Namespace) -> None:
     from gnt.analysis import AnalysisConfig
     from gnt.analysis.config import seconds_to_slurm_time, PROJECT_ROOT
     from gnt.analysis.slurm import (
+        filter_unrun_model_pairs,
         ONE_WEEK_SECONDS,
         make_job_label,
         resolve_explicit_pairs,
-        resolve_table_model_pairs,
         submit_job,
         write_job_script,
     )
@@ -95,29 +109,45 @@ def handle_submit(args: argparse.Namespace) -> None:
 
     tables = list(getattr(args, "tables", None) or [])
     individual_models = list(getattr(args, "models", None) or [])
-    source = getattr(args, "source", None)
 
-    if not tables and not individual_models and not source:
+    if not tables and not individual_models:
         raise ValueError(
             "analysis submit requires at least one of "
-            "--tables <table> [...], --models <model> [...], or --source <name>"
+            "--tables <table> [...] or --models <model> [...]"
         )
 
     cfg = AnalysisConfig(getattr(args, "analysis_config", None) or None)
+    pairs, total_secs = resolve_explicit_pairs(
+        tables,
+        individual_models,
+        cfg,
+        fixed_effects=getattr(args, "fe", None),
+        resolution=getattr(args, "resolution", None),
+        clustering=getattr(args, "clustering", None),
+        temporal_extent=getattr(args, "temporal_extent", None),
+    )
+    pairs, skipped_models = filter_unrun_model_pairs(
+        pairs,
+        cfg.base_path,
+        rerun_existing=getattr(args, "rerun_existing", False),
+    )
+    identifiers = tables + individual_models
 
-    if tables or individual_models:
-        # If --source is also given, auto-detect and route it to the right list
-        if source:
-            if source in set(cfg.get_all_table_names()):
-                tables = [source] + tables
-            else:
-                individual_models = [source] + individual_models
-        pairs, total_secs = resolve_explicit_pairs(tables, individual_models, cfg)
-        identifiers = tables + individual_models
-    else:
-        # Only --source: legacy auto-detect behaviour
-        pairs, total_secs = resolve_table_model_pairs([source], cfg)
-        identifiers = [source]
+    if skipped_models:
+        print(
+            f"Skipping {len(skipped_models)} model(s) with existing results. "
+            "Pass --rerun-existing to include them."
+        )
+
+    if not pairs:
+        print("No models left to submit.")
+        return
+
+    total_secs = sum(
+        cfg.get_model_runtime_seconds_for_spec(model_spec)
+        for _, models in pairs
+        for model_spec in models
+    )
 
     print(f"Total runtime across all identifiers: {seconds_to_slurm_time(total_secs)}")
 
@@ -130,16 +160,35 @@ def handle_submit(args: argparse.Namespace) -> None:
 
     slurm_time = getattr(args, "time", None) or seconds_to_slurm_time(total_secs)
     job_label = make_job_label(identifiers)
+    duckdb_memory_limit = scale_memory_limit(args.mem, 0.8)
+    partition = resolve_slurm_partition(args.mem, getattr(args, "partition", None))
     slurm_kwargs = {
         "mem":           args.mem,
         "time":          slurm_time,
         "qos":           args.qos,
-        "partition":     args.partition,
+        "partition":     partition,
         "cpus_per_task": args.cpus_per_task,
     }
 
     print(f"Creating job script... (duckreg {_duckreg_ver})")
-    job_path = write_job_script(pairs, PROJECT_ROOT, job_label, _duckreg_ver)
+    job_path = write_job_script(
+        pairs,
+        PROJECT_ROOT,
+        job_label,
+        _duckreg_ver,
+        debug=args.debug,
+        runtime_settings={
+            "se_method": args.se_method,
+            "fitter": args.fitter,
+            "fe_method": args.fe_method,
+            "round_strata": args.round_strata,
+            "seed": args.seed,
+            "n_bootstraps": args.n_bootstraps,
+            "threads": args.threads,
+            "memory_limit": duckdb_memory_limit,
+            "max_temp_directory_size": args.max_temp_directory_size,
+        },
+    )
 
     print("Submitting job to SLURM...")
     job_id = submit_job(job_path, slurm_kwargs)
@@ -152,6 +201,8 @@ def handle_submit(args: argparse.Namespace) -> None:
     print(f"  Total   : {total_models} model(s)")
     print(f"  duckreg : {_duckreg_ver}")
     print(f"  Memory  : {args.mem}")
+    print(f"  Partition: {partition}")
+    print(f"  DuckDB  : {duckdb_memory_limit}")
     print(f"  Time    : {slurm_time}")
     print(f"  QOS     : {args.qos}")
 

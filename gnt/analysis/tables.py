@@ -19,7 +19,6 @@ Public API
 
 from __future__ import annotations
 
-import json
 import warnings
 import zipfile
 from abc import ABC, abstractmethod
@@ -31,9 +30,9 @@ import pandas as pd
 
 from .config import AnalysisConfig, PROJECT_ROOT, RESULTS_DIR
 from .results import (
-    find_latest_model_result,
     get_coefficient_data,
     get_model_date,
+    get_model_result_status,
     get_model_version,
     is_2sls_model,
     load_models_by_name,
@@ -850,27 +849,23 @@ def summarize_tables(config: AnalysisConfig) -> None:
 
     col_w = 52
     for table_name in table_names:
-        models = config.get_models_for_table(table_name)
-        print(f"\n  Table: {table_name}  ({len(models)} model{'s' if len(models) != 1 else ''})")
+        model_specs = config.get_table_model_specs(table_name)
+        print(f"\n  Table: {table_name}  ({len(model_specs)} model{'s' if len(model_specs) != 1 else ''})")
         print(
             f"  {'Model':<{col_w}}  {'Last Run':<12}  {'Version':<12}  Status"
         )
         print(f"  {'-' * col_w}  {'-' * 12}  {'-' * 12}  ------")
-        for model in models:
-            try:
-                path = find_latest_model_result(model, config.base_path)
-                with open(path) as fh:
-                    data = json.load(fh)
-                date = get_model_date(data)
-                ver  = get_model_version(data)
-                status = "ok"
-            except FileNotFoundError:
-                date = ver = 'N/A'
-                status = "missing"
-            except Exception as exc:
-                date = ver = 'error'
-                status = f"error: {exc}"
-            print(f"  {model:<{col_w}}  {date:<12}  {ver:<12}  {status}")
+        for model in model_specs:
+            label = (
+                f"{model['model_name']} "
+                f"[{model['fixed_effects_label']}/{model['resolution']}/"
+                f"{model['temporal_extent']}/{model['clustering']}]"
+            )
+            result_status = get_model_result_status(model, config.base_path)
+            date = result_status['date']
+            ver = result_status['version']
+            status = result_status['status']
+            print(f"  {label:<{col_w}}  {date:<12}  {ver:<12}  {status}")
 
     print()
 

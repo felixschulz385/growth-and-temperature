@@ -19,7 +19,12 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .config import AnalysisConfig, PROJECT_ROOT
+from .config import (
+    AnalysisConfig,
+    PROJECT_ROOT,
+    build_temporal_extent_sql,
+    normalize_sql_query,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -110,6 +115,19 @@ def run_duckreg(
     output_dir: Optional[str] = None,
     verbose: bool = True,
     dataset_override: Optional[str] = None,
+    fixed_effects: Optional[str] = None,
+    resolution: Optional[str] = None,
+    clustering: Optional[str] = None,
+    temporal_extent: Optional[str] = None,
+    se_method: str = "CRV1",
+    fitter: str = "duckdb",
+    fe_method: str = "demean",
+    round_strata: int = 5,
+    seed: int = 42,
+    n_bootstraps: int = 0,
+    threads: int = 4,
+    memory_limit: Optional[str] = "112GB",
+    max_temp_directory_size: Optional[str] = "768GB",
 ) -> Any:
     """Run a single DuckReg model and optionally persist results.
 
@@ -136,9 +154,24 @@ def run_duckreg(
 
     logger = logging.getLogger(__name__)
 
-    spec_config = config.get_model_spec(spec_name)
-    defaults = config.get_defaults()
-    settings = {**defaults, **spec_config.get('settings', {})}
+    spec_config = config.get_model_spec(
+        spec_name,
+        fixed_effects=fixed_effects,
+        resolution=resolution,
+        clustering=clustering,
+        temporal_extent=temporal_extent,
+    )
+    settings = {
+        "se_method": se_method,
+        "fitter": fitter,
+        "fe_method": fe_method,
+        "round_strata": round_strata,
+        "seed": seed,
+        "n_bootstraps": n_bootstraps,
+        "threads": threads,
+        "memory_limit": memory_limit,
+        "max_temp_directory_size": max_temp_directory_size,
+    }
 
     data_source = dataset_override or spec_config['data_source']
     formula = spec_config.get('formula')
@@ -146,17 +179,20 @@ def run_duckreg(
         raise ValueError(f"Model '{spec_name}' has no formula")
 
     # ── build SQL WHERE clause ────────────────────────────────────────────────
-    sql_where: Optional[str] = None
+    sql_clauses: List[str] = []
     subset_name = spec_config.get('subset')
     if subset_name:
         country_col = spec_config.get('country_col', 'country')
         country_ids = load_subset(subset_name)
-        sql_where = f"{country_col} IN ({','.join(map(str, country_ids))})"
+        sql_clauses.append(f"{country_col} IN ({','.join(map(str, country_ids))})")
+
+    sql_clauses.append(build_temporal_extent_sql(spec_config['temporal_extent']))
 
     user_query = spec_config.get('query')
     if user_query:
-        user_sql = user_query.replace(' & ', ' AND ').replace(' | ', ' OR ')
-        sql_where = f"({sql_where}) AND ({user_sql})" if sql_where else user_sql
+        sql_clauses.append(normalize_sql_query(user_query))
+
+    sql_where = " AND ".join(f"({clause})" for clause in sql_clauses if clause)
 
     # ── scratch DB path ───────────────────────────────────────────────────────
     wd = os.environ.get('WD', str(PROJECT_ROOT))
@@ -169,8 +205,8 @@ def run_duckreg(
     db_name = str(scratch_path / f'duckreg_{spec_name}_{timestamp}.db')
 
     # ── SE method ─────────────────────────────────────────────────────────────
-    fitter = settings.get('fitter', 'duckdb')
-    se_method_raw = settings.get('se_method', 'HC1')
+    fitter = settings["fitter"]
+    se_method_raw = settings["se_method"]
     cluster_col = spec_config.get('cluster1_col')
     if cluster_col and isinstance(se_method_raw, str) and se_method_raw.startswith('CRV'):
         se_method: Any = {se_method_raw: cluster_col}
@@ -178,11 +214,11 @@ def run_duckreg(
         se_method = se_method_raw
 
     # ── DuckDB resource kwargs ────────────────────────────────────────────────
-    threads = int(settings.get('threads', 1))
-    memory_limit = settings.get('memory_limit')
+    threads = int(settings["threads"])
+    memory_limit = settings["memory_limit"]
     if isinstance(memory_limit, str):
         memory_limit = os.path.expandvars(memory_limit)
-    max_temp_directory_size = settings.get('max_temp_directory_size')
+    max_temp_directory_size = settings["max_temp_directory_size"]
     if isinstance(max_temp_directory_size, str):
         max_temp_directory_size = os.path.expandvars(max_temp_directory_size)
 
@@ -192,6 +228,10 @@ def run_duckreg(
             f"Description: {spec_config['description']}",
             f"Data source:  {data_source}",
             f"Formula:      {formula}",
+            f"Fixed effects: {spec_config['fixed_effects_label']}",
+            f"Resolution:   {spec_config['resolution']}",
+            f"Temporal:     {spec_config['temporal_extent']}",
+            f"Clustering:   {spec_config['clustering']}",
         ]
         if sql_where:
             info_lines.append(f"Filter:       {sql_where}")
@@ -204,7 +244,7 @@ def run_duckreg(
         logger.info("\n" + "\n".join(info_lines))
 
     # ── fit ───────────────────────────────────────────────────────────────────
-    _n_bootstraps = settings.get('n_bootstraps', 0)
+    _n_bootstraps = settings["n_bootstraps"]
     bootstrap_config = {'n': _n_bootstraps} if _n_bootstraps and _n_bootstraps > 0 else None
 
     resource_kwargs: Dict[str, Any] = {'threads': threads}
@@ -218,9 +258,9 @@ def run_duckreg(
         data=data_source,
         subset=sql_where,
         bootstrap=bootstrap_config,
-        round_strata=settings.get('round_strata'),
-        seed=settings.get('seed', 42),
-        fe_method=settings.get('fe_method', 'demean'),
+        round_strata=settings["round_strata"],
+        seed=settings["seed"],
+        fe_method=settings["fe_method"],
         db_name=db_name,
         se_method=se_method,
         fitter=fitter,
@@ -235,7 +275,9 @@ def run_duckreg(
 
     # ── persist results ───────────────────────────────────────────────────────
     if output_dir:
-        output_path = Path(output_dir) / 'duckreg' / spec_name
+        output_path = Path(output_dir) / 'duckreg'
+        for part in spec_config['variant_path']:
+            output_path /= part
         output_path.mkdir(parents=True, exist_ok=True)
 
         results_container: Dict[str, Any] = {
@@ -247,6 +289,11 @@ def run_duckreg(
                 'data_source': data_source,
                 'query': sql_where,
                 'settings': settings,
+                'fixed_effects': spec_config['fixed_effects_label'],
+                'resolution': spec_config['resolution'],
+                'temporal_extent': spec_config['temporal_extent'],
+                'clustering': spec_config['clustering'],
+                'variant_path': spec_config['variant_path'],
             },
             **model_summary,
         }
@@ -324,20 +371,18 @@ def cleanup_analysis_results(
     total_deleted = 0
     total_kept = 0
 
-    for spec_dir in output_path.iterdir():
-        if not spec_dir.is_dir():
-            continue
-
-        result_files = list(spec_dir.glob("results_*.json"))
+    spec_dirs = sorted({path.parent for path in output_path.glob("**/results_*.json")})
+    for spec_dir in spec_dirs:
+        result_files = sorted(spec_dir.glob("results_*.json"))
         if not result_files:
             continue
 
         # version_minor → {timestamp: [associated files]}
         version_groups: Dict[int, Dict[datetime, List[Path]]] = {}
 
-        for jf in result_files:
+        for json_file in result_files:
             try:
-                with open(jf) as fh:
+                with open(json_file) as fh:
                     data = json.load(fh)
 
                 vi = data.get('version_info', {})
@@ -348,22 +393,22 @@ def cleanup_analysis_results(
                 parts_v = ver.split('.')
                 minor = int(parts_v[1]) if len(parts_v) >= 2 and parts_v[1].isdigit() else 0
 
-                stem_parts = jf.stem.split('_', 1)
+                stem_parts = json_file.stem.split('_', 1)
                 if len(stem_parts) != 2 or len(stem_parts[1]) != 15:
-                    logger.warning(f"Unexpected filename: {jf.name}")
+                    logger.warning(f"Unexpected filename: {json_file.name}")
                     continue
                 ts = datetime.strptime(stem_parts[1], '%Y%m%d_%H%M%S')
 
                 version_groups.setdefault(minor, {}).setdefault(ts, [])
 
-                associated = [jf]
+                associated = [json_file]
                 txt = spec_dir / f"results_{stem_parts[1]}.txt"
                 if txt.exists():
                     associated.append(txt)
                 version_groups[minor][ts].extend(associated)
 
             except Exception as exc:
-                logger.error(f"Error processing {jf}: {exc}")
+                logger.error(f"Error processing {json_file}: {exc}")
 
         for minor, ts_map in version_groups.items():
             if not ts_map:
@@ -373,7 +418,8 @@ def cleanup_analysis_results(
             for ts, files in ts_map.items():
                 if ts == latest_ts:
                     logger.info(
-                        f"Keeping {spec_dir.name} (v{ver_label}, {ts}): {len(files)} files"
+                        f"Keeping {spec_dir.relative_to(output_path)} "
+                        f"(v{ver_label}, {ts}): {len(files)} files"
                     )
                     total_kept += len(files)
                 else:
