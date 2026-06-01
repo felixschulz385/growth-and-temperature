@@ -21,7 +21,12 @@ from gnt.data.assemble.constants import (
     LONGITUDE_COORD,
     EXCLUDED_VARIABLES,
 )
-from gnt.data.assemble.utils import winsorize, make_pixel_ids
+from gnt.data.assemble.utils import (
+    add_derived_pixel_id_columns,
+    make_pixel_ids,
+    normalize_derived_pixel_id_specs,
+    winsorize,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +111,9 @@ class TileProcessor:
         self.uses_geometry_aggregation = uses_geometry_aggregation(assembly_config)
         self.column_order_map = {}  # Track {dataset_name: [col1, col2, ...]}
         self.all_index_cols = self._get_all_index_cols()  # Cache all index columns
+        self.derived_pixel_id_specs = normalize_derived_pixel_id_specs(
+            self.processing_config.get("derived_pixel_ids")
+        )
         
         # Pre-build column order map from dataset configs
         self._build_column_order_map_from_config()
@@ -115,6 +123,11 @@ class TileProcessor:
         for dataset_name, dataset_config in self.assembly_config.get('datasets', {}).items():
             idx_cols = dataset_config.get('index_cols', ['pixel_id'])
             logger.debug(f"Dataset '{dataset_name}' index_cols: {idx_cols}")
+        if self.derived_pixel_id_specs:
+            logger.info(
+                "Derived pixel ID columns enabled: %s",
+                ", ".join(f"{name}@{resolution}" for name, resolution in self.derived_pixel_id_specs),
+            )
     
     def _build_column_order_map_from_config(self) -> None:
         """
@@ -465,6 +478,8 @@ class TileProcessor:
         """
         # Start with index columns that exist in the dataframe
         ordered_cols = [col for col in index_cols if col in df.columns]
+        derived_cols = [col for col, _ in self.derived_pixel_id_specs if col in df.columns]
+        ordered_cols.extend([col for col in derived_cols if col not in ordered_cols])
         
         # Add data columns by dataset order
         for dataset_name in dataset_order:
@@ -477,10 +492,30 @@ class TileProcessor:
         # Don't add any remaining columns not tracked (shouldn't happen, but be safe)
         for col in df.columns:
             if col not in ordered_cols:
-                #ordered_cols.append(col)
+                ordered_cols.append(col)
                 logger.debug(f"Found untracked column: {col}")
         
         return df[ordered_cols]
+
+    def _apply_derived_pixel_id_columns(
+        self,
+        df: pd.DataFrame,
+        ix: int,
+        iy: int,
+        tile_geobox,
+        source_geobox,
+    ) -> pd.DataFrame:
+        """Append configured derived pixel ID columns to a tile dataframe."""
+        if not self.derived_pixel_id_specs:
+            return df
+        return add_derived_pixel_id_columns(
+            df=df,
+            ix=ix,
+            iy=iy,
+            base_tile_geobox=tile_geobox,
+            source_geobox=source_geobox,
+            derived_specs=self.derived_pixel_id_specs,
+        )
     
     def _get_all_index_cols(self) -> List[str]:
         """
@@ -649,6 +684,13 @@ class TileProcessor:
         if combined is None:
             return False
         combined = self._fill_dataset_columns(combined, dataset_name, dataset_config)
+        combined = self._apply_derived_pixel_id_columns(
+            combined,
+            ix=ix,
+            iy=iy,
+            tile_geobox=tile_geobox,
+            source_geobox=target_geobox_zoomed,
+        )
         
         rows_before = len(existing_df)
         logger.info(
@@ -1144,6 +1186,13 @@ class TileProcessor:
         combined = self._combine_dataset_tables(dataset_tables, ix, iy)
         for dataset_name, _, dataset_config in datasets:
             combined = self._fill_dataset_columns(combined, dataset_name, dataset_config)
+        combined = self._apply_derived_pixel_id_columns(
+            combined,
+            ix=ix,
+            iy=iy,
+            tile_geobox=tile_geobox,
+            source_geobox=target_geobox_zoomed,
+        )
         
         # Check for empty result
         if combined is None or combined.empty:

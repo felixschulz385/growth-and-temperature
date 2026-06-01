@@ -215,11 +215,24 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
     
     processing = assembly_config.get('processing', {})
     spatial_partition = processing.get('spatial_partition', 'grid')
+    derived_pixel_ids = processing.get('derived_pixel_ids')
 
     if spatial_partition not in {'grid', 'geometry'}:
         errors.append(
             f"'spatial_partition' must be either 'grid' or 'geometry', got '{spatial_partition}'"
         )
+
+    if derived_pixel_ids is not None:
+        if not isinstance(derived_pixel_ids, dict):
+            errors.append("'processing.derived_pixel_ids' must be a mapping of column_name -> resolution")
+        else:
+            for column_name, raw_value in derived_pixel_ids.items():
+                if not isinstance(column_name, str) or not column_name.strip():
+                    errors.append("Derived pixel ID column names must be non-empty strings")
+                if not isinstance(raw_value, (int, float, str)):
+                    errors.append(
+                        f"Derived pixel ID resolution for {column_name!r} must be numeric or a known grid label"
+                    )
 
     if spatial_partition == 'geometry':
         geometry_source = assembly_config.get('geometry_source')
