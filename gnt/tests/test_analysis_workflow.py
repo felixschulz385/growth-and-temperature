@@ -1,91 +1,49 @@
 from pathlib import Path
 
-import pytest
-
-from gnt.analysis import runner
-from gnt.analysis import workflow
+from gnt.analysis.execution import runner
+from gnt.cli.config import load_config_with_env_vars
 
 
-def test_load_config_delegates_to_analysis_config(monkeypatch):
+def test_excel_configs_are_loaded_through_analysis_config(monkeypatch, tmp_path):
     class DummyAnalysisConfig:
         def __init__(self, config_path):
-            self.config_path = config_path
+            self.config_path = Path(config_path)
 
         def as_workflow_config(self):
             return {
                 "analyses": {"duckreg": {"specifications": {}, "defaults": {}}},
                 "output": {"base_path": "out"},
-                "config_path": self.config_path,
+                "config_path": str(self.config_path),
             }
 
-    monkeypatch.setattr(workflow, "AnalysisConfig", DummyAnalysisConfig)
+    monkeypatch.setattr("gnt.analysis.core.config.AnalysisConfig", DummyAnalysisConfig)
 
-    config = workflow.load_config("analysis.xlsx")
+    config_path = tmp_path / "analysis.xlsx"
+    config_path.write_text("")
 
-    assert config["config_path"] == "analysis.xlsx"
+    config = load_config_with_env_vars(config_path)
+
+    assert config["config_path"] == str(config_path)
     assert config["output"]["base_path"] == "out"
 
 
-def test_run_duckreg_accepts_legacy_dict_config(monkeypatch, tmp_path):
-    calls = []
-
-    def fake_run_duckreg(config, spec_name, **kwargs):
-        calls.append((config, spec_name, kwargs))
-        return config.get_model_spec(spec_name)
-
-    legacy_config = {
-        "analyses": {
-            "duckreg": {
-                "specifications": {
-                    "model_a": {
-                        "model_name": "model_a",
-                        "formula": "y ~ x",
-                        "data_source": "data.parquet",
-                    }
-                },
-                "defaults": {},
-            }
-        },
-        "output": {"base_path": str(tmp_path)},
-    }
-    monkeypatch.setattr(workflow, "_run_duckreg", fake_run_duckreg)
-
-    spec = workflow.run_duckreg(
-        legacy_config,
-        "model_a",
-        output_dir="results",
-        verbose=False,
-        dataset_override="override.parquet",
-    )
-
-    assert spec["formula"] == "y ~ x"
-    assert calls[0][1] == "model_a"
-    assert calls[0][2] == {
-        "output_dir": "results",
-        "verbose": False,
-        "dataset_override": "override.parquet",
-    }
-    assert calls[0][0].base_path == Path(tmp_path)
-
-
-def test_legacy_dict_adapter_rejects_variant_overrides():
-    config = {
-        "analyses": {
-            "duckreg": {
-                "specifications": {"model_a": {"formula": "y ~ x"}},
-                "defaults": {},
-            }
-        }
-    }
-    adapter = workflow._WorkflowConfigAdapter(config)
-
-    with pytest.raises(ValueError, match="Variant overrides require AnalysisConfig"):
-        adapter.get_model_spec("model_a", fixed_effects="PX")
-
-
-def test_build_geographic_query_accepts_legacy_subset_key(monkeypatch):
+def test_build_geographic_query_uses_spatial_extent(monkeypatch):
     monkeypatch.setattr(runner, "load_subset", lambda subset_name: [1, 2])
 
-    query = workflow.build_geographic_query({"subset": "AF"})
+    query = runner.build_geographic_query({"spatial_extent": "AF"})
 
     assert query == "(country.isin([1, 2]))"
+
+
+def test_build_geographic_query_combines_subset_and_country_filters(monkeypatch):
+    monkeypatch.setattr(runner, "load_subset", lambda subset_name: [1, 2])
+
+    query = runner.build_geographic_query(
+        {
+            "spatial_extent": "AF",
+            "countries": [10, 20],
+            "country_col": "country_id",
+        }
+    )
+
+    assert query == "(country_id.isin([1, 2])) & (country_id.isin([10, 20]))"

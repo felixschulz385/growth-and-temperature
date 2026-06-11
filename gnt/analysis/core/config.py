@@ -4,17 +4,17 @@ Unified configuration reader for ``orchestration/configs/analysis.xlsx``.
 This is the single source of truth for all three concerns that previously
 read the workbook independently:
 
-* **Model execution** (workflow.py / run.py) — formula and data source.
-* **SLURM submission** (submit.py) — table membership,
+* **Model execution** (CLI / runner) — formula and data source.
+* **SLURM submission** (orchestration) — table membership,
   wall-clock time budgets.
-* **Table rendering** (generate_tables.py) — table display configuration,
+* **Table rendering** (rendering) — table display configuration,
   output formats.
 
 Sheets consumed
 ---------------
 Models           one row per model specification
 Models in Tables table_name / model_name / order
-Tables           (optional) per-table display overrides for generate_tables
+Tables           (optional) per-table display overrides for rendered tables
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ import pandas as pd
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-_ANALYSIS_DIR = Path(__file__).parent           # gnt/analysis/
+_ANALYSIS_DIR = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = _ANALYSIS_DIR.parent.parent       # project root
 RESULTS_DIR = PROJECT_ROOT / "output" / "analysis"
 DEFAULT_EXCEL = PROJECT_ROOT / "orchestration" / "configs" / "analysis.xlsx"
@@ -519,7 +519,7 @@ class AnalysisConfig:
         """Return the full specification dict for *model_name*.
 
         The returned dict mirrors the structure expected by
-        :func:`~gnt.analysis.runner.run_duckreg`:
+        :func:`~gnt.analysis.execution.runner.run_duckreg`:
 
         .. code-block:: python
 
@@ -683,7 +683,7 @@ class AnalysisConfig:
         """Return SLURM-formatted combined runtime for *table_name*."""
         return seconds_to_slurm_time(self.get_table_runtime_seconds(table_name))
 
-    # ── Table display config (generate_tables) ──────────────────────────────
+    # ── Table display config (rendering) ────────────────────────────────────
 
     def get_models_for_table_with_labels(self, table_name: str) -> List[Tuple[str, Optional[str]]]:
         """Return ``[(model_name, model_label), …]`` for *table_name*, sorted by ``order``.
@@ -948,7 +948,7 @@ class AnalysisConfig:
         return pd.DataFrame(rows)
 
     def as_workflow_config(self) -> Dict[str, Any]:
-        """Return a dict compatible with the legacy ``workflow.py`` ``load_config`` format."""
+        """Return the nested analysis config dict consumed by generic CLI loaders."""
         return {
             'analyses': {
                 'duckreg': {

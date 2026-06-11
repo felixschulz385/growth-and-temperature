@@ -2,8 +2,8 @@
 SLURM job creation and submission utilities.
 
 This module is purely concerned with SLURM: building batch scripts, submitting
-them via ``sbatch``, and checking constraints.  All business-logic about which
-models belong to which table lives in :mod:`~gnt.analysis.config`.
+them via ``sbatch``, and checking constraints. All business-logic about which
+models belong to which table lives in :mod:`~gnt.analysis.core.config`.
 """
 
 from __future__ import annotations
@@ -13,12 +13,12 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from .config import (
+from ..core.config import (
     AnalysisConfig,
     PROJECT_ROOT,
     seconds_to_slurm_time,
 )
-from .results import get_model_result_status
+from ..io.results import get_model_result_status
 
 ONE_WEEK_SECONDS = 7 * 24 * 3600
 DEFAULT_CONDA_HOOK = (

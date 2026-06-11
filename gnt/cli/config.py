@@ -1,7 +1,7 @@
 """
 Configuration loading utilities for the GNT CLI.
 
-Supports YAML, JSON, and Excel (delegated to gnt.analysis.workflow).
+Supports YAML, JSON, and Excel.
 Environment variables in the form ``${VAR}`` or ``${VAR:-default}`` are
 expanded inside YAML/JSON values.
 """
@@ -58,10 +58,11 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
     if not config_path.exists():
         raise FileNotFoundError(f"Configuration file not found at {config_path}")
 
-    # Excel (analysis) configs are handled by gnt.analysis.workflow
+    # Excel analysis configs are normalized through AnalysisConfig.
     if config_path.suffix.lower() in (".xlsx", ".xls"):
-        from gnt.analysis.workflow import load_config as _load_analysis_config
-        return _load_analysis_config(config_path)
+        from gnt.analysis.core.config import AnalysisConfig
+
+        return AnalysisConfig(config_path).as_workflow_config()
 
     env_pattern = re.compile(r"\${([^}^{]+)}")
 

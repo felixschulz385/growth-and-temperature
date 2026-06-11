@@ -17,7 +17,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gnt.analysis.config import (  # noqa: E402
+from gnt.analysis.core.config import (  # noqa: E402
     DEFAULT_EXCEL,
     FULL_SAMPLE_SPATIAL_EXTENT,
     RESULTS_DIR,
@@ -27,7 +27,7 @@ from gnt.analysis.config import (  # noqa: E402
     normalize_spatial_extent_label,
     normalize_temporal_extent_label,
 )
-from gnt.analysis.results import get_model_metadata  # noqa: E402
+from gnt.analysis.io.results import get_model_metadata  # noqa: E402
 
 SETTINGS_ANCHOR_KEYS = {
     "HDI": ("migration_hdi_anchor_year", "hdi_anchor_year"),
