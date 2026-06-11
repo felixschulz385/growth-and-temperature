@@ -56,8 +56,8 @@ DEFAULT_MODEL_MAX_RUNTIMES = {
         'IV': '0-00:05:00',
     },
     'adm2_1km': {
-        'OLS': '0-00:00:10',
-        'IV': '0-00:00:30',
+        'OLS': '0-00:05:00',
+        'IV': '0-00:10:00',
     }
 }
 DEFAULT_MODEL_MAX_RUNTIME = '0-20:15:00'
@@ -99,6 +99,12 @@ FIXED_EFFECT_LABELS = {
     'PX5K+CY': 'PX5K+CY',
     'pixel_id_5km + year': 'PX5K+YR',
     'PX5K+YR': 'PX5K+YR',
+    'pixel_id_50km': 'PX50K',
+    'PX50K': 'PX50K',
+    'pixel_id_50km + country*year': 'PX50K+CY',
+    'PX50K+CY': 'PX50K+CY',
+    'pixel_id_50km + year': 'PX50K+YR',
+    'PX50K+YR': 'PX50K+YR',
     'GID_2': 'ADM2',
     'subdivision': 'ADM2',
     'ADM2': 'ADM2',
@@ -121,6 +127,9 @@ FIXED_EFFECT_TERMS = {
     'PX5K': ['pixel_id_5km'],
     'PX5K+CY': ['pixel_id_5km', 'country*year'],
     'PX5K+YR': ['pixel_id_5km', 'year'],
+    'PX50K': ['pixel_id_50km'],
+    'PX50K+CY': ['pixel_id_50km', 'country*year'],
+    'PX50K+YR': ['pixel_id_50km', 'year'],
     'ADM2': ['subdivision'],
     'ADM2+CY': ['subdivision', 'country*year'],
     'ADM2+YR': ['subdivision', 'year'],
@@ -136,6 +145,27 @@ CLUSTERING_LABELS = {
 CLUSTERING_COLUMNS = {
     'ADM2': 'subdivision',
     'Country': 'country',
+}
+
+FULL_SAMPLE_SPATIAL_EXTENT = 'full_sample'
+CANONICAL_PARTITIONED_SPATIAL_EXTENT_RE = re.compile(r'^(HDI|WB)_[A-Z_]+_\d{4}$')
+TABLE_SPATIAL_EXTENT_ALIASES = {
+    ('HDI', 'LOW'): 'LO',
+    ('HDI', '> LOW'): 'ME_HI_VH',
+    ('HDI', 'GTLO'): 'ME_HI_VH',
+    ('HDI', 'MEDIUM'): 'ME',
+    ('HDI', 'HIGH'): 'HI',
+    ('HDI', 'V HIGH'): 'VH',
+    ('HDI', 'VERY HIGH'): 'VH',
+    ('HDI', 'V. HIGH'): 'VH',
+    ('WB', 'LOW'): 'LO',
+    ('WB', '> LOW'): 'LM_UM_HI',
+    ('WB', 'GTLO'): 'LM_UM_HI',
+    ('WB', 'LOWER MIDDLE'): 'LM',
+    ('WB', 'LM'): 'LM',
+    ('WB', 'UPPER MIDDLE'): 'UM',
+    ('WB', 'UM'): 'UM',
+    ('WB', 'HIGH'): 'HI',
 }
 
 
@@ -163,6 +193,58 @@ def normalize_temporal_extent_label(temporal_extent: Any, resolution: Any) -> st
     if temporal_extent is None or pd.isna(temporal_extent) or not str(temporal_extent).strip():
         return DEFAULT_TEMPORAL_EXTENTS[normalize_resolution_label(resolution)]
     return str(temporal_extent).strip()
+
+
+def normalize_spatial_extent_label(spatial_extent: Any) -> str:
+    """Return canonical spatial extent label used in metadata and paths."""
+    if spatial_extent is None or pd.isna(spatial_extent):
+        return FULL_SAMPLE_SPATIAL_EXTENT
+
+    raw = str(spatial_extent).strip()
+    if raw == '' or raw == 'nan':
+        return FULL_SAMPLE_SPATIAL_EXTENT
+    return raw
+
+
+def resolve_table_spatial_extent_label(
+    spatial_extent: Any,
+    temporal_extent: Any,
+    resolution: Any,
+) -> str:
+    """Resolve ``Models in Tables`` display labels to canonical subset ids."""
+    raw = normalize_spatial_extent_label(spatial_extent)
+    if raw == FULL_SAMPLE_SPATIAL_EXTENT:
+        return raw
+    if CANONICAL_PARTITIONED_SPATIAL_EXTENT_RE.fullmatch(raw):
+        match = re.fullmatch(r'(HDI|WB)_GTLO_(\d{4})', raw)
+        if match:
+            family, year = match.groups()
+            bucket = TABLE_SPATIAL_EXTENT_ALIASES[(family, 'GTLO')]
+            return f'{family}_{bucket}_{year}'
+        return raw
+
+    normalized = re.sub(r'[\[\]]', ' ', raw)
+    normalized = normalized.replace('_', ' ')
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    if normalized.lower() == 'world':
+        return FULL_SAMPLE_SPATIAL_EXTENT
+
+    family_match = re.match(r'^(HDI|WB)\s+(.+)$', normalized, flags=re.IGNORECASE)
+    if not family_match:
+        return normalize_spatial_extent_label(spatial_extent)
+
+    family = family_match.group(1).upper()
+    bucket_label = family_match.group(2).strip().upper()
+    bucket = TABLE_SPATIAL_EXTENT_ALIASES.get((family, bucket_label))
+    if bucket is None:
+        raise ValueError(
+            f"Unsupported Models in Tables spatial extent: {spatial_extent!r}. "
+            f"Expected World or {family} label."
+        )
+
+    temporal_label = normalize_temporal_extent_label(temporal_extent, resolution)
+    start_year = int(temporal_label.split('-', 1)[0])
+    return f'{family}_{bucket}_{start_year - 1}'
 
 
 def build_temporal_extent_sql(temporal_extent: str) -> str:
@@ -394,6 +476,13 @@ class AnalysisConfig:
             raise ValueError("'Models in Tables' sheet not found in workbook")
         return df
 
+    def _numbered_models_in_tables(self) -> pd.DataFrame:
+        """Return ``Models in Tables`` rows with a numeric ``order`` only."""
+        rows = self.df_models_in_tables.copy()
+        rows['_order_numeric'] = pd.to_numeric(rows.get('order'), errors='coerce')
+        rows = rows[rows['_order_numeric'].notna()]
+        return rows.sort_values('_order_numeric')
+
     @property
     def df_tables(self) -> Optional[pd.DataFrame]:
         """``Tables`` sheet, or *None* if the sheet does not exist."""
@@ -425,6 +514,7 @@ class AnalysisConfig:
         resolution: Optional[str] = None,
         clustering: Optional[str] = None,
         temporal_extent: Optional[str] = None,
+        spatial_extent: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Return the full specification dict for *model_name*.
 
@@ -439,7 +529,7 @@ class AnalysisConfig:
                 'formula': str,               # patsy-style
                 'cluster1_col': str,          # optional
                 'query': str,                 # optional SQL WHERE
-                'subset': str,               # optional subset name
+                'spatial_extent': str,        # canonical subset shorthand
             }
         """
         row = self._get_model_row(model_name)
@@ -481,6 +571,11 @@ class AnalysisConfig:
             'fixed_effects_label': fe_label,
             'resolution': resolution_label,
             'temporal_extent': temporal_label,
+            'spatial_extent': resolve_table_spatial_extent_label(
+                spatial_extent,
+                temporal_label,
+                resolution_label,
+            ),
         }
 
         cluster_label = normalize_clustering_label(
@@ -494,15 +589,12 @@ class AnalysisConfig:
         if query and query != 'nan':
             spec['query'] = query
 
-        subset = str(row.get('subset', '')).strip()
-        if subset and subset != 'nan':
-            spec['subset'] = subset
-
         spec['variant_path'] = [
             model_name,
             fe_label,
             resolution_label,
             temporal_label,
+            spec['spatial_extent'],
             cluster_label,
         ]
 
@@ -517,7 +609,7 @@ class AnalysisConfig:
     def get_all_table_names(self) -> List[str]:
         """Return unique table names in ``Models in Tables`` sheet order."""
         return (
-            self.df_models_in_tables['table_name']
+            self._numbered_models_in_tables()['table_name']
             .dropna()
             .unique()
             .tolist()
@@ -525,9 +617,8 @@ class AnalysisConfig:
 
     def get_models_for_table(self, table_name: str) -> List[str]:
         """Return model names for *table_name* sorted by the ``order`` column."""
-        rows = self.df_models_in_tables[
-            self.df_models_in_tables['table_name'] == table_name
-        ].sort_values('order')
+        mit = self._numbered_models_in_tables()
+        rows = mit[mit['table_name'] == table_name]
         if rows.empty:
             available = self.get_all_table_names()
             raise KeyError(
@@ -538,9 +629,8 @@ class AnalysisConfig:
 
     def get_table_model_specs(self, table_name: str) -> List[Dict[str, Any]]:
         """Return ordered variant-aware model specs for *table_name*."""
-        rows = self.df_models_in_tables[
-            self.df_models_in_tables['table_name'] == table_name
-        ].sort_values('order')
+        mit = self._numbered_models_in_tables()
+        rows = mit[mit['table_name'] == table_name]
         if rows.empty:
             available = self.get_all_table_names()
             raise KeyError(
@@ -557,6 +647,7 @@ class AnalysisConfig:
                     resolution=row.get('Resolution'),
                     clustering=row.get('Clustering'),
                     temporal_extent=row.get('Temporal Extent'),
+                    spatial_extent=row.get('Spatial Extent'),
                 )
             )
         return specs
@@ -599,9 +690,8 @@ class AnalysisConfig:
 
         ``model_label`` is *None* when the column is absent or the cell is empty.
         """
-        rows = self.df_models_in_tables[
-            self.df_models_in_tables['table_name'] == table_name
-        ].sort_values('order')
+        mit = self._numbered_models_in_tables()
+        rows = mit[mit['table_name'] == table_name]
         if rows.empty:
             available = self.get_all_table_names()
             raise KeyError(
@@ -630,7 +720,7 @@ class AnalysisConfig:
         ``Tables`` sheet columns recognised:
         ``caption``, ``notes`` (``|``-separated list), ``show_first_stage``,
         ``table_environment``, ``table_size`` (alias: ``fontsize``), ``decimals``, ``stars``,
-        ``include_ci``, ``model_display_names`` (comma/semicolon-separated),
+        ``include_ci``, ``scale``, ``model_display_names`` (comma/semicolon-separated),
         ``output_formats``, ``show_stats``,
         ``select_coefs_keys`` / ``select_coefs_labels`` (semicolon-separated),
         ``select_instruments_keys`` / ``select_instruments_labels``
@@ -638,8 +728,14 @@ class AnalysisConfig:
         ``Models in Tables`` sheet columns recognised:
         ``model_label`` — used as column display names when
         ``model_display_names`` is not set in the ``Tables`` sheet.
+        ``Spatial Extent`` — accepts ``World`` plus human-readable
+        ``HDI …`` / ``WB …`` labels and resolves them to year-stamped
+        canonical sample splits using ``start_year - 1``.
+        ``Dependent Variable`` — rendered as a grouped header row above
+        ``model_label``/model display names when consecutive values match.
         Any additional columns beyond ``order``, ``table_name``,
-        ``model_name``, ``model_label`` are collected into a
+        ``model_name``, ``model_label``, ``Dependent Variable``,
+        ``Instrument`` are collected into a
         ``custom_rows`` dict (``{column_name: [value_per_model]}``) and
         appended to the bottom block of the rendered table.
         """
@@ -653,6 +749,7 @@ class AnalysisConfig:
                     'fixed_effects': spec['fixed_effects_label'],
                     'resolution': spec['resolution'],
                     'temporal_extent': spec['temporal_extent'],
+                    'spatial_extent': spec['spatial_extent'],
                     'clustering': spec['clustering'],
                 }
                 for spec in self.get_table_model_specs(table_name)
@@ -665,6 +762,32 @@ class AnalysisConfig:
                 lbl if lbl is not None else name
                 for name, lbl in model_label_pairs
             ]
+
+        mit = self._numbered_models_in_tables()
+        mit_rows = mit[mit['table_name'] == table_name]
+
+        if 'Dependent Variable' in mit_rows.columns:
+            dep_values = []
+            for _, row in mit_rows.iterrows():
+                val = row.get('Dependent Variable')
+                dep_values.append(
+                    str(val).strip()
+                    if val is not None and pd.notna(val) and str(val).strip()
+                    else ''
+                )
+
+            if any(dep_values):
+                header_row: List[Tuple[str, slice]] = []
+                start = 0
+                while start < len(dep_values):
+                    end = start + 1
+                    while end < len(dep_values) and dep_values[end] == dep_values[start]:
+                        end += 1
+                    header_row.append((dep_values[start], slice(start, end)))
+                    start = end
+
+                existing_header_rows = config.get('header_rows') or []
+                config['header_rows'] = [header_row] + list(existing_header_rows)
 
         if self.df_tables is None:
             return config
@@ -685,6 +808,10 @@ class AnalysisConfig:
         fontsize_val = r.get('fontsize')
         if fontsize_val is not None and pd.notna(fontsize_val):
             config['table_size'] = str(fontsize_val).strip()
+
+        scale_val = r.get('scale')
+        if scale_val is not None and pd.notna(scale_val):
+            config['table_scale'] = str(scale_val).strip()
 
         # notes: pipe-separated → list of strings
         notes_val = r.get('notes')
@@ -751,16 +878,15 @@ class AnalysisConfig:
                 config['select_instruments'] = {k: k for k in inst_keys}
 
         # Extra columns in Models in Tables → custom_rows at bottom of table
-        _mit_standard_cols = {'order', 'table_name', 'model_name', 'model_label'}
+        _mit_standard_cols = {
+            'order', 'table_name', 'model_name', 'model_label',
+            'Dependent Variable', 'Instrument',
+        }
         extra_cols = [
             c for c in self.df_models_in_tables.columns
             if c not in _mit_standard_cols
         ]
         if extra_cols:
-            # Reload rows in order so values align with models
-            mit_rows = self.df_models_in_tables[
-                self.df_models_in_tables['table_name'] == table_name
-            ].sort_values('order')
             extra_custom: Dict[str, List] = {}
             for col in extra_cols:
                 vals = []

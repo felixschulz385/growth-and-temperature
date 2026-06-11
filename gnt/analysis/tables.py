@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+import numpy as np
 import pandas as pd
 
 from .config import AnalysisConfig, PROJECT_ROOT, RESULTS_DIR
@@ -64,6 +65,12 @@ def _extract_raw_latex(text: str) -> str:
     return text
 
 
+def _iter_header_cells(row_def: Any) -> List[Any]:
+    if isinstance(row_def, dict):
+        return list(row_def.items())
+    return list(row_def)
+
+
 # ---------------------------------------------------------------------------
 # Data container
 # ---------------------------------------------------------------------------
@@ -86,6 +93,7 @@ class RegressionTableData:
     has_2sls: bool = False
     table_environment: str = "table"
     table_size: str = "footnotesize"
+    table_scale: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +153,10 @@ class HtmlTableFormatter(TableFormatter):
             for row_def in data.header_rows:
                 parts.append('<tr><th></th>')
                 col_idx = 0
-                for label, col_slice in row_def.items():
+                for label, col_slice in _iter_header_cells(row_def):
+                    while col_idx < col_slice.start:
+                        parts.append('<th></th>')
+                        col_idx += 1
                     if label:
                         span = col_slice.stop - col_slice.start
                         parts.append(
@@ -258,6 +269,7 @@ class LatexTableFormatter(TableFormatter):
 
     def format(self, data: RegressionTableData) -> str:
         col_spec = 'l' + 'c' * len(data.model_names)
+        scale_arg = self._get_adjustbox_arg(data.table_scale)
         parts = [
             f'\\begin{{{data.table_environment}}}[htbp]',
             r'\centering',
@@ -265,6 +277,8 @@ class LatexTableFormatter(TableFormatter):
         ]
         if data.caption:
             parts.append(f'\\caption{{{self._escape_latex(data.caption)}}}')
+        if scale_arg:
+            parts.append(f'\\begin{{adjustbox}}{{{scale_arg}}}')
         parts += [
             f'\\begin{{tabular}}{{{col_spec}}}',
             r'\toprule',
@@ -272,10 +286,22 @@ class LatexTableFormatter(TableFormatter):
             self._build_body(data),
             r'\bottomrule',
             r'\end{tabular}',
+        ]
+        if scale_arg:
+            parts.append(r'\end{adjustbox}')
+        parts += [
             self._build_footer(data),
             f'\\end{{{data.table_environment}}}',
         ]
         return '\n'.join(parts)
+
+    def _get_adjustbox_arg(self, table_scale: Optional[str]) -> Optional[str]:
+        if table_scale is None:
+            return None
+        raw = str(table_scale).strip()
+        if not raw:
+            return None
+        return raw if '=' in raw else f'scale={raw}'
 
     def _build_header(self, data: RegressionTableData) -> str:
         parts: List[str] = []
@@ -284,18 +310,29 @@ class LatexTableFormatter(TableFormatter):
             for row_def in data.header_rows:
                 row_parts = ['']
                 col_idx = 0
-                for label, col_slice in row_def.items():
+                cmidranges: List[str] = []
+                for label, col_slice in _iter_header_cells(row_def):
+                    while col_idx < col_slice.start:
+                        row_parts.append('')
+                        col_idx += 1
                     if label:
                         span = col_slice.stop - col_slice.start
                         row_parts.append(
                             f'\\multicolumn{{{span}}}{{c}}{{{self._escape_latex(label)}}}'
                         )
-                        col_idx = col_slice.stop
+                        cmidranges.append(
+                            rf'\cmidrule(lr){{{col_slice.start + 2}-{col_slice.stop + 1}}}'
+                        )
+                    else:
+                        for _ in range(col_slice.start, col_slice.stop):
+                            row_parts.append('')
+                    col_idx = col_slice.stop
                 while col_idx < n_models:
                     row_parts.append('')
                     col_idx += 1
                 parts.append(' & '.join(row_parts) + r' \\')
-                parts.append(r'\cmidrule(lr){2-' + str(n_models + 1) + '}')
+                if cmidranges:
+                    parts.append(''.join(cmidranges))
         row_parts = [''] + [self._escape_latex(n) for n in data.model_names]
         parts += [' & '.join(row_parts) + r' \\', r'\midrule']
         return '\n'.join(parts)
@@ -558,6 +595,49 @@ _STAT_KEYS = {
 }
 _INT_STATS = {'n_obs', 'n_observations', 'n_compressed', 'n_compressed_rows', 'df_model', 'df_resid'}
 _FLOAT_STATS = {'r_squared', 'adj_r_squared', 'compression_ratio'}
+_DERIVED_STAT_LABELS = {
+    'f_statistic': 'F Statistic',
+    'f_stat': 'F Statistic',
+}
+
+
+def _is_intercept_term(name: Any) -> bool:
+    normalized = str(name).strip().lower()
+    return normalized in {'intercept', '(intercept)', 'const', 'constant'}
+
+
+def _compute_joint_f_statistic(model: Dict[str, Any]) -> Optional[float]:
+    """Return a Wald-style joint F-stat for all non-intercept coefficients."""
+    coef_data = get_coefficient_data(model)
+    coef_names = coef_data.get('names', coef_data.get('coef_names', []))
+    estimates = coef_data.get('estimates', coef_data.get('coefficients', []))
+    vcov = coef_data.get('vcov')
+
+    if not coef_names or not estimates or vcov is None:
+        return None
+
+    tested_idx = [i for i, name in enumerate(coef_names) if not _is_intercept_term(name)]
+    if not tested_idx:
+        return None
+
+    try:
+        beta = np.asarray(estimates, dtype=float)[tested_idx]
+        vcov_matrix = np.asarray(vcov, dtype=float)[np.ix_(tested_idx, tested_idx)]
+    except (IndexError, TypeError, ValueError):
+        return None
+
+    if beta.size == 0 or vcov_matrix.shape != (beta.size, beta.size):
+        return None
+
+    try:
+        wald = float(beta.T @ np.linalg.pinv(vcov_matrix) @ beta)
+    except np.linalg.LinAlgError:
+        return None
+
+    if not np.isfinite(wald):
+        return None
+
+    return wald / beta.size
 
 
 def _extract_stat_rows(
@@ -579,8 +659,15 @@ def _extract_stat_rows(
         rows.extend([ver_row, date_row])
 
     for stat_key in show_stats:
-        stat_row: Dict[str, Any] = {'Variable': stat_key.replace('_', ' ').title()}
+        stat_row: Dict[str, Any] = {
+            'Variable': _DERIVED_STAT_LABELS.get(stat_key, stat_key.replace('_', ' ').title())
+        }
         for i, model in enumerate(models):
+            if stat_key in _DERIVED_STAT_LABELS:
+                val = _compute_joint_f_statistic(model)
+                stat_row[model_names[i]] = f"{val:.{decimals}f}" if val is not None else ""
+                continue
+
             sample = model.get('sample_info', {})
             mstats = model.get('model_statistics', {})
             coefs  = model.get('coefficients', {})
@@ -660,6 +747,7 @@ def create_regression_table(
     show_first_stage: str = "default",
     table_environment: str = "table",
     table_size: str = "footnotesize",
+    table_scale: Optional[str] = None,
     output_format: str = 'html',
 ) -> str:
     """Render a regression table from a list of model specifications.
@@ -737,6 +825,7 @@ def create_regression_table(
         has_2sls=has_2sls,
         table_environment=table_environment,
         table_size=table_size,
+        table_scale=table_scale,
     )
 
     return TableFormatterFactory.get_formatter(output_format).format(table_data)
@@ -859,7 +948,8 @@ def summarize_tables(config: AnalysisConfig) -> None:
             label = (
                 f"{model['model_name']} "
                 f"[{model['fixed_effects_label']}/{model['resolution']}/"
-                f"{model['temporal_extent']}/{model['clustering']}]"
+                f"{model['temporal_extent']}/{model['spatial_extent']}/"
+                f"{model['clustering']}]"
             )
             result_status = get_model_result_status(model, config.base_path)
             date = result_status['date']

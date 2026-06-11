@@ -49,8 +49,9 @@ def _model_block(
     variant_args = [
         f'    --fe "{model_spec["fixed_effects_label"]}" \\\n',
         f'    --resolution "{model_spec["resolution"]}" \\\n',
-        f'    --clustering "{model_spec["clustering"]}" \\\n',
         f'    --temporal-extent "{model_spec["temporal_extent"]}" \\\n',
+        f'    --spatial-extent "{model_spec["spatial_extent"]}" \\\n',
+        f'    --clustering "{model_spec["clustering"]}" \\\n',
         f'    --se-method "{runtime_settings["se_method"]}" \\\n',
         f'    --fitter "{runtime_settings["fitter"]}" \\\n',
         f'    --fe-method "{runtime_settings["fe_method"]}" \\\n',
@@ -165,6 +166,7 @@ def build_job_script(
                 model['fixed_effects_label'],
                 model['resolution'],
                 model['temporal_extent'],
+                model['spatial_extent'],
                 model['clustering'],
             )
             model_log_dir = (
@@ -304,6 +306,7 @@ def resolve_explicit_pairs(
     resolution: Optional[str] = None,
     clustering: Optional[str] = None,
     temporal_extent: Optional[str] = None,
+    spatial_extent: Optional[str] = None,
 ) -> Tuple[List[Tuple[str, List[Dict[str, str]]]], int]:
     """Resolve separately specified tables and individual models into pairs.
 
@@ -335,6 +338,7 @@ def resolve_explicit_pairs(
             resolution=resolution,
             clustering=clustering,
             temporal_extent=temporal_extent,
+            spatial_extent=spatial_extent,
         )
         pairs.append((model, [model_spec]))
         total_secs += config.get_model_runtime_seconds_for_spec(model_spec)
@@ -366,6 +370,7 @@ def filter_unrun_model_pairs(
                     'fixed_effects_label': model_spec['fixed_effects_label'],
                     'resolution': model_spec['resolution'],
                     'temporal_extent': model_spec['temporal_extent'],
+                    'spatial_extent': model_spec['spatial_extent'],
                     'clustering': model_spec['clustering'],
                 })
                 continue

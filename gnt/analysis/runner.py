@@ -21,10 +21,16 @@ import pandas as pd
 
 from .config import (
     AnalysisConfig,
+    FULL_SAMPLE_SPATIAL_EXTENT,
     PROJECT_ROOT,
     build_temporal_extent_sql,
+    normalize_spatial_extent_label,
     normalize_sql_query,
 )
+
+SUBSET_ALIASES = {
+    "H&R": "research_hodler_raschky_2014",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -57,6 +63,8 @@ def load_subset(subset_name: str, subsets_dir: Optional[Path] = None) -> List[in
     if not subsets_dir.exists():
         raise FileNotFoundError(f"Subsets directory not found: {subsets_dir}")
 
+    subset_name = SUBSET_ALIASES.get(subset_name, subset_name)
+
     if len(subset_name) == 2 and subset_name.isupper():
         subset_file = subsets_dir / f"continent_{subset_name.lower()}.json"
     elif subset_name.endswith('.json'):
@@ -86,12 +94,12 @@ def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
     Reads ``subset``, ``countries``, and ``country_col`` from *spec_config*.
     Returns ``None`` when no geographic filter is requested.
     """
-    subset_name = spec_config.get('subset')
+    subset_name = normalize_spatial_extent_label(spec_config.get('spatial_extent'))
     country_filter = spec_config.get('countries')
     country_col = spec_config.get('country_col', 'country')
 
     queries = []
-    if subset_name:
+    if subset_name != FULL_SAMPLE_SPATIAL_EXTENT:
         ids = load_subset(subset_name)
         if ids:
             queries.append(f"{country_col}.isin({ids})")
@@ -119,6 +127,7 @@ def run_duckreg(
     resolution: Optional[str] = None,
     clustering: Optional[str] = None,
     temporal_extent: Optional[str] = None,
+    spatial_extent: Optional[str] = None,
     se_method: str = "CRV1",
     fitter: str = "duckdb",
     fe_method: str = "demean",
@@ -160,6 +169,7 @@ def run_duckreg(
         resolution=resolution,
         clustering=clustering,
         temporal_extent=temporal_extent,
+        spatial_extent=spatial_extent,
     )
     settings = {
         "se_method": se_method,
@@ -180,8 +190,8 @@ def run_duckreg(
 
     # ── build SQL WHERE clause ────────────────────────────────────────────────
     sql_clauses: List[str] = []
-    subset_name = spec_config.get('subset')
-    if subset_name:
+    subset_name = normalize_spatial_extent_label(spec_config.get('spatial_extent'))
+    if subset_name != FULL_SAMPLE_SPATIAL_EXTENT:
         country_col = spec_config.get('country_col', 'country')
         country_ids = load_subset(subset_name)
         sql_clauses.append(f"{country_col} IN ({','.join(map(str, country_ids))})")
@@ -231,6 +241,7 @@ def run_duckreg(
             f"Fixed effects: {spec_config['fixed_effects_label']}",
             f"Resolution:   {spec_config['resolution']}",
             f"Temporal:     {spec_config['temporal_extent']}",
+            f"Spatial:      {spec_config['spatial_extent']}",
             f"Clustering:   {spec_config['clustering']}",
         ]
         if sql_where:
@@ -292,6 +303,7 @@ def run_duckreg(
                 'fixed_effects': spec_config['fixed_effects_label'],
                 'resolution': spec_config['resolution'],
                 'temporal_extent': spec_config['temporal_extent'],
+                'spatial_extent': spec_config['spatial_extent'],
                 'clustering': spec_config['clustering'],
                 'variant_path': spec_config['variant_path'],
             },

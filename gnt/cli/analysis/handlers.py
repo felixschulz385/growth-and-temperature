@@ -75,6 +75,7 @@ def handle_run(args: argparse.Namespace) -> None:
         resolution=getattr(args, "resolution", None),
         clustering=getattr(args, "clustering", None),
         temporal_extent=getattr(args, "temporal_extent", None),
+        spatial_extent=getattr(args, "spatial_extent", None),
         se_method=getattr(args, "se_method"),
         fitter=getattr(args, "fitter"),
         fe_method=getattr(args, "fe_method"),
@@ -125,6 +126,7 @@ def handle_submit(args: argparse.Namespace) -> None:
         resolution=getattr(args, "resolution", None),
         clustering=getattr(args, "clustering", None),
         temporal_extent=getattr(args, "temporal_extent", None),
+        spatial_extent=getattr(args, "spatial_extent", None),
     )
     pairs, skipped_models = filter_unrun_model_pairs(
         pairs,

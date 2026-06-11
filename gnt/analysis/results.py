@@ -29,9 +29,10 @@ def _variant_parts_from_spec(model_spec: Union[str, Dict[str, Any]]) -> List[str
         'fixed_effects': ('fixed_effects', 'fixed_effects_label'),
         'resolution': ('resolution',),
         'temporal_extent': ('temporal_extent',),
+        'spatial_extent': ('spatial_extent',),
         'clustering': ('clustering',),
     }
-    for key in ('fixed_effects', 'resolution', 'temporal_extent', 'clustering'):
+    for key in ('fixed_effects', 'resolution', 'temporal_extent', 'spatial_extent', 'clustering'):
         val = None
         for alias in key_aliases[key]:
             if model_spec.get(alias) is not None:

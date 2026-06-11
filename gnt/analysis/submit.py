@@ -62,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Override temporal extent for individually submitted models (YYYY-YYYY)",
     )
     parser.add_argument(
+        "--spatial-extent",
+        help="Override spatial extent for individually submitted models",
+    )
+    parser.add_argument(
         "--mem",
         default="128GB",
         help="SLURM memory request (default: 128GB)",
@@ -170,6 +174,7 @@ def main() -> int:
             resolution=args.resolution,
             clustering=args.clustering,
             temporal_extent=args.temporal_extent,
+            spatial_extent=args.spatial_extent,
         )
         pairs, skipped_models = filter_unrun_model_pairs(
             pairs,

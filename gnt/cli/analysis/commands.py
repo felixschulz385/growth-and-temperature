@@ -15,7 +15,11 @@ from __future__ import annotations
 import argparse
 
 from gnt.cli.common import add_logging_args
+from gnt.analysis.config import FIXED_EFFECT_TERMS
 from gnt.analysis.runtime_settings import ANALYSIS_RUNTIME_DEFAULTS
+
+
+CLI_FIXED_EFFECT_CHOICES = list(FIXED_EFFECT_TERMS.keys())
 
 
 def _add_runtime_setting_args(
@@ -129,7 +133,7 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     )
     run_p.add_argument(
         "--fe",
-        choices=["NO", "PX", "PX+CY", "PX+YR", "ADM2", "ADM2+CY", "ADM2+YR"],
+        choices=CLI_FIXED_EFFECT_CHOICES,
         help="Override fixed effects for this run",
     )
     run_p.add_argument(
@@ -145,6 +149,10 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     run_p.add_argument(
         "--temporal-extent",
         help="Override temporal extent for this run (YYYY-YYYY)",
+    )
+    run_p.add_argument(
+        "--spatial-extent",
+        help="Override spatial extent for this run",
     )
     run_p.add_argument(
         "--output", "-o",
@@ -180,7 +188,7 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     )
     submit_p.add_argument(
         "--fe",
-        choices=["NO", "PX", "PX+CY", "PX+YR", "ADM2", "ADM2+CY", "ADM2+YR"],
+        choices=CLI_FIXED_EFFECT_CHOICES,
         help="Override fixed effects for individually submitted models",
     )
     submit_p.add_argument(
@@ -196,6 +204,10 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     submit_p.add_argument(
         "--temporal-extent",
         help="Override temporal extent for individually submitted models (YYYY-YYYY)",
+    )
+    submit_p.add_argument(
+        "--spatial-extent",
+        help="Override spatial extent for individually submitted models",
     )
     submit_p.add_argument(
         "--mem",

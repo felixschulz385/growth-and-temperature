@@ -5,6 +5,7 @@ Run this script to regenerate all tables from analysis results.
 
 import argparse
 import json
+import numpy as np
 import pandas as pd
 from pathlib import Path
 from abc import ABC, abstractmethod
@@ -839,6 +840,46 @@ def _extract_stat_rows(models: List[Dict], model_names: List[str],
         'df_model': ['df_model'],
         'df_resid': ['df_resid']
     }
+    derived_stat_labels = {
+        'f_statistic': 'F Statistic',
+        'f_stat': 'F Statistic',
+    }
+
+    def is_intercept_term(name: Any) -> bool:
+        normalized = str(name).strip().lower()
+        return normalized in {'intercept', '(intercept)', 'const', 'constant'}
+
+    def compute_joint_f_statistic(model: Dict) -> Optional[float]:
+        coef_data = _get_coefficient_data(model)
+        coef_names = coef_data.get('names', coef_data.get('coef_names', []))
+        estimates = coef_data.get('estimates', coef_data.get('coefficients', []))
+        vcov = coef_data.get('vcov')
+
+        if not coef_names or not estimates or vcov is None:
+            return None
+
+        tested_idx = [i for i, name in enumerate(coef_names) if not is_intercept_term(name)]
+        if not tested_idx:
+            return None
+
+        try:
+            beta = np.asarray(estimates, dtype=float)[tested_idx]
+            vcov_matrix = np.asarray(vcov, dtype=float)[np.ix_(tested_idx, tested_idx)]
+        except (IndexError, TypeError, ValueError):
+            return None
+
+        if beta.size == 0 or vcov_matrix.shape != (beta.size, beta.size):
+            return None
+
+        try:
+            wald = float(beta.T @ np.linalg.pinv(vcov_matrix) @ beta)
+        except np.linalg.LinAlgError:
+            return None
+
+        if not np.isfinite(wald):
+            return None
+
+        return wald / beta.size
     
     stat_rows = []
     
@@ -859,9 +900,14 @@ def _extract_stat_rows(models: List[Dict], model_names: List[str],
         stat_rows.append(date_row)
     
     for stat_key in show_stats:
-        stat_row = {'Variable': stat_key.replace('_', ' ').title()}
+        stat_row = {'Variable': derived_stat_labels.get(stat_key, stat_key.replace('_', ' ').title())}
         
         for i, model in enumerate(models):
+            if stat_key in derived_stat_labels:
+                val = compute_joint_f_statistic(model)
+                stat_row[model_names[i]] = f"{val:.{decimals}f}" if val is not None else ""
+                continue
+
             # Check multiple locations for statistics
             sample_info = model.get('sample_info', {})
             model_stats = model.get('model_statistics', {})
