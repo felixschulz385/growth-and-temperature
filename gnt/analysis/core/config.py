@@ -26,6 +26,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from .runtime import ANALYSIS_RUNTIME_DEFAULTS
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -409,6 +411,51 @@ def get_default_model_runtime(data_source: Any, instruments: Any) -> str:
     )
 
 
+_RUNTIME_INT_KEYS = {
+    "round_strata",
+    "seed",
+    "n_bootstraps",
+    "threads",
+    "max_iterations",
+    "check_interval",
+    "min_iterations_before_check",
+    "max_check_interval",
+}
+_RUNTIME_FLOAT_KEYS = {
+    "tolerance",
+    "convergence_sample",
+}
+_RUNTIME_BOOL_KEYS = {
+    "check_interval_growth",
+    "drop_constant_variables",
+}
+
+
+def _coerce_runtime_setting_value(key: str, value: Any) -> Any:
+    """Coerce workbook setting values to the runtime type expected downstream."""
+    if value is None or pd.isna(value):
+        return None
+
+    if key in _RUNTIME_INT_KEYS:
+        return int(value)
+    if key in _RUNTIME_FLOAT_KEYS:
+        return float(value)
+    if key in _RUNTIME_BOOL_KEYS:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", ""}:
+            return False
+        raise ValueError(f"Cannot parse boolean runtime setting {key!r}: {value!r}")
+    if isinstance(value, str):
+        return value.strip()
+    return value
+
+
 # ---------------------------------------------------------------------------
 # AnalysisConfig
 # ---------------------------------------------------------------------------
@@ -487,6 +534,42 @@ class AnalysisConfig:
     def df_tables(self) -> Optional[pd.DataFrame]:
         """``Tables`` sheet, or *None* if the sheet does not exist."""
         return self._sheet('Tables')
+
+    @property
+    def df_settings(self) -> Optional[pd.DataFrame]:
+        """``Settings`` sheet, or *None* when the sheet does not exist."""
+        return self._sheet('Settings')
+
+    def get_runtime_settings(
+        self,
+        overrides: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Return runtime settings merged from defaults, workbook, and overrides.
+
+        Precedence:
+        1. ``ANALYSIS_RUNTIME_DEFAULTS``
+        2. ``Settings`` sheet values
+        3. explicit non-``None`` overrides
+        """
+        settings = dict(ANALYSIS_RUNTIME_DEFAULTS)
+
+        df = self.df_settings
+        if df is not None and {"key", "value"}.issubset(df.columns):
+            for _, row in df.iterrows():
+                key_raw = row.get("key")
+                if key_raw is None or pd.isna(key_raw):
+                    continue
+                key = str(key_raw).strip()
+                if not key:
+                    continue
+                settings[key] = _coerce_runtime_setting_value(key, row.get("value"))
+
+        if overrides:
+            for key, value in overrides.items():
+                if value is not None:
+                    settings[key] = value
+
+        return settings
 
     # ── Model specs ─────────────────────────────────────────────────────────
 
@@ -953,7 +1036,7 @@ class AnalysisConfig:
             'analyses': {
                 'duckreg': {
                     'specifications': self.get_all_model_specs(),
-                    'defaults': {},
+                    'defaults': self.get_runtime_settings(),
                 }
             },
             'output': {'base_path': str(self.base_path)},
