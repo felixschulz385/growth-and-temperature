@@ -26,8 +26,6 @@ data.local.yaml
 *.log
 
 *.pyc
-__init__.py
-
 debug_eog_credentials.sh
 git_access_token
 
