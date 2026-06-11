@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
-from .config import (
+from ..core.config import (
     AnalysisConfig,
     FULL_SAMPLE_SPATIAL_EXTENT,
     PROJECT_ROOT,
@@ -143,7 +143,7 @@ def run_duckreg(
     Parameters
     ----------
     config:
-        :class:`~gnt.analysis.config.AnalysisConfig` instance.
+        :class:`~gnt.analysis.core.config.AnalysisConfig` instance.
     spec_name:
         Name of the model specification (must exist in the ``Models`` sheet).
     output_dir:

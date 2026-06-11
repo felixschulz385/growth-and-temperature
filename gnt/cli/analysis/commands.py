@@ -15,8 +15,8 @@ from __future__ import annotations
 import argparse
 
 from gnt.cli.common import add_logging_args
-from gnt.analysis.config import FIXED_EFFECT_TERMS
-from gnt.analysis.runtime_settings import ANALYSIS_RUNTIME_DEFAULTS
+from gnt.analysis.core.config import FIXED_EFFECT_TERMS
+from gnt.analysis.core.runtime import ANALYSIS_RUNTIME_DEFAULTS
 
 
 CLI_FIXED_EFFECT_CHOICES = list(FIXED_EFFECT_TERMS.keys())

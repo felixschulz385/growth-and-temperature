@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from gnt.analysis.config import RESULTS_DIR  # noqa: E402
+from gnt.analysis.core.config import RESULTS_DIR  # noqa: E402
 
 
 def _iter_candidate_dirs(duckreg_root: Path, cleanup_root: Path) -> List[Path]:

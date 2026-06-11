@@ -7,7 +7,7 @@ import argparse
 import os
 import sys
 
-from gnt.analysis.runtime_settings import (
+from gnt.analysis.core.runtime import (
     ANALYSIS_RUNTIME_DEFAULTS,
     resolve_slurm_partition,
     scale_memory_limit,
@@ -150,8 +150,8 @@ def main() -> int:
 
     try:
         from gnt.analysis import AnalysisConfig
-        from gnt.analysis.config import PROJECT_ROOT, seconds_to_slurm_time
-        from gnt.analysis.slurm import (
+        from gnt.analysis.core.config import PROJECT_ROOT, seconds_to_slurm_time
+        from gnt.analysis.orchestration.slurm import (
             ONE_WEEK_SECONDS,
             filter_unrun_model_pairs,
             make_job_label,

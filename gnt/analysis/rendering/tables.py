@@ -3,7 +3,7 @@ Table rendering for analysis results.
 
 This module is responsible for **display only** — it never reads the Excel
 config or touches the file system beyond loading pre-computed result JSON
-files.  Configuration is consumed via :class:`~gnt.analysis.config.AnalysisConfig`.
+files. Configuration is consumed via :class:`~gnt.analysis.core.config.AnalysisConfig`.
 
 Public API
 ----------
@@ -29,8 +29,8 @@ from typing import Any, Dict, List, Optional, Union
 import numpy as np
 import pandas as pd
 
-from .config import AnalysisConfig, PROJECT_ROOT, RESULTS_DIR
-from .results import (
+from ..core.config import AnalysisConfig, PROJECT_ROOT, RESULTS_DIR
+from ..io.results import (
     get_coefficient_data,
     get_model_date,
     get_model_result_status,
@@ -836,7 +836,7 @@ def generate_table_from_config(
     config: AnalysisConfig,
     output_formats: Optional[List[str]] = None,
 ) -> Dict[str, str]:
-    """Render a table from :class:`~gnt.analysis.config.AnalysisConfig`.
+    """Render a table from :class:`~gnt.analysis.core.config.AnalysisConfig`.
 
     Parameters
     ----------

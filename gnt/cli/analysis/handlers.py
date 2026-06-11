@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from gnt.cli.common import setup_logging
-from gnt.analysis.runtime_settings import resolve_slurm_partition, scale_memory_limit
+from gnt.analysis.core.runtime import resolve_slurm_partition, scale_memory_limit
 
 logger = logging.getLogger(__name__)
 
@@ -93,8 +93,8 @@ def handle_submit(args: argparse.Namespace) -> None:
     setup_logging(args.log_level, debug=args.debug)
 
     from gnt.analysis import AnalysisConfig
-    from gnt.analysis.config import seconds_to_slurm_time, PROJECT_ROOT
-    from gnt.analysis.slurm import (
+    from gnt.analysis.core.config import seconds_to_slurm_time, PROJECT_ROOT
+    from gnt.analysis.orchestration.slurm import (
         filter_unrun_model_pairs,
         ONE_WEEK_SECONDS,
         make_job_label,
