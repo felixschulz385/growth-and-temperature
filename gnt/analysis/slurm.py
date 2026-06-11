@@ -16,9 +16,9 @@ from typing import Dict, List, Optional, Tuple
 from .config import (
     AnalysisConfig,
     PROJECT_ROOT,
-    parse_runtime_to_seconds,
     seconds_to_slurm_time,
 )
+from .results import get_model_result_status
 
 ONE_WEEK_SECONDS = 7 * 24 * 3600
 DEFAULT_CONDA_HOOK = (
@@ -32,7 +32,7 @@ DEFAULT_CONDA_ENV = "gnt"
 # ---------------------------------------------------------------------------
 
 def _model_block(
-    model: str,
+    model_spec: Dict[str, str],
     model_idx: int,
     table_idx: int,
     n_models_in_table: int,
@@ -40,16 +40,37 @@ def _model_block(
     table_id: str,
     model_log_dir: Path,
     duckreg_version: str,
+    runtime_settings: Dict[str, str | int],
+    debug: bool = False,
 ) -> str:
     """Return the bash fragment that runs a single model."""
+    model = model_spec['model_name']
+    debug_arg = "    --debug \\\n" if debug else ""
+    variant_args = [
+        f'    --fe "{model_spec["fixed_effects_label"]}" \\\n',
+        f'    --resolution "{model_spec["resolution"]}" \\\n',
+        f'    --clustering "{model_spec["clustering"]}" \\\n',
+        f'    --temporal-extent "{model_spec["temporal_extent"]}" \\\n',
+        f'    --se-method "{runtime_settings["se_method"]}" \\\n',
+        f'    --fitter "{runtime_settings["fitter"]}" \\\n',
+        f'    --fe-method "{runtime_settings["fe_method"]}" \\\n',
+        f'    --round-strata {runtime_settings["round_strata"]} \\\n',
+        f'    --seed {runtime_settings["seed"]} \\\n',
+        f'    --n-bootstraps {runtime_settings["n_bootstraps"]} \\\n',
+        f'    --threads {runtime_settings["threads"]} \\\n',
+        f'    --memory-limit "{runtime_settings["memory_limit"]}" \\\n',
+        f'    --max-temp-directory-size "{runtime_settings["max_temp_directory_size"]}" \\\n',
+    ]
     return (
         f"# ── Model {table_idx}/{n_models_in_table} in {table_id}"
         f"  [{model_idx}/{n_models_total} overall]: {model}\n"
         f'mkdir -p "{model_log_dir}"\n'
         f'echo "[$(date -Is)] Running model {table_idx}/{n_models_in_table}: {model}"\n'
-        f"python run.py analysis \\\n"
+        f"python run.py analysis run \\\n"
+        f"{debug_arg}"
         f"    --config orchestration/configs/analysis.xlsx \\\n"
         f'    --model "{model}" \\\n'
+        f"{''.join(variant_args)}"
         f"    --output output/analysis \\\n"
         f'    >> "{model_log_dir}/slurm-$SLURM_JOB_ID.log" \\\n'
         f'    2>> "{model_log_dir}/slurm-$SLURM_JOB_ID.err"\n'
@@ -61,27 +82,33 @@ def _model_block(
 
 
 def build_job_script(
-    table_model_pairs: List[Tuple[str, List[str]]],
+    table_model_pairs: List[Tuple[str, List[Dict[str, str]]]],
     project_root: Path,
     job_label: str,
     duckreg_version: str,
+    runtime_settings: Dict[str, str | int],
     conda_hook: str = DEFAULT_CONDA_HOOK,
     conda_env: str = DEFAULT_CONDA_ENV,
+    debug: bool = False,
 ) -> str:
     """Return a SLURM batch script as a string.
 
     Parameters
     ----------
     table_model_pairs:
-        List of ``(table_id, [model_name, …])`` tuples.
+        List of ``(table_id, [model_spec, …])`` tuples.
     project_root:
         Absolute path to the project root.
     job_label:
         Human-readable label used in the job name and log directory.
     duckreg_version:
         duckreg version string embedded in the log path.
+    runtime_settings:
+        Runtime settings passed through to each ``analysis run`` invocation.
     conda_hook / conda_env:
         Conda initialisation command and environment name.
+    debug:
+        Pass ``--debug`` to each submitted ``analysis run`` invocation.
     """
     job_log_dir = (
         project_root / 'log' / 'analysis' / f'table-{job_label}' / duckreg_version
@@ -133,12 +160,19 @@ def build_job_script(
         ]
         for i, model in enumerate(models, 1):
             global_index += 1
+            variant_path = Path(
+                model['model_name'],
+                model['fixed_effects_label'],
+                model['resolution'],
+                model['temporal_extent'],
+                model['clustering'],
+            )
             model_log_dir = (
-                project_root / 'log' / 'analysis' / model / duckreg_version
+                project_root / 'log' / 'analysis' / variant_path / duckreg_version
             )
             lines.append(
                 _model_block(
-                    model=model,
+                    model_spec=model,
                     model_idx=global_index,
                     table_idx=i,
                     n_models_in_table=len(models),
@@ -146,6 +180,8 @@ def build_job_script(
                     table_id=table_id,
                     model_log_dir=model_log_dir,
                     duckreg_version=duckreg_version,
+                    runtime_settings=runtime_settings,
+                    debug=debug,
                 )
             )
         lines += [
@@ -160,7 +196,7 @@ def build_job_script(
 
 
 def write_job_script(
-    table_model_pairs: List[Tuple[str, List[str]]],
+    table_model_pairs: List[Tuple[str, List[Dict[str, str]]]],
     project_root: Path,
     job_label: str,
     duckreg_version: str,
@@ -222,7 +258,7 @@ def submit_job(job_script: str, slurm_kwargs: Dict[str, str]) -> str:
 def resolve_table_model_pairs(
     identifiers: List[str],
     config: AnalysisConfig,
-) -> Tuple[List[Tuple[str, List[str]]], int]:
+) -> Tuple[List[Tuple[str, List[Dict[str, str]]]], int]:
     """Resolve each identifier to ``(label, [model_names])`` and sum runtimes.
 
     Each identifier is treated as a table name first; if not found it is tried
@@ -233,9 +269,9 @@ def resolve_table_model_pairs(
     table_model_pairs:
         List of ``(label, [model_names])`` in input order.
     grand_total_seconds:
-        Sum of ``max_runtime`` for every resolved model.
+        Sum of derived runtime budgets for every resolved model.
     """
-    table_model_pairs: List[Tuple[str, List[str]]] = []
+    table_model_pairs: List[Tuple[str, List[Dict[str, str]]]] = []
     grand_total_seconds = 0
 
     known_tables = set(config.get_all_table_names())
@@ -243,11 +279,11 @@ def resolve_table_model_pairs(
 
     for ident in identifiers:
         if ident in known_tables:
-            models = config.get_models_for_table(ident)
+            models = config.get_table_model_specs(ident)
             secs = config.get_table_runtime_seconds(ident)
         elif ident in known_models:
-            models = [ident]
-            secs = config.get_model_runtime_seconds(ident)
+            models = [config.get_model_spec(ident)]
+            secs = config.get_model_runtime_seconds_for_spec(models[0])
         else:
             raise ValueError(
                 f"'{ident}' is neither a table in 'Models in Tables' "
@@ -263,7 +299,12 @@ def resolve_explicit_pairs(
     tables: List[str],
     models: List[str],
     config: AnalysisConfig,
-) -> Tuple[List[Tuple[str, List[str]]], int]:
+    *,
+    fixed_effects: Optional[str] = None,
+    resolution: Optional[str] = None,
+    clustering: Optional[str] = None,
+    temporal_extent: Optional[str] = None,
+) -> Tuple[List[Tuple[str, List[Dict[str, str]]]], int]:
     """Resolve separately specified tables and individual models into pairs.
 
     Unlike :func:`resolve_table_model_pairs`, this function does not
@@ -274,24 +315,65 @@ def resolve_explicit_pairs(
     Returns
     -------
     table_model_pairs:
-        Tables first (in the order given), then individual models.  Each
-        entry is a ``(label, [model_names])`` tuple.
+        Tables first (in the order given), then individual models. Each
+        entry is a ``(label, [model_specs])`` tuple.
     grand_total_seconds:
-        Sum of ``max_runtime`` for every resolved model.
+        Sum of derived runtime budgets for every resolved model.
     """
-    pairs: List[Tuple[str, List[str]]] = []
+    pairs: List[Tuple[str, List[Dict[str, str]]]] = []
     total_secs = 0
 
     for table_id in (tables or []):
-        models_in_table = config.get_models_for_table(table_id)
+        models_in_table = config.get_table_model_specs(table_id)
         pairs.append((table_id, models_in_table))
         total_secs += config.get_table_runtime_seconds(table_id)
 
     for model in (models or []):
-        pairs.append((model, [model]))
-        total_secs += config.get_model_runtime_seconds(model)
+        model_spec = config.get_model_spec(
+            model,
+            fixed_effects=fixed_effects,
+            resolution=resolution,
+            clustering=clustering,
+            temporal_extent=temporal_extent,
+        )
+        pairs.append((model, [model_spec]))
+        total_secs += config.get_model_runtime_seconds_for_spec(model_spec)
 
     return pairs, total_secs
+
+
+def filter_unrun_model_pairs(
+    table_model_pairs: List[Tuple[str, List[Dict[str, str]]]],
+    base_path: Path,
+    *,
+    rerun_existing: bool = False,
+) -> Tuple[List[Tuple[str, List[Dict[str, str]]]], List[Dict[str, str]]]:
+    """Filter model specs to only those without results unless reruns are enabled."""
+    if rerun_existing:
+        return table_model_pairs, []
+
+    filtered_pairs: List[Tuple[str, List[Dict[str, str]]]] = []
+    skipped: List[Dict[str, str]] = []
+
+    for label, models in table_model_pairs:
+        pending_models: List[Dict[str, str]] = []
+        for model_spec in models:
+            result_status = get_model_result_status(model_spec, base_path)
+            if result_status['exists']:
+                skipped.append({
+                    'label': label,
+                    'model_name': model_spec['model_name'],
+                    'fixed_effects_label': model_spec['fixed_effects_label'],
+                    'resolution': model_spec['resolution'],
+                    'temporal_extent': model_spec['temporal_extent'],
+                    'clustering': model_spec['clustering'],
+                })
+                continue
+            pending_models.append(model_spec)
+        if pending_models:
+            filtered_pairs.append((label, pending_models))
+
+    return filtered_pairs, skipped
 
 
 def make_job_label(identifiers: List[str], max_inline: int = 3) -> str:

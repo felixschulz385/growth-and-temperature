@@ -4,6 +4,28 @@ This directory contains utility scripts for the GNT data system.
 
 ## Index Conversion Scripts
 
+### backfill_grid_ids.py
+
+Backfills user-facing coarse-grid pixel ID columns into existing assembled
+parquet datasets, partition by partition.
+
+Typical use case:
+- existing `500m.parquet` dataset already has canonical `pixel_id`
+- append `pixel_id_1km` and `pixel_id_5km`
+- preserve the original `pixel_id` column
+
+Example:
+
+```bash
+python scripts/backfill_grid_ids.py \
+    --dataset-root data_nobackup/assembled/500m.parquet \
+    --data-root data_nobackup \
+    --source-grid 500m \
+    --target-grid 1km \
+    --target-grid 5km \
+    --dry-run
+```
+
 ### convert_legacy_indices.py
 
 Converts existing legacy index databases to the new enhanced timestamp format.

@@ -19,6 +19,7 @@ from datetime import datetime
 from gnt.data.common.index.unified_index import UnifiedDataIndex
 from gnt.data.download.sources.factory import create_data_source
 from gnt.data.common.hpc.client import HPCClient
+from gnt.config.runtime import get_paths_config, get_remote_config
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -438,7 +439,8 @@ def run_workflow_with_config(config: Dict[str, Any]):
         source_config = config.get('source', {})
         index_config = config.get('index', {})
         workflow_config = config.get('workflow', {})
-        hpc_config = config.get('hpc', {})
+        paths_config = get_paths_config(config)
+        remote_config = get_remote_config(config)
         
         # Handle case where source name might be passed separately
         if 'source_name' in config and not any(k in source_config for k in ['name', 'dataset_name', 'source_name', 'type']):
@@ -449,14 +451,14 @@ def run_workflow_with_config(config: Dict[str, Any]):
         logger.info(f"Created data source: {data_source.DATA_SOURCE_NAME}")
         
         # Create workflow context - HPC if target specified, otherwise basic
-        if hpc_config.get('target'):
+        if remote_config.get('ssh_target'):
             context = WorkflowContext(
                 bucket_name=None,
-                hpc_target=hpc_config['target'],
-                local_index_dir=index_config.get('local_dir'),
-                key_file=hpc_config.get('key_file')
+                hpc_target=remote_config['ssh_target'],
+                local_index_dir=index_config.get('local_dir') or paths_config.get('local_index_dir'),
+                key_file=remote_config.get('key_file')
             )
-            logger.info("Using HPC workflow context")
+            logger.info("Using remote transfer workflow context")
         else:
             context = WorkflowContext(bucket_name=config.get('bucket_name'))
             logger.info("Using basic workflow context")
@@ -471,7 +473,7 @@ def run_workflow_with_config(config: Dict[str, Any]):
             data_source=data_source,
             local_index_dir=getattr(context, 'local_index_dir', None),
             key_file=getattr(context, 'key_file', None),
-            hpc_mode=bool(hpc_config.get('target'))  # Enable HPC mode if target is specified
+            hpc_mode=bool(remote_config.get('ssh_target'))
         )
         
         # Set schema options as attributes if available

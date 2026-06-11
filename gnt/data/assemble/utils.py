@@ -8,9 +8,10 @@ and other reusable operations.
 import re
 import logging
 import numpy as np
+import pandas as pd
 import xarray as xr
 from odc.geo.xr import ODCExtensionDa
-from typing import Optional
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from gnt.data.assemble.constants import (
     DEFAULT_CRS,
@@ -21,6 +22,13 @@ from gnt.data.assemble.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+DEFAULT_DERIVED_PIXEL_ID_RESOLUTIONS = {
+    "500m": 0.00417,
+    "1km": 0.01,
+    "5km": 0.05,
+    "50km": 0.5,
+}
 
 
 def strip_remote_prefix(path: str) -> str:
@@ -126,6 +134,138 @@ def decode_pixel_id(pixel_id: np.uint64) -> tuple:
     iy = int((pixel_id >> PIXEL_ID_IY_SHIFT) & 0xFFFF)
     local_pixel = int(pixel_id & 0xFFFFFFFF)
     return ix, iy, local_pixel
+
+
+def encode_pixel_ids(ix: int, iy: int, local_pixels: np.ndarray) -> np.ndarray:
+    """Encode local pixel indices into packed uint64 pixel IDs."""
+    return (
+        (np.uint64(ix) << PIXEL_ID_IX_SHIFT)
+        | (np.uint64(iy) << PIXEL_ID_IY_SHIFT)
+        | local_pixels.astype(np.uint64)
+    )
+
+
+def normalize_derived_pixel_id_specs(
+    config: Optional[Dict[str, object]],
+) -> List[Tuple[str, float]]:
+    """Normalize a config mapping of derived pixel ID columns to resolutions."""
+    if not config:
+        return []
+
+    specs: List[Tuple[str, float]] = []
+    for column_name, raw_value in config.items():
+        if raw_value is None:
+            continue
+        if isinstance(raw_value, str):
+            try:
+                resolution = DEFAULT_DERIVED_PIXEL_ID_RESOLUTIONS[raw_value]
+            except KeyError as exc:
+                available = ", ".join(sorted(DEFAULT_DERIVED_PIXEL_ID_RESOLUTIONS))
+                raise ValueError(
+                    f"Unknown derived pixel ID grid label {raw_value!r} for {column_name!r}. "
+                    f"Available labels: {available}"
+                ) from exc
+        else:
+            resolution = float(raw_value)
+        specs.append((str(column_name), float(resolution)))
+    return specs
+
+
+def _centers_to_indices(values: np.ndarray, coords: np.ndarray) -> np.ndarray:
+    """Map center coordinates to integer pixel indices on an axis."""
+    if coords.ndim != 1 or coords.size == 0:
+        raise ValueError("Coordinate array must be 1D and non-empty")
+
+    if coords.size == 1:
+        return np.zeros(values.shape, dtype=np.int64)
+
+    step = float(coords[1] - coords[0])
+    if step == 0:
+        raise ValueError("Coordinate step cannot be zero")
+
+    if step > 0:
+        edge0 = float(coords[0]) - step / 2.0
+        indices = np.floor((values - edge0) / step)
+    else:
+        cell = abs(step)
+        edge0 = float(coords[0]) + cell / 2.0
+        indices = np.floor((edge0 - values) / cell)
+
+    indices = indices.astype(np.int64)
+    return np.clip(indices, 0, coords.size - 1)
+
+
+def build_derived_pixel_id_mapping(
+    pixel_ids: np.ndarray,
+    ix: int,
+    iy: int,
+    base_tile_geobox,
+    source_geobox,
+    derived_specs: Iterable[Tuple[str, float]],
+) -> pd.DataFrame:
+    """Build a dataframe mapping canonical pixel IDs to alternate grid IDs."""
+    specs = list(derived_specs)
+    if pixel_ids.size == 0:
+        return pd.DataFrame(columns=["pixel_id"] + [name for name, _ in specs])
+
+    source_h, source_w = source_geobox.shape
+    decoded = np.array([decode_pixel_id(np.uint64(pid)) for pid in pixel_ids], dtype=np.int64)
+    local_pixels = decoded[:, 2]
+    rows = local_pixels // source_w
+    cols = local_pixels % source_w
+
+    source_lats = source_geobox.coords[LATITUDE_COORD].values
+    source_lons = source_geobox.coords[LONGITUDE_COORD].values
+    lats = source_lats[rows]
+    lons = source_lons[cols]
+
+    mapping = pd.DataFrame({"pixel_id": pixel_ids})
+    for column_name, resolution in specs:
+        target_geobox = base_tile_geobox.zoom_to(resolution=resolution)
+        target_h, target_w = target_geobox.shape
+        target_rows = _centers_to_indices(lats, target_geobox.coords[LATITUDE_COORD].values)
+        target_cols = _centers_to_indices(lons, target_geobox.coords[LONGITUDE_COORD].values)
+        target_local = target_rows * target_w + target_cols
+        if np.any(target_local < 0) or np.any(target_local >= target_h * target_w):
+            raise ValueError(
+                f"Derived local pixels for column {column_name!r} are out of bounds for tile ({ix}, {iy})"
+            )
+        mapping[column_name] = encode_pixel_ids(ix, iy, target_local)
+
+    return mapping
+
+
+def add_derived_pixel_id_columns(
+    df: pd.DataFrame,
+    ix: int,
+    iy: int,
+    base_tile_geobox,
+    source_geobox,
+    derived_specs: Iterable[Tuple[str, float]],
+) -> pd.DataFrame:
+    """Append derived pixel ID columns to a dataframe that already contains `pixel_id`."""
+    specs = list(derived_specs)
+    if not specs or df is None or df.empty or "pixel_id" not in df.columns:
+        return df
+
+    for column_name, _ in specs:
+        df = df.drop(columns=[column_name], errors="ignore")
+
+    unique_ids = pd.Index(df["pixel_id"].dropna().unique()).astype("uint64").to_numpy()
+    mapping = build_derived_pixel_id_mapping(
+        pixel_ids=unique_ids,
+        ix=ix,
+        iy=iy,
+        base_tile_geobox=base_tile_geobox,
+        source_geobox=source_geobox,
+        derived_specs=specs,
+    )
+    if mapping.empty:
+        for column_name, _ in specs:
+            df[column_name] = pd.Series(dtype="uint64")
+        return df
+
+    return df.merge(mapping, on="pixel_id", how="left")
 
 
 def convert_int_to_float32(ds: xr.Dataset) -> xr.Dataset:

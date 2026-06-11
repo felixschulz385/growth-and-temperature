@@ -21,6 +21,7 @@ import os
 import signal
 import sys
 
+from gnt.config.runtime import get_paths_config, get_remote_config
 from gnt.data.preprocess.sources.factory import create_preprocessor, get_preprocessor_class, create_source
 
 # Configure logging
@@ -71,7 +72,7 @@ def expand_env_vars(config: Dict[str, Any]) -> Dict[str, Any]:
         return config
 
 
-def process_task(task_config: Dict[str, Any]) -> None:
+def process_task(task_config: Dict[str, Any]) -> bool:
     """
     Process a single preprocessing task.
     
@@ -111,6 +112,7 @@ def process_task(task_config: Dict[str, Any]) -> None:
         if mode == "validate":
             # Handle validation task
             handle_validate_task(preprocessor_name, task_config)
+            return True
         elif mode == "preprocess":
             # Create preprocessor instance using the factory
             preprocessor = create_preprocessor(preprocessor_name, task_config)
@@ -130,13 +132,25 @@ def process_task(task_config: Dict[str, Any]) -> None:
             logger.info(f"Processing {len(targets)} targets (bypassing cache validation)")
             
             # Process each ready target
+            all_targets_succeeded = True
             for target in targets:
                 try:
-                    preprocessor.process_target(target)
+                    target_success = preprocessor.process_target(target)
+                    if target_success is False:
+                        logger.error(
+                            "Target processing reported failure for %s/%s",
+                            target.get('year', 'unknown'),
+                            target.get('grid_cell', 'global'),
+                        )
+                        all_targets_succeeded = False
                 except Exception as e:
                     logger.error(f"Error processing target {target.get('year', 'unknown')}/{target.get('grid_cell', 'global')}: {e}")
-                    # Continue with next target instead of failing entire task
-                    continue
+                    all_targets_succeeded = False
+
+            return all_targets_succeeded
+
+        logger.error("Unknown preprocessing mode: %s", mode)
+        return False
         
     except Exception as e:
         logger.error(f"Error processing task with {preprocessor_name}: {str(e)}")
@@ -319,21 +333,32 @@ def handle_validate_task(preprocessor_name: str, task_config: Dict[str, Any]) ->
 class PreprocessWorkflowContext:
     """Unified context for preprocessing workflow execution."""
     
-    def __init__(self, hpc_config: Dict[str, Any] = None, gcs_config: Dict[str, Any] = None, sources_config: Dict[str, Any] = None):
+    def __init__(
+        self,
+        paths_config: Dict[str, Any] = None,
+        remote_config: Dict[str, Any] = None,
+        gcs_config: Dict[str, Any] = None,
+        sources_config: Dict[str, Any] = None,
+    ):
         """
         Initialize the preprocessing workflow context.
         
         Args:
-            hpc_config: HPC configuration dictionary
+            paths_config: Local path configuration dictionary
+            remote_config: Remote connection configuration dictionary
             gcs_config: GCS configuration dictionary
             sources_config: Sources configuration dictionary
         """
-        self.hpc_config = hpc_config or {}
+        self.paths_config = paths_config or {}
+        self.remote_config = remote_config or {}
         self.gcs_config = gcs_config or {}
+        self.data_root = self.paths_config.get("data_root")
         
-        # Store sources configuration in hpc_config for preprocessors to access
+        # Store sources configuration for preprocessors to access
         if sources_config:
-            self.hpc_config['sources'] = sources_config
+            self.sources_config = sources_config
+        else:
+            self.sources_config = {}
         
         # Set up staging directory
         self.staging_dir = os.path.join(os.getcwd(), "preprocessing_staging")
@@ -372,13 +397,23 @@ class PreprocessTaskHandlers:
                 preprocessor_config['subsource'] = task_config['subsource']
             
             # 5. Add sources configuration for preprocessors that need the full structure
-            if 'sources' in context.hpc_config:
-                preprocessor_config['sources'] = context.hpc_config['sources']
+            if context.sources_config:
+                preprocessor_config['sources'] = context.sources_config
             
-            # 6. Add HPC configuration with proper prefixes
-            if context.hpc_config:
-                for key, value in context.hpc_config.items():
-                    preprocessor_config[f"hpc_{key}"] = value
+            # 6. Add local path and remote connection configuration
+            if context.paths_config:
+                for key, value in context.paths_config.items():
+                    preprocessor_config[key] = value
+                if context.data_root:
+                    preprocessor_config['hpc_target'] = context.data_root
+                if context.paths_config.get("local_index_dir") and "local_index_dir" not in preprocessor_config:
+                    preprocessor_config["local_index_dir"] = context.paths_config["local_index_dir"]
+
+            if context.remote_config:
+                for key, value in context.remote_config.items():
+                    preprocessor_config[f"remote_{key}"] = value
+                if context.remote_config.get("key_file"):
+                    preprocessor_config["hpc_key_file"] = context.remote_config["key_file"]
                     
             # 7. Add GCS configuration with proper prefixes
             if context.gcs_config:
@@ -390,9 +425,6 @@ class PreprocessTaskHandlers:
             preprocessor_config['name'] = source_name
             
             # 9. Handle HPC local index directory mapping
-            if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
-                preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
-            
             # 10. Pass admin_level if specified (for PLAD and other preprocessors)
             if 'admin_level' in source_config:
                 preprocessor_config['admin_level'] = source_config['admin_level']
@@ -414,8 +446,11 @@ class PreprocessTaskHandlers:
                 logger.debug("Skipping data source creation for misc preprocessor (handles internally)")
             
             # Run the preprocessing task
-            process_task(preprocessor_config)
-            
+            success = process_task(preprocessor_config)
+            if not success:
+                logger.error(f"Preprocessing task failed for {source_name}")
+                return False
+
             logger.info(f"Preprocessing task completed successfully")
             return True
             
@@ -452,13 +487,23 @@ class PreprocessTaskHandlers:
                 preprocessor_config['subsource'] = task_config['subsource']
             
             # 6. Add sources configuration for preprocessors that need the full structure
-            if 'sources' in context.hpc_config:
-                preprocessor_config['sources'] = context.hpc_config['sources']
+            if context.sources_config:
+                preprocessor_config['sources'] = context.sources_config
             
-            # 7. Add HPC configuration with proper prefixes
-            if context.hpc_config:
-                for key, value in context.hpc_config.items():
-                    preprocessor_config[f"hpc_{key}"] = value
+            # 7. Add local path and remote connection configuration
+            if context.paths_config:
+                for key, value in context.paths_config.items():
+                    preprocessor_config[key] = value
+                if context.data_root:
+                    preprocessor_config['hpc_target'] = context.data_root
+                if context.paths_config.get("local_index_dir") and "local_index_dir" not in preprocessor_config:
+                    preprocessor_config["local_index_dir"] = context.paths_config["local_index_dir"]
+
+            if context.remote_config:
+                for key, value in context.remote_config.items():
+                    preprocessor_config[f"remote_{key}"] = value
+                if context.remote_config.get("key_file"):
+                    preprocessor_config["hpc_key_file"] = context.remote_config["key_file"]
                     
             # 8. Add GCS configuration with proper prefixes
             if context.gcs_config:
@@ -470,9 +515,6 @@ class PreprocessTaskHandlers:
             preprocessor_config['name'] = source_name
             
             # 10. Handle HPC local index directory mapping
-            if "hpc_local_index_dir" in preprocessor_config and "local_index_dir" not in preprocessor_config:
-                preprocessor_config["local_index_dir"] = preprocessor_config["hpc_local_index_dir"]
-            
             # 11. Create data source instance if possible (skip for misc preprocessor)
             if source_name.lower() != 'misc':
                 try:
@@ -489,8 +531,11 @@ class PreprocessTaskHandlers:
                 logger.debug("Skipping data source creation for misc preprocessor (handles internally)")
             
             # Run the validation task
-            process_task(preprocessor_config)
-            
+            success = process_task(preprocessor_config)
+            if not success:
+                logger.error(f"Validation task failed for {source_name}")
+                return False
+
             logger.info(f"Validation task completed successfully")
             return True
             
@@ -516,7 +561,8 @@ def run_workflow_with_config(config: Dict[str, Any]):
         source_config = config.get('source', {})
         preprocess_config = config.get('preprocess', {})
         workflow_config = config.get('workflow', {})
-        hpc_config = config.get('hpc', {})
+        paths_config = get_paths_config(config)
+        remote_config = get_remote_config(config)
         gcs_config = config.get('gcs', {})
         sources_config = config.get('sources', {})  # Extract sources configuration
         
@@ -533,7 +579,8 @@ def run_workflow_with_config(config: Dict[str, Any]):
         
         # Create workflow context
         context = PreprocessWorkflowContext(
-            hpc_config=hpc_config,
+            paths_config=paths_config,
+            remote_config=remote_config,
             gcs_config=gcs_config,
             sources_config=sources_config  # Pass sources configuration
         )

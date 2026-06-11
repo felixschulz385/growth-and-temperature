@@ -1,0 +1,57 @@
+paths:
+  data_root: "${DATA_NOBACKUP:-data_nobackup}"
+  local_index_dir: "${DATA_NOBACKUP:-data_nobackup}/hpc_data_index"
+
+preprocess:
+  stage: "spatial"
+  dask_threads: 1
+  dask_memory_limit: "4GB"
+
+sources:
+  snl_mining:
+    type: "snl_mining"
+    data_path: "snl_mining"
+    year_range: [1992, 2024]
+    duckdb_path: "snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb"
+    properties_table: "properties"
+    llm_years_table: "property_llm_years"
+    work_history_table: "property_work_history_events"
+    latitude_column: "latitude"
+    longitude_column: "longitude"
+    opening_year_column: "actual_start_up_year"
+    closing_year_column: "actual_closure_year"
+    llm_opening_year_column: "llm_opening_year"
+    llm_closing_year_column: "llm_closing_year"
+    aggregation:
+      prepared_db_path: "snl_mining/processed/stage_1/snl_mining_prepared_debug.duckdb"
+      output_filename: "snl_mining_timeseries_reprojected_debug.zarr"
+      metric_crs: "ESRI:54009"
+      tile_size: 2048
+      semantics:
+        radius: "count of active mine buffers covering pixel center"
+        admin: "count of active mines in containing ADM polygon"
+      radius_variables:
+        mine_count_10km:
+          radius_km: 10
+          table_name: "mine_buffers_10km"
+        mine_count_20km:
+          radius_km: 20
+          table_name: "mine_buffers_20km"
+        mine_count_50km:
+          radius_km: 50
+          table_name: "mine_buffers_50km"
+      admin_variables:
+        mine_count_adm1:
+          table_name: "adm1_year_counts"
+          geometry_path: "misc/processed/stage_1/gadm/gadm_levelADM_1_simplified.gpkg"
+          code_column: "GID_1"
+        mine_count_adm2:
+          table_name: "adm2_year_counts"
+          geometry_path: "misc/processed/stage_1/gadm/gadm_levelADM_2_simplified.gpkg"
+          code_column: "GID_2"
+      output_variables:
+        - "mine_count_10km"
+        - "mine_count_20km"
+        - "mine_count_50km"
+        - "mine_count_adm1"
+        - "mine_count_adm2"

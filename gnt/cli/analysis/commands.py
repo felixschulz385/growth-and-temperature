@@ -15,6 +15,68 @@ from __future__ import annotations
 import argparse
 
 from gnt.cli.common import add_logging_args
+from gnt.analysis.runtime_settings import ANALYSIS_RUNTIME_DEFAULTS
+
+
+def _add_runtime_setting_args(
+    parser: argparse.ArgumentParser,
+    *,
+    include_memory_limit: bool = True,
+) -> None:
+    """Register analysis runtime settings with CLI-owned defaults."""
+    parser.add_argument(
+        "--se-method",
+        default=ANALYSIS_RUNTIME_DEFAULTS["se_method"],
+        help=f"DuckReg SE method (default: {ANALYSIS_RUNTIME_DEFAULTS['se_method']})",
+    )
+    parser.add_argument(
+        "--fitter",
+        default=ANALYSIS_RUNTIME_DEFAULTS["fitter"],
+        help=f"DuckReg fitter (default: {ANALYSIS_RUNTIME_DEFAULTS['fitter']})",
+    )
+    parser.add_argument(
+        "--fe-method",
+        default=ANALYSIS_RUNTIME_DEFAULTS["fe_method"],
+        help=f"Fixed-effects estimation method (default: {ANALYSIS_RUNTIME_DEFAULTS['fe_method']})",
+    )
+    parser.add_argument(
+        "--round-strata",
+        type=int,
+        default=ANALYSIS_RUNTIME_DEFAULTS["round_strata"],
+        help=f"Round strata setting (default: {ANALYSIS_RUNTIME_DEFAULTS['round_strata']})",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=ANALYSIS_RUNTIME_DEFAULTS["seed"],
+        help=f"Random seed (default: {ANALYSIS_RUNTIME_DEFAULTS['seed']})",
+    )
+    parser.add_argument(
+        "--n-bootstraps",
+        type=int,
+        default=ANALYSIS_RUNTIME_DEFAULTS["n_bootstraps"],
+        help=f"Number of bootstraps (default: {ANALYSIS_RUNTIME_DEFAULTS['n_bootstraps']})",
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=ANALYSIS_RUNTIME_DEFAULTS["threads"],
+        help=f"DuckDB threads (default: {ANALYSIS_RUNTIME_DEFAULTS['threads']})",
+    )
+    if include_memory_limit:
+        parser.add_argument(
+            "--memory-limit",
+            default=ANALYSIS_RUNTIME_DEFAULTS["memory_limit"],
+            help=f"DuckDB memory limit (default: {ANALYSIS_RUNTIME_DEFAULTS['memory_limit']})",
+        )
+    parser.add_argument(
+        "--max-temp-directory-size",
+        default=ANALYSIS_RUNTIME_DEFAULTS["max_temp_directory_size"],
+        help=(
+            "DuckDB max temp directory size "
+            f"(default: {ANALYSIS_RUNTIME_DEFAULTS['max_temp_directory_size']})"
+        ),
+    )
 
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
@@ -66,9 +128,29 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         help="Override dataset path (overrides data_source in specification)",
     )
     run_p.add_argument(
+        "--fe",
+        choices=["NO", "PX", "PX+CY", "PX+YR", "ADM2", "ADM2+CY", "ADM2+YR"],
+        help="Override fixed effects for this run",
+    )
+    run_p.add_argument(
+        "--resolution",
+        choices=["500m", "1km", "5km", "50km", "ADM2"],
+        help="Override dataset resolution for this run",
+    )
+    run_p.add_argument(
+        "--clustering",
+        choices=["ADM2", "Country"],
+        help="Override clustering for this run",
+    )
+    run_p.add_argument(
+        "--temporal-extent",
+        help="Override temporal extent for this run (YYYY-YYYY)",
+    )
+    run_p.add_argument(
         "--output", "-o",
         help="Output directory for analysis results",
     )
+    _add_runtime_setting_args(run_p)
     run_p.set_defaults(func=handle_run)
 
     # ── submit ─────────────────────────────────────────────────────────────
@@ -97,14 +179,43 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         help="Individual model names to submit",
     )
     submit_p.add_argument(
-        "--source",
-        help="Single table or model name (auto-detected; legacy alternative to --tables / --models)",
+        "--fe",
+        choices=["NO", "PX", "PX+CY", "PX+YR", "ADM2", "ADM2+CY", "ADM2+YR"],
+        help="Override fixed effects for individually submitted models",
     )
-    submit_p.add_argument("--mem",           default="128GB",   help="SLURM memory (default: 128GB)")
+    submit_p.add_argument(
+        "--resolution",
+        choices=["500m", "1km", "5km", "50km", "ADM2"],
+        help="Override resolution for individually submitted models",
+    )
+    submit_p.add_argument(
+        "--clustering",
+        choices=["ADM2", "Country"],
+        help="Override clustering for individually submitted models",
+    )
+    submit_p.add_argument(
+        "--temporal-extent",
+        help="Override temporal extent for individually submitted models (YYYY-YYYY)",
+    )
+    submit_p.add_argument(
+        "--mem",
+        default="128GB",
+        help="SLURM memory request (default: 128GB)",
+    )
     submit_p.add_argument("--time",          default=None,      help="SLURM time limit override")
     submit_p.add_argument("--qos",           default="1week",   help="SLURM QOS (default: 1week)")
-    submit_p.add_argument("--partition",     default="scicore", help="SLURM partition (default: scicore)")
+    submit_p.add_argument(
+        "--partition",
+        default=None,
+        help="SLURM partition override (default: auto-select scicore, or bigmem for mem >=256GB)",
+    )
     submit_p.add_argument("--cpus-per-task", type=int, default=8, help="SLURM CPUs per task (default: 8)")
+    submit_p.add_argument(
+        "--rerun-existing",
+        action="store_true",
+        help="Include models that already have results (default: skip them)",
+    )
+    _add_runtime_setting_args(submit_p, include_memory_limit=False)
     submit_p.set_defaults(func=handle_submit)
 
     # ── summary ────────────────────────────────────────────────────────────

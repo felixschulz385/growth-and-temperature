@@ -20,6 +20,19 @@ import yaml
 logger = logging.getLogger(__name__)
 
 
+def _deep_merge_dicts(base: Any, override: Any) -> Any:
+    """Recursively merge dictionaries, preferring values from *override*."""
+    if isinstance(base, dict) and isinstance(override, dict):
+        merged = dict(base)
+        for key, value in override.items():
+            if key in merged:
+                merged[key] = _deep_merge_dicts(merged[key], value)
+            else:
+                merged[key] = value
+        return merged
+    return override
+
+
 def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
     """Load a YAML/JSON/Excel config file with environment variable expansion.
 
@@ -90,5 +103,14 @@ def load_config_with_env_vars(config_path: Union[str, Path]) -> Dict[str, Any]:
             raise ValueError(
                 f"Unsupported configuration format: {config_path.suffix}"
             )
+
+    if config_path.suffix.lower() in (".yaml", ".yml"):
+        local_config_path = config_path.with_name(
+            f"{config_path.stem}.local{config_path.suffix}"
+        )
+        if local_config_path.exists():
+            with open(local_config_path) as fh:
+                local_raw = yaml.safe_load(fh) or {}
+            raw = _deep_merge_dicts(raw, local_raw)
 
     return process_item(raw)

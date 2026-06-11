@@ -3,7 +3,7 @@
 #SBATCH --output=./log/assemble/slurm-%j.log
 #SBATCH --error=./log/assemble/slurm-%j.err
 #SBATCH --partition=scicore
-#SBATCH --time=0-12:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
@@ -28,8 +28,7 @@ export DATA_NOBACKUP="/scicore/home/meiera/schulz0022/projects/growth-and-temper
 MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 
 # Run the assembly using the unified interface
-python run.py assemble \
-    --update \
+python run.py assemble update \
     --datasource $DATASOURCE \
     --config orchestration/configs/data.yaml \
     --source $SOURCE \

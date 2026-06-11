@@ -26,7 +26,7 @@ exec > "${LOG_DIR}/slurm-${SLURM_JOB_ID}.log" 2> "${LOG_DIR}/slurm-${SLURM_JOB_I
 cd "${WD}"
 mkdir -p "${WD}/scratch_nobackup/${SLURM_JOB_ID}"
 
-python run.py analysis \
+python run.py analysis run \
     --config orchestration/configs/analysis.xlsx \
     --model "${MODEL}" \
     --output output/analysis \

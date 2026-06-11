@@ -9,7 +9,7 @@ import logging
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 
-from gnt.data.assemble.utils import strip_remote_prefix
+from gnt.config.runtime import resolve_data_root
 from gnt.data.assemble.constants import (
     DEFAULT_TILE_SIZE,
     DEFAULT_COMPRESSION,
@@ -108,27 +108,29 @@ class DatasetConfig:
         )
 
 
-def derive_hpc_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+def derive_data_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
-    Derive hpc_root from assembly configuration, checking multiple sources.
+    Derive the local project data root from configuration.
     
     Args:
         assembly_config: Assembly configuration dictionary
-        full_config: Full configuration dictionary containing HPC settings
+        full_config: Full configuration dictionary containing runtime settings
         
     Returns:
-        HPC root path or None if not found
+        Local project data root or None if not found
     """
-    # Check full config for hpc settings
     if full_config:
-        hpc_config = full_config.get('hpc', {})
-        hpc_target = hpc_config.get('target')
-        
-        if hpc_target:
-            return strip_remote_prefix(hpc_target)
+        data_root = resolve_data_root(full_config)
+        if data_root:
+            return data_root
     
-    logger.warning("Could not derive hpc_root from configuration")
+    logger.warning("Could not derive data_root from configuration")
     return None
+
+
+def derive_hpc_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """Backward-compatible alias for older callers."""
+    return derive_data_root(assembly_config, full_config)
 
 
 def apply_cli_overrides(assembly_config: Dict[str, Any], cli_overrides: Dict[str, Any]) -> None:
@@ -212,6 +214,50 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 logger.debug(f"Dataset '{name}' using default index_cols: ['pixel_id']")
     
     processing = assembly_config.get('processing', {})
+    spatial_partition = processing.get('spatial_partition', 'grid')
+    derived_pixel_ids = processing.get('derived_pixel_ids')
+
+    if spatial_partition not in {'grid', 'geometry'}:
+        errors.append(
+            f"'spatial_partition' must be either 'grid' or 'geometry', got '{spatial_partition}'"
+        )
+
+    if derived_pixel_ids is not None:
+        if not isinstance(derived_pixel_ids, dict):
+            errors.append("'processing.derived_pixel_ids' must be a mapping of column_name -> resolution")
+        else:
+            for column_name, raw_value in derived_pixel_ids.items():
+                if not isinstance(column_name, str) or not column_name.strip():
+                    errors.append("Derived pixel ID column names must be non-empty strings")
+                if not isinstance(raw_value, (int, float, str)):
+                    errors.append(
+                        f"Derived pixel ID resolution for {column_name!r} must be numeric or a known grid label"
+                    )
+
+    if spatial_partition == 'geometry':
+        geometry_source = assembly_config.get('geometry_source')
+        if not isinstance(geometry_source, dict):
+            errors.append(
+                "Geometry assembly requires a 'geometry_source' mapping in the assembly configuration"
+            )
+        else:
+            geometry_path = geometry_source.get('path')
+            geometry_id_column = geometry_source.get('id_column')
+
+            if not geometry_path:
+                errors.append("Geometry assembly requires 'geometry_source.path'")
+            elif not os.path.exists(geometry_path):
+                logger.warning(f"Geometry source path does not exist: {geometry_path}")
+
+            if not geometry_id_column:
+                errors.append("Geometry assembly requires 'geometry_source.id_column'")
+
+        if not assembly_config.get('geometry_aggregator'):
+            errors.append(
+                "Geometry assembly requires 'geometry_aggregator' "
+                "(import path to callable, e.g. 'pkg.module:function')"
+            )
+
     year_range = processing.get('year_range')
     if year_range:
         if not isinstance(year_range, (list, tuple)) or len(year_range) != 2:

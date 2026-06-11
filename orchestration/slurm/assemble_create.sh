@@ -25,7 +25,7 @@ export DATA_NOBACKUP="/scicore/home/meiera/schulz0022/projects/growth-and-temper
 MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 
 # Run the assembly using the unified interface
-python run.py assemble \
+python run.py assemble create \
     --config orchestration/configs/data.yaml \
     --source $SOURCE \
     --no-overwrite \

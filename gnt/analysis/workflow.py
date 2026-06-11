@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import pandas as pd
+from gnt.analysis.config import normalize_fixed_effects_label, fixed_effect_terms_from_label
 
 # Add project root to path
 project_root = Path(__file__).parent.parent.parent
@@ -67,10 +68,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
         dependent  = str(row['dependent']).strip()
         independent = str(row['independent']).strip()
 
-        fixed_effects: List[str] = []
         fe_raw = str(row.get('fixed_effects', '0')).strip()
-        if fe_raw not in ('0', 'nan', ''):
-            fixed_effects = [fe.strip() for fe in fe_raw.split(',')]
+        fe_label = normalize_fixed_effects_label(fe_raw)
+        fixed_effects: List[str] = fixed_effect_terms_from_label(fe_label)
 
         instruments_raw = str(row.get('instruments', '0')).strip()
         has_iv = instruments_raw not in ('0', 'nan', '')
