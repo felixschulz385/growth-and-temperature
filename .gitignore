@@ -13,6 +13,9 @@ _data.yaml
 sqlite_*
 index_*
 
+config.toml
+data.local.yaml
+
 /log
 *.log
 
