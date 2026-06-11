@@ -17,6 +17,9 @@ orchestration/configs/**/*.local.yaml
 sqlite_*
 index_*
 
+config.toml
+data.local.yaml
+
 ._*
 
 /log
