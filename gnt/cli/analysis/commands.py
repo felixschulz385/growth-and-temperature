@@ -22,6 +22,24 @@ from gnt.analysis.core.runtime import ANALYSIS_RUNTIME_DEFAULTS
 CLI_FIXED_EFFECT_CHOICES = list(FIXED_EFFECT_TERMS.keys())
 
 
+def _runtime_default_help(key: str) -> str:
+    return (
+        f"Default: from analysis.xlsx Settings sheet, "
+        f"falling back to {ANALYSIS_RUNTIME_DEFAULTS[key]!r}."
+    )
+
+
+def _parse_bool(value: str) -> bool:
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(
+        f"Expected a boolean value, got {value!r}."
+    )
+
+
 def _add_runtime_setting_args(
     parser: argparse.ArgumentParser,
     *,
@@ -30,56 +48,133 @@ def _add_runtime_setting_args(
     """Register analysis runtime settings with CLI-owned defaults."""
     parser.add_argument(
         "--se-method",
-        default=ANALYSIS_RUNTIME_DEFAULTS["se_method"],
-        help=f"DuckReg SE method (default: {ANALYSIS_RUNTIME_DEFAULTS['se_method']})",
+        default=None,
+        help=f"DuckReg SE method. {_runtime_default_help('se_method')}",
     )
     parser.add_argument(
         "--fitter",
-        default=ANALYSIS_RUNTIME_DEFAULTS["fitter"],
-        help=f"DuckReg fitter (default: {ANALYSIS_RUNTIME_DEFAULTS['fitter']})",
+        default=None,
+        help=f"DuckReg fitter. {_runtime_default_help('fitter')}",
     )
     parser.add_argument(
         "--fe-method",
-        default=ANALYSIS_RUNTIME_DEFAULTS["fe_method"],
-        help=f"Fixed-effects estimation method (default: {ANALYSIS_RUNTIME_DEFAULTS['fe_method']})",
+        default=None,
+        help=f"Fixed-effects estimation method. {_runtime_default_help('fe_method')}",
     )
     parser.add_argument(
         "--round-strata",
         type=int,
-        default=ANALYSIS_RUNTIME_DEFAULTS["round_strata"],
-        help=f"Round strata setting (default: {ANALYSIS_RUNTIME_DEFAULTS['round_strata']})",
+        default=None,
+        help=f"Round strata setting. {_runtime_default_help('round_strata')}",
     )
     parser.add_argument(
         "--seed",
         type=int,
-        default=ANALYSIS_RUNTIME_DEFAULTS["seed"],
-        help=f"Random seed (default: {ANALYSIS_RUNTIME_DEFAULTS['seed']})",
+        default=None,
+        help=f"Random seed. {_runtime_default_help('seed')}",
     )
     parser.add_argument(
         "--n-bootstraps",
         type=int,
-        default=ANALYSIS_RUNTIME_DEFAULTS["n_bootstraps"],
-        help=f"Number of bootstraps (default: {ANALYSIS_RUNTIME_DEFAULTS['n_bootstraps']})",
+        default=None,
+        help=f"Number of bootstraps. {_runtime_default_help('n_bootstraps')}",
     )
     parser.add_argument(
         "--threads",
         type=int,
-        default=ANALYSIS_RUNTIME_DEFAULTS["threads"],
-        help=f"DuckDB threads (default: {ANALYSIS_RUNTIME_DEFAULTS['threads']})",
+        default=None,
+        help=f"DuckDB threads. {_runtime_default_help('threads')}",
     )
     if include_memory_limit:
         parser.add_argument(
             "--memory-limit",
-            default=ANALYSIS_RUNTIME_DEFAULTS["memory_limit"],
-            help=f"DuckDB memory limit (default: {ANALYSIS_RUNTIME_DEFAULTS['memory_limit']})",
+            default=None,
+            help=f"DuckDB memory limit. {_runtime_default_help('memory_limit')}",
         )
     parser.add_argument(
         "--max-temp-directory-size",
-        default=ANALYSIS_RUNTIME_DEFAULTS["max_temp_directory_size"],
+        default=None,
         help=(
-            "DuckDB max temp directory size "
-            f"(default: {ANALYSIS_RUNTIME_DEFAULTS['max_temp_directory_size']})"
+            "DuckDB max temp directory size. "
+            f"{_runtime_default_help('max_temp_directory_size')}"
         ),
+    )
+    parser.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=f"Maximum MAP iterations. {_runtime_default_help('max_iterations')}",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=float,
+        default=None,
+        help=f"MAP convergence tolerance. {_runtime_default_help('tolerance')}",
+    )
+    parser.add_argument(
+        "--check-interval",
+        type=int,
+        default=None,
+        help=f"MAP convergence check interval. {_runtime_default_help('check_interval')}",
+    )
+    parser.add_argument(
+        "--convergence-sample",
+        type=float,
+        default=None,
+        help=f"MAP convergence sampling fraction. {_runtime_default_help('convergence_sample')}",
+    )
+    parser.add_argument(
+        "--min-iterations-before-check",
+        type=int,
+        default=None,
+        help=(
+            "Minimum MAP iterations before non-final convergence checks. "
+            f"{_runtime_default_help('min_iterations_before_check')}"
+        ),
+    )
+    parser.add_argument(
+        "--check-interval-growth",
+        type=_parse_bool,
+        default=None,
+        metavar="BOOL",
+        help=(
+            "Whether MAP convergence checks become less frequent over time. "
+            f"{_runtime_default_help('check_interval_growth')}"
+        ),
+    )
+    parser.add_argument(
+        "--max-check-interval",
+        type=int,
+        default=None,
+        help=f"Upper bound for adaptive MAP check intervals. {_runtime_default_help('max_check_interval')}",
+    )
+    parser.add_argument(
+        "--singleton-pruning",
+        choices=["iterative", "one_pass"],
+        default=None,
+        help=f"Singleton pruning strategy. {_runtime_default_help('singleton_pruning')}",
+    )
+    parser.add_argument(
+        "--fe-order",
+        choices=["input", "ascending_groups", "descending_groups"],
+        default=None,
+        help=f"Order of FE sweeps during MAP. {_runtime_default_help('fe_order')}",
+    )
+    parser.add_argument(
+        "--drop-constant-variables",
+        type=_parse_bool,
+        default=None,
+        metavar="BOOL",
+        help=(
+            "Whether to skip constant residual columns during MAP. "
+            f"{_runtime_default_help('drop_constant_variables')}"
+        ),
+    )
+    parser.add_argument(
+        "--residual-type",
+        choices=["DOUBLE", "FLOAT"],
+        default=None,
+        help=f"Residual storage type. {_runtime_default_help('residual_type')}",
     )
 
 

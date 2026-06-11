@@ -15,6 +15,17 @@ ANALYSIS_RUNTIME_DEFAULTS: Dict[str, Any] = {
     "threads": 4,
     "memory_limit": "112GB",
     "max_temp_directory_size": "768GB",
+    "max_iterations": 1000,
+    "tolerance": 1e-8,
+    "check_interval": 10,
+    "convergence_sample": 1.0,
+    "min_iterations_before_check": 5,
+    "check_interval_growth": True,
+    "max_check_interval": 25,
+    "singleton_pruning": "iterative",
+    "fe_order": "input",
+    "drop_constant_variables": False,
+    "residual_type": "DOUBLE",
 }
 
 _MEMORY_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)\s*$")
