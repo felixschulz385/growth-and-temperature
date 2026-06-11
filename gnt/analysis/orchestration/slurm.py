@@ -31,6 +31,11 @@ DEFAULT_CONDA_ENV = "gnt"
 # Script building
 # ---------------------------------------------------------------------------
 
+
+def _bool_to_cli(value: bool) -> str:
+    """Return a stable lowercase boolean literal for CLI arguments."""
+    return "true" if value else "false"
+
 def _model_block(
     model_spec: Dict[str, str],
     model_idx: int,
@@ -61,6 +66,17 @@ def _model_block(
         f'    --threads {runtime_settings["threads"]} \\\n',
         f'    --memory-limit "{runtime_settings["memory_limit"]}" \\\n',
         f'    --max-temp-directory-size "{runtime_settings["max_temp_directory_size"]}" \\\n',
+        f'    --max-iterations {runtime_settings["max_iterations"]} \\\n',
+        f'    --tolerance {runtime_settings["tolerance"]} \\\n',
+        f'    --check-interval {runtime_settings["check_interval"]} \\\n',
+        f'    --convergence-sample {runtime_settings["convergence_sample"]} \\\n',
+        f'    --min-iterations-before-check {runtime_settings["min_iterations_before_check"]} \\\n',
+        f'    --check-interval-growth {_bool_to_cli(bool(runtime_settings["check_interval_growth"]))} \\\n',
+        f'    --max-check-interval {runtime_settings["max_check_interval"]} \\\n',
+        f'    --singleton-pruning "{runtime_settings["singleton_pruning"]}" \\\n',
+        f'    --fe-order "{runtime_settings["fe_order"]}" \\\n',
+        f'    --drop-constant-variables {_bool_to_cli(bool(runtime_settings["drop_constant_variables"]))} \\\n',
+        f'    --residual-type "{runtime_settings["residual_type"]}" \\\n',
     ]
     return (
         f"# ── Model {table_idx}/{n_models_in_table} in {table_id}"

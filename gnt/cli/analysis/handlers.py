@@ -85,6 +85,17 @@ def handle_run(args: argparse.Namespace) -> None:
         threads=getattr(args, "threads"),
         memory_limit=getattr(args, "memory_limit"),
         max_temp_directory_size=getattr(args, "max_temp_directory_size"),
+        max_iterations=getattr(args, "max_iterations"),
+        tolerance=getattr(args, "tolerance"),
+        check_interval=getattr(args, "check_interval"),
+        convergence_sample=getattr(args, "convergence_sample"),
+        min_iterations_before_check=getattr(args, "min_iterations_before_check"),
+        check_interval_growth=getattr(args, "check_interval_growth"),
+        max_check_interval=getattr(args, "max_check_interval"),
+        singleton_pruning=getattr(args, "singleton_pruning"),
+        fe_order=getattr(args, "fe_order"),
+        drop_constant_variables=getattr(args, "drop_constant_variables"),
+        residual_type=getattr(args, "residual_type"),
     )
 
 
@@ -162,6 +173,27 @@ def handle_submit(args: argparse.Namespace) -> None:
 
     slurm_time = getattr(args, "time", None) or seconds_to_slurm_time(total_secs)
     job_label = make_job_label(identifiers)
+    runtime_settings = cfg.get_runtime_settings(overrides={
+        "se_method": args.se_method,
+        "fitter": args.fitter,
+        "fe_method": args.fe_method,
+        "round_strata": args.round_strata,
+        "seed": args.seed,
+        "n_bootstraps": args.n_bootstraps,
+        "threads": args.threads,
+        "max_temp_directory_size": args.max_temp_directory_size,
+        "max_iterations": args.max_iterations,
+        "tolerance": args.tolerance,
+        "check_interval": args.check_interval,
+        "convergence_sample": args.convergence_sample,
+        "min_iterations_before_check": args.min_iterations_before_check,
+        "check_interval_growth": args.check_interval_growth,
+        "max_check_interval": args.max_check_interval,
+        "singleton_pruning": args.singleton_pruning,
+        "fe_order": args.fe_order,
+        "drop_constant_variables": args.drop_constant_variables,
+        "residual_type": args.residual_type,
+    })
     duckdb_memory_limit = scale_memory_limit(args.mem, 0.8)
     partition = resolve_slurm_partition(args.mem, getattr(args, "partition", None))
     slurm_kwargs = {
@@ -180,15 +212,8 @@ def handle_submit(args: argparse.Namespace) -> None:
         _duckreg_ver,
         debug=args.debug,
         runtime_settings={
-            "se_method": args.se_method,
-            "fitter": args.fitter,
-            "fe_method": args.fe_method,
-            "round_strata": args.round_strata,
-            "seed": args.seed,
-            "n_bootstraps": args.n_bootstraps,
-            "threads": args.threads,
+            **runtime_settings,
             "memory_limit": duckdb_memory_limit,
-            "max_temp_directory_size": args.max_temp_directory_size,
         },
     )
 
