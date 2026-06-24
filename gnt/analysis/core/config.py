@@ -42,20 +42,20 @@ DEFAULT_EXCEL = PROJECT_ROOT / "orchestration" / "configs" / "analysis.xlsx"
 # observed maxima by dataset/method.
 DEFAULT_MODEL_MAX_RUNTIMES = {
     '500m': {
-        'OLS': '0-20:15:00',
-        'IV': '0-17:30:00',
+        'OLS': '1-00:00:00',
+        'IV': '2-00:00:00',
     },
     '1km': {
-        'OLS': '0-07:15:00',
-        'IV': '0-02:45:00',
+        'OLS': '0-12:00:00',
+        'IV': '1-00:00:00',
     },
     '5km': {
-        'OLS': '0-00:30:00',
-        'IV': '0-00:10:00',
+        'OLS': '0-04:00:00',
+        'IV': '0-08:00:00',
     },
     '50km': {
         'OLS': '0-00:10:00',
-        'IV': '0-00:05:00',
+        'IV': '0-00:20:00',
     },
     'adm2_1km': {
         'OLS': '0-00:05:00',
