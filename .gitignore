@@ -18,6 +18,7 @@ sqlite_*
 index_*
 
 config.toml
+analysis.xlsx
 data.local.yaml
 
 ._*
