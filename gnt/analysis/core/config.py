@@ -155,6 +155,13 @@ TABLE_SPATIAL_EXTENT_ALIASES = {
     ('HDI', 'LOW'): 'LO',
     ('HDI', '> LOW'): 'ME_HI_VH',
     ('HDI', 'GTLO'): 'ME_HI_VH',
+    ('HDI', '< V. HIGH'): 'LO_ME_HI',
+    ('HDI', '< V HIGH'): 'LO_ME_HI',
+    ('HDI', '< VERY HIGH'): 'LO_ME_HI',
+    ('HDI', 'EXCL V. HIGH'): 'LO_ME_HI',
+    ('HDI', 'EXCL V HIGH'): 'LO_ME_HI',
+    ('HDI', 'EXCL VERY HIGH'): 'LO_ME_HI',
+    ('HDI', 'LO ME HI'): 'LO_ME_HI',
     ('HDI', 'MEDIUM'): 'ME',
     ('HDI', 'HIGH'): 'HI',
     ('HDI', 'V HIGH'): 'VH',
@@ -163,6 +170,9 @@ TABLE_SPATIAL_EXTENT_ALIASES = {
     ('WB', 'LOW'): 'LO',
     ('WB', '> LOW'): 'LM_UM_HI',
     ('WB', 'GTLO'): 'LM_UM_HI',
+    ('WB', '< HIGH'): 'LO_LM_UM',
+    ('WB', 'EXCL HIGH'): 'LO_LM_UM',
+    ('WB', 'LO LM UM'): 'LO_LM_UM',
     ('WB', 'LOWER MIDDLE'): 'LM',
     ('WB', 'LM'): 'LM',
     ('WB', 'UPPER MIDDLE'): 'UM',
@@ -812,8 +822,9 @@ class AnalysisConfig:
         ``model_label`` — used as column display names when
         ``model_display_names`` is not set in the ``Tables`` sheet.
         ``Spatial Extent`` — accepts ``World`` plus human-readable
-        ``HDI …`` / ``WB …`` labels and resolves them to year-stamped
-        canonical sample splits using ``start_year - 1``.
+        ``HDI …`` / ``WB …`` labels, including grouped split aliases such as
+        ``HDI > Low``, ``HDI < V. High``, and ``WB < High``, and resolves
+        them to year-stamped canonical sample splits using ``start_year - 1``.
         ``Dependent Variable`` — rendered as a grouped header row above
         ``model_label``/model display names when consecutive values match.
         Any additional columns beyond ``order``, ``table_name``,

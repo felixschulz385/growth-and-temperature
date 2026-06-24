@@ -3,8 +3,9 @@ from types import SimpleNamespace
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
-from gnt.analysis.core.config import AnalysisConfig
+from gnt.analysis.core.config import AnalysisConfig, resolve_table_spatial_extent_label
 from gnt.analysis.execution import runner
 from gnt.cli.config import load_config_with_env_vars
 
@@ -52,6 +53,26 @@ def test_build_geographic_query_combines_subset_and_country_filters(monkeypatch)
     )
 
     assert query == "(country_id.isin([1, 2])) & (country_id.isin([10, 20]))"
+
+
+@pytest.mark.parametrize(
+    ("spatial_extent", "expected"),
+    [
+        ("HDI < V. High", "HDI_LO_ME_HI_1999"),
+        ("HDI excl V High", "HDI_LO_ME_HI_1999"),
+        ("WB < High", "WB_LO_LM_UM_1999"),
+        ("WB excl High", "WB_LO_LM_UM_1999"),
+        ("HDI_LO_ME_HI_1999", "HDI_LO_ME_HI_1999"),
+        ("WB_LO_LM_UM_1999", "WB_LO_LM_UM_1999"),
+    ],
+)
+def test_resolve_table_spatial_extent_label_supports_excluding_top_bucket(
+    spatial_extent, expected
+):
+    assert (
+        resolve_table_spatial_extent_label(spatial_extent, "2000-2020", "1km")
+        == expected
+    )
 
 
 def test_analysis_config_reads_runtime_settings_sheet(tmp_path):
