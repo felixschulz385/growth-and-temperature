@@ -55,6 +55,92 @@ def test_build_geographic_query_combines_subset_and_country_filters(monkeypatch)
     assert query == "(country_id.isin([1, 2])) & (country_id.isin([10, 20]))"
 
 
+def test_load_subset_generates_partitioned_hdi_subset_from_classifications(tmp_path):
+    project_root = tmp_path
+    subsets_dir = project_root / "data_nobackup" / "subsets"
+    classifications_dir = (
+        project_root
+        / "data_nobackup"
+        / "misc"
+        / "processed"
+        / "stage_1"
+        / "country_classifications"
+    )
+    mapping_dir = (
+        project_root
+        / "data_nobackup"
+        / "misc"
+        / "processed"
+        / "stage_2"
+        / "gadm"
+    )
+    classifications_dir.mkdir(parents=True)
+    mapping_dir.mkdir(parents=True)
+
+    pd.DataFrame(
+        [
+            {"iso3": "AAA", "HDI_LO_1999": True, "HDI_ME_1999": False, "HDI_HI_1999": False},
+            {"iso3": "BBB", "HDI_LO_1999": False, "HDI_ME_1999": True, "HDI_HI_1999": False},
+            {"iso3": "CCC", "HDI_LO_1999": False, "HDI_ME_1999": False, "HDI_HI_1999": False},
+        ]
+    ).to_parquet(classifications_dir / "classifications.parquet", index=False)
+    mapping_dir.joinpath("country_code_mapping.json").write_text(
+        '{"AAA": 10, "BBB": 20, "CCC": 30}'
+    )
+
+    country_ids = runner.load_subset(
+        "HDI_LO_ME_HI_1999",
+        subsets_dir=subsets_dir,
+        project_root=project_root,
+    )
+
+    assert country_ids == [10, 20]
+    assert (subsets_dir / "HDI_LO_ME_HI_1999.json").exists()
+
+
+def test_load_subset_generates_partitioned_wb_subset_from_classifications(tmp_path):
+    project_root = tmp_path
+    subsets_dir = project_root / "data_nobackup" / "subsets"
+    classifications_dir = (
+        project_root
+        / "data_nobackup"
+        / "misc"
+        / "processed"
+        / "stage_1"
+        / "country_classifications"
+    )
+    mapping_dir = (
+        project_root
+        / "data_nobackup"
+        / "misc"
+        / "processed"
+        / "stage_2"
+        / "gadm"
+    )
+    classifications_dir.mkdir(parents=True)
+    mapping_dir.mkdir(parents=True)
+
+    pd.DataFrame(
+        [
+            {"iso3": "AAA", "WB_LO_1999": True, "WB_LM_1999": False, "WB_UM_1999": False},
+            {"iso3": "BBB", "WB_LO_1999": False, "WB_LM_1999": False, "WB_UM_1999": False},
+            {"iso3": "CCC", "WB_LO_1999": False, "WB_LM_1999": True, "WB_UM_1999": True},
+        ]
+    ).to_parquet(classifications_dir / "classifications.parquet", index=False)
+    mapping_dir.joinpath("country_code_mapping.json").write_text(
+        '{"AAA": 10, "BBB": 20, "CCC": 30}'
+    )
+
+    country_ids = runner.load_subset(
+        "WB_LO_LM_UM_1999",
+        subsets_dir=subsets_dir,
+        project_root=project_root,
+    )
+
+    assert country_ids == [10, 30]
+    assert (subsets_dir / "WB_LO_LM_UM_1999.json").exists()
+
+
 @pytest.mark.parametrize(
     ("spatial_extent", "expected"),
     [
