@@ -923,41 +923,10 @@ def create_tables_download_zip(
 # ---------------------------------------------------------------------------
 
 def summarize_tables(config: AnalysisConfig) -> None:
-    """Print a status overview of every table defined in the Excel config.
+    """Print a runtime-aware status summary of every configured analysis table."""
+    from .summary import summarize_tables as _summarize_tables
 
-    For each model the function reports the last run date, duckreg version
-    used, and whether results exist.
-    """
-    table_names = config.get_all_table_names()
-
-    print(f"\n{'=' * 80}")
-    print("  Analysis Tables Summary")
-    print(f"  Excel  : {config.excel_path}")
-    print(f"  Results: {config.base_path}")
-    print(f"{'=' * 80}")
-
-    col_w = 52
-    for table_name in table_names:
-        model_specs = config.get_table_model_specs(table_name)
-        print(f"\n  Table: {table_name}  ({len(model_specs)} model{'s' if len(model_specs) != 1 else ''})")
-        print(
-            f"  {'Model':<{col_w}}  {'Last Run':<12}  {'Version':<12}  Status"
-        )
-        print(f"  {'-' * col_w}  {'-' * 12}  {'-' * 12}  ------")
-        for model in model_specs:
-            label = (
-                f"{model['model_name']} "
-                f"[{model['fixed_effects_label']}/{model['resolution']}/"
-                f"{model['temporal_extent']}/{model['spatial_extent']}/"
-                f"{model['clustering']}]"
-            )
-            result_status = get_model_result_status(model, config.base_path)
-            date = result_status['date']
-            ver = result_status['version']
-            status = result_status['status']
-            print(f"  {label:<{col_w}}  {date:<12}  {ver:<12}  {status}")
-
-    print()
+    _summarize_tables(config)
 
 
 def generate_all_tables(

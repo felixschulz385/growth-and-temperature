@@ -208,10 +208,13 @@ def test_run_duckreg_passes_settings_sheet_fixef_tuning(monkeypatch, tmp_path):
     captured = {}
 
     class DummyModel:
-        def summary(self):
+        def as_dict(self):
             return {}
 
-        def summary_df(self):
+        def summary(self):
+            return "summary"
+
+        def tidy(self):
             return pd.DataFrame()
 
     def fake_duckreg(**kwargs):
@@ -245,7 +248,7 @@ def test_run_duckreg_passes_settings_sheet_fixef_tuning(monkeypatch, tmp_path):
                 "se_method": "CRV1",
                 "fitter": "duckdb",
                 "fe_method": "demean",
-                "round_strata": 5,
+                "compression": 5,
                 "seed": 42,
                 "n_bootstraps": 0,
                 "threads": 4,
@@ -280,3 +283,4 @@ def test_run_duckreg_passes_settings_sheet_fixef_tuning(monkeypatch, tmp_path):
     assert captured["fe_order"] == "ascending_groups"
     assert captured["drop_constant_variables"] is True
     assert captured["residual_type"] == "FLOAT"
+    assert captured["compression"] == 5

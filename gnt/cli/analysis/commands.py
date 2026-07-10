@@ -62,10 +62,12 @@ def _add_runtime_setting_args(
         help=f"Fixed-effects estimation method. {_runtime_default_help('fe_method')}",
     )
     parser.add_argument(
+        "--compression",
         "--round-strata",
+        dest="compression",
         type=int,
         default=None,
-        help=f"Round strata setting. {_runtime_default_help('round_strata')}",
+        help=f"DuckReg compression setting. {_runtime_default_help('compression')}",
     )
     parser.add_argument(
         "--seed",
@@ -310,13 +312,22 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         help="SLURM memory request (default: 128GB)",
     )
     submit_p.add_argument("--time",          default=None,      help="SLURM time limit override")
-    submit_p.add_argument("--qos",           default="1week",   help="SLURM QOS (default: 1week)")
+    submit_p.add_argument(
+        "--qos",
+        default=None,
+        help="SLURM QoS override (default: auto-select from estimated runtime)",
+    )
     submit_p.add_argument(
         "--partition",
         default=None,
         help="SLURM partition override (default: auto-select scicore, or bigmem for mem >=256GB)",
     )
-    submit_p.add_argument("--cpus-per-task", type=int, default=8, help="SLURM CPUs per task (default: 8)")
+    submit_p.add_argument(
+        "--cpus-per-task",
+        type=int,
+        default=None,
+        help="SLURM CPUs per task override (default: auto-select from resolution)",
+    )
     submit_p.add_argument(
         "--rerun-existing",
         action="store_true",

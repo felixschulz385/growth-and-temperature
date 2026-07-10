@@ -9,6 +9,9 @@ import sys
 
 from gnt.analysis.core.runtime import (
     ANALYSIS_RUNTIME_DEFAULTS,
+    TWO_WEEKS_SECONDS,
+    recommended_cores_for_model_specs,
+    recommend_slurm_qos,
     resolve_slurm_partition,
     scale_memory_limit,
 )
@@ -71,7 +74,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="SLURM memory request (default: 128GB)",
     )
     parser.add_argument("--time", default=None, help="SLURM time limit override")
-    parser.add_argument("--qos", default="1week", help="SLURM QOS (default: 1week)")
+    parser.add_argument(
+        "--qos",
+        default=None,
+        help="SLURM QoS override (default: auto-select from estimated runtime)",
+    )
     parser.add_argument(
         "--partition",
         default=None,
@@ -79,9 +86,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--cpus-per-task",
-        default=8,
+        default=None,
         type=int,
-        help="SLURM CPUs per task (default: 8)",
+        help="SLURM CPUs per task override (default: auto-select from resolution)",
     )
     parser.add_argument(
         "--rerun-existing",
@@ -104,10 +111,12 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Fixed-effects estimation method (default: {ANALYSIS_RUNTIME_DEFAULTS['fe_method']})",
     )
     parser.add_argument(
+        "--compression",
         "--round-strata",
+        dest="compression",
         type=int,
-        default=ANALYSIS_RUNTIME_DEFAULTS["round_strata"],
-        help=f"Round strata setting (default: {ANALYSIS_RUNTIME_DEFAULTS['round_strata']})",
+        default=ANALYSIS_RUNTIME_DEFAULTS["compression"],
+        help=f"DuckReg compression setting (default: {ANALYSIS_RUNTIME_DEFAULTS['compression']})",
     )
     parser.add_argument(
         "--seed",
@@ -152,13 +161,13 @@ def main() -> int:
         from gnt.analysis import AnalysisConfig
         from gnt.analysis.core.config import PROJECT_ROOT, seconds_to_slurm_time
         from gnt.analysis.orchestration.slurm import (
-            ONE_WEEK_SECONDS,
             filter_unrun_model_pairs,
             make_job_label,
             resolve_explicit_pairs,
             submit_job,
             write_job_script,
         )
+        from gnt.analysis.orchestration.status import write_job_manifest
 
         tables = list(args.tables or [])
         models = list(args.models or [])
@@ -197,14 +206,19 @@ def main() -> int:
             for _, model_specs in pairs
             for model_spec in model_specs
         )
+        all_model_specs = [
+            model_spec
+            for _, model_specs in pairs
+            for model_spec in model_specs
+        ]
         slurm_time = args.time or seconds_to_slurm_time(total_seconds)
 
         print(f"\nTotal combined runtime: {seconds_to_slurm_time(total_seconds)}")
 
-        if total_seconds > ONE_WEEK_SECONDS:
+        if total_seconds > TWO_WEEKS_SECONDS:
             raise ValueError(
                 f"Total runtime {seconds_to_slurm_time(total_seconds)} exceeds the "
-                f"1-week limit ({seconds_to_slurm_time(ONE_WEEK_SECONDS)}). "
+                f"2-week limit ({seconds_to_slurm_time(TWO_WEEKS_SECONDS)}). "
                 "Split the tables across multiple jobs."
             )
 
@@ -213,6 +227,25 @@ def main() -> int:
         duckdb_memory_limit = scale_memory_limit(args.mem, 0.8)
         partition = resolve_slurm_partition(args.mem, args.partition)
 
+        runtime_lookup = {
+            tuple(model_spec["variant_path"]): cfg.get_model_runtime_seconds_for_spec(model_spec)
+            for model_spec in all_model_specs
+        }
+        selected_qos = args.qos or recommend_slurm_qos(total_seconds)
+        qos_source = "explicit" if args.qos else "auto"
+        selected_cpus = args.cpus_per_task or recommended_cores_for_model_specs(all_model_specs)
+        cpu_source = "explicit" if args.cpus_per_task else "auto"
+        selected_threads = args.threads or selected_cpus
+        threads_source = "explicit" if args.threads else "auto"
+
+        print(
+            f"\nSubmitting with QoS: {selected_qos} "
+            f"({qos_source}, estimated runtime {seconds_to_slurm_time(total_seconds)})"
+        )
+        print(
+            f"Using CPUs/threads: {selected_cpus}/{selected_threads} "
+            f"(cpu={cpu_source}, threads={threads_source})"
+        )
         print(f"\nCreating job script... (duckreg {_DUCKREG_VERSION})")
         job_script_path = write_job_script(
             pairs,
@@ -220,15 +253,28 @@ def main() -> int:
             job_label,
             _DUCKREG_VERSION,
             runtime_settings={
+                **cfg.get_runtime_settings(overrides={
                 "se_method": args.se_method,
                 "fitter": args.fitter,
                 "fe_method": args.fe_method,
-                "round_strata": args.round_strata,
+                "compression": args.compression,
                 "seed": args.seed,
                 "n_bootstraps": args.n_bootstraps,
-                "threads": args.threads,
+                    "threads": selected_threads,
+                    "max_temp_directory_size": args.max_temp_directory_size,
+                    "max_iterations": None,
+                    "tolerance": None,
+                    "check_interval": None,
+                    "convergence_sample": None,
+                    "min_iterations_before_check": None,
+                    "check_interval_growth": None,
+                    "max_check_interval": None,
+                    "singleton_pruning": None,
+                    "fe_order": None,
+                    "drop_constant_variables": None,
+                    "residual_type": None,
+                }),
                 "memory_limit": duckdb_memory_limit,
-                "max_temp_directory_size": args.max_temp_directory_size,
             },
             debug=args.debug,
         )
@@ -237,11 +283,20 @@ def main() -> int:
         slurm_kwargs = {
             "mem": args.mem,
             "time": slurm_time,
-            "qos": args.qos,
+            "qos": selected_qos,
             "partition": partition,
-            "cpus_per_task": args.cpus_per_task,
+            "cpus_per_task": selected_cpus,
         }
         job_id = submit_job(job_script_path, slurm_kwargs)
+        write_job_manifest(
+            project_root=PROJECT_ROOT,
+            job_id=job_id,
+            job_label=job_label,
+            duckreg_version=_DUCKREG_VERSION,
+            table_model_pairs=pairs,
+            slurm_kwargs=slurm_kwargs,
+            runtime_lookup=runtime_lookup,
+        )
 
         total_models = sum(len(model_specs) for _, model_specs in pairs)
         print("\nJob submitted successfully!")
@@ -254,7 +309,9 @@ def main() -> int:
         print(f"  Partition:   {partition}")
         print(f"  DuckDB:      {duckdb_memory_limit}")
         print(f"  Time:        {slurm_time}")
-        print(f"  QOS:         {args.qos}")
+        print(f"  QOS:         {selected_qos} ({qos_source})")
+        print(f"  CPUs:        {selected_cpus} ({cpu_source})")
+        print(f"  Threads:     {selected_threads} ({threads_source})")
 
         os.remove(job_script_path)
         return 0

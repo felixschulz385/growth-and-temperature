@@ -215,7 +215,7 @@ def run_duckreg(
     se_method: Optional[str] = None,
     fitter: Optional[str] = None,
     fe_method: Optional[str] = None,
-    round_strata: Optional[int] = None,
+    compression: Optional[int] = None,
     seed: Optional[int] = None,
     n_bootstraps: Optional[int] = None,
     threads: Optional[int] = None,
@@ -270,7 +270,7 @@ def run_duckreg(
         "se_method": se_method,
         "fitter": fitter,
         "fe_method": fe_method,
-        "round_strata": round_strata,
+        "compression": compression,
         "seed": seed,
         "n_bootstraps": n_bootstraps,
         "threads": threads,
@@ -361,8 +361,11 @@ def run_duckreg(
         logger.info("\n" + "\n".join(info_lines))
 
     # ── fit ───────────────────────────────────────────────────────────────────
-    _n_bootstraps = settings["n_bootstraps"]
-    bootstrap_config = {'n': _n_bootstraps} if _n_bootstraps and _n_bootstraps > 0 else None
+    if settings["n_bootstraps"] and settings["n_bootstraps"] > 0:
+        raise ValueError(
+            "DuckReg bootstrap support was removed. Set n_bootstraps to 0 and "
+            "use se_method values supported by duckreg()."
+        )
 
     resource_kwargs: Dict[str, Any] = {'threads': threads}
     if memory_limit is not None:
@@ -374,8 +377,7 @@ def run_duckreg(
         formula=formula,
         data=data_source,
         subset=sql_where,
-        bootstrap=bootstrap_config,
-        round_strata=settings["round_strata"],
+        compression=settings["compression"],
         seed=settings["seed"],
         fe_method=settings["fe_method"],
         max_iterations=settings["max_iterations"],
@@ -397,7 +399,14 @@ def run_duckreg(
 
     logger.info("Analysis complete!")
 
-    model_summary = model.summary()
+    model_summary_raw = model.as_dict() if hasattr(model, 'as_dict') else model.summary()
+    if not isinstance(model_summary_raw, dict):
+        raise TypeError(
+            "duckreg model output is not machine-readable. Expected as_dict() or "
+            f"summary() to return dict, got {type(model_summary_raw)!r}."
+        )
+    model_summary = model_summary_raw
+
     text_output = format_model_summary(model_summary, spec_config, precision=4)
     print("\n" + text_output)
 
@@ -439,7 +448,12 @@ def run_duckreg(
 
         (output_path / f'results_{timestamp}.txt').write_text(text_output)
 
-        coefficients_df = model.summary_df()
+        if hasattr(model, 'tidy'):
+            coefficients_df = model.tidy()
+        elif hasattr(model, 'summary_df'):
+            coefficients_df = model.summary_df()
+        else:
+            coefficients_df = pd.DataFrame()
         if not coefficients_df.empty:
             coefficients_df.to_csv(output_path / 'coefficients.csv')
 

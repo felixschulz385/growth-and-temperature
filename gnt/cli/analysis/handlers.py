@@ -10,7 +10,13 @@ import os
 from pathlib import Path
 
 from gnt.cli.common import setup_logging
-from gnt.analysis.core.runtime import resolve_slurm_partition, scale_memory_limit
+from gnt.analysis.core.runtime import (
+    TWO_WEEKS_SECONDS,
+    recommended_cores_for_model_specs,
+    recommend_slurm_qos,
+    resolve_slurm_partition,
+    scale_memory_limit,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +85,7 @@ def handle_run(args: argparse.Namespace) -> None:
         se_method=getattr(args, "se_method"),
         fitter=getattr(args, "fitter"),
         fe_method=getattr(args, "fe_method"),
-        round_strata=getattr(args, "round_strata"),
+        compression=getattr(args, "compression"),
         seed=getattr(args, "seed"),
         n_bootstraps=getattr(args, "n_bootstraps"),
         threads=getattr(args, "threads"),
@@ -107,12 +113,12 @@ def handle_submit(args: argparse.Namespace) -> None:
     from gnt.analysis.core.config import seconds_to_slurm_time, PROJECT_ROOT
     from gnt.analysis.orchestration.slurm import (
         filter_unrun_model_pairs,
-        ONE_WEEK_SECONDS,
         make_job_label,
         resolve_explicit_pairs,
         submit_job,
         write_job_script,
     )
+    from gnt.analysis.orchestration.status import write_job_manifest
 
     try:
         from duckreg._version import __version__ as _duckreg_ver
@@ -161,13 +167,16 @@ def handle_submit(args: argparse.Namespace) -> None:
         for _, models in pairs
         for model_spec in models
     )
+    all_model_specs = [
+        model_spec
+        for _, models in pairs
+        for model_spec in models
+    ]
 
-    print(f"Total runtime across all identifiers: {seconds_to_slurm_time(total_secs)}")
-
-    if total_secs > ONE_WEEK_SECONDS:
+    if total_secs > TWO_WEEKS_SECONDS:
         logger.error(
             f"Combined runtime {seconds_to_slurm_time(total_secs)} exceeds the "
-            "1-week QOS limit. Split the tables across multiple jobs."
+            "2-week QoS limit. Split the tables across multiple jobs."
         )
         raise SystemExit(1)
 
@@ -177,7 +186,7 @@ def handle_submit(args: argparse.Namespace) -> None:
         "se_method": args.se_method,
         "fitter": args.fitter,
         "fe_method": args.fe_method,
-        "round_strata": args.round_strata,
+        "compression": args.compression,
         "seed": args.seed,
         "n_bootstraps": args.n_bootstraps,
         "threads": args.threads,
@@ -194,16 +203,35 @@ def handle_submit(args: argparse.Namespace) -> None:
         "drop_constant_variables": args.drop_constant_variables,
         "residual_type": args.residual_type,
     })
+    runtime_lookup = {
+        tuple(model_spec["variant_path"]): cfg.get_model_runtime_seconds_for_spec(model_spec)
+        for model_spec in all_model_specs
+    }
     duckdb_memory_limit = scale_memory_limit(args.mem, 0.8)
     partition = resolve_slurm_partition(args.mem, getattr(args, "partition", None))
+    selected_qos = args.qos or recommend_slurm_qos(total_secs)
+    qos_source = "explicit" if args.qos else "auto"
+    selected_cpus = args.cpus_per_task or recommended_cores_for_model_specs(all_model_specs)
+    cpu_source = "explicit" if args.cpus_per_task else "auto"
+    selected_threads = args.threads or selected_cpus
+    threads_source = "explicit" if args.threads else "auto"
     slurm_kwargs = {
         "mem":           args.mem,
         "time":          slurm_time,
-        "qos":           args.qos,
+        "qos":           selected_qos,
         "partition":     partition,
-        "cpus_per_task": args.cpus_per_task,
+        "cpus_per_task": selected_cpus,
     }
 
+    print(
+        f"Estimated runtime across all identifiers: "
+        f"{seconds_to_slurm_time(total_secs)}"
+    )
+    print(f"Selected QoS: {selected_qos} ({qos_source})")
+    print(
+        f"Using CPUs/threads: {selected_cpus}/{selected_threads} "
+        f"(cpu={cpu_source}, threads={threads_source})"
+    )
     print(f"Creating job script... (duckreg {_duckreg_ver})")
     job_path = write_job_script(
         pairs,
@@ -213,12 +241,22 @@ def handle_submit(args: argparse.Namespace) -> None:
         debug=args.debug,
         runtime_settings={
             **runtime_settings,
+            "threads": selected_threads,
             "memory_limit": duckdb_memory_limit,
         },
     )
 
     print("Submitting job to SLURM...")
     job_id = submit_job(job_path, slurm_kwargs)
+    write_job_manifest(
+        project_root=PROJECT_ROOT,
+        job_id=job_id,
+        job_label=job_label,
+        duckreg_version=_duckreg_ver,
+        table_model_pairs=pairs,
+        slurm_kwargs=slurm_kwargs,
+        runtime_lookup=runtime_lookup,
+    )
 
     total_models = sum(len(m) for _, m in pairs)
     print(f"\nJob submitted successfully!")
@@ -231,7 +269,9 @@ def handle_submit(args: argparse.Namespace) -> None:
     print(f"  Partition: {partition}")
     print(f"  DuckDB  : {duckdb_memory_limit}")
     print(f"  Time    : {slurm_time}")
-    print(f"  QOS     : {args.qos}")
+    print(f"  QOS     : {selected_qos} ({qos_source})")
+    print(f"  CPUs    : {selected_cpus} ({cpu_source})")
+    print(f"  Threads : {selected_threads} ({threads_source})")
 
     os.remove(job_path)
 

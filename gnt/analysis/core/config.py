@@ -85,56 +85,54 @@ FIXED_EFFECT_LABELS = {
     'NO': 'NO',
     'pixel_id': 'PX',
     'PX': 'PX',
-    'pixel_id + country*year': 'PX+CY',
+    'pixel_id %in% country + country^year': 'PX+CY',
     'PX+CY': 'PX+CY',
     'pixel_id + year': 'PX+YR',
     'PX+YR': 'PX+YR',
     'pixel_id_1km': 'PX1K',
     'PX1K': 'PX1K',
-    'pixel_id_1km + country*year': 'PX1K+CY',
+    'pixel_id_1km + country^year': 'PX1K+CY',
     'PX1K+CY': 'PX1K+CY',
     'pixel_id_1km + year': 'PX1K+YR',
     'PX1K+YR': 'PX1K+YR',
     'pixel_id_5km': 'PX5K',
     'PX5K': 'PX5K',
-    'pixel_id_5km + country*year': 'PX5K+CY',
+    'pixel_id_5km + country^year': 'PX5K+CY',
     'PX5K+CY': 'PX5K+CY',
     'pixel_id_5km + year': 'PX5K+YR',
     'PX5K+YR': 'PX5K+YR',
     'pixel_id_50km': 'PX50K',
     'PX50K': 'PX50K',
-    'pixel_id_50km + country*year': 'PX50K+CY',
+    'pixel_id_50km + country^year': 'PX50K+CY',
     'PX50K+CY': 'PX50K+CY',
     'pixel_id_50km + year': 'PX50K+YR',
     'PX50K+YR': 'PX50K+YR',
     'GID_2': 'ADM2',
     'subdivision': 'ADM2',
     'ADM2': 'ADM2',
-    'GID_2 + country*year': 'ADM2+CY',
-    'subdivision + country*year': 'ADM2+CY',
+    'GID_2 + country^year': 'ADM2+CY',
     'ADM2+CY': 'ADM2+CY',
     'GID_2 + year': 'ADM2+YR',
-    'subdivision + year': 'ADM2+YR',
     'ADM2+YR': 'ADM2+YR',
 }
 
 FIXED_EFFECT_TERMS = {
     'NO': [],
     'PX': ['pixel_id'],
-    'PX+CY': ['pixel_id', 'country*year'],
+    'PX+CY': ['pixel_id %in% country', 'country^year'],
     'PX+YR': ['pixel_id', 'year'],
     'PX1K': ['pixel_id_1km'],
-    'PX1K+CY': ['pixel_id_1km', 'country*year'],
+    'PX1K+CY': ['pixel_id_1km', 'country^year'],
     'PX1K+YR': ['pixel_id_1km', 'year'],
     'PX5K': ['pixel_id_5km'],
-    'PX5K+CY': ['pixel_id_5km', 'country*year'],
+    'PX5K+CY': ['pixel_id_5km', 'country^year'],
     'PX5K+YR': ['pixel_id_5km', 'year'],
     'PX50K': ['pixel_id_50km'],
-    'PX50K+CY': ['pixel_id_50km', 'country*year'],
+    'PX50K+CY': ['pixel_id_50km', 'country^year'],
     'PX50K+YR': ['pixel_id_50km', 'year'],
-    'ADM2': ['subdivision'],
-    'ADM2+CY': ['subdivision', 'country*year'],
-    'ADM2+YR': ['subdivision', 'year'],
+    'ADM2': ['GID_2'],
+    'ADM2+CY': ['GID_2', 'country^year'],
+    'ADM2+YR': ['GID_2', 'year'],
 }
 
 CLUSTERING_LABELS = {
@@ -422,7 +420,7 @@ def get_default_model_runtime(data_source: Any, instruments: Any) -> str:
 
 
 _RUNTIME_INT_KEYS = {
-    "round_strata",
+    "compression",
     "seed",
     "n_bootstraps",
     "threads",
@@ -440,9 +438,14 @@ _RUNTIME_BOOL_KEYS = {
     "drop_constant_variables",
 }
 
+_RUNTIME_KEY_ALIASES = {
+    "round_strata": "compression",
+}
+
 
 def _coerce_runtime_setting_value(key: str, value: Any) -> Any:
     """Coerce workbook setting values to the runtime type expected downstream."""
+    key = _RUNTIME_KEY_ALIASES.get(key, key)
     if value is None or pd.isna(value):
         return None
 
@@ -572,11 +575,13 @@ class AnalysisConfig:
                 key = str(key_raw).strip()
                 if not key:
                     continue
+                key = _RUNTIME_KEY_ALIASES.get(key, key)
                 settings[key] = _coerce_runtime_setting_value(key, row.get("value"))
 
         if overrides:
             for key, value in overrides.items():
                 if value is not None:
+                    key = _RUNTIME_KEY_ALIASES.get(key, key)
                     settings[key] = value
 
         return settings

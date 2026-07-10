@@ -60,7 +60,7 @@ def _model_block(
         f'    --se-method "{runtime_settings["se_method"]}" \\\n',
         f'    --fitter "{runtime_settings["fitter"]}" \\\n',
         f'    --fe-method "{runtime_settings["fe_method"]}" \\\n',
-        f'    --round-strata {runtime_settings["round_strata"]} \\\n',
+        f'    --compression {runtime_settings["compression"]} \\\n',
         f'    --seed {runtime_settings["seed"]} \\\n',
         f'    --n-bootstraps {runtime_settings["n_bootstraps"]} \\\n',
         f'    --threads {runtime_settings["threads"]} \\\n',
