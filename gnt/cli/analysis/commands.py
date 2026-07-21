@@ -240,7 +240,7 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     )
     run_p.add_argument(
         "--clustering",
-        choices=["ADM2", "Country"],
+        choices=["ADM1", "Country"],
         help="Override clustering for this run",
     )
     run_p.add_argument(
@@ -295,7 +295,7 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     )
     submit_p.add_argument(
         "--clustering",
-        choices=["ADM2", "Country"],
+        choices=["ADM1", "Country"],
         help="Override clustering for individually submitted models",
     )
     submit_p.add_argument(

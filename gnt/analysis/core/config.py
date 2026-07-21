@@ -136,14 +136,14 @@ FIXED_EFFECT_TERMS = {
 }
 
 CLUSTERING_LABELS = {
-    'subdivision': 'ADM2',
-    'ADM2': 'ADM2',
+    'subdivision': 'ADM1',
+    'ADM1': 'ADM1',
     'country': 'Country',
     'Country': 'Country',
 }
 
 CLUSTERING_COLUMNS = {
-    'ADM2': 'subdivision',
+    'ADM1': 'subdivision',
     'Country': 'country',
 }
 
@@ -292,7 +292,7 @@ def normalize_clustering_label(clustering: Any, resolution: Any) -> str:
     """Return canonical clustering label, applying resolution-based defaults."""
     if clustering is None or pd.isna(clustering) or not str(clustering).strip():
         resolution_label = normalize_resolution_label(resolution)
-        return 'Country' if resolution_label in ('50km', 'ADM2') else 'ADM2'
+        return 'Country' if resolution_label in ('50km', 'ADM1') else 'ADM1'
 
     raw = str(clustering).strip()
     try:

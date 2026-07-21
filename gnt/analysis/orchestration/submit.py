@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--clustering",
-        choices=["ADM2", "Country"],
+        choices=["ADM1", "Country"],
         help="Override clustering for individually submitted models",
     )
     parser.add_argument(
