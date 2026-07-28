@@ -332,3 +332,42 @@ def handle_cleanup(args: argparse.Namespace) -> None:
         logger.info("DRY RUN MODE — no files will be deleted")
 
     cleanup_analysis_results(output_dir, dry_run=dry_run)
+
+
+def handle_subsets_generate(args: argparse.Namespace) -> None:
+    """``analysis subsets generate`` — regenerate default subset files."""
+    setup_logging(args.log_level, debug=args.debug)
+
+    from gnt.analysis.subsets import generate_all_default_subsets
+
+    project_root = Path(getattr(args, "project_root", None) or _project_root())
+    output_dir = getattr(args, "output_dir", None)
+    output_files = generate_all_default_subsets(
+        project_root,
+        output_dir=Path(output_dir) if output_dir else None,
+    )
+
+    print(f"\nGenerated {len(output_files)} subset files:")
+    for name, path in output_files.items():
+        print(f"  {name}: {path}")
+
+
+def handle_subsets_list(args: argparse.Namespace) -> None:
+    """``analysis subsets list`` — enumerate available subsets and aliases."""
+    setup_logging(args.log_level, debug=args.debug)
+
+    from gnt.analysis.subsets import list_available_subsets
+
+    project_root = Path(getattr(args, "project_root", None) or _project_root())
+    subsets_dir = Path(
+        getattr(args, "subsets_dir", None) or (project_root / "data_nobackup" / "subsets")
+    )
+
+    info = list_available_subsets(subsets_dir)
+    if not info:
+        print(f"No subsets found in {subsets_dir}")
+        return
+
+    print(f"\nAvailable subsets ({subsets_dir}):")
+    for name, target in sorted(info.items()):
+        print(f"  {name}: {target}")

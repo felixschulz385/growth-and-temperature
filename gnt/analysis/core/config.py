@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pandas as pd
 
 from .runtime import ANALYSIS_RUNTIME_DEFAULTS
+from ..subsets import PARTITIONED_SUBSET_RE as CANONICAL_PARTITIONED_SPATIAL_EXTENT_RE
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -148,7 +149,11 @@ CLUSTERING_COLUMNS = {
 }
 
 FULL_SAMPLE_SPATIAL_EXTENT = 'full_sample'
-CANONICAL_PARTITIONED_SPATIAL_EXTENT_RE = re.compile(r'^(HDI|WB)_[A-Z_]+_\d{4}$')
+# CANONICAL_PARTITIONED_SPATIAL_EXTENT_RE is imported above from gnt.analysis.subsets
+# (single source of truth, shared with subset resolution) — this module only
+# resolves human-readable display labels (e.g. "HDI > Low") to canonical
+# subset-name strings; it doesn't know about country ids or GADM. Country-id
+# resolution for a canonical subset name lives in gnt.analysis.subsets.
 TABLE_SPATIAL_EXTENT_ALIASES = {
     ('HDI', 'LOW'): 'LO',
     ('HDI', '> LOW'): 'ME_HI_VH',

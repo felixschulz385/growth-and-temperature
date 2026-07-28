@@ -13,6 +13,8 @@ Usage (new-style):
     python -m gnt.cli.main analysis summary
     python -m gnt.cli.main analysis tables
     python -m gnt.cli.main analysis cleanup
+    python -m gnt.cli.main analysis subsets generate
+    python -m gnt.cli.main analysis subsets list
 
 The module is also the delegate for the compatibility shim in ``run.py``.
 """
@@ -57,6 +59,8 @@ Examples:
   gnt analysis summary
   gnt analysis tables --formats html latex
   gnt analysis cleanup --dry-run
+  gnt analysis subsets generate
+  gnt analysis subsets list
 """,
     )
 

@@ -981,14 +981,14 @@ class MiscPreprocessor(AbstractPreprocessor):
             # Load the country code mapping
             gadm_dir = os.path.dirname(gadm_zarr)
             country_mapping_file = os.path.join(gadm_dir, "country_code_mapping.json")
-            
+
             if not os.path.exists(country_mapping_file):
                 logger.error(f"Country mapping file not found: {country_mapping_file}")
                 return False
-            
-            with open(country_mapping_file, 'r') as f:
-                country_code_to_id = json.load(f)
-            
+
+            from gnt.analysis.subsets.registry import load_country_registry
+            country_code_to_id = load_country_registry(Path(country_mapping_file)).country_to_id
+
             # Merge classifications with country codes
             logger.info("Merging classifications with country IDs")
             classifications_df['country_id'] = classifications_df['iso3'].map(

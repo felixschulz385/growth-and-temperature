@@ -13,7 +13,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -28,73 +27,13 @@ from ..core.config import (
     normalize_spatial_extent_label,
     normalize_sql_query,
 )
-
-SUBSET_ALIASES = {
-    "H&R": "research_hodler_raschky_2014",
-    "USA": "custom_usa",
-    "World ex/ USA": "custom_world_ex_usa",
-    "World ex USA": "custom_world_ex_usa",
-}
-PARTITIONED_SUBSET_RE = re.compile(r"^(HDI|WB)_([A-Z_]+)_(\d{4})$")
+from ..subsets import PARTITIONED_SUBSET_RE, SUBSET_ALIASES
+from ..subsets import resolve_subset as _resolve_subset
 
 
 # ---------------------------------------------------------------------------
 # Geographic helpers
 # ---------------------------------------------------------------------------
-
-def _resolve_partitioned_subset_country_ids(
-    subset_name: str,
-    project_root: Path,
-) -> Optional[List[int]]:
-    """Resolve HDI/WB partitioned subsets from processed classification tables."""
-    match = PARTITIONED_SUBSET_RE.fullmatch(subset_name)
-    if not match:
-        return None
-
-    family, bucket, year = match.groups()
-    bucket_tokens = bucket.split("_")
-    classifications_path = (
-        project_root
-        / "data_nobackup"
-        / "misc"
-        / "processed"
-        / "stage_1"
-        / "country_classifications"
-        / "classifications.parquet"
-    )
-    country_mapping_path = (
-        project_root
-        / "data_nobackup"
-        / "misc"
-        / "processed"
-        / "stage_2"
-        / "gadm"
-        / "country_code_mapping.json"
-    )
-
-    if not classifications_path.exists() or not country_mapping_path.exists():
-        return None
-
-    classifications_df = pd.read_parquet(classifications_path)
-    required_columns = [f"{family}_{token}_{year}" for token in bucket_tokens]
-    missing_columns = [col for col in required_columns if col not in classifications_df.columns]
-    if missing_columns:
-        raise FileNotFoundError(
-            f"Subset '{subset_name}' requires missing classification columns: {missing_columns}"
-        )
-
-    with open(country_mapping_path) as fh:
-        country_to_id = json.load(fh)
-
-    mask = classifications_df[required_columns].any(axis=1)
-    iso3_codes = classifications_df.loc[mask, "iso3"].dropna().astype(str)
-    country_ids = sorted(
-        int(country_to_id[iso3])
-        for iso3 in iso3_codes
-        if iso3 in country_to_id
-    )
-    return country_ids
-
 
 def load_subset(
     subset_name: str,
@@ -121,58 +60,12 @@ def load_subset(
     FileNotFoundError
         When the subset directory or file does not exist.
     """
-    logger = logging.getLogger(__name__)
     if project_root is None:
         project_root = PROJECT_ROOT
     if subsets_dir is None:
         subsets_dir = project_root / "data_nobackup" / "subsets"
 
-    subset_name = SUBSET_ALIASES.get(subset_name, subset_name)
-
-    if len(subset_name) == 2 and subset_name.isupper():
-        subset_file = subsets_dir / f"continent_{subset_name.lower()}.json"
-    elif subset_name.endswith('.json'):
-        subset_file = subsets_dir / subset_name
-    else:
-        subset_file = subsets_dir / f"{subset_name}.json"
-
-    if not subset_file.exists():
-        generated_country_ids = _resolve_partitioned_subset_country_ids(
-            subset_name,
-            project_root=project_root,
-        )
-        if generated_country_ids is not None:
-            subsets_dir.mkdir(parents=True, exist_ok=True)
-            with open(subset_file, "w") as fh:
-                json.dump(
-                    {
-                        "name": subset_name,
-                        "country_ids": generated_country_ids,
-                        "n_countries": len(generated_country_ids),
-                        "generated_from": "country_classifications",
-                    },
-                    fh,
-                    indent=2,
-                )
-            logger.info(
-                f"Generated subset '{subset_name}' from country classifications: "
-                f"{len(generated_country_ids)} countries"
-            )
-            return generated_country_ids
-
-        available = [f.stem for f in subsets_dir.glob("*.json")] if subsets_dir.exists() else []
-        raise FileNotFoundError(
-            f"Subset '{subset_name}' not found. Available: {available}"
-        )
-
-    with open(subset_file) as fh:
-        data = json.load(fh)
-
-    country_ids: List[int] = data['country_ids']
-    logger.info(
-        f"Loaded subset '{data.get('name', subset_name)}': {len(country_ids)} countries"
-    )
-    return country_ids
+    return _resolve_subset(subset_name, subsets_dir=subsets_dir, project_root=project_root)
 
 
 def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:

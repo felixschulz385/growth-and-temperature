@@ -8,6 +8,7 @@ submit   Submit one or more table/model sets as a SLURM batch job.
 summary  Print a status overview of all tables and their last results.
 tables   Render HTML / LaTeX table files.
 cleanup  Remove stale result files, keeping the latest per version group.
+subsets  Generate and inspect country subset files.
 """
 
 from __future__ import annotations
@@ -186,6 +187,8 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         handle_cleanup,
         handle_run,
         handle_submit,
+        handle_subsets_generate,
+        handle_subsets_list,
         handle_summary,
         handle_tables,
     )
@@ -397,3 +400,51 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         help="Show what would be deleted without actually deleting",
     )
     cleanup_p.set_defaults(func=handle_cleanup)
+
+    # ── subsets ────────────────────────────────────────────────────────────
+    subsets_p = sub.add_parser(
+        "subsets",
+        help="Generate and inspect country subset files",
+        description="Manage country subset JSON files used for spatial-extent filtering.",
+    )
+    add_logging_args(subsets_p)
+    subsets_sub = subsets_p.add_subparsers(
+        dest="subsets_cmd",
+        metavar="SUBCOMMAND",
+    )
+    subsets_sub.required = True
+
+    subsets_generate_p = subsets_sub.add_parser(
+        "generate",
+        help="Generate all default subset files",
+        description=(
+            "Regenerate continent, USA/World-ex-USA, and research country "
+            "subset JSON files."
+        ),
+    )
+    add_logging_args(subsets_generate_p)
+    subsets_generate_p.add_argument(
+        "--project-root",
+        help="Project root (default: repository root)",
+    )
+    subsets_generate_p.add_argument(
+        "--output-dir",
+        help="Output directory for subset files (default: data_nobackup/subsets)",
+    )
+    subsets_generate_p.set_defaults(func=handle_subsets_generate)
+
+    subsets_list_p = subsets_sub.add_parser(
+        "list",
+        help="List available subset files and aliases",
+        description="Enumerate generated subset JSON files and known subset aliases.",
+    )
+    add_logging_args(subsets_list_p)
+    subsets_list_p.add_argument(
+        "--project-root",
+        help="Project root (default: repository root)",
+    )
+    subsets_list_p.add_argument(
+        "--subsets-dir",
+        help="Subsets directory (default: data_nobackup/subsets)",
+    )
+    subsets_list_p.set_defaults(func=handle_subsets_list)
