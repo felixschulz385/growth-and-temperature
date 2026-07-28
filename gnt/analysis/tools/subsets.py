@@ -292,27 +292,76 @@ class SubsetGenerator:
         
         return str(output_file)
     
+    def generate_usa_subset(self) -> str:
+        """
+        Generate subset containing only the United States.
+
+        Returns:
+        --------
+        output_file : str
+            Path to generated subset file
+        """
+        if self.country_to_id is None:
+            raise ValueError("Country mapping not loaded. Cannot generate subset.")
+
+        return self.generate_custom_subset(
+            name="USA",
+            country_codes=["USA"],
+            description="United States of America"
+        )
+
+    def generate_world_ex_usa_subset(self) -> str:
+        """
+        Generate subset containing all countries except the United States.
+
+        Returns:
+        --------
+        output_file : str
+            Path to generated subset file
+        """
+        if self.country_to_id is None:
+            raise ValueError("Country mapping not loaded. Cannot generate subset.")
+
+        usa_id = self.country_to_id.get("USA")
+        country_ids = [
+            country_id for code, country_id in self.country_to_id.items()
+            if code != "USA" and country_id != usa_id
+        ]
+
+        return self.generate_custom_subset(
+            name="World ex USA",
+            country_ids=country_ids,
+            description="All countries excluding the United States"
+        )
+
     def generate_all_default_subsets(self) -> Dict[str, str]:
         """
         Generate all default subset files.
-        
+
         Returns:
         --------
         dict mapping subset names to output file paths
         """
         output_files = {}
-        
+
         # Generate continent subsets
         continent_files = self.generate_continent_subsets()
         output_files.update(continent_files)
-        
+
         # Generate research subsets
         try:
             hr2014_file = self.generate_hodler_raschky_2014_subset()
             output_files['hodler_raschky_2014'] = hr2014_file
         except Exception as e:
             logger.warning(f"Failed to generate Hodler & Raschky (2014) subset: {e}")
-        
+
+        # Generate USA / World-ex-USA subsets
+        try:
+            output_files['usa'] = self.generate_usa_subset()
+            output_files['world_ex_usa'] = self.generate_world_ex_usa_subset()
+        except Exception as e:
+            logger.warning(f"Failed to generate USA / World ex USA subsets: {e}")
+
         logger.info(f"Generated {len(output_files)} default subset files")
         return output_files
     

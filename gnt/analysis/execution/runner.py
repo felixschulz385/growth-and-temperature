@@ -31,6 +31,9 @@ from ..core.config import (
 
 SUBSET_ALIASES = {
     "H&R": "research_hodler_raschky_2014",
+    "USA": "custom_usa",
+    "World ex/ USA": "custom_world_ex_usa",
+    "World ex USA": "custom_world_ex_usa",
 }
 PARTITIONED_SUBSET_RE = re.compile(r"^(HDI|WB)_([A-Z_]+)_(\d{4})$")
 
