@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=demean_modis
-#SBATCH --output=./log/slurm-%j.log
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/assemble/demean/%x-%j.out
+#SBATCH --error=./log/assemble/demean/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=06:00:00
 #SBATCH --qos=6hours
@@ -11,6 +11,8 @@
 #SBATCH --mem=256G
 
 # Set environment variables for Spark
+mkdir -p "./log/assemble/demean"
+
 export SPARK_MEMORY_GB=100
 export SPARK_CPUS=14
 

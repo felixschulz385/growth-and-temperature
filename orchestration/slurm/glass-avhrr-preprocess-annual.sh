@@ -1,11 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=glass-avhrr-preprocess
-#SBATCH --output=./log/slurm-%j.out
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --job-name=glass-avhrr-preprocess-annual
+#SBATCH --output=./log/preprocess/glass_avhrr/%x-%j.out
+#SBATCH --error=./log/preprocess/glass_avhrr/%x-%j.err
 #SBATCH --time=3-00:00:00
 #SBATCH --qos=1week
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
+
+mkdir -p "./log/preprocess/glass_avhrr"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

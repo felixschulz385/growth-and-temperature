@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=eog-viirs-preprocess-spatial
-#SBATCH --output=./log/slurm-%j.out
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/preprocess/eog_viirs/%x-%j.out
+#SBATCH --error=./log/preprocess/eog_viirs/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=06:00:00
 #SBATCH --qos=6hours
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
+
+mkdir -p "./log/preprocess/eog_viirs"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=berman_mining-preprocess-spatial
-#SBATCH --output=./log/slurm-%j.out
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/preprocess/berman_mining/%x-%j.out
+#SBATCH --error=./log/preprocess/berman_mining/%x-%j.err
 #SBATCH --time=00:30:00
 #SBATCH --partition=bigmem
 #SBATCH --qos=30min
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
+
+mkdir -p "./log/preprocess/berman_mining"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

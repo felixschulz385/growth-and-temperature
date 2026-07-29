@@ -1,11 +1,13 @@
 #!/bin/bash
-#SBATCH --job-name=acag-preprocess-spatial
-#SBATCH --output=./log/preprocess/acag/slurm-%j.log
-#SBATCH --error=./log/preprocess/acag/slurm-%j.err
+#SBATCH --job-name=esacci-preprocess-spatial
+#SBATCH --output=./log/preprocess/esacci/%x-%j.out
+#SBATCH --error=./log/preprocess/esacci/%x-%j.err
 #SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
+
+mkdir -p "./log/preprocess/esacci"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

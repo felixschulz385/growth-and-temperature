@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=misc-osm-preprocess-spatial
-#SBATCH --output=./log/slurm-%j.out
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/preprocess/misc_osm/%x-%j.out
+#SBATCH --error=./log/preprocess/misc_osm/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=00:30:00
 #SBATCH --qos=30min
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
+
+mkdir -p "./log/preprocess/misc_osm"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"

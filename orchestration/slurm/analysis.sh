@@ -1,5 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=analysis
+#SBATCH --output=./log/_bootstrap/%x-%j.out
+#SBATCH --error=./log/_bootstrap/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=0-12:00:00
 #SBATCH --qos=1day

@@ -1,12 +1,14 @@
 #!/bin/bash
 #SBATCH --job-name=snl_mining-preprocess-spatial
-#SBATCH --output=./log/preprocess/snl_mining/slurm-%j.log
-#SBATCH --error=./log/preprocess/snl_mining/slurm-%j.err
+#SBATCH --output=./log/preprocess/snl_mining/%x-%j.out
+#SBATCH --error=./log/preprocess/snl_mining/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
+
+mkdir -p "./log/preprocess/snl_mining"
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
@@ -14,9 +16,6 @@ conda activate src
 
 # Change to project directory
 cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
-
-# Ensure log directory exists
-mkdir -p ./log/preprocess/snl_mining
 
 # Calculate memory limit (leave some buffer for system - 60% of allocated)
 MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)

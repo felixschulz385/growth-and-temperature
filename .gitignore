@@ -5,9 +5,8 @@
 /misc
 .DS_Store
 /.vscode
-data.yaml
-data.backup.yaml
-_data.yaml
+orchestration/configs/data.backup.yaml
+orchestration/configs/_data.yaml
 **/presentation_files
 **/secrets
 .codex
@@ -19,7 +18,6 @@ index_*
 
 config.toml
 analysis.xlsx
-data.local.yaml
 
 ._*
 

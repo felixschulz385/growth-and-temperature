@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=misc-gadm-preprocess-spatial
-#SBATCH --output=./log/slurm-%j.out
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/preprocess/misc_gadm/%x-%j.out
+#SBATCH --error=./log/preprocess/misc_gadm/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=1-00:00:00
 # SBATCH --time=00:30:00
@@ -11,6 +11,8 @@
 #SBATCH --mem=64G
 
 # Activate conda environment
+mkdir -p "./log/preprocess/misc_gadm"
+
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
 conda activate src
 

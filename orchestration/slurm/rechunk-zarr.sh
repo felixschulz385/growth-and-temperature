@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=rechunk-annual-zarrs
-#SBATCH --output=./log/rechunk-%j.out
-#SBATCH --error=./log/rechunk-%j.err
+#SBATCH --job-name=rechunk-zarr
+#SBATCH --output=./log/maintenance/rechunk/%x-%j.out
+#SBATCH --error=./log/maintenance/rechunk/%x-%j.err
 #SBATCH --time=12:00:00
 #SBATCH --qos=1day
 #SBATCH --cpus-per-task=8
@@ -11,10 +11,10 @@ CHUNK_SIZE="${1:-256}"
 BASE_PATH="${2:-/scicore/home/meiera/schulz0022/projects/growth-and-temperature}"
 
 # Create log directory if it doesn't exist
-mkdir -p "${BASE_PATH}/log"
+mkdir -p "${BASE_PATH}/log/maintenance/rechunk"
 
 # Set up logging
-LOG_FILE="${BASE_PATH}/log/rechunk-zarr-${SLURM_JOB_ID}.log"
+LOG_FILE="${BASE_PATH}/log/maintenance/rechunk/rechunk-zarr-${SLURM_JOB_ID}.log"
 exec > >(tee -a "$LOG_FILE")
 exec 2>&1
 

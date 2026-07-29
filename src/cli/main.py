@@ -33,6 +33,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from src.cli import analysis, assemble, download, preprocess
+from src.cli.common import setup_logging
 
 logger = logging.getLogger(__name__)
 
@@ -84,12 +85,9 @@ def main(argv: list[str] | None = None) -> int:
 
     Returns the integer exit code (0 = success, 1 = error).
     """
-    # Configure a minimal logger before arg parsing so early errors are visible
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-        handlers=[logging.StreamHandler(sys.stdout)],
-    )
+    # Configure a minimal logger before arg parsing so early errors are visible.
+    # Handlers reconfigure this once --log-level/--debug are known.
+    setup_logging()
 
     parser = build_parser()
     args = parser.parse_args(argv)

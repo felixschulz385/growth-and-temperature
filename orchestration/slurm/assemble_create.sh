@@ -1,12 +1,14 @@
 #!/bin/bash
-#SBATCH --job-name=assemble_modis
-#SBATCH --output=./log/assemble/slurm-%j.log
-#SBATCH --error=./log/assemble/slurm-%j.err
+#SBATCH --job-name=assemble_create
+#SBATCH --output=./log/assemble/create/%x-%j.out
+#SBATCH --error=./log/assemble/create/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=1-00:00:00
 #SBATCH --qos=1day
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=128G
+
+mkdir -p "./log/assemble/create"
 
 # Accept assemble config name as first argument, default to "modis"
 SOURCE=${1:-modis}

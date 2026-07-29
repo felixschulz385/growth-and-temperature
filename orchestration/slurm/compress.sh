@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=compress-coldstore
-#SBATCH --output=./log/compress/%x-%j.log
-#SBATCH --error=./log/compress/%x-%j.err
+#SBATCH --job-name=compress
+#SBATCH --output=./log/maintenance/compress/%x-%j.out
+#SBATCH --error=./log/maintenance/compress/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=3-00:00:00
 #SBATCH --qos=1week
@@ -30,7 +30,7 @@ PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python"
 SCRIPT_PATH="${PROJECT_ROOT}/scripts/compress_agent.py"
 
 cd "$PROJECT_ROOT"
-mkdir -p "./log/compress/${DATASET_NAME}"
+mkdir -p "./log/maintenance/compress/${DATASET_NAME}"
 
 TMPDIR="/scratch/schulz0022/compress_${DATASET_NAME}_${SLURM_JOB_ID}"
 mkdir -p "$TMPDIR"
@@ -49,6 +49,6 @@ echo "Python:       $PYTHON_BIN"
     --checksum \
     --delete-source \
     --delete-source-existing \
-    --log-file "./log/compress/${DATASET_NAME}/compress-${SLURM_JOB_ID}.log"
+    --log-file "./log/maintenance/compress/${DATASET_NAME}/compress-${SLURM_JOB_ID}.log"
 
 rm -rf "$TMPDIR"

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=glass-modis-preprocess-spatial
-#SBATCH --output=./log/slurm-%j.log
-#SBATCH --error=./log/slurm-%j.err
+#SBATCH --output=./log/preprocess/glass_modis/%x-%j.out
+#SBATCH --error=./log/preprocess/glass_modis/%x-%j.err
 #SBATCH --partition=scicore
 #SBATCH --time=3-00:00:00
  #SBATCH --time=00:30:00
@@ -11,6 +11,8 @@
 #SBATCH --mem=128G
 
 # Activate conda environment
+mkdir -p "./log/preprocess/glass_modis"
+
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
 conda activate src
 

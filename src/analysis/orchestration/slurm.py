@@ -36,6 +36,23 @@ def _bool_to_cli(value: bool) -> str:
     """Return a stable lowercase boolean literal for CLI arguments."""
     return "true" if value else "false"
 
+
+def _analysis_log_dir(
+    project_root: Path,
+    *,
+    duckreg_version: str,
+    table_label: Optional[str] = None,
+    variant_path: Optional[Path] = None,
+) -> Path:
+    """Return the log directory for a table-level job or a single model run.
+
+    Exactly one of ``table_label``/``variant_path`` should be given.
+    """
+    if (table_label is None) == (variant_path is None):
+        raise ValueError("Pass exactly one of table_label or variant_path")
+    sub_path = f"table-{table_label}" if table_label is not None else variant_path
+    return project_root / "log" / "analysis" / sub_path / duckreg_version
+
 def _model_block(
     model_spec: Dict[str, str],
     model_idx: int,
@@ -127,8 +144,8 @@ def build_job_script(
     debug:
         Pass ``--debug`` to each submitted ``analysis run`` invocation.
     """
-    job_log_dir = (
-        project_root / 'log' / 'analysis' / f'table-{job_label}' / duckreg_version
+    job_log_dir = _analysis_log_dir(
+        project_root, duckreg_version=duckreg_version, table_label=job_label
     )
 
     lines: List[str] = [
@@ -185,8 +202,8 @@ def build_job_script(
                 model['spatial_extent'],
                 model['clustering'],
             )
-            model_log_dir = (
-                project_root / 'log' / 'analysis' / variant_path / duckreg_version
+            model_log_dir = _analysis_log_dir(
+                project_root, duckreg_version=duckreg_version, variant_path=variant_path
             )
             lines.append(
                 _model_block(
