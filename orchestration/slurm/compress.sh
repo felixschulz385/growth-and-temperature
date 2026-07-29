@@ -26,7 +26,7 @@ if [ ! -d "$RAW_ROOT" ]; then
 fi
 
 PROJECT_ROOT="/scicore/home/meiera/schulz0022/projects/growth-and-temperature"
-PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python"
+PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python"
 SCRIPT_PATH="${PROJECT_ROOT}/scripts/compress_agent.py"
 
 cd "$PROJECT_ROOT"

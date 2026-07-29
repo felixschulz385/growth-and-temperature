@@ -29,7 +29,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 def main(argv: list[str] | None = None) -> int:
     """Run the modular GNT CLI."""
-    from gnt.cli.main import main as cli_main
+    from src.cli.main import main as cli_main
 
     return cli_main(sys.argv[1:] if argv is None else argv)
 

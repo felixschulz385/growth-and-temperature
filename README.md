@@ -46,7 +46,7 @@ T_it = α + β · NightLights_it + γ_i + δ_t + λ_i · t + ε_it
 git clone <repository-url>
 cd growth-and-temperature
 conda env create -f environment.yml
-conda activate gnt
+conda activate src
 pip install -e .
 ```
 
@@ -59,7 +59,7 @@ python run.py download --config orchestration/configs/data.yaml --source glass
 python run.py preprocess --config orchestration/configs/data.yaml --source glass_modis --stage annual
 
 # Assemble datasets
-python gnt/data/assemble/0_main.py
+python run.py assemble create --config orchestration/configs/data.yaml --source main_panel
 ```
 
 ### HPC Processing
@@ -67,7 +67,7 @@ python gnt/data/assemble/0_main.py
 # Submit SLURM jobs for large-scale processing
 sbatch orchestration/slurm/glass-modis-preprocess-annual.sh
 sbatch orchestration/slurm/eog-dvnl-preprocess-tabular.sh
-sbatch orchestration/slurm/assemble_0_main.sh
+sbatch orchestration/slurm/assemble_create.sh
 ```
 
 ## 🏗️ System Architecture
@@ -86,7 +86,7 @@ sbatch orchestration/slurm/assemble_0_main.sh
 ## 📁 Repository Structure
 ```
 .
-├── gnt/                     # Core Python package
+├── src/                     # Core Python package
 │   ├── data/               # Data processing modules
 │   └── experiments/        # Analysis notebooks
 ├── orchestration/          # Configuration & SLURM scripts

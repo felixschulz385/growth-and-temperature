@@ -10,7 +10,7 @@
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate gnt
+conda activate src
 
 # Change to project directory
 cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
@@ -23,7 +23,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 
 # Run spatial preprocessing for the full inferred SNL mining year range.
 # Omitting --year-range lets the preprocessor use all years available in the stage-0 DuckDB.
-/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" preprocess \
+/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" preprocess \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source snl_mining \
     --stage spatial \

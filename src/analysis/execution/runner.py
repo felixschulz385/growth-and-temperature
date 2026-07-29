@@ -1,0 +1,480 @@
+"""
+Analysis execution layer.
+
+Provides:
+* :func:`load_subset` — load country IDs from a subset JSON file
+* :func:`build_geographic_query` — build a SQL ``WHERE`` clause from subset / country config
+* :func:`run_duckreg` — execute a single model via duckreg and persist results
+* :func:`cleanup_analysis_results` — prune old result files, keeping the latest per version group
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
+
+from ..core.config import (
+    AnalysisConfig,
+    FULL_SAMPLE_SPATIAL_EXTENT,
+    PROJECT_ROOT,
+    build_temporal_extent_sql,
+    normalize_spatial_extent_label,
+    normalize_sql_query,
+)
+from ..subsets import PARTITIONED_SUBSET_RE, SUBSET_ALIASES
+from ..subsets import resolve_subset as _resolve_subset
+
+
+# ---------------------------------------------------------------------------
+# Geographic helpers
+# ---------------------------------------------------------------------------
+
+def load_subset(
+    subset_name: str,
+    subsets_dir: Optional[Path] = None,
+    project_root: Optional[Path] = None,
+) -> List[int]:
+    """Load country IDs from a subset JSON file.
+
+    Subset files live in ``data_nobackup/subsets/``.  Two-letter uppercase
+    codes (e.g. ``'AF'``) are resolved to ``continent_af.json``.
+
+    Parameters
+    ----------
+    subset_name:
+        Subset identifier: bare name, two-letter continent code, or filename
+        ending in ``.json``.
+    subsets_dir:
+        Override the default subset directory.
+    project_root:
+        Override the project root used to resolve generated HDI/WB subsets.
+
+    Raises
+    ------
+    FileNotFoundError
+        When the subset directory or file does not exist.
+    """
+    if project_root is None:
+        project_root = PROJECT_ROOT
+    if subsets_dir is None:
+        subsets_dir = project_root / "data_nobackup" / "subsets"
+
+    return _resolve_subset(subset_name, subsets_dir=subsets_dir, project_root=project_root)
+
+
+def build_geographic_query(spec_config: Dict[str, Any]) -> Optional[str]:
+    """Build a Pandas-style query string for geographic filtering.
+
+    Reads ``subset``, ``countries``, and ``country_col`` from *spec_config*.
+    Returns ``None`` when no geographic filter is requested.
+    """
+    subset_name = normalize_spatial_extent_label(spec_config.get('spatial_extent'))
+    country_filter = spec_config.get('countries')
+    country_col = spec_config.get('country_col', 'country')
+
+    queries = []
+    if subset_name != FULL_SAMPLE_SPATIAL_EXTENT:
+        ids = load_subset(subset_name)
+        if ids:
+            queries.append(f"{country_col}.isin({ids})")
+
+    if country_filter:
+        if isinstance(country_filter, list):
+            queries.append(f"{country_col}.isin({country_filter})")
+        else:
+            queries.append(f"{country_col} == {country_filter}")
+
+    return " & ".join(f"({q})" for q in queries) if queries else None
+
+
+# ---------------------------------------------------------------------------
+# Main execution function
+# ---------------------------------------------------------------------------
+
+def run_duckreg(
+    config: AnalysisConfig,
+    spec_name: str,
+    output_dir: Optional[str] = None,
+    verbose: bool = True,
+    dataset_override: Optional[str] = None,
+    fixed_effects: Optional[str] = None,
+    resolution: Optional[str] = None,
+    clustering: Optional[str] = None,
+    temporal_extent: Optional[str] = None,
+    spatial_extent: Optional[str] = None,
+    se_method: Optional[str] = None,
+    fitter: Optional[str] = None,
+    fe_method: Optional[str] = None,
+    compression: Optional[int] = None,
+    seed: Optional[int] = None,
+    n_bootstraps: Optional[int] = None,
+    threads: Optional[int] = None,
+    memory_limit: Optional[str] = None,
+    max_temp_directory_size: Optional[str] = None,
+    max_iterations: Optional[int] = None,
+    tolerance: Optional[float] = None,
+    check_interval: Optional[int] = None,
+    convergence_sample: Optional[float] = None,
+    min_iterations_before_check: Optional[int] = None,
+    check_interval_growth: Optional[bool] = None,
+    max_check_interval: Optional[int] = None,
+    singleton_pruning: Optional[str] = None,
+    fe_order: Optional[str] = None,
+    drop_constant_variables: Optional[bool] = None,
+    residual_type: Optional[str] = None,
+) -> Any:
+    """Run a single DuckReg model and optionally persist results.
+
+    Parameters
+    ----------
+    config:
+        :class:`~src.analysis.core.config.AnalysisConfig` instance.
+    spec_name:
+        Name of the model specification (must exist in the ``Models`` sheet).
+    output_dir:
+        If given, results JSON, CSV, and TXT are written here under
+        ``duckreg/<spec_name>/``.
+    verbose:
+        Log the analysis summary block (default ``True``).
+    dataset_override:
+        Use this path as the data source instead of the one in the spec.
+
+    Returns
+    -------
+    duckreg model object
+    """
+    from duckreg import duckreg
+    from duckreg.utils.summary import format_model_summary
+
+    logger = logging.getLogger(__name__)
+
+    spec_config = config.get_model_spec(
+        spec_name,
+        fixed_effects=fixed_effects,
+        resolution=resolution,
+        clustering=clustering,
+        temporal_extent=temporal_extent,
+        spatial_extent=spatial_extent,
+    )
+    settings = config.get_runtime_settings(overrides={
+        "se_method": se_method,
+        "fitter": fitter,
+        "fe_method": fe_method,
+        "compression": compression,
+        "seed": seed,
+        "n_bootstraps": n_bootstraps,
+        "threads": threads,
+        "memory_limit": memory_limit,
+        "max_temp_directory_size": max_temp_directory_size,
+        "max_iterations": max_iterations,
+        "tolerance": tolerance,
+        "check_interval": check_interval,
+        "convergence_sample": convergence_sample,
+        "min_iterations_before_check": min_iterations_before_check,
+        "check_interval_growth": check_interval_growth,
+        "max_check_interval": max_check_interval,
+        "singleton_pruning": singleton_pruning,
+        "fe_order": fe_order,
+        "drop_constant_variables": drop_constant_variables,
+        "residual_type": residual_type,
+    })
+
+    data_source = dataset_override or spec_config['data_source']
+    formula = spec_config.get('formula')
+    if not formula:
+        raise ValueError(f"Model '{spec_name}' has no formula")
+
+    # ── build SQL WHERE clause ────────────────────────────────────────────────
+    sql_clauses: List[str] = []
+    subset_name = normalize_spatial_extent_label(spec_config.get('spatial_extent'))
+    if subset_name != FULL_SAMPLE_SPATIAL_EXTENT:
+        country_col = spec_config.get('country_col', 'country')
+        country_ids = load_subset(subset_name)
+        sql_clauses.append(f"{country_col} IN ({','.join(map(str, country_ids))})")
+
+    sql_clauses.append(build_temporal_extent_sql(spec_config['temporal_extent']))
+
+    user_query = spec_config.get('query')
+    if user_query:
+        sql_clauses.append(normalize_sql_query(user_query))
+
+    sql_where = " AND ".join(f"({clause})" for clause in sql_clauses if clause)
+
+    # ── scratch DB path ───────────────────────────────────────────────────────
+    wd = os.environ.get('WD', str(PROJECT_ROOT))
+    slurm_job_id = os.environ.get('SLURM_JOB_ID', 'local')
+    scratch_path = (
+        Path(wd) / 'scratch_nobackup' / slurm_job_id / 'duckreg' / f'analysis_{spec_name}'
+    )
+    scratch_path.mkdir(exist_ok=True, parents=True)
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    db_name = str(scratch_path / f'duckreg_{spec_name}_{timestamp}.db')
+
+    # ── SE method ─────────────────────────────────────────────────────────────
+    fitter = settings["fitter"]
+    se_method_raw = settings["se_method"]
+    cluster_col = spec_config.get('cluster1_col')
+    if cluster_col and isinstance(se_method_raw, str) and se_method_raw.startswith('CRV'):
+        se_method: Any = {se_method_raw: cluster_col}
+    else:
+        se_method = se_method_raw
+
+    # ── DuckDB resource kwargs ────────────────────────────────────────────────
+    threads = int(settings["threads"])
+    memory_limit = settings["memory_limit"]
+    if isinstance(memory_limit, str):
+        memory_limit = os.path.expandvars(memory_limit)
+    max_temp_directory_size = settings["max_temp_directory_size"]
+    if isinstance(max_temp_directory_size, str):
+        max_temp_directory_size = os.path.expandvars(max_temp_directory_size)
+
+    if verbose:
+        info_lines = [
+            "=== DuckReg analysis summary ===",
+            f"Description: {spec_config['description']}",
+            f"Data source:  {data_source}",
+            f"Formula:      {formula}",
+            f"Fixed effects: {spec_config['fixed_effects_label']}",
+            f"Resolution:   {spec_config['resolution']}",
+            f"Temporal:     {spec_config['temporal_extent']}",
+            f"Spatial:      {spec_config['spatial_extent']}",
+            f"Clustering:   {spec_config['clustering']}",
+        ]
+        if sql_where:
+            info_lines.append(f"Filter:       {sql_where}")
+        info_lines.append("Settings:")
+        for k, v in settings.items():
+            info_lines.append(f"  {k}: {v}")
+        info_lines.append(f"Fitter: {fitter}, SE method: {se_method}")
+        info_lines.append(f"Database:     {db_name}")
+        info_lines.append("=" * 30)
+        logger.info("\n" + "\n".join(info_lines))
+
+    # ── fit ───────────────────────────────────────────────────────────────────
+    if settings["n_bootstraps"] and settings["n_bootstraps"] > 0:
+        raise ValueError(
+            "DuckReg bootstrap support was removed. Set n_bootstraps to 0 and "
+            "use se_method values supported by duckreg()."
+        )
+
+    resource_kwargs: Dict[str, Any] = {'threads': threads}
+    if memory_limit is not None:
+        resource_kwargs['memory_limit'] = memory_limit
+    if max_temp_directory_size is not None:
+        resource_kwargs['max_temp_directory_size'] = max_temp_directory_size
+
+    model = duckreg(
+        formula=formula,
+        data=data_source,
+        subset=sql_where,
+        compression=settings["compression"],
+        seed=settings["seed"],
+        fe_method=settings["fe_method"],
+        max_iterations=settings["max_iterations"],
+        tolerance=settings["tolerance"],
+        check_interval=settings["check_interval"],
+        convergence_sample=settings["convergence_sample"],
+        min_iterations_before_check=settings["min_iterations_before_check"],
+        check_interval_growth=settings["check_interval_growth"],
+        max_check_interval=settings["max_check_interval"],
+        singleton_pruning=settings["singleton_pruning"],
+        fe_order=settings["fe_order"],
+        drop_constant_variables=settings["drop_constant_variables"],
+        residual_type=settings["residual_type"],
+        db_name=db_name,
+        se_method=se_method,
+        fitter=fitter,
+        **resource_kwargs,
+    )
+
+    logger.info("Analysis complete!")
+
+    model_summary_raw = model.as_dict() if hasattr(model, 'as_dict') else model.summary()
+    if not isinstance(model_summary_raw, dict):
+        raise TypeError(
+            "duckreg model output is not machine-readable. Expected as_dict() or "
+            f"summary() to return dict, got {type(model_summary_raw)!r}."
+        )
+    model_summary = model_summary_raw
+
+    text_output = format_model_summary(model_summary, spec_config, precision=4)
+    print("\n" + text_output)
+
+    # ── persist results ───────────────────────────────────────────────────────
+    if output_dir:
+        output_path = Path(output_dir) / 'duckreg'
+        for part in spec_config['variant_path']:
+            output_path /= part
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        results_container: Dict[str, Any] = {
+            'analysis_metadata': {
+                'analysis_type': 'duckreg',
+                'spec_name': spec_name,
+                'description': spec_config['description'],
+                'formula': formula,
+                'data_source': data_source,
+                'query': sql_where,
+                'settings': settings,
+                'fixed_effects': spec_config['fixed_effects_label'],
+                'resolution': spec_config['resolution'],
+                'temporal_extent': spec_config['temporal_extent'],
+                'spatial_extent': spec_config['spatial_extent'],
+                'clustering': spec_config['clustering'],
+                'variant_path': spec_config['variant_path'],
+            },
+            **model_summary,
+        }
+
+        version_info = model_summary.get('version_info', {})
+        duckreg_version = version_info.get('duckreg_version', 'unknown')
+        logger.info(f"Results computed with duckreg version: {duckreg_version}")
+
+        if model_summary.get('first_stage'):
+            logger.info(
+                f"First stage results stored for "
+                f"{len(model_summary['first_stage'])} endogenous variable(s)"
+            )
+
+        (output_path / f'results_{timestamp}.txt').write_text(text_output)
+
+        if hasattr(model, 'tidy'):
+            coefficients_df = model.tidy()
+        elif hasattr(model, 'summary_df'):
+            coefficients_df = model.summary_df()
+        else:
+            coefficients_df = pd.DataFrame()
+        if not coefficients_df.empty:
+            coefficients_df.to_csv(output_path / 'coefficients.csv')
+
+        for endog, fs_dict in model_summary.get('first_stage', {}).items():
+            if isinstance(fs_dict, dict) and 'coef_names' in fs_dict:
+                fs_df = pd.DataFrame({
+                    'variable': fs_dict.get('coef_names', []),
+                    'coefficient': fs_dict.get('coefficients', []),
+                    'std_error': fs_dict.get('std_errors', []),
+                    't_stat': fs_dict.get('t_statistics', []),
+                    'p_value': fs_dict.get('p_values', []),
+                })
+                if 'ci_lower' in fs_dict and 'ci_upper' in fs_dict:
+                    fs_df['ci_lower'] = fs_dict['ci_lower']
+                    fs_df['ci_upper'] = fs_dict['ci_upper']
+                safe = endog.replace(' ', '_').replace('/', '_')
+                fs_df.to_csv(output_path / f'first_stage_{safe}.csv', index=False)
+
+        with open(output_path / f'results_{timestamp}.json', 'w') as fh:
+            json.dump(results_container, fh, indent=2)
+
+        logger.info(f"Results saved to: {output_path}")
+
+    return model
+
+
+# ---------------------------------------------------------------------------
+# Cleanup
+# ---------------------------------------------------------------------------
+
+def cleanup_analysis_results(
+    output_dir: str,
+    dry_run: bool = False,
+    analysis_type: str = 'duckreg',
+) -> None:
+    """Prune stale result files, keeping the latest per minor version.
+
+    For each model directory the function groups result JSON files by the
+    minor component of the duckreg version (``X`` in ``y.X.z``) and deletes
+    all but the most recent file within each group.
+
+    Parameters
+    ----------
+    output_dir:
+        Base output directory (e.g. ``output/analysis``).
+    dry_run:
+        When *True*, log what would be deleted without touching any files.
+    analysis_type:
+        Sub-directory to scan (default ``'duckreg'``).
+    """
+    logger = logging.getLogger(__name__)
+
+    output_path = Path(output_dir) / analysis_type
+    if not output_path.exists():
+        logger.warning(f"Output directory not found: {output_path}")
+        return
+
+    total_deleted = 0
+    total_kept = 0
+
+    spec_dirs = sorted({path.parent for path in output_path.glob("**/results_*.json")})
+    for spec_dir in spec_dirs:
+        result_files = sorted(spec_dir.glob("results_*.json"))
+        if not result_files:
+            continue
+
+        # version_minor → {timestamp: [associated files]}
+        version_groups: Dict[int, Dict[datetime, List[Path]]] = {}
+
+        for json_file in result_files:
+            try:
+                with open(json_file) as fh:
+                    data = json.load(fh)
+
+                vi = data.get('version_info', {})
+                ver = vi.get('duckreg_version', '0.0.0')
+                if ver == 'unknown':
+                    ver = '0.0.0'
+
+                parts_v = ver.split('.')
+                minor = int(parts_v[1]) if len(parts_v) >= 2 and parts_v[1].isdigit() else 0
+
+                stem_parts = json_file.stem.split('_', 1)
+                if len(stem_parts) != 2 or len(stem_parts[1]) != 15:
+                    logger.warning(f"Unexpected filename: {json_file.name}")
+                    continue
+                ts = datetime.strptime(stem_parts[1], '%Y%m%d_%H%M%S')
+
+                version_groups.setdefault(minor, {}).setdefault(ts, [])
+
+                associated = [json_file]
+                txt = spec_dir / f"results_{stem_parts[1]}.txt"
+                if txt.exists():
+                    associated.append(txt)
+                version_groups[minor][ts].extend(associated)
+
+            except Exception as exc:
+                logger.error(f"Error processing {json_file}: {exc}")
+
+        for minor, ts_map in version_groups.items():
+            if not ts_map:
+                continue
+            latest_ts = max(ts_map)
+            ver_label = f"0.{minor}.x"
+            for ts, files in ts_map.items():
+                if ts == latest_ts:
+                    logger.info(
+                        f"Keeping {spec_dir.relative_to(output_path)} "
+                        f"(v{ver_label}, {ts}): {len(files)} files"
+                    )
+                    total_kept += len(files)
+                else:
+                    for fpath in files:
+                        if dry_run:
+                            logger.info(f"Would delete: {fpath.relative_to(output_path)}")
+                        else:
+                            fpath.unlink()
+                            logger.debug(f"Deleted: {fpath.relative_to(output_path)}")
+                        total_deleted += 1
+
+    if dry_run:
+        logger.info(
+            f"Dry run complete: would delete {total_deleted} files, keep {total_kept} files"
+        )
+    else:
+        logger.info(
+            f"Cleanup complete: deleted {total_deleted} files, kept {total_kept} files"
+        )

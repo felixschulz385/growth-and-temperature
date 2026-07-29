@@ -16,7 +16,7 @@ export SPARK_CPUS=14
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate gnt
+conda activate src
 
 # Change to project directory
 cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
