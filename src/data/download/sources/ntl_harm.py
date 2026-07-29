@@ -387,3 +387,16 @@ class NTLHarmDataSource(BaseDataSource):
         except Exception as e:
             logger.error(f"Error in async file listing: {e}")
             return []
+
+
+NAMES = ("ntl_harm", "ntlharm", "harmonized_ntl")
+
+
+def from_config(dataset_name, config, *, base_url, file_extensions, output_path, source_config, **kwargs):
+    """Build an NTLHarmDataSource from the shared config-extraction the factory does."""
+    logger.info("Creating NTL Harm data source")
+    return NTLHarmDataSource(
+        base_url=base_url,
+        file_extensions=file_extensions,
+        output_path=output_path
+    )

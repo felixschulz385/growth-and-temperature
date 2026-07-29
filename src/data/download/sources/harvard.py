@@ -114,3 +114,17 @@ class HarvardDataSource(BaseDataSource):
             str: A unique hash identifier for the file
         """
         return hashlib.md5(file_url.encode('utf-8')).hexdigest()
+
+NAMES = ("harvard_plad", "harvard")
+
+
+def from_config(dataset_name, config, *, base_url, file_extensions, output_path, source_config, **kwargs):
+    """Build a HarvardDataSource from the shared config-extraction the factory does."""
+    logger.info("Creating Harvard PLAD data source")
+    # Accept either base_url or doi for flexibility
+    return HarvardDataSource(
+        base_url=base_url,
+        file_extensions=file_extensions,
+        output_path=output_path,
+        doi=config.get('doi', base_url)
+    )

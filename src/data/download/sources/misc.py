@@ -499,3 +499,35 @@ class MiscDataSource(BaseDataSource):
                 except:
                     pass
             raise
+
+NAMES = ("misc",)
+
+
+def from_config(dataset_name, config, *, base_url, file_extensions, output_path, source_config, **kwargs):
+    """Build a MiscDataSource from the shared config-extraction the factory does."""
+    logger.info("Creating Misc data source")
+    sources_config = config.get('sources', {})
+
+    files = []
+    if isinstance(sources_config, dict):
+        for key, file_config in sources_config.items():
+            file_config_copy = file_config.copy()
+            file_config_copy['key'] = key
+            files.append(file_config_copy)
+    elif isinstance(sources_config, list):
+        files = sources_config
+    else:
+        logger.warning(f"Unexpected sources format: {type(sources_config)}")
+        files = []
+
+    if not files:
+        raise ValueError("Misc data source requires 'sources' configuration with at least one file")
+
+    file_filter = config.get('file_filter')
+
+    return MiscDataSource(
+        files=files,
+        output_path=config.get('data_path', 'misc'),
+        timeout=config.get('download', {}).get('timeout', 60),
+        file_filter=file_filter
+    )

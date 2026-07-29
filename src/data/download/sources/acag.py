@@ -354,3 +354,18 @@ class ACAGDataSource(BaseDataSource):
                 if 1990 <= year <= 2040:
                     return year
         return None
+
+
+NAMES = ("acag", "acag_pm25", "pm25")
+
+
+def from_config(dataset_name, config, *, base_url, file_extensions, output_path, source_config, **kwargs):
+    """Build an ACAGDataSource from the shared config-extraction the factory does."""
+    logger.info("Creating ACAG PM2.5 data source")
+    return ACAGDataSource(
+        base_url=base_url,
+        file_extensions=file_extensions,
+        output_path=output_path,
+        root_folder_id=config.get('root_folder_id'),
+        shared_link_url=config.get('shared_link_url'),
+    )

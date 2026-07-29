@@ -4,7 +4,7 @@ Handler functions for the ``download`` domain.
 Each handler corresponds to one sub-command and is wired via
 ``parser.set_defaults(func=handle_<name>)``.
 Handlers are thin: they load config, build the workflow config dict, then
-delegate to :mod:`src.data.download.workflow_unified`.
+delegate to :mod:`src.data.download.workflow.runner`.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ def _build_download_workflow_config(
     source_config: dict,
     operation: str,
 ) -> dict:
-    """Build the workflow configuration dict consumed by workflow_unified."""
+    """Build the workflow configuration dict consumed by workflow.runner."""
     paths_config = get_paths_config(config)
     remote_config = get_remote_config(config)
     return {
@@ -66,8 +66,8 @@ def _build_download_workflow_config(
 
 
 def _run_workflow(workflow_config: dict) -> None:
-    """Dispatch to workflow_unified.run_workflow_with_config."""
-    mod = importlib.import_module("src.data.download.workflow_unified")
+    """Dispatch to workflow.runner.run_workflow_with_config."""
+    mod = importlib.import_module("src.data.download.workflow.runner")
     logger.info("Running unified download workflow")
     mod.run_workflow_with_config(workflow_config)
 

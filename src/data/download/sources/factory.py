@@ -1,5 +1,7 @@
 import logging
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, List
+
+from .registry import get_factory
 
 logger = logging.getLogger(__name__)
 
@@ -12,21 +14,21 @@ def validate_required_params(config: Dict[str, Any], required: List[str]):
 def create_data_source(source_config):
     """
     Create a data source instance based on configuration.
-    
+
     Args:
         source_config: Configuration dictionary or string
-        
+
     Returns:
         BaseDataSource: Instance of the appropriate data source
     """
     # Handle both dict and string inputs for backward compatibility
     if isinstance(source_config, dict):
         # Try multiple possible keys for dataset name
-        dataset_name = (source_config.get('name') or 
-                       source_config.get('dataset_name') or 
+        dataset_name = (source_config.get('name') or
+                       source_config.get('dataset_name') or
                        source_config.get('source_name') or
                        source_config.get('type'))
-        
+
         if not dataset_name:
             # If no dataset name in config, check if there's only one key that could be the source name
             possible_keys = [k for k in source_config.keys() if k not in ['base_url', 'url', 'file_extensions', 'output_path']]
@@ -34,13 +36,13 @@ def create_data_source(source_config):
                 dataset_name = possible_keys[0]
             else:
                 raise ValueError(f"Source configuration must contain 'name', 'dataset_name', 'source_name', or 'type' field. Available keys: {list(source_config.keys())}")
-        
+
         config = source_config
     else:
         # Legacy string input
         dataset_name = source_config
         config = {}
-    
+
     # Extract parameters from config
     # Check for dataset-specific configuration
     if dataset_name in config and isinstance(config[dataset_name], dict):
@@ -54,107 +56,15 @@ def create_data_source(source_config):
         base_url = config.get('base_url', config.get('url'))
         file_extensions = config.get('file_extensions')
         output_path = config.get('output_path', config.get('data_path'))
-    
+
     logger.debug(f"Creating data source for {dataset_name}")
-    
-    # Create data source based on dataset name
-    if dataset_name.lower() == 'misc':
-        logger.info(f"Creating Misc data source")
-        # Don't validate for 'files' - misc uses 'sources' instead
-        from src.data.download.sources.misc import MiscDataSource
-        
-        # Handle both dict and list formats for sources
-        sources_config = config.get('sources', {})
-        
-        # Convert sources dict to list format with keys preserved
-        files = []
-        if isinstance(sources_config, dict):
-            for key, file_config in sources_config.items():
-                # Preserve the key for filtering
-                file_config_copy = file_config.copy()
-                file_config_copy['key'] = key
-                files.append(file_config_copy)
-        elif isinstance(sources_config, list):
-            files = sources_config
-        else:
-            logger.warning(f"Unexpected sources format: {type(sources_config)}")
-            files = []
-        
-        if not files:
-            raise ValueError("Misc data source requires 'sources' configuration with at least one file")
-        
-        # Check for file filter
-        file_filter = config.get('file_filter')
-        
-        return MiscDataSource(
-            files=files,
-            output_path=config.get('data_path', 'misc'),
-            timeout=config.get('download', {}).get('timeout', 60),
-            file_filter=file_filter
-        )
-    elif dataset_name.lower() in ['glass_modis', 'glass_avhrr']:
-        logger.info(f"Creating GLASS LST data source")
-        from src.data.download.sources.glass import GlassLSTDataSource
-        return GlassLSTDataSource(
-            base_url=base_url,
-            file_extensions=file_extensions,
-            output_path=output_path
-        )
-    elif dataset_name.lower() in ['eog_dmsp', 'eog_viirs', 'eog_dvnl']:
-        logger.info(f"Creating EOG data source: {dataset_name}")
-        if not output_path:
-            raise ValueError(f"EOG data source requires 'output_path' or 'data_path' in configuration")
-        from src.data.download.sources.eog import EOGDataSource
-        return EOGDataSource(
-            base_url=source_config['base_url'],
-            file_extensions=source_config.get('file_extensions', None),
-            output_path=source_config.get('data_path')
-        )
-    elif dataset_name in ['ntl_harm', 'ntlharm', 'harmonized_ntl']:
-        logger.info(f"Creating NTL Harm data source")
-        from src.data.download.sources.ntl_harm import NTLHarmDataSource
-        return NTLHarmDataSource(
-            base_url=base_url,
-            file_extensions=file_extensions,
-            output_path=output_path
-        )
-    elif dataset_name.lower() in ['harvard_plad', 'harvard']:
-        logger.info(f"Creating Harvard PLAD data source")
-        from src.data.download.sources.harvard import HarvardDataSource
-        # Accept either base_url or doi for flexibility
-        return HarvardDataSource(
-            base_url=base_url,
-            file_extensions=file_extensions,
-            output_path=output_path,
-            doi=config.get('doi', base_url)
-        )
-    elif dataset_name.lower() in ['berman_mining', 'berman', 'mining_conflict']:
-        logger.info(f"Creating Berman Mining data source")
-        from src.data.download.sources.manual import BermanMiningDataSource
-        return BermanMiningDataSource(
-            output_path=output_path or 'berman_mining'
-        )
-    elif dataset_name.lower() in ['acag', 'acag_pm25', 'pm25']:
-        logger.info("Creating ACAG PM2.5 data source")
-        from src.data.download.sources.acag import ACAGDataSource
-        return ACAGDataSource(
-            base_url=base_url,
-            file_extensions=file_extensions,
-            output_path=output_path,
-            root_folder_id=config.get('root_folder_id'),
-            shared_link_url=config.get('shared_link_url'),
-        )
-    elif dataset_name.lower() in ['esacci', 'esa_cci', 'esacci_lc', 'landcover']:
-        logger.info("Creating ESA CCI Land Cover data source")
-        from src.data.download.sources.esacci import ESACCIDataSource
-        year_range = config.get('year_range')
-        if isinstance(year_range, list) and len(year_range) == 2:
-            year_range = tuple(year_range)
-        return ESACCIDataSource(
-            output_path=output_path,
-            year_range=year_range,
-            versions=config.get('versions'),
-            cdsapi_rc=config.get('cdsapi_rc'),
-        )
-    else:
-        raise ValueError(f"Unknown data source: {dataset_name}")
+
+    factory_fn = get_factory(dataset_name)
+    return factory_fn(
+        dataset_name,
+        config,
+        base_url=base_url,
+        file_extensions=file_extensions,
+        output_path=output_path,
+        source_config=source_config if isinstance(source_config, dict) else config,
+    )

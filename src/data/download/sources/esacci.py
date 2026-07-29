@@ -314,3 +314,20 @@ class ESACCIDataSource(BaseDataSource):
                 if 1990 <= y <= 2040:
                     return y
         return None
+
+
+NAMES = ("esacci", "esa_cci", "esacci_lc", "landcover")
+
+
+def from_config(dataset_name, config, *, base_url, file_extensions, output_path, source_config, **kwargs):
+    """Build an ESACCIDataSource from the shared config-extraction the factory does."""
+    logger.info("Creating ESA CCI Land Cover data source")
+    year_range = config.get('year_range')
+    if isinstance(year_range, list) and len(year_range) == 2:
+        year_range = tuple(year_range)
+    return ESACCIDataSource(
+        output_path=output_path,
+        year_range=year_range,
+        versions=config.get('versions'),
+        cdsapi_rc=config.get('cdsapi_rc'),
+    )

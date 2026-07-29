@@ -225,3 +225,14 @@ class BermanMiningDataSource(ManualDataSource):
         )
         
         self.DATA_SOURCE_NAME = "berman_mining"
+
+
+NAMES = ("berman_mining", "berman", "mining_conflict")
+
+
+def from_config(dataset_name, config, *, base_url, file_extensions, output_path, source_config, **kwargs):
+    """Build a BermanMiningDataSource from the shared config-extraction the factory does."""
+    logger.info("Creating Berman Mining data source")
+    return BermanMiningDataSource(
+        output_path=output_path or 'berman_mining'
+    )
