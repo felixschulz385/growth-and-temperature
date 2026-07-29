@@ -123,6 +123,12 @@ class NTLHarmPreprocessor(AbstractPreprocessor):
         
         # Settings
         self.override = kwargs.get('override', False)
+
+        # Harmonized DMSP-VIIRS nighttime lights are still a radiance (flux)
+        # field, so reprojection must stay area-weighted-sum, not
+        # nearest-neighbour (docs/design/04-ingest.md §1), same reasoning as
+        # eog.py's raw VIIRS/DMSP sources. Overridable via config.
+        self.resampling = kwargs.get('resampling', 'sum')
         
         # Get data source parameters - handle both data_path and output_path
         base_url = kwargs.get('base_url')
@@ -656,7 +662,8 @@ class NTLHarmPreprocessor(AbstractPreprocessor):
                         years_to_process=self.years_to_process,
                         year_pattern_func=extract_year_from_ntl_harm_path,
                         preprocess_func=preprocess_ntl_harm_dataset,
-                        get_variables_func=get_ntl_harm_variables_and_attrs
+                        get_variables_func=get_ntl_harm_variables_and_attrs,
+                        resampling=self.resampling,
                     )
                     
                     if success:

@@ -204,10 +204,11 @@ class SpatialProcessor:
         target_geobox,
         preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None,
         dst_nodata: Optional[float] = None,
+        resampling: str = "nearest",
     ) -> bool:
         """
         Write a year's worth of data to zarr with reprojection.
-        
+
         Args:
             year_ds: Source dataset for the year
             output_path: Output zarr path
@@ -217,19 +218,29 @@ class SpatialProcessor:
             dst_nodata: Optional destination nodata value that will be passed
                 to :func:`odc.geo.xr.xr_reproject` as ``dst_nodata``. When
                 ``None`` the reprojection library default ("auto") is used.
-        
+            resampling: Resampling method passed to
+                :func:`odc.geo.xr.xr_reproject`. Defaults to ``"nearest"``,
+                unchanged from this function's prior hardcoded behaviour.
+                Radiance-like (flux) variables should pass ``"sum"``
+                (area-weighted, flux-conserving) instead -- see
+                docs/design/04-ingest.md §1. This must stay a per-call
+                override, never a new hardcoded default here, since
+                categorical variables (e.g. ESACCI land cover) require
+                ``"nearest"``/``"mode"`` and would silently break under a
+                different shared default.
+
         Returns:
             bool: Success status
         """
         try:
-            logger.info(f"Processing year {year} for spatial reprojection")
-            
+            logger.info(f"Processing year {year} for spatial reprojection (resampling={resampling})")
+
             # Apply preprocessing if provided
             if preprocess_func:
                 year_ds = preprocess_func(year_ds)
-            
+
             # Reproject to target geobox; propagate custom nodata if given
-            reproj_kwargs = {"resampling": "nearest"}
+            reproj_kwargs = {"resampling": resampling}
             if dst_nodata is not None:
                 reproj_kwargs["dst_nodata"] = dst_nodata
             reprojected_ds = xr_reproject(year_ds, target_geobox, **reproj_kwargs)
@@ -270,13 +281,14 @@ class SpatialProcessor:
         get_variables_func: Callable[[str], Tuple[List[str], Dict]] = None,
         dst_nodata: Optional[float] = None,
         packaging_attrs: Optional[Dict[str, Any]] = None,
+        resampling: str = "nearest",
     ) -> bool:
         """
         Standard spatial processing workflow for simple cases.
-        
+
         This handles the common case where each year has one file and minimal
         aggregation is needed.
-        
+
         Args:
             source_files: List of source zarr files
             output_path: Output zarr path
@@ -284,7 +296,11 @@ class SpatialProcessor:
             year_pattern_func: Function to extract year from file path
             preprocess_func: Optional preprocessing function for each dataset
             get_variables_func: Function to get variables and attrs from sample file
-            
+            resampling: Resampling method for every year's reprojection
+                (see `write_year_to_zarr`). Defaults to ``"nearest"``, this
+                function's prior fixed behaviour; pass ``"sum"`` for
+                radiance-like variables (docs/design/04-ingest.md §1).
+
         Returns:
             bool: Success status
         """
@@ -343,6 +359,7 @@ class SpatialProcessor:
                     target_geobox,
                     preprocess_func,
                     dst_nodata=effective_nodata,
+                    resampling=resampling,
                 )
                 
                 year_ds.close()

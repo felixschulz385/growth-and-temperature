@@ -1,0 +1,87 @@
+# Pinned dependency set for the growth-and-temperature "src" conda environment.
+#
+# docs/design/05-migration.md §3 / docs/design/06-open-questions.md item 4: no
+# environment/dependency pin file existed anywhere in this repository, despite
+# the README's install instructions (below) already assuming one exists. This
+# matters specifically for the backbone redesign: the canonical-grid work in
+# docs/design/01-grid.md depends on exact odc-geo/pyproj/PROJ behavior, and an
+# unpinned environment means the grid's exact extent -- and the convolution
+# engine's exact halo geometry -- can silently shift between machines or over
+# time as these libraries are upgraded.
+#
+# Provenance: versions below were captured from a local conda environment
+# (Python 3.11, macOS arm64) in which the full test suite -- including
+# tests/data/common/neighbourhood/ -- passes. This is NOT a dump of the actual
+# HPC environment currently named `src` (out-of-repo, not introspectable from
+# here; orchestration/slurm/*.sh scripts just `conda activate src` against it).
+# Reconcile against that environment's `conda list --explicit` before treating
+# this file as authoritative for HPC runs, and prefer generating a
+# platform-specific lock (e.g. `conda-lock` or `conda list --explicit run on
+# the HPC login/compute node) for byte-exact reproducibility -- this file pins
+# direct dependencies only, not the full transitive closure, and a macOS
+# solve is not guaranteed to match a Linux HPC solve exactly.
+#
+# Install:
+#   conda env create -f environment.yml
+#   conda activate src
+#   pip install -e .
+name: src
+channels:
+  - conda-forge
+  - nodefaults
+dependencies:
+  - python=3.11
+
+  # Geodesy / canonical grid stack -- version-critical, see docs/design/01-grid.md
+  - odc-geo=0.5.1
+  - pyproj=3.7.2
+  - rioxarray=0.19.0
+  - gdal=3.12.3
+  - proj=9.7.1
+
+  # Array / raster processing
+  - numpy=2.2.6
+  - scipy=1.17.1
+  - xarray=2026.4.0
+  - dask=2026.3.0
+  - zarr=3.1.6
+  - affine=2.4.0
+  - shapely=2.1.2
+  - geopandas=1.1.3
+
+  # Tabular / storage
+  - pandas=3.0.2
+  - pyarrow=24.0.0
+  - duckdb=1.5.2
+
+  # Download / scraping subsystem (src/data/download/)
+  - aiohttp=3.14.1
+  - requests=2.33.1
+  - beautifulsoup4=4.14.3
+  - selenium=4.43.0
+  - webdriver-manager=4.1.1
+  - openpyxl=3.1.5
+  - psutil=7.2.2
+  - pyyaml=6.0.3
+
+  # Testing
+  - pytest=9.0.3
+
+  - pip
+  - pip:
+      - -e .
+      # cdsapi/duckreg/xvec/pyspark: not present in any local environment
+      # checked while writing this file -- versions unverified, confirm
+      # against the HPC `src` environment (docs/design/06-open-questions.md
+      # item 4). aiofiles was subsequently installed locally to run the
+      # test suite (tests/data/preprocess/); its version is real, the
+      # others are not.
+      - aiofiles==25.1.0
+      - cdsapi
+      - duckreg
+      - xvec
+      # Only exercised by src/data/common/spark/client.py, which backs the
+      # `spark`/`filter_land_only` config keys confirmed dead/unconsumed in
+      # docs/design/05-migration.md §2 -- candidate for removal from this
+      # file once that cleanup lands. Version unverified, same caveat as above.
+      - pyspark

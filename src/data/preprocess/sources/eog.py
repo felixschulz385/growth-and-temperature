@@ -123,9 +123,18 @@ class EOGPreprocessor(AbstractPreprocessor):
             logger.info(f"Processing year range: {self.year_start}-{self.year_end} ({len(self.years_to_process)} years)")
         
         self.grid_cell = kwargs.get('grid_cell')
-        
+
         # Settings
         self.override = kwargs.get('override', False)
+
+        # Nighttime lights are a radiance (flux) field, so their spatial
+        # reprojection must be area-weighted-sum, not nearest-neighbour, to
+        # stay flux-conserving -- nearest-neighbour resampling would inject
+        # aliasing noise directly into every downstream ring sum
+        # (docs/design/04-ingest.md §1). Overridable via config for parity
+        # with SpatialProcessor.process_spatial_standard's signature, but
+        # "sum" is the correct default for this source, not "nearest".
+        self.resampling = kwargs.get('resampling', 'sum')
         
         # Get data source parameters - handle both data_path and output_path
         base_url = kwargs.get('base_url')
@@ -653,7 +662,8 @@ class EOGPreprocessor(AbstractPreprocessor):
                         years_to_process=self.years_to_process,
                         year_pattern_func=extract_year_from_eog_path,
                         preprocess_func=preprocess_eog_dataset,
-                        get_variables_func=get_eog_variables_and_attrs
+                        get_variables_func=get_eog_variables_and_attrs,
+                        resampling=self.resampling,
                     )
                     
                     if success:
