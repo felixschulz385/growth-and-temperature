@@ -121,6 +121,43 @@ def _verify_remote(client: HPCClient, remote_path: str, sample_size: int = 5) ->
     return bool(sample_files) and all(client.check_file_exists(f) for f in sample_files)
 
 
+def _transfer_file_unit(
+    client: HPCClient,
+    unit_id: str,
+    local_path: str,
+    remote_path: str,
+    manifest: Optional[TransferManifest],
+) -> bool:
+    """Push a single file directly (no tar/extract needed for one file)."""
+    remote_parent = os.path.dirname(remote_path.rstrip("/"))
+    if remote_parent:
+        client.ensure_directory(remote_parent)
+
+    logger.info("Transferring %s to HPC", os.path.basename(local_path))
+    success, summary = client.rsync_transfer(
+        local_path, remote_path, source_is_local=True,
+        options={"compress": True, "archive": True, "partial": True, "verbose": False},
+        show_progress=False,
+    )
+    if not success:
+        logger.error("Transfer failed for unit %s: %s", unit_id, summary)
+        if manifest is not None:
+            manifest.record(unit_id, local_path, remote_path, STATUS_FAILED, error=summary)
+        return False
+
+    full_remote_path = _full_remote_path(client, remote_path)
+    if not client.check_file_exists(full_remote_path):
+        logger.error("Verification failed for unit %s: %s not found on HPC", unit_id, full_remote_path)
+        if manifest is not None:
+            manifest.record(unit_id, local_path, remote_path, STATUS_FAILED, error="verification failed")
+        return False
+
+    if manifest is not None:
+        manifest.record(unit_id, local_path, remote_path, STATUS_COMPLETED)
+    logger.info("Transfer unit %s completed", unit_id)
+    return True
+
+
 def transfer_unit(
     client: HPCClient,
     unit: Dict[str, Any],
@@ -128,7 +165,15 @@ def transfer_unit(
     override: bool = False,
 ) -> bool:
     """Push one transfer unit (``{unit_id, local_path, remote_path}``) to the
-    HPC target: tar -> rsync -> remote extract -> verify."""
+    HPC target.
+
+    ``local_path`` a directory (e.g. a Zarr store): tar -> rsync -> remote
+    extract -> verify, amortizing per-file rsync overhead for a tree of many
+    small chunk files.
+    ``local_path`` a single file (e.g. a GeoTIFF): direct rsync -> verify,
+    skipping tar/extract entirely -- there's only one file, so the overhead
+    tar exists to amortize doesn't apply.
+    """
     unit_id = unit["unit_id"]
     local_path = unit["local_path"]
     remote_path = unit["remote_path"]
@@ -140,6 +185,9 @@ def transfer_unit(
     if manifest is not None and not override and manifest.status_of(unit_id) == STATUS_COMPLETED:
         logger.info("Skipping transfer unit %s -- already completed", unit_id)
         return True
+
+    if os.path.isfile(local_path):
+        return _transfer_file_unit(client, unit_id, local_path, remote_path, manifest)
 
     tar_dir = tempfile.mkdtemp(prefix="hpc_transfer_")
     tar_filename = f"{unit_id.replace('/', '_')}.tar.gz"

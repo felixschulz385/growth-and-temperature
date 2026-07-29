@@ -20,8 +20,9 @@ import os
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
+import pandas as pd
 import xarray as xr
-from zarr.codecs import BloscCodec
 
 from src.data.preprocess.sources.base import AbstractPreprocessor
 from src.data.preprocess.sources import modis_util
@@ -198,7 +199,7 @@ class MODISPreprocessor(AbstractPreprocessor):
         stage1_root = self.get_hpc_output_path("annual")
         for year in years:
             for tile in self.tiles:
-                output_path = os.path.join(stage1_root, str(year), f"{tile}.zarr")
+                output_path = os.path.join(stage1_root, str(year), f"{tile}.tif")
                 targets.append({
                     "stage": "annual",
                     "year": year,
@@ -221,7 +222,7 @@ class MODISPreprocessor(AbstractPreprocessor):
                 logger.warning("No stage-1 output for year %d at %s", year, year_dir)
                 continue
             tile_files = sorted(
-                os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".zarr")
+                os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
             )
             if not tile_files:
                 continue
@@ -236,9 +237,10 @@ class MODISPreprocessor(AbstractPreprocessor):
         return targets
 
     def get_transfer_units(self, stage: str) -> List[Dict[str, Any]]:
-        """Per-(year, tile) transfer units for stage "annual" -- finer-grained
-        resumability than one directory sync, matching the per-tile-year
-        processing granularity (docs/design/08-hpc-transfer.md §2). Stage
+        """Per-(year, tile) transfer units for stage "annual" -- one GeoTIFF
+        file per unit, so `transfer.py` pushes each directly (no tar/extract
+        needed for a single file), with per-tile-year resumability matching
+        the processing granularity (docs/design/08-hpc-transfer.md §2). Stage
         "spatial" falls back to the default single-unit behaviour since its
         output is already one shared store.
         """
@@ -255,7 +257,7 @@ class MODISPreprocessor(AbstractPreprocessor):
             if not os.path.isdir(year_dir):
                 continue
             for tile_name in sorted(os.listdir(year_dir)):
-                if not tile_name.endswith(".zarr"):
+                if not tile_name.endswith(".tif"):
                     continue
                 local_path = os.path.join(year_dir, tile_name)
                 remote_path = os.path.relpath(local_path, hpc_root)
@@ -398,42 +400,105 @@ class MODISPreprocessor(AbstractPreprocessor):
             ds["lst"], valid_mask
         )
 
+        # Annual variables are squeezed out of "time" (size 1) here, before
+        # dataset construction below -- combining them via xr.Dataset({...})
+        # while they still carried a "time" dim would collide with the
+        # monthly variables' *different* time coordinate (12 monthly labels
+        # vs. 1 annual label), and xarray's dict-based Dataset constructor
+        # silently outer-joins/broadcasts mismatched coordinates on a shared
+        # dim name -- corrupting the annual variables' shape rather than
+        # raising. Verified against a synthetic combine while testing this.
         data_vars = {
-            "lst_night": annual_lst.astype("float32"),
+            "lst_night": annual_lst.squeeze("time", drop=True).astype("float32"),
             "lst_night_monthly": monthly_lst.astype("float32"),
-            "valid_period_count_monthly": monthly_count.astype("uint16"),
-            "valid_period_count_annual": annual_count.astype("uint16"),
+            "valid_period_count_monthly": monthly_count.astype("float32"),
+            "valid_period_count_annual": annual_count.squeeze("time", drop=True).astype("float32"),
         }
         for key in ("emis_29", "emis_31", "emis_32", "view_angle", "view_time"):
             if key in ds.data_vars:
                 annual_var, _, _, _ = composite_to_annual(ds[key], valid_mask)
-                data_vars[key] = annual_var.astype("float32")
+                data_vars[key] = annual_var.squeeze("time", drop=True).astype("float32")
 
         out_ds = xr.Dataset(data_vars)
-        if "band" not in out_ds.dims:
-            out_ds = out_ds.expand_dims(band=[1])
         out_ds = out_ds.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
         out_ds.attrs.update({
             "source_type": "modis", "product": self.product, "tile": tile,
             "collection": self.collection_id, "platform": self.platform,
         })
 
-        return self._write_annual_zarr(out_ds, output_path)
+        return self._write_annual_geotiff(out_ds, output_path)
 
-    def _write_annual_zarr(self, ds: xr.Dataset, output_path: str) -> bool:
+    def _write_annual_geotiff(self, ds: xr.Dataset, output_path: str) -> bool:
+        """Write this tile-year's composite as one atomic multi-band GeoTIFF.
+
+        A single file, not a Zarr directory: `transfer.py` pushes it via a
+        direct rsync with no tar/extract step needed (there's only one
+        file), and the write below is trivially atomic (temp file + rename)
+        -- a Zarr store's directory-of-many-chunk-files write is not, so a
+        killed write could previously leave a partial store on disk that a
+        bare `os.path.exists` resume check would wrongly treat as complete.
+
+        Annual (single-band) variables and each month of the monthly
+        diagnostic variables become separate, named bands in one file --
+        band descriptions record which is which. All values share one
+        dtype (float32) since classic GTiff doesn't support per-band
+        dtypes; the small integer valid-period counts are exactly
+        representable in float32, so nothing is lost.
+        """
+        import rasterio
+
+        band_arrays: List[np.ndarray] = []
+        band_names: List[str] = []
+
+        for var in ("lst_night", "valid_period_count_annual", "emis_29", "emis_31", "emis_32", "view_angle", "view_time"):
+            if var not in ds.data_vars:
+                continue
+            arr = ds[var]
+            for dim in ("time", "band"):
+                if dim in arr.dims:
+                    arr = arr.squeeze(dim, drop=True)
+            band_arrays.append(np.asarray(arr.values, dtype="float32"))
+            band_names.append(var)
+
+        for var in ("lst_night_monthly", "valid_period_count_monthly"):
+            if var not in ds.data_vars:
+                continue
+            monthly = ds[var]
+            if "band" in monthly.dims:
+                monthly = monthly.squeeze("band", drop=True)
+            for i in range(monthly.sizes.get("time", 0)):
+                month_label = pd.Timestamp(monthly["time"].values[i]).strftime("%m")
+                band_arrays.append(np.asarray(monthly.isel(time=i).values, dtype="float32"))
+                band_names.append(f"{var}_{month_label}")
+
+        if not band_arrays:
+            logger.error("No bands to write for %s", output_path)
+            return False
+
+        stacked = np.stack(band_arrays, axis=0)
+        transform = ds.rio.transform()
+        crs = ds.rio.crs
+
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        tmp_path = output_path + ".tmp"
         try:
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            chunk_dict = {d: (1 if d in ("time", "band") else 2048) for d in ds.dims}
-            ds = ds.chunk(chunk_dict)
-
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {var: {"compressors": (compressor,)} for var in ds.data_vars}
-
-            ds.to_zarr(output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-            logger.info("Wrote MODIS annual zarr: %s", output_path)
+            with rasterio.open(
+                tmp_path, "w", driver="GTiff",
+                height=stacked.shape[1], width=stacked.shape[2], count=stacked.shape[0],
+                dtype="float32", crs=crs, transform=transform,
+                nodata=np.nan, compress="deflate", predictor=3, tiled=True,
+            ) as dst:
+                dst.write(stacked)
+                for i, name in enumerate(band_names, start=1):
+                    dst.set_band_description(i, name)
+                dst.update_tags(**{k: str(v) for k, v in ds.attrs.items()})
+            os.replace(tmp_path, output_path)
+            logger.info("Wrote MODIS annual GeoTIFF: %s (%d bands)", output_path, len(band_names))
             return True
         except Exception:
-            logger.exception("Error writing MODIS annual zarr to %s", output_path)
+            logger.exception("Error writing MODIS annual GeoTIFF to %s", output_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
             return False
 
     # ------------------------------------------------------------------
@@ -449,8 +514,38 @@ class MODISPreprocessor(AbstractPreprocessor):
             temp_dir=os.path.join(self.temp_dir, "dask_workspace"),
         )
 
-    def _mosaic_tiles(self, tile_files: List[str]) -> xr.Dataset:
-        """Merge one year's per-tile native-sinusoidal zarrs into one mosaic.
+    def _read_annual_geotiff(self, path: str, year: int) -> xr.Dataset:
+        """Reconstruct a tile-year's *annual* variables from its GeoTIFF.
+
+        Only the annual (single-band) variables are carried onto the
+        canonical-grid mosaic -- the monthly diagnostic bands
+        (`*_monthly_MM`) are ingest-time QA/robustness-arm material
+        (docs/design/07-modis-ingest.md §5), not one of the canonical-grid
+        variables docs/design/04-ingest.md §5 lists, so they stay in the
+        pushed tile-year file rather than being reprojected. `time`/`band`
+        dims are re-added to match what `SpatialProcessor` expects.
+        """
+        import rasterio
+        import rioxarray as rxr
+
+        da = rxr.open_rasterio(path, masked=True)
+        with rasterio.open(path) as src:
+            descriptions = src.descriptions
+
+        time_coord = [pd.Timestamp(f"{year}-12-31")]
+        data_vars = {}
+        for i, name in enumerate(descriptions):
+            if not name or "_monthly_" in name:
+                continue
+            band_da = da.isel(band=i, drop=True)
+            band_da = band_da.expand_dims(time=time_coord, axis=0).expand_dims(band=[1], axis=1)
+            data_vars[name] = band_da
+
+        ds = xr.Dataset(data_vars)
+        return ds.rio.write_crs(da.rio.crs)
+
+    def _mosaic_tiles(self, tile_files: List[str], year: int) -> xr.Dataset:
+        """Merge one year's per-tile native-sinusoidal GeoTIFFs into one mosaic.
 
         MODIS sinusoidal tiles share resolution/CRS and tile exactly onto a
         shared global sinusoidal grid (docs/design/07-modis-ingest.md §3:
@@ -458,11 +553,8 @@ class MODISPreprocessor(AbstractPreprocessor):
         so a coordinate-based combine is sufficient -- no reprojection needed
         at this step.
         """
-        datasets = [xr.open_zarr(f, consolidated=False, decode_coords="all") for f in tile_files]
-        mosaic = xr.combine_by_coords(datasets, combine_attrs="override")
-        for d in datasets:
-            d.close()
-        return mosaic
+        datasets = [self._read_annual_geotiff(f, year) for f in tile_files]
+        return xr.combine_by_coords(datasets, combine_attrs="override")
 
     def _process_spatial_target(self, target: Dict[str, Any]) -> bool:
         from src.data.common.geobox import get_or_create_canonical_geobox
@@ -487,7 +579,7 @@ class MODISPreprocessor(AbstractPreprocessor):
                 )
 
                 with spatial_processor.setup_dask_config():
-                    mosaic = self._mosaic_tiles(source_files)
+                    mosaic = self._mosaic_tiles(source_files, year)
                     if mosaic.rio.crs is None:
                         mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
 
