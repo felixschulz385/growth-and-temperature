@@ -51,6 +51,9 @@ def get_preprocessor_class(preprocessor_name: str) -> Type:
         elif preprocessor_name in ['esacci', 'esa_cci', 'esacci_lc', 'landcover']:
             from src.data.preprocess.sources.esacci import ESACCIPreprocessor
             return ESACCIPreprocessor
+        elif preprocessor_name in ['modis', 'modis_lst']:
+            from src.data.preprocess.sources.modis import MODISPreprocessor
+            return MODISPreprocessor
         else:
             # By convention, the class name is expected to be CamelCase
             class_name = ''.join(word.capitalize() for word in preprocessor_name.split('_')) + 'Preprocessor'
@@ -101,6 +104,11 @@ def create_source(source_name: str, config: Dict[str, Any]):
         return None
     elif source_name_lower == 'snl_mining':
         # SNL mining preprocessing works directly from local DuckDB inputs
+        return None
+    elif source_name_lower in ('modis', 'modis_lst'):
+        # MODIS streams directly from Planetary Computer's STAC catalog
+        # inside the preprocessor (docs/design/07-modis-ingest.md) -- no
+        # separate raw-file download subsystem data source.
         return None
     # GLASSLSTDataSource
     elif source_name_lower == "glasslstdatasource":

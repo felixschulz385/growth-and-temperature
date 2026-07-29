@@ -85,3 +85,10 @@ dependencies:
       # docs/design/05-migration.md §2 -- candidate for removal from this
       # file once that cleanup lands. Version unverified, same caveat as above.
       - pyspark
+      # MODIS STAC ingest (src/data/preprocess/sources/modis.py,
+      # docs/design/07-modis-ingest.md). New to this repo -- confirmed via
+      # repo-wide grep that zero code used odc-stac/pystac-client/Planetary
+      # Computer before this. Versions unverified, same caveat as above.
+      - pystac-client
+      - odc-stac
+      - planetary-computer

@@ -22,10 +22,11 @@ class SpatialProcessor:
     allowing source-specific customization through callback functions.
     """
     
-    def __init__(self, hpc_root: str, temp_dir: str = None, dask_client=None, default_nodata: Optional[float] = None):
+    def __init__(self, hpc_root: str, temp_dir: str = None, dask_client=None, default_nodata: Optional[float] = None,
+                 target_geobox=None):
         """
         Initialize spatial processor.
-        
+
         Args:
             hpc_root: HPC root directory for geobox
             temp_dir: Temporary directory for processing
@@ -33,19 +34,30 @@ class SpatialProcessor:
             default_nodata: if provided, this value will be used as the
                 ``dst_nodata`` argument for every reprojection call made by
                 this processor unless overridden at method call time.
+            target_geobox: Optional pre-built GeoBox to reproject onto,
+                overriding the default legacy EPSG:4326 grid
+                (`get_or_create_geobox`). Additive per docs/design/05-
+                migration.md §1 -- pass the canonical EPSG:6933 GeoBox
+                (`src.data.common.geobox.get_or_create_canonical_geobox`) for
+                sources landing on the new backbone grid; existing sources
+                are unaffected since this defaults to ``None``.
         """
         self.hpc_root = hpc_root
         self.temp_dir = temp_dir or tempfile.mkdtemp(prefix="spatial_processor_")
         self.dask_client = dask_client
         # store a default nodata for downstream operations
         self.default_nodata = default_nodata
+        self._target_geobox_override = target_geobox
         # suppress verbose rasterio transformer warnings that crop up during
         # reprojection (e.g. CPLE_NotSupported XSCALE).  we only care about
         # errors.
         logging.getLogger("rasterio._env").setLevel(logging.ERROR)
-        
+
     def get_target_geobox(self):
         """Get or create the target geobox for reprojection."""
+        if self._target_geobox_override is not None:
+            logger.info(f"Using overridden target geobox for reprojection: {self._target_geobox_override.shape}")
+            return self._target_geobox_override
         try:
             target_geobox = get_or_create_geobox(self.hpc_root)
             logger.info(f"Using target geobox for reprojection: {target_geobox.shape}")
@@ -64,10 +76,11 @@ class SpatialProcessor:
         variable_attrs_func: Callable[[str, Dict], Dict] = None,
         dst_nodata: Optional[float] = None,
         packaging_attrs: Optional[Dict[str, Any]] = None,
+        dtype: str = "uint16",
     ) -> bool:
         """
         Create empty zarr file with target dimensions and metadata.
-        
+
         Args:
             output_path: Path for output zarr
             target_geobox: Target geobox for spatial dimensions
@@ -78,7 +91,13 @@ class SpatialProcessor:
             dst_nodata: Optional nodata value to use for the output arrays. If
                 provided the default `_FillValue` attribute will be set to this
                 value instead of the hard‑coded 65535.
-        
+            dtype: Storage dtype for the output arrays. Defaults to
+                ``"uint16"`` (unchanged prior behaviour, matching the
+                existing packed-integer sources). Pass e.g. ``"float32"``
+                for sources writing already-physical (unpacked) values --
+                forcing those through a uint16 store would silently
+                truncate precision on the later region write.
+
         Returns:
             bool: Success status
         """
@@ -88,16 +107,25 @@ class SpatialProcessor:
             # Create time coordinates
             time_coords = pd.to_datetime([f"{year}-12-31" for year in sorted(years)])
             
-            # Create empty dataset with target geobox dimensions
+            # Create empty dataset with target geobox dimensions. Dimension
+            # names follow the geobox's own CRS-dependent axis names --
+            # ('latitude', 'longitude') for a geographic CRS like the legacy
+            # EPSG:4326 grid, ('y', 'x') for a projected CRS like the
+            # canonical EPSG:6933 grid -- rather than hardcoding the
+            # geographic names, which would silently mislabel a projected
+            # grid's axes (docs/design/01-grid.md).
             ny, nx = target_geobox.shape
-            lat_coords = target_geobox.coords['latitude'].values.round(5)
-            lon_coords = target_geobox.coords['longitude'].values.round(5)
-            
+            dim_y, dim_x = target_geobox.dimensions
+            y_coords = target_geobox.coords[dim_y].values.round(5)
+            x_coords = target_geobox.coords[dim_x].values.round(5)
+            np_dtype = np.dtype(dtype)
+
             # Create data variables with fill values and band dimension
             data_vars = {}
-            
+
             # use provided nodata as fill value if given
-            default_attrs = {"_FillValue": dst_nodata if dst_nodata is not None else 65535}
+            default_fill = dst_nodata if dst_nodata is not None else (65535 if np_dtype.kind in "ui" else np.nan)
+            default_attrs = {"_FillValue": default_fill}
             if dst_nodata is not None:
                 # also expose the attribute under common name
                 default_attrs["nodata"] = dst_nodata
@@ -118,13 +146,13 @@ class SpatialProcessor:
                     var_attrs.update(packaging_attrs)
                     
                 data_vars[var] = xr.DataArray(
-                    da.zeros((len(time_coords), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 512, 512)),
-                    dims=['time', 'band', 'latitude', 'longitude'],
+                    da.zeros((len(time_coords), 1, ny, nx), dtype=np_dtype, chunks=(1, 1, 512, 512)),
+                    dims=['time', 'band', dim_y, dim_x],
                     coords={
                         'time': time_coords,
                         'band': [1],
-                        'latitude': lat_coords,
-                        'longitude': lon_coords
+                        dim_y: y_coords,
+                        dim_x: x_coords
                     },
                     attrs=var_attrs
                 )
@@ -139,10 +167,10 @@ class SpatialProcessor:
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
             encoding = {
                 var: {
-                    "chunks": (1, 1, 512, 512), 
+                    "chunks": (1, 1, 512, 512),
                     "compressors": (compressor,),
-                    "dtype": "uint16"
-                } 
+                    "dtype": dtype
+                }
                 for var in variables
             }
             
@@ -247,13 +275,15 @@ class SpatialProcessor:
             
             # Clean up dataset
             reprojected_ds = reprojected_ds.drop_vars(['spatial_ref'], errors='ignore').drop_attrs()
-            
-            # Transform coordinates
-            reprojected_ds.coords['longitude'] = reprojected_ds.coords['longitude'].round(5)
-            reprojected_ds.coords['latitude'] = reprojected_ds.coords['latitude'].round(5)
-            
+
+            # Transform coordinates -- dimension names follow the target
+            # geobox's own axis names (see create_empty_target_zarr).
+            dim_y, dim_x = target_geobox.dimensions
+            reprojected_ds.coords[dim_x] = reprojected_ds.coords[dim_x].round(5)
+            reprojected_ds.coords[dim_y] = reprojected_ds.coords[dim_y].round(5)
+
             # Rechunk for zarr writing
-            reprojected_ds = reprojected_ds.chunk({'time': 1, 'band': 1, 'latitude': 512, 'longitude': 512})
+            reprojected_ds = reprojected_ds.chunk({'time': 1, 'band': 1, dim_y: 512, dim_x: 512})
             
             # Write to zarr
             reprojected_ds.to_zarr(

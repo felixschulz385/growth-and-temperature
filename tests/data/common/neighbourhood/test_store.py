@@ -126,3 +126,45 @@ def test_end_to_end_convolve_tile_then_write_disc_tile(tmp_path):
         y=slice(row * tile_size, (row + 1) * tile_size), x=slice(col * tile_size, (col + 1) * tile_size)
     )
     assert not np.isnan(tile_written.values).any()
+
+
+def test_write_disc_tile_casts_float_convolution_output_to_stored_integer_dtype(tmp_path):
+    """Regression test: convolve_tile's N_d is always float64 (scipy.signal.fftconvolve's
+    native output dtype), but the count store is uint16 (docs/design/02-storage.md §6).
+
+    Caught via scripts/validate_backbone_subset.py: writing that float64 array
+    straight into a uint16 zarr region previously corrupted values (xarray
+    silently truncating float bit patterns into the integer dtype) instead of
+    rounding/casting cleanly.
+    """
+    canonical = _make_geobox(width_m=60_000, height_m=60_000)
+    variable = xr_zeros(canonical, dtype="float32")
+    variable.values[...] = 1.0
+    mask = xr_zeros(canonical, dtype="bool")
+    mask.values[...] = True
+
+    ladder = [1, 2, 3]
+    registry = _build_registry(radii_km=ladder)
+    tile_size = 20
+    tiles = GeoboxTiles(canonical, (tile_size, tile_size))
+    row, col = tiles.shape.y // 2, tiles.shape.x // 2
+    tile_gbox = tiles[row, col]
+
+    S_d, N_d = convolve_tile(variable, mask, tile_gbox, r_max_m=3000.0, ladder_km=ladder, kernel_registry=registry)
+    assert N_d.dtype == np.float64  # sanity: confirms the scenario this test guards against
+
+    n_path = tmp_path / "n_d.zarr"
+    create_empty_disc_count_store(n_path, canonical, years=[2020], ladder_km=ladder, tile_size=tile_size)
+    assert write_disc_tile(n_path, N_d, year=2020, variable="N_d")
+
+    ds = xr.open_zarr(str(n_path), consolidated=False, mask_and_scale=False)
+    assert ds["N_d"].dtype == np.uint16
+    written = ds["N_d"].sel(time=pd.Timestamp("2020-12-31"), radius_km=1).isel(
+        y=slice(row * tile_size, (row + 1) * tile_size), x=slice(col * tile_size, (col + 1) * tile_size)
+    )
+    # interior, fully-valid, uniform-mask tile -> N_d should equal the disc
+    # pixel count exactly (an integer already, before rounding), not garbage
+    # from a truncated float64->uint16 bit reinterpretation
+    expected = np.round(N_d.sel(radius_km=1).values).astype(np.uint16)
+    np.testing.assert_array_equal(written.values, expected)
+    assert written.values.max() < 1000  # sanity ceiling: not a bit-pattern-corrupted huge value

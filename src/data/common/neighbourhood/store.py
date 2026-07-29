@@ -132,6 +132,11 @@ def create_empty_disc_count_store(
     return _create_empty_disc_store(output_path, geobox, years, ladder_km, variable, tile_size, dtype, fill_value)
 
 
+def _stored_dtype(output_path, variable: str):
+    ds = xr.open_zarr(str(output_path), consolidated=False, mask_and_scale=False)
+    return ds[variable].dtype
+
+
 def write_disc_tile(output_path, tile_data: xr.DataArray, year: int, variable: str) -> bool:
     """Write one tile's convolved output into its store region.
 
@@ -144,10 +149,24 @@ def write_disc_tile(output_path, tile_data: xr.DataArray, year: int, variable: s
     analysis-ready-grid write point -- locates that slice from the
     coordinate labels alone, so no manual chunk-index bookkeeping is needed
     here.
+
+    `convolve_discs`/`convolve_tile` always produce float64 S_d/N_d (that's
+    what `scipy.signal.fftconvolve` returns, regardless of the eventual
+    storage dtype) -- so this casts to the store's own declared dtype (e.g.
+    `uint16` for a count store, docs/design/02-storage.md §6) before writing.
+    Without this, xarray silently writes float bit patterns into an integer
+    zarr array, corrupting values on read-back rather than raising.
     """
     try:
+        target_dtype = _stored_dtype(output_path, variable)
+        data = tile_data
+        if np.dtype(target_dtype) != data.dtype:
+            if np.issubdtype(np.dtype(target_dtype), np.integer):
+                data = data.round()
+            data = data.astype(target_dtype)
+
         time = pd.Timestamp(f"{year}-12-31")
-        tile_out = tile_data.expand_dims(time=[time])
+        tile_out = data.expand_dims(time=[time])
         ds_out = tile_out.to_dataset(name=variable).drop_vars("spatial_ref", errors="ignore")
         ds_out.to_zarr(str(output_path), region="auto", align_chunks=True, zarr_format=3, consolidated=False)
         return True

@@ -3,7 +3,8 @@ Argument registration for the ``preprocess`` domain.
 
 Sub-commands
 ------------
-run   Preprocess raw source files into analysis-ready data.
+run       Preprocess raw source files into analysis-ready data.
+transfer  Push a preprocess stage's local output to the HPC target over SSH.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from src.cli.common import add_logging_args
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
     """Register ``preprocess`` and its sub-commands on *top_subparsers*."""
-    from .handlers import handle_run
+    from .handlers import handle_run, handle_transfer
 
     preprocess_parser = top_subparsers.add_parser(
         "preprocess",
@@ -100,3 +101,42 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         help="Directory for Dask worker spilling",
     )
     run_p.set_defaults(func=handle_run)
+
+    # ── transfer ───────────────────────────────────────────────────────────
+    transfer_p = sub.add_parser(
+        "transfer",
+        help="Push a preprocess stage's local output to the HPC target over SSH",
+        description=(
+            "Push a preprocess stage's local output to the HPC target over SSH "
+            "(docs/design/08-hpc-transfer.md). Generic across sources via "
+            "AbstractPreprocessor.get_transfer_units()."
+        ),
+    )
+    add_logging_args(transfer_p)
+    transfer_p.add_argument(
+        "--config",
+        required=True,
+        help="Path to unified configuration file (YAML or JSON)",
+    )
+    transfer_p.add_argument(
+        "--source",
+        required=True,
+        help="Data source name as defined in the configuration file",
+    )
+    transfer_p.add_argument(
+        "--stage",
+        required=True,
+        help="Stage whose output should be transferred (e.g. annual)",
+    )
+    transfer_p.add_argument(
+        "--direction",
+        choices=["push", "pull"],
+        default="push",
+        help="Transfer direction (default: push, local -> HPC)",
+    )
+    transfer_p.add_argument(
+        "--override",
+        action="store_true",
+        help="Re-transfer units already marked completed in the transfer manifest",
+    )
+    transfer_p.set_defaults(func=handle_transfer)

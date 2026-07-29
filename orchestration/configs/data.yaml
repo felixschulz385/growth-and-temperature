@@ -25,6 +25,34 @@ sources:
       tar_max_files: 100
       tar_max_size_mb: 500
 
+  # MODIS LST (Planetary Computer STAC) -- MYD21A2 primary, MYD11A1 bounded
+  # robustness arm. docs/design/07-modis-ingest.md / 07a-modis-band-reference.md
+  modis:
+    type: "modis"
+    product: "21A2"           # "21A2" (primary) or "11A1" (robustness arm)
+    platform: "aqua"
+    year_range: [2002, 2025]  # illustrative Aqua-era span, see docs/design/07a §"land tile count"
+    lat_clip_deg: 60.0
+    qc_max_lst_error_k: 2.0    # configurable pending QC bit-layout verification, docs/design/07 §6
+    stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
+    # tiles: []                # optional explicit override, e.g. the robustness arm's bounded subset
+    transfer:
+      stages: ["annual"]
+
+  modis_robustness_11a1:
+    type: "modis"
+    product: "11A1"
+    platform: "aqua"
+    # Bounded robustness-arm subset (docs/design/07-modis-ingest.md §1) --
+    # a handful of tiles spanning biomes/climates x 3-5 years spanning
+    # early/mid/late mission, not a full parallel backfill. Placeholder
+    # values below; exact tile/year selection is an implementation-time call.
+    tiles: ["h18v04", "h20v08", "h09v05"]
+    year_range: [2003, 2024]
+    lat_clip_deg: 60.0
+    qc_max_lst_error_k: 2.0
+    stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
+
   # GLASS AVHRR LST Daily 0.05D
   glass_avhrr:
     type: "glass_avhrr"

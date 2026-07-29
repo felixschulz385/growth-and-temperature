@@ -1,0 +1,209 @@
+# Parameter table for orchestration/slurm/generate_slurm_scripts.py.
+#
+# One entry per "preprocess" family SLURM script. To add/change a job, edit
+# here and regenerate:
+#   python orchestration/slurm/generate_slurm_scripts.py
+# To check for drift (e.g. a generated .sh got hand-edited) without writing:
+#   python orchestration/slurm/generate_slurm_scripts.py --check
+#
+# Resource fields (time/qos/partition/cpus/mem/mem_fraction) are transcribed
+# from each script's prior committed value -- they encode real per-source
+# tuning (e.g. glass_modis's 7-day annual job, berman_mining's bigmem/30min
+# job) and were preserved exactly, not guessed.
+#
+# Scripts NOT covered here (left as hand-maintained, standalone files):
+# assemble_create.sh, assemble_update.sh, demean_modis.sh, analysis.sh,
+# compress.sh, rechunk-zarr.sh, validate-backbone-subset.sh,
+# modis-preprocess-spatial.sh (new MODIS-ingest work, still settling --
+# see docs/design/08-hpc-transfer.md).
+
+jobs:
+  - name: acag-preprocess-annual
+    log_key: acag
+    source: acag
+    stage: annual
+    time: "0-06:00:00"
+    qos: 6hours
+    cpus: 4
+    mem: 128G
+    mem_fraction: 0.6
+    temp_dir_prefix: acag  # was "esacci_..." -- copy-paste artifact, fixed
+
+  - name: acag-preprocess-spatial
+    log_key: acag
+    source: acag
+    stage: spatial
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: acag  # was "esacci_..." -- copy-paste artifact, fixed
+
+  - name: berman_mining-preprocess-spatial
+    log_key: berman_mining
+    source: berman_mining
+    stage: spatial
+    partition: bigmem
+    time: "00:30:00"
+    qos: 30min
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: berman_mining  # was "glass_..." -- copy-paste artifact, fixed
+
+  - name: eog-viirs-preprocess-spatial
+    log_key: eog_viirs
+    source: eog_viirs
+    stage: spatial
+    partition: scicore
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.9
+    temp_dir_prefix: eog_viirs  # was "glass_..." -- copy-paste artifact, fixed
+
+  - name: esacci-preprocess-annual
+    log_key: esacci
+    source: esacci
+    stage: annual
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 4
+    mem: 128G
+    mem_fraction: 0.6
+    temp_dir_prefix: esacci
+
+  - name: esacci-preprocess-spatial
+    log_key: esacci
+    source: esacci  # was "--source acag" -- real bug, this job was preprocessing the wrong source. Fixed.
+    stage: spatial
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: esacci
+
+  - name: glass-avhrr-preprocess-annual
+    log_key: glass_avhrr
+    source: glass_avhrr
+    stage: annual
+    time: "3-00:00:00"
+    qos: 1week
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.9
+    temp_dir_prefix: glass_avhrr
+
+  - name: glass-avhrr-preprocess-spatial
+    log_key: glass_avhrr
+    source: glass_avhrr
+    stage: spatial
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: glass_avhrr
+
+  - name: glass-modis-preprocess-annual
+    log_key: glass_modis
+    source: glass_modis
+    stage: annual
+    time: "7-00:00:00"
+    qos: 1week
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.9
+    temp_dir_prefix: glass_modis
+
+  - name: glass-modis-preprocess-spatial
+    log_key: glass_modis
+    source: glass_modis
+    stage: spatial
+    partition: scicore
+    time: "3-00:00:00"
+    qos: 1week
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.6
+    temp_dir_prefix: glass_modis
+    # prior version was missing --debug (present on every sibling spatial
+    # script) and had stray commented-out --time/--qos alternates left over
+    # from manual edits -- both cleaned up by generation.
+
+  - name: misc-gadm-preprocess-spatial
+    log_key: misc_gadm
+    source: misc
+    subsource: gadm
+    stage: spatial
+    partition: scicore
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 64G
+    mem_fraction: 0.9
+    temp_dir_prefix: misc_gadm  # was "glass_..." -- copy-paste artifact, fixed
+    # prior version had stray commented-out --time/--qos alternates, cleaned up.
+
+  - name: misc-osm-preprocess-spatial
+    log_key: misc_osm
+    source: misc
+    subsource: osm
+    stage: spatial
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 8
+    mem: 64G
+    mem_fraction: 0.9
+    temp_dir_prefix: misc_osm  # was "glass_..." -- copy-paste artifact, fixed
+
+  - name: ntl_harm-preprocess-spatial
+    log_key: ntl_harm
+    source: ntl_harm
+    stage: spatial
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: ntl_harm  # was "glass_..." -- copy-paste artifact, fixed
+
+  - name: snl_mining-preprocess-spatial
+    log_key: snl_mining
+    source: snl_mining
+    stage: spatial
+    partition: scicore
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.6
+    temp_dir_prefix: snl_mining
+    extra_args: ["--override"]
+
+  # "simple" jobs: no dask-threads/memory-limit/temp-dir/dashboard-port,
+  # matching their prior (lighter-weight) invocation exactly.
+  - name: eog-preprocess
+    log_key: viirs_annual
+    source: viirs_annual
+    stage: annual
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 128G
+    simple: true
+
+  - name: plad-preprocess
+    log_key: plad
+    source: plad
+    stage: spatial
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 128G
+    simple: true
+    extra_args: ["--admin-level 2"]
