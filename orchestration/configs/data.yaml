@@ -1,4 +1,10 @@
 # Unified configuration for the GNT data system
+#
+# docs/design/09-integrated-pipeline.md: `sources:` entries are now consumed
+# by the `pipeline` CLI domain (src/data/sources/registry.py), replacing the
+# old `download`/`preprocess` split. `misc` is split into `osm`/`gadm`/
+# `country_classifications` (§7); each source's config carries an `origins:`
+# list where it fetches more than one file.
 
 # Local runtime paths and optional remote transfer settings.
 # Machine-specific values belong in orchestration/configs/data.local.yaml.
@@ -10,6 +16,11 @@ remote:
   ssh_target: ""
   key_file: ""
 
+# Backbone-wide pipeline settings (docs/design/05-migration.md §1's grid
+# switch, finally implemented generically rather than MODIS-only ad hoc).
+pipeline:
+  grid: legacy_4326  # or "ease6933"
+
 # Data source configurations
 sources:
   # GLASS MODIS LST Daily 1KM
@@ -17,7 +28,7 @@ sources:
     type: "glass_modis"
     base_url: "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"
     year_range: [2000, 2020]
-    
+
     # Download settings
     download:
       batch_size: 1000
@@ -37,7 +48,7 @@ sources:
     stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
     # tiles: []                # optional explicit override, e.g. the robustness arm's bounded subset
     transfer:
-      stages: ["annual"]
+      steps: ["prepare"]
 
   modis_robustness_11a1:
     type: "modis"
@@ -58,22 +69,22 @@ sources:
     type: "glass_avhrr"
     base_url: "https://glass.hku.hk/archive/LST/AVHRR/0.05D/"
     year_range: [1982, 2021]
-    
+
     # Download settings
     download:
       batch_size: 1000
       max_concurrent_downloads: 4
       tar_max_files: 100
       tar_max_size_mb: 500
-  
+
   # EOG DMSP Nightlights
   eog_dmsp:
     type: "eog_dmsp"
     base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
     data_path: "eog/dmsp"
     year_range: [1992, 2013]  # DMSP data availability period
-    
-  
+
+
   # EOG VIIRS
   eog_viirs:
     type: "eog_viirs"
@@ -95,7 +106,7 @@ sources:
     data_path: "ntl_harm/harmonized"
     year_range: [1992, 2018]  # Harmonized data availability period
     file_extensions: [".tif", ".zip", ".tar.gz", ".gz"]
-    
+
     # Download settings
     download:
       batch_size: 50
@@ -104,46 +115,81 @@ sources:
       tar_max_size_mb: 2000
       timeout: 600  # 10 minutes for large files
 
-  # Miscellaneous boundary and administrative data
-  misc:
-    type: "misc"
+  # ACAG PM2.5 (Washington University in St. Louis, Box shared folder)
+  acag:
+    type: "acag"
+    data_path: "acag/pm25"
+    year_range: [1998, 2023]
+
+  # ESA CCI Land Cover (Copernicus CDS API)
+  esacci:
+    type: "esacci"
+    data_path: "esacci/landcover"
+    year_range: [1992, 2022]
+
+  # OpenStreetMap land polygons -- one of the three sources split out of the
+  # old `misc` source (docs/design/09-integrated-pipeline.md §7).
+  osm:
+    type: "osm"
     data_path: "misc"
-    sources:
-      osm:
-        url: "https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip"
-        name: "land-polygons-complete-4326.zip"
-        description: "OpenStreetMap land polygons (WGS84)"
-        subfolder: "osm"
-      gadm:
-        url: "https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip"
-        name: "gadm_410-levels.zip"
-        description: "GADM administrative boundaries v4.1"
-        subfolder: "gadm"
-      hdi:
-        url: "https://hdr.undp.org/sites/default/files/2025_HDR/HDR25_Composite_indices_complete_time_series.csv"
-        name: "HDR25.csv"
-        description: "UNDP Human Development Index 2025 Statistical Annex"
-        subfolder: "hdi"
-      worldbank_income_classes:
-        url: "https://ddh-openapi.worldbank.org/resources/DR0095334/download"
-        name: "DR0095334.xlsx"
-        description: "World Bank: World By Income"
-        subfolder: "hdi"
-    # Download settings
+    namespace: "osm"
+    url: "https://osmdata.openstreetmap.de/download/land-polygons-complete-4326.zip"
+    name: "land-polygons-complete-4326.zip"
+    description: "OpenStreetMap land polygons (WGS84)"
+
     download:
       batch_size: 2
       max_concurrent_downloads: 1
       tar_max_files: 2
       tar_max_size_mb: 100
-      timeout: 600  # Increase timeout to 10 minutes for large files
+      timeout: 600
+
+  # GADM v4.1 administrative boundaries -- second of the three misc-split sources.
+  gadm:
+    type: "gadm"
+    data_path: "misc"
+    namespace: "gadm"
+    url: "https://geodata.ucdavis.edu/gadm/gadm4.1/gadm_410-levels.zip"
+    name: "gadm_410-levels.zip"
+    description: "GADM administrative boundaries v4.1"
+
+    download:
+      batch_size: 2
+      max_concurrent_downloads: 1
+      tar_max_files: 2
+      tar_max_size_mb: 100
+      timeout: 600
+
+  # UNDP HDI + World Bank income-group classifications, joined on iso3 --
+  # third of the three misc-split sources; kept together deliberately, not a
+  # 4-way split (docs/design/09-integrated-pipeline.md §7).
+  country_classifications:
+    type: "country_classifications"
+    data_path: "misc"
+    namespace: "country_classifications"
+    hdi_url: "https://hdr.undp.org/sites/default/files/2025_HDR/HDR25_Composite_indices_complete_time_series.csv"
+    hdi_name: "HDR25.csv"
+    worldbank_url: "https://ddh-openapi.worldbank.org/resources/DR0095334/download"
+    worldbank_name: "DR0095334.xlsx"
+    # subfolder fixed to "worldbank" -- the old `misc` config downloaded the
+    # World Bank file into the "hdi" subfolder (docs/design/09-integrated-pipeline.md §1).
+
+    download:
+      batch_size: 2
+      max_concurrent_downloads: 1
+      tar_max_files: 2
+      tar_max_size_mb: 100
+      timeout: 600
 
   # PLAD Harvard Dataverse
-  harvard_plad:
-    type: "harvard_plad"
+  plad:
+    type: "plad"
     doi: "doi:10.7910/DVN/YUS575"
     data_path: "plad"
     file_extensions: ["tab"]
-    # Download settings
+    admin_level: 2  # moved from the --admin-level CLI flag (docs/design/09-integrated-pipeline.md §5)
+    year_range: [1980, 2022]
+
     download:
       batch_size: 1
       max_concurrent_downloads: 1
@@ -153,8 +199,7 @@ sources:
   berman_mining:
     type: "berman_mining"
     data_path: "berman_mining"
-    
-    # Download settings (manual prompts)
+
     download:
       batch_size: 1
       max_concurrent_downloads: 1
@@ -162,11 +207,11 @@ sources:
       tar_max_size_mb: 500
       timeout: 60
 
-  # SNL/SNF Mining Property Tables -> Stage 2 Grid
+  # SNL/S&P Global Mining Property Tables -> GRID
   snl_mining:
     type: "snl_mining"
-    data_path: "snf_mining"
-    duckdb_path: "snf_mining/processed/stage_0/manual_xls/snf_mining_manual_export.duckdb"
+    data_path: "snl_mining"  # fixed: was "snf_mining", inconsistent with the debug config (docs/design/09-integrated-pipeline.md §5)
+    duckdb_path: "snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb"
     properties_table: "properties"
     llm_years_table: "property_llm_years"
     work_history_table: "property_work_history_events"
@@ -177,7 +222,7 @@ sources:
     llm_opening_year_column: "llm_opening_year"
     llm_closing_year_column: "llm_closing_year"
     aggregation:
-      prepared_db_path: "snf_mining/processed/stage_1/snl_mining_prepared.duckdb"
+      prepared_db_path: "snl_mining/processed/stage_1/snl_mining_prepared.duckdb"
       output_filename: "snl_mining_timeseries_reprojected.zarr"
       metric_crs: "ESRI:54009"
       tile_size: 512
@@ -241,12 +286,10 @@ assemble:
         index_cols: ["pixel_id"]
         join_type: "left"
     processing:
-      filter_land_only: true
-      demean_columns: ["median", "dmsp", "viirs_dvnl", "viirs_annual"]
       compression: "zstd"
-    spark:
-      app_name: "MainAssembly"
-      temp_dir: "${DATA_NOBACKUP}/scratch/spark"
+      # demean_columns/filter_land_only/spark deleted -- confirmed dead
+      # config, not read anywhere in src/data/assemble/*.py
+      # (docs/design/05-migration.md §2).
 
   temperature_only:
     description: "Temperature data only assembly"
@@ -261,9 +304,4 @@ assemble:
         index_cols: ["pixel_id"]
         join_type: "left"
     processing:
-      filter_land_only: true
-      demean_columns: ["median"]
       compression: "zstd"
-    spark:
-      app_name: "TemperatureOnly"
-      temp_dir: "${DATA_NOBACKUP}/scratch/spark"

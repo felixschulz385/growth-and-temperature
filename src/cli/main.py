@@ -2,6 +2,9 @@
 src.cli.main — root parser and top-level entry point.
 
 Usage (new-style):
+    python -m src.cli.main pipeline list
+    python -m src.cli.main pipeline plan   --config cfg.yaml --source acag --step prepare
+    python -m src.cli.main pipeline run    --config cfg.yaml --source acag --step fetch
     python -m src.cli.main download index  --config cfg.yaml --source glass
     python -m src.cli.main download run    --config cfg.yaml --source glass
     python -m src.cli.main preprocess run  --config cfg.yaml --source glass
@@ -32,7 +35,7 @@ _PROJECT_ROOT = _HERE.parents[2]  # src/cli/main.py → project root
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.cli import analysis, assemble, download, preprocess
+from src.cli import analysis, assemble, download, pipeline, preprocess
 from src.cli.common import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -71,9 +74,14 @@ Examples:
     )
     subparsers.required = True
 
-    # Register each domain
+    # Register each domain. `pipeline` replaces `download`/`preprocess run`/
+    # `preprocess transfer` (docs/design/09-integrated-pipeline.md §8) but both
+    # sets coexist until every source has migrated (§10) -- migrated sources
+    # are removed from `download`/`preprocess`'s registries, not from these
+    # top-level domains, so unmigrated sources keep working.
     download.register(subparsers)
     preprocess.register(subparsers)
+    pipeline.register(subparsers)
     assemble.register(subparsers)
     analysis.register(subparsers)
 

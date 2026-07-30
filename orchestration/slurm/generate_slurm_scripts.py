@@ -1,36 +1,41 @@
 #!/usr/bin/env python3
 """
-Generate the "preprocess" family of orchestration/slurm/*.sh scripts from
-orchestration/slurm/jobs.yaml, so per-job differences (source, stage,
-resources) live in one small parameter table instead of being copy-pasted
-across ~16 near-identical files.
+Generate the per-source pipeline SLURM/egress scripts from
+orchestration/slurm/jobs.yaml, so per-job differences (source, step,
+resources, execution host) live in one small parameter table instead of
+being copy-pasted across many near-identical files.
 
-Why this exists: auditing the existing scripts while adding a new one
-(validate-backbone-subset.sh) surfaced real bugs from that copy-paste
-pattern, all fixed by construction here since there is now exactly one place
-the invocation shape is written:
+docs/design/09-integrated-pipeline.md §9: emits `run.py pipeline run
+--source X --step Y` (replacing `preprocess run --source X --stage Y
+[--subsource Z]`). `host: egress` (default `host: slurm`) folds what used to
+be the hand-maintained `orchestration/scripts/modis-ingest-annual.sh` into
+this generator: MODIS's PREPARE step needs outbound internet egress to
+Planetary Computer, which scicore's SLURM compute nodes may not have, so it
+is emitted as a plain shell script into `orchestration/scripts/` instead of
+an `#SBATCH` script into `orchestration/slurm/`, with an optional
+`transfer_after` step pushing results to scicore once done. After this
+change, every per-source job the fleet runs -- including MODIS's -- is
+covered by exactly one generator, with the execution-host difference modeled
+as data rather than a directory convention.
 
-  - Every script in this family called `run.py preprocess --source ...`
-    without the required `run` sub-subcommand
-    (`src/cli/preprocess/commands.py` has required `run`/`transfer`
-    sub-subcommands since commit 7da6da6) -- every one of them was failing
-    immediately with an argparse error before doing any work.
-  - `esacci-preprocess-spatial.sh` ran `--source acag` under ESACCI's job
-    name and log directory -- it was preprocessing the wrong source.
-  - Several scripts used a `/scratch/.../<wrong_source>_$SLURM_JOB_ID`
-    temp-dir inherited from whichever script they were copied from (e.g.
-    `berman_mining-preprocess-spatial.sh` used a `glass_...` prefix).
-  - A couple of scripts had a memory-limit comment percentage that didn't
-    match the actual fraction used in the `bc` expression below it.
+Validates at generation time (this is the direct regression test for the
+class of bug that motivated writing this generator in the first place --
+see docs/design/09-integrated-pipeline.md §1's verified findings):
+  - every job's `source` resolves in the source registry
+    (src/data/sources/registry.py);
+  - every job's `step` is one of that source's declared `steps`;
+  - every job's `source` is a key in `orchestration/configs/data.yaml`'s
+    `sources:` block.
 
 Usage:
   python orchestration/slurm/generate_slurm_scripts.py          # write files
   python orchestration/slurm/generate_slurm_scripts.py --check  # drift check, no writes; exit 1 if any file would change
 
-Scripts intentionally NOT covered (left as hand-maintained, standalone
-files): assemble_create.sh, assemble_update.sh, demean_modis.sh, analysis.sh,
-compress.sh, rechunk-zarr.sh, validate-backbone-subset.sh,
-modis-preprocess-spatial.sh -- see jobs.yaml's header comment.
+Scripts intentionally NOT covered here (left as hand-maintained, standalone
+files): assemble_create.sh, assemble_update.sh, analysis.sh, compress.sh,
+rechunk-zarr.sh, validate-backbone-subset.sh -- see jobs.yaml's header
+comment. demean_modis.sh is dead (docs/design/04-ingest.md §6) and removed
+in the migration's cutover step, not generated.
 """
 
 import argparse
@@ -41,7 +46,13 @@ from pathlib import Path
 import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parent.parent
+SCRIPTS_DIR = REPO_ROOT / "orchestration" / "scripts"
 JOBS_FILE = SCRIPT_DIR / "jobs.yaml"
+DATA_YAML_FILE = REPO_ROOT / "orchestration" / "configs" / "data.yaml"
+
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 CONDA_HOOK = "/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda"
 PYTHON_BIN = "/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python"
@@ -54,12 +65,33 @@ GENERATED_MARKER = (
 )
 
 
-def render_job(job: dict) -> str:
+def _pipeline_run_cmd(job: dict) -> list[str]:
+    simple = job.get("simple", False)
+    dashboard_port = job.get("dashboard_port", DEFAULT_DASHBOARD_PORT)
+
+    cmd_parts = [
+        f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" pipeline run',
+        f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
+        f"--source {job['source']}",
+        f"--step {job['step']}",
+    ]
+    cmd_parts.extend(job.get("extra_args", []))
+    if not simple:
+        cmd_parts += [
+            "--dask-threads $SLURM_CPUS_PER_TASK",
+            '--dask-memory-limit "${MEMORY_LIMIT_GB}GiB"',
+            f'--temp-dir "/scratch/schulz0022/{job["temp_dir_prefix"]}_${{SLURM_JOB_ID}}"',
+            f"--dashboard-port {dashboard_port}",
+        ]
+    if job.get("debug", True):
+        cmd_parts.append("--debug")
+    return cmd_parts
+
+
+def render_slurm_job(job: dict) -> str:
     name = job["name"]
     log_key = job["log_key"]
     simple = job.get("simple", False)
-    debug = job.get("debug", True)
-    dashboard_port = job.get("dashboard_port", DEFAULT_DASHBOARD_PORT)
 
     lines = [
         "#!/bin/bash",
@@ -95,34 +127,139 @@ def render_job(job: dict) -> str:
             "",
         ]
 
-    cmd_parts = [
-        f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" preprocess run',
-        f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
-        f"--source {job['source']}",
-    ]
-    if job.get("subsource"):
-        cmd_parts.append(f"--subsource {job['subsource']}")
-    cmd_parts.append(f"--stage {job['stage']}")
-    cmd_parts.extend(job.get("extra_args", []))
-    if not simple:
-        cmd_parts += [
-            "--dask-threads $SLURM_CPUS_PER_TASK",
-            '--dask-memory-limit "${MEMORY_LIMIT_GB}GiB"',
-            f'--temp-dir "/scratch/schulz0022/{job["temp_dir_prefix"]}_${{SLURM_JOB_ID}}"',
-            f"--dashboard-port {dashboard_port}",
-        ]
-    if debug:
-        cmd_parts.append("--debug")
-
-    lines.append(" \\\n    ".join(cmd_parts))
+    lines.append(" \\\n    ".join(_pipeline_run_cmd(job)))
     lines.append("")
     return "\n".join(lines)
+
+
+def render_egress_job(job: dict) -> str:
+    """A plain (non-SBATCH) script for a job that needs outbound internet
+    egress a SLURM compute node may not have -- run manually on whatever
+    host has that access, then (if `transfer_after` is set) push results to
+    scicore before the corresponding SLURM job runs there."""
+    name = job["name"]
+    log_key = job["log_key"]
+
+    lines = [
+        "#!/bin/bash",
+        GENERATED_MARKER,
+        "#",
+        f"# {name}: runs on whatever host has outbound internet egress (a scicore",
+        "# login/transfer node, a workstation, a cloud VM) -- NOT submitted via sbatch.",
+        "# See docs/design/09-integrated-pipeline.md §9 / docs/design/08-hpc-transfer.md.",
+        "",
+        "set -euo pipefail",
+        "",
+        f'mkdir -p "./log/preprocess/{log_key}"',
+        f"cd {PROJECT_ROOT}",
+        "",
+    ]
+    lines.append(" \\\n    ".join(_pipeline_run_cmd(job)))
+    lines.append("")
+
+    transfer_after = job.get("transfer_after")
+    if transfer_after:
+        lines += [
+            f'echo "{job["step"]} complete -- pushing results to scicore"',
+            " \\\n    ".join(
+                [
+                    f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" pipeline transfer',
+                    f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
+                    f"--source {job['source']}",
+                    f"--step {transfer_after}",
+                    "--direction push",
+                ]
+            ),
+            "",
+        ]
+    return "\n".join(lines)
+
+
+def render_job(job: dict) -> tuple[str, Path]:
+    """Return (rendered content, target path) for *job*."""
+    host = job.get("host", "slurm")
+    if host == "egress":
+        return render_egress_job(job), SCRIPTS_DIR / f"{job['name']}.sh"
+    if host == "slurm":
+        return render_slurm_job(job), SCRIPT_DIR / f"{job['name']}.sh"
+    raise ValueError(f"job {job['name']!r}: unknown host {host!r} (expected 'slurm' or 'egress')")
 
 
 def load_jobs() -> list:
     with open(JOBS_FILE) as f:
         spec = yaml.safe_load(f)
     return spec["jobs"]
+
+
+def _load_data_yaml_source_keys() -> set[str]:
+    if not DATA_YAML_FILE.exists():
+        return set()
+    with open(DATA_YAML_FILE) as f:
+        data = yaml.safe_load(f) or {}
+    return set((data.get("sources") or {}).keys())
+
+
+def _pipeline_run_argv(job: dict) -> list[str]:
+    """The argv `_pipeline_run_cmd` would hand to `pipeline run`, with SLURM's
+    shell-expanded values (``$SLURM_CPUS_PER_TASK``, etc.) replaced by dummy
+    literals so it can be fed straight to argparse -- shlex can't split
+    something that's only meaningful after the shell substitutes it."""
+    import shlex
+
+    parts = _pipeline_run_cmd(job)[1:]  # drop the "python .../run.py pipeline run" launcher token
+    argv: list[str] = []
+    for part in parts:
+        part = (
+            part.replace("$SLURM_CPUS_PER_TASK", "4")
+            .replace('"${MEMORY_LIMIT_GB}GiB"', "4GiB")
+            .replace('"/scratch/schulz0022/', '"/tmp/dummy_')
+        )
+        argv.extend(shlex.split(part))
+    return argv
+
+
+def validate_jobs(jobs: list) -> list[str]:
+    """Return a list of error strings (empty if every job is valid)."""
+    from src.data.sources import registry
+    from src.data.sources.steps import PipelineStep
+
+    errors = []
+    data_yaml_sources = _load_data_yaml_source_keys()
+
+    for job in jobs:
+        name = job["name"]
+        try:
+            spec = registry.resolve(job["source"])
+        except ValueError:
+            errors.append(f"{name}: source '{job['source']}' is not registered in src/data/sources/registry.py")
+            continue
+
+        try:
+            step = PipelineStep(job["step"])
+        except ValueError:
+            errors.append(f"{name}: unknown step '{job['step']}'")
+            continue
+
+        if step not in spec.steps:
+            errors.append(
+                f"{name}: source '{job['source']}' does not implement step '{job['step']}' "
+                f"(declared steps: {[s.value for s in spec.steps]})"
+            )
+
+        if job["source"] not in data_yaml_sources:
+            errors.append(f"{name}: source '{job['source']}' is not a key in orchestration/configs/data.yaml's sources: block")
+
+        # Argparse round-trip: catches a job emitting a flag `pipeline run`
+        # doesn't define (e.g. --dask-threads before it existed on this
+        # parser) before it ever reaches a SLURM queue.
+        from src.cli.main import build_parser
+
+        try:
+            build_parser().parse_args(["pipeline", "run", *_pipeline_run_argv(job)])
+        except SystemExit:
+            errors.append(f"{name}: rendered command does not parse against `pipeline run`'s argparse spec")
+
+    return errors
 
 
 def main() -> int:
@@ -132,7 +269,6 @@ def main() -> int:
 
     jobs = load_jobs()
     names_seen = set()
-    drift = False
 
     for job in jobs:
         name = job["name"]
@@ -141,14 +277,22 @@ def main() -> int:
             return 1
         names_seen.add(name)
 
-        rendered = render_job(job)
-        target = SCRIPT_DIR / f"{name}.sh"
+    errors = validate_jobs(jobs)
+    if errors:
+        print("ERROR: jobs.yaml validation failed:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        return 1
+
+    drift = False
+    for job in jobs:
+        rendered, target = render_job(job)
 
         if args.check:
             existing = target.read_text() if target.exists() else ""
             if existing != rendered:
                 drift = True
-                print(f"DRIFT: {target.name}")
+                print(f"DRIFT: {target.relative_to(REPO_ROOT)}")
                 diff = difflib.unified_diff(
                     existing.splitlines(keepends=True),
                     rendered.splitlines(keepends=True),
@@ -157,13 +301,14 @@ def main() -> int:
                 )
                 sys.stdout.writelines(diff)
         else:
+            target.parent.mkdir(parents=True, exist_ok=True)
             target.write_text(rendered)
             target.chmod(0o755)
             print(f"wrote {target}")
 
     if args.check:
         if drift:
-            print(f"\n{sum(1 for _ in names_seen)} job(s) checked -- drift found, run without --check to regenerate.")
+            print(f"\n{len(names_seen)} job(s) checked -- drift found, run without --check to regenerate.")
             return 1
         print(f"{len(names_seen)} job(s) checked -- no drift.")
     return 0

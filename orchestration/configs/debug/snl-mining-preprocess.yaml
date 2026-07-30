@@ -2,10 +2,10 @@ paths:
   data_root: "${DATA_NOBACKUP:-data_nobackup}"
   local_index_dir: "${DATA_NOBACKUP:-data_nobackup}/hpc_data_index"
 
-preprocess:
-  stage: "spatial"
-  dask_threads: 1
-  dask_memory_limit: "4GB"
+# docs/design/09-integrated-pipeline.md §9: step is now passed via
+# `run.py pipeline run --step grid`, not a config key (the old `preprocess:
+# {stage: ...}` block here is dropped -- dask_threads/dask_memory_limit are
+# CLI flags too, e.g. `--dask-threads 1 --dask-memory-limit 4GB`).
 
 sources:
   snl_mining:

@@ -18,16 +18,28 @@ estimation step itself.
 
 Two modes:
   --variable-zarr PATH   Real mode. PATH is a Zarr store already regridded
-                          onto the canonical EASE6933 grid (i.e. produced by
-                          a `resampling`-aware SpatialProcessor run targeting
-                          the new grid -- not yet wired up anywhere as of
-                          this script's writing, see docs/design/05-
-                          migration.md §5 step 5 vs. the `grid: ease6933`
-                          switch in step 1). Must expose `--data-var`
-                          (default "value") and `--mask-var` (default
-                          "valid", boolean or 0/1) on a `y`/`x` grid matching
-                          the canonical GeoBox, optionally with a leading
-                          `time` or `year` dimension selected via --years.
+                          onto the canonical EASE6933 grid -- i.e. the output
+                          of `run.py pipeline run --source X --step grid`
+                          with `orchestration/configs/data.yaml`'s
+                          `pipeline.grid` set to `ease6933`
+                          (docs/design/09-integrated-pipeline.md §3; that
+                          config key defaults to `legacy_4326`, so this must
+                          be set explicitly before running `grid`). Must
+                          expose `--data-var` on a `y`/`x` grid matching the
+                          canonical GeoBox, optionally with a leading `time`
+                          or `year` dimension selected via --years.
+
+                          Validity mask: as of this script's writing, the
+                          `grid` step (`SpatialProcessor` in
+                          `src/data/common/raster/spatial.py`) does not emit
+                          a separate boolean validity variable -- invalid
+                          cells are nodata-filled within the data variable
+                          itself (a `_FillValue`/`nodata` attribute, NaN by
+                          default for float arrays). This script derives the
+                          mask from that automatically; `--mask-var`, if
+                          given and present in the store, overrides that and
+                          is used directly instead (for any future/other
+                          source that does emit a real mask variable).
   (omitted)               Synthetic mode. Generates a small in-memory field
                           with a validity mask (a few holes punched in) --
                           no real data required. Useful on its own for
@@ -48,8 +60,8 @@ Usage:
   python scripts/validate_backbone_subset.py --hpc-root /path/to/hpc_root
 
   python scripts/validate_backbone_subset.py --hpc-root /path/to/hpc_root \\
-      --variable-zarr /path/to/eog_viirs_ease6933.zarr \\
-      --data-var DNB_BRDF_Corrected_NTL --mask-var valid --years 2020 2021
+      --variable-zarr /path/to/eog_ease6933.zarr \\
+      --data-var DNB_BRDF_Corrected_NTL --years 2020 2021
 """
 
 import argparse
@@ -108,7 +120,13 @@ def parse_args() -> argparse.Namespace:
         "--variable-zarr", default=None, help="Real mode: path to a canonical-grid-aligned Zarr store"
     )
     parser.add_argument("--data-var", default="value")
-    parser.add_argument("--mask-var", default="valid")
+    parser.add_argument(
+        "--mask-var",
+        default=None,
+        help="Optional: name of an explicit boolean/0-1 validity variable in the store. "
+        "If omitted or not present, the mask is derived from the data variable's own "
+        "_FillValue/nodata attribute (or NaN, for float arrays with neither).",
+    )
     parser.add_argument("--years", type=int, nargs="+", default=[2020])
     parser.add_argument("--tile-size", type=int, default=2048)
     parser.add_argument("--n-tiles", type=int, default=4, help="Tiles sampled across the grid's latitude range")
@@ -151,14 +169,55 @@ def build_synthetic_field(geobox, logger) -> tuple:
     return variable, mask
 
 
-def load_real_field(path: str, data_var: str, mask_var: str, logger) -> tuple:
-    logger.info("REAL MODE -- loading %s (data_var=%s, mask_var=%s)", path, data_var, mask_var)
+def load_real_field(path: str, data_var: str, logger) -> tuple:
+    logger.info("REAL MODE -- loading %s (data_var=%s)", path, data_var)
     ds = xr.open_zarr(path, consolidated=False, mask_and_scale=False)
     if data_var not in ds:
         raise ValueError(f"{data_var!r} not found in {path} (available: {list(ds.data_vars)})")
-    if mask_var not in ds:
-        raise ValueError(f"{mask_var!r} not found in {path} (available: {list(ds.data_vars)})")
-    return ds[data_var], ds[mask_var].astype(bool)
+    return ds, ds[data_var]
+
+
+def derive_mask(data: xr.DataArray, ds: xr.Dataset, mask_var: str, year: int, logger) -> xr.DataArray:
+    """Validity mask for one year's slice of a grid-step output.
+
+    The `grid` step (`SpatialProcessor` in `src/data/common/raster/spatial.py`)
+    does not currently emit a separate boolean validity variable -- invalid
+    cells are nodata-filled within the data variable itself. Prefer an
+    explicit `mask_var`, if the caller named one and it's actually present
+    (keeps this working for any future/other source that does emit a real
+    mask); otherwise derive from `data`'s own `_FillValue`/`nodata` attribute,
+    falling back to NaN for float arrays with neither.
+    """
+    if mask_var and mask_var in ds:
+        mask_da = ds[mask_var]
+        if "time" in mask_da.dims or "year" in mask_da.dims:
+            mask_da = _select_year(mask_da, year, logger)
+        logger.info("Using explicit mask variable %r", mask_var)
+        return mask_da.astype(bool)
+
+    fill_value = data.attrs.get("_FillValue", data.attrs.get("nodata"))
+    if fill_value is not None:
+        logger.info("Deriving mask from %s's _FillValue/nodata attr = %r", data.name, fill_value)
+        if isinstance(fill_value, float) and np.isnan(fill_value):
+            return ~np.isnan(data)
+        return data != fill_value
+
+    if np.issubdtype(data.dtype, np.floating):
+        logger.warning(
+            "No mask variable and no _FillValue/nodata attr on %s -- falling back to a NaN-based "
+            "mask; verify this actually matches the store's nodata convention before trusting the "
+            "result.",
+            data.name,
+        )
+        return ~np.isnan(data)
+
+    logger.warning(
+        "No mask variable, no _FillValue/nodata attr, and %s is not a float dtype -- cannot "
+        "determine validity from the data alone; treating every cell as valid. Pass --mask-var "
+        "pointing at a real variable if this is wrong.",
+        data.name,
+    )
+    return xr.ones_like(data, dtype=bool)
 
 
 def _select_year(da: xr.DataArray, year: int, logger) -> xr.DataArray:
@@ -273,8 +332,9 @@ def main() -> int:
     )
     logger.info("Kernel registry: %d bands x %d radii", registry.n_bands, len(args.ladder_km))
 
+    real_ds = None
     if args.variable_zarr:
-        variable_full, mask_full = load_real_field(args.variable_zarr, args.data_var, args.mask_var, logger)
+        real_ds, variable_full = load_real_field(args.variable_zarr, args.data_var, logger)
     else:
         variable_full, mask_full = build_synthetic_field(geobox, logger)
 
@@ -290,8 +350,12 @@ def main() -> int:
 
     all_results = []
     for year in args.years:
-        variable_year = _select_year(variable_full, year, logger) if args.variable_zarr else variable_full
-        mask_year = _select_year(mask_full, year, logger) if args.variable_zarr and "time" in mask_full.dims or "year" in mask_full.dims else mask_full
+        if args.variable_zarr:
+            variable_year = _select_year(variable_full, year, logger)
+            mask_year = derive_mask(variable_year, real_ds, args.mask_var, year, logger)
+        else:
+            variable_year = variable_full
+            mask_year = mask_full
 
         for row, col in tile_indices:
             tile_gbox = tiles[row, col]

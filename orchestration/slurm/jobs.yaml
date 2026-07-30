@@ -1,73 +1,86 @@
 # Parameter table for orchestration/slurm/generate_slurm_scripts.py.
 #
-# One entry per "preprocess" family SLURM script. To add/change a job, edit
-# here and regenerate:
+# docs/design/09-integrated-pipeline.md §9: `stage`/`subsource` are retired
+# in favour of `step` (fetch|prepare|grid, matching the new `pipeline run`
+# CLI) and per-source ids (the misc split gives osm/gadm/country_classifications
+# their own entries instead of `source: misc, subsource: ...`). `host: egress`
+# (default `slurm`) folds the previously-hand-maintained
+# orchestration/scripts/modis-ingest-annual.sh into this generator -- MODIS's
+# PREPARE step needs outbound internet egress to Planetary Computer, which
+# scicore's SLURM compute nodes may not have, so it runs wherever that access
+# exists and pushes results via `transfer_after`.
+#
+# To add/change a job, edit here and regenerate:
 #   python orchestration/slurm/generate_slurm_scripts.py
 # To check for drift (e.g. a generated .sh got hand-edited) without writing:
 #   python orchestration/slurm/generate_slurm_scripts.py --check
 #
 # Resource fields (time/qos/partition/cpus/mem/mem_fraction) are transcribed
 # from each script's prior committed value -- they encode real per-source
-# tuning (e.g. glass_modis's 7-day annual job, berman_mining's bigmem/30min
+# tuning (e.g. glass_modis's 7-day prepare job, berman_mining's bigmem/30min
 # job) and were preserved exactly, not guessed.
 #
+# FETCH steps are deliberately not covered here -- no download-family SLURM
+# script has ever existed in this repo (fetch/download runs manually), and
+# this refactor does not introduce one.
+#
 # Scripts NOT covered here (left as hand-maintained, standalone files):
-# assemble_create.sh, assemble_update.sh, demean_modis.sh, analysis.sh,
-# compress.sh, rechunk-zarr.sh, validate-backbone-subset.sh,
-# modis-preprocess-spatial.sh (new MODIS-ingest work, still settling --
-# see docs/design/08-hpc-transfer.md).
+# assemble_create.sh, assemble_update.sh, analysis.sh, compress.sh,
+# rechunk-zarr.sh, validate-backbone-subset.sh.
+# demean_modis.sh is dead (docs/design/04-ingest.md §6's `assemble demean`
+# finding) and removed in migration step 10's cutover, not generated here.
 
 jobs:
-  - name: acag-preprocess-annual
+  - name: acag-prepare
     log_key: acag
     source: acag
-    stage: annual
+    step: prepare
     time: "0-06:00:00"
     qos: 6hours
     cpus: 4
     mem: 128G
     mem_fraction: 0.6
-    temp_dir_prefix: acag  # was "esacci_..." -- copy-paste artifact, fixed
+    temp_dir_prefix: acag
 
-  - name: acag-preprocess-spatial
+  - name: acag-grid
     log_key: acag
     source: acag
-    stage: spatial
+    step: grid
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
     mem: 256G
     mem_fraction: 0.6
-    temp_dir_prefix: acag  # was "esacci_..." -- copy-paste artifact, fixed
+    temp_dir_prefix: acag
 
-  - name: berman_mining-preprocess-spatial
+  - name: berman_mining-grid
     log_key: berman_mining
     source: berman_mining
-    stage: spatial
+    step: grid
     partition: bigmem
     time: "00:30:00"
     qos: 30min
     cpus: 8
     mem: 256G
     mem_fraction: 0.6
-    temp_dir_prefix: berman_mining  # was "glass_..." -- copy-paste artifact, fixed
+    temp_dir_prefix: berman_mining
 
-  - name: eog-viirs-preprocess-spatial
+  - name: eog-viirs-grid
     log_key: eog_viirs
     source: eog_viirs
-    stage: spatial
+    step: grid
     partition: scicore
     time: "06:00:00"
     qos: 6hours
     cpus: 8
     mem: 256G
     mem_fraction: 0.9
-    temp_dir_prefix: eog_viirs  # was "glass_..." -- copy-paste artifact, fixed
+    temp_dir_prefix: eog_viirs
 
-  - name: esacci-preprocess-annual
+  - name: esacci-prepare
     log_key: esacci
     source: esacci
-    stage: annual
+    step: prepare
     time: "1-00:00:00"
     qos: 1day
     cpus: 4
@@ -75,10 +88,10 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: esacci
 
-  - name: esacci-preprocess-spatial
+  - name: esacci-grid
     log_key: esacci
-    source: esacci  # was "--source acag" -- real bug, this job was preprocessing the wrong source. Fixed.
-    stage: spatial
+    source: esacci
+    step: grid
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
@@ -86,10 +99,10 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: esacci
 
-  - name: glass-avhrr-preprocess-annual
+  - name: glass-avhrr-prepare
     log_key: glass_avhrr
     source: glass_avhrr
-    stage: annual
+    step: prepare
     time: "3-00:00:00"
     qos: 1week
     cpus: 8
@@ -97,10 +110,10 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: glass_avhrr
 
-  - name: glass-avhrr-preprocess-spatial
+  - name: glass-avhrr-grid
     log_key: glass_avhrr
     source: glass_avhrr
-    stage: spatial
+    step: grid
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
@@ -108,10 +121,10 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: glass_avhrr
 
-  - name: glass-modis-preprocess-annual
+  - name: glass-modis-prepare
     log_key: glass_modis
     source: glass_modis
-    stage: annual
+    step: prepare
     time: "7-00:00:00"
     qos: 1week
     cpus: 8
@@ -119,10 +132,10 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: glass_modis
 
-  - name: glass-modis-preprocess-spatial
+  - name: glass-modis-grid
     log_key: glass_modis
     source: glass_modis
-    stage: spatial
+    step: grid
     partition: scicore
     time: "3-00:00:00"
     qos: 1week
@@ -130,52 +143,106 @@ jobs:
     mem: 128G
     mem_fraction: 0.6
     temp_dir_prefix: glass_modis
-    # prior version was missing --debug (present on every sibling spatial
-    # script) and had stray commented-out --time/--qos alternates left over
-    # from manual edits -- both cleaned up by generation.
 
-  - name: misc-gadm-preprocess-spatial
-    log_key: misc_gadm
-    source: misc
-    subsource: gadm
-    stage: spatial
+  - name: gadm-prepare
+    log_key: gadm
+    source: gadm
+    step: prepare
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 4
+    mem: 32G
+    mem_fraction: 0.9
+    temp_dir_prefix: gadm
+
+  - name: gadm-grid
+    log_key: gadm
+    source: gadm
+    step: grid
     partition: scicore
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
     mem: 64G
     mem_fraction: 0.9
-    temp_dir_prefix: misc_gadm  # was "glass_..." -- copy-paste artifact, fixed
-    # prior version had stray commented-out --time/--qos alternates, cleaned up.
+    temp_dir_prefix: gadm
 
-  - name: misc-osm-preprocess-spatial
-    log_key: misc_osm
-    source: misc
-    subsource: osm
-    stage: spatial
+  - name: osm-prepare
+    log_key: osm
+    source: osm
+    step: prepare
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 4
+    mem: 32G
+    mem_fraction: 0.9
+    temp_dir_prefix: osm
+
+  - name: osm-grid
+    log_key: osm
+    source: osm
+    step: grid
     partition: scicore
     time: "00:30:00"
     qos: 30min
     cpus: 8
     mem: 64G
     mem_fraction: 0.9
-    temp_dir_prefix: misc_osm  # was "glass_..." -- copy-paste artifact, fixed
+    temp_dir_prefix: osm
 
-  - name: ntl_harm-preprocess-spatial
+  - name: country_classifications-prepare
+    log_key: country_classifications
+    source: country_classifications
+    step: prepare
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 2
+    mem: 16G
+    mem_fraction: 0.9
+    temp_dir_prefix: country_classifications
+
+  - name: country_classifications-grid
+    log_key: country_classifications
+    source: country_classifications
+    step: grid
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 4
+    mem: 32G
+    mem_fraction: 0.9
+    temp_dir_prefix: country_classifications
+
+  - name: ntl_harm-grid
     log_key: ntl_harm
     source: ntl_harm
-    stage: spatial
+    step: grid
     time: "06:00:00"
     qos: 6hours
     cpus: 8
     mem: 256G
     mem_fraction: 0.6
-    temp_dir_prefix: ntl_harm  # was "glass_..." -- copy-paste artifact, fixed
+    temp_dir_prefix: ntl_harm
 
-  - name: snl_mining-preprocess-spatial
+  - name: snl_mining-prepare
     log_key: snl_mining
     source: snl_mining
-    stage: spatial
+    step: prepare
+    partition: scicore
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.6
+    temp_dir_prefix: snl_mining
+
+  - name: snl_mining-grid
+    log_key: snl_mining
+    source: snl_mining
+    step: grid
     partition: scicore
     time: "1-00:00:00"
     qos: 1day
@@ -185,25 +252,43 @@ jobs:
     temp_dir_prefix: snl_mining
     extra_args: ["--override"]
 
+  - name: modis-prepare
+    log_key: modis
+    source: modis
+    step: prepare
+    host: egress
+    simple: true
+    transfer_after: prepare
+
+  - name: modis-grid
+    log_key: modis
+    source: modis
+    step: grid
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: modis
+
   # "simple" jobs: no dask-threads/memory-limit/temp-dir/dashboard-port,
   # matching their prior (lighter-weight) invocation exactly.
-  - name: eog-preprocess
-    log_key: viirs_annual
-    source: viirs_annual
-    stage: annual
+  - name: eog-prepare
+    log_key: eog_viirs
+    source: eog_viirs
+    step: prepare
     time: "06:00:00"
     qos: 6hours
     cpus: 8
     mem: 128G
     simple: true
 
-  - name: plad-preprocess
+  - name: plad-grid
     log_key: plad
     source: plad
-    stage: spatial
+    step: grid
     time: "06:00:00"
     qos: 6hours
     cpus: 8
     mem: 128G
     simple: true
-    extra_args: ["--admin-level 2"]
