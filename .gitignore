@@ -20,6 +20,7 @@ config.toml
 analysis.xlsx
 
 ._*
+/*.egg-info
 
 /log
 *.log
