@@ -196,8 +196,16 @@ EOF
 run_old() {
     local stage="$1"
     echo "$(date -Is): OLD  preprocess run --source $SOURCE --stage $stage --year $YEAR"
+    # Without an explicit --dask-threads, dask's LocalCluster auto-detects
+    # os.cpu_count() for the WHOLE NODE, not this job's --cpus-per-task
+    # allocation -- found by actually running this on scicore, where it
+    # spawned 28+ worker processes under a 4-cpu/32G job. Constrain it to
+    # match run_new()'s sizing so both codepaths run under the same
+    # resources and neither blows past what SBATCH actually reserved.
     "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source "$SOURCE" \
-        --stage "$stage" --year "$YEAR" --override
+        --stage "$stage" --year "$YEAR" --override \
+        --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
+        --temp-dir "${TEST_ROOT}/dask_tmp"
 }
 
 run_new() {
