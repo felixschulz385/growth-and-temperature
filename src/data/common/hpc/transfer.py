@@ -45,14 +45,28 @@ class TransferManifest:
     def __init__(self, manifest_path: str):
         self.manifest_path = Path(manifest_path)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        self._df = None  # lazily loaded, cached for this instance's lifetime
 
     def _load(self):
+        """Load the manifest, cached after the first call.
+
+        `transfer_units` calls `status_of` then `record` once per unit in a
+        loop -- without this cache, each of those was a full parquet read of
+        the whole (monotonically growing) manifest, i.e. two full reads per
+        unit on top of `record`'s own write. `record` still keeps every
+        update in memory *and* persists it below, so a crash mid-batch loses
+        nothing already recorded; only the redundant re-reads are removed.
+        """
         import pandas as pd
-        if self.manifest_path.exists():
-            return pd.read_parquet(self.manifest_path)
-        return pd.DataFrame(columns=self._COLUMNS)
+        if self._df is None:
+            if self.manifest_path.exists():
+                self._df = pd.read_parquet(self.manifest_path)
+            else:
+                self._df = pd.DataFrame(columns=self._COLUMNS)
+        return self._df
 
     def _save(self, df) -> None:
+        self._df = df
         df.to_parquet(self.manifest_path, index=False)
 
     def status_of(self, unit_id: str) -> Optional[str]:
@@ -110,6 +124,13 @@ def _verify_remote(client: HPCClient, remote_path: str, sample_size: int = 5) ->
     approach — full checksum verification of every chunk is unnecessary given
     rsync's own transfer integrity guarantees; sampling catches a failed or
     partial extraction, the actual failure mode worth guarding against here.
+
+    Checks the whole sample in one remote round trip via
+    `client.check_files_exist` rather than one `client.check_file_exists`
+    call per file — each of those is a separate `execute_command`, i.e. a
+    fresh SSH subprocess with its own handshake, so checking `sample_size`
+    files individually paid `sample_size` handshakes for no benefit over one
+    batched shell command.
     """
     full_remote_path = _full_remote_path(client, remote_path)
     success, stdout, _ = client.execute_command(
@@ -118,7 +139,11 @@ def _verify_remote(client: HPCClient, remote_path: str, sample_size: int = 5) ->
     if not success or not stdout.strip():
         return False
     sample_files = [line for line in stdout.strip().splitlines() if line]
-    return bool(sample_files) and all(client.check_file_exists(f) for f in sample_files)
+    if not sample_files:
+        return False
+
+    results = client.check_files_exist(sample_files)
+    return all(results.values())
 
 
 def _transfer_file_unit(

@@ -10,6 +10,7 @@ import logging
 
 from src.cli.config import load_config_with_env_vars
 from src.cli.common import setup_logging
+from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +29,7 @@ def _collect_dask_overrides(args: argparse.Namespace) -> dict:
         logger.info(f"Overriding dask_memory_limit from CLI: {args.dask_memory_limit}")
     if getattr(args, "temp_dir", None) is not None:
         overrides["temp_dir"] = args.temp_dir
-    if getattr(args, "dashboard_port", 8787) != 8787:
+    if getattr(args, "dashboard_port", DEFAULT_DASHBOARD_PORT) != DEFAULT_DASHBOARD_PORT:
         overrides["dashboard_port"] = args.dashboard_port
     if getattr(args, "local_directory", None) is not None:
         overrides["local_directory"] = args.local_directory

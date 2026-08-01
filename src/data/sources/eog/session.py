@@ -23,89 +23,6 @@ logger = logging.getLogger(__name__)
 class _SessionMixin:
     """Selenium session/auth lifecycle for EOG."""
 
-    def get_selenium_session(self):
-        """
-        Returns a selenium session (webdriver).
-        Creates it if it does not exist.
-
-        Note: The workflow context will be responsible for maintaining
-        the persistent session, this method is just a factory.
-        """
-        logger.info("Creating new Selenium WebDriver for EOG data source")
-
-        try:
-            # Create a shared temporary directory for all downloads
-            # Use a consistent name so all sessions can share the same directory
-            download_dir = tempfile.mkdtemp(prefix="eog_shared_downloads_")
-            logger.info(f"Created shared download directory: {download_dir}")
-
-            # Configure Chrome options
-            chrome_options = Options()
-
-            # Set download directory
-            prefs = {
-                "download.default_directory": download_dir,
-                "download.prompt_for_download": False,
-                "download.directory_upgrade": True,
-                "safebrowsing.enabled": False
-            }
-            chrome_options.add_experimental_option("prefs", prefs)
-
-            # Headless mode for server environments
-            chrome_options.add_argument("--headless")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            chrome_options.add_argument('--ignore-ssl-errors=yes')
-            chrome_options.add_argument('--ignore-certificate-errors')
-
-            # Initialize the WebDriver
-            if WEBDRIVER_MANAGER_AVAILABLE:
-                driver = webdriver.Chrome(
-                    service=Service(ChromeDriverManager().install()),
-                    options=chrome_options
-                )
-            else:
-                driver = webdriver.Chrome(options=chrome_options)
-
-            # Set page load timeout
-            driver.set_page_load_timeout(120)
-
-            # Store download directory and login state as attributes on the driver
-            driver._eog_download_dir = download_dir
-            driver._eog_is_logged_in = False
-            driver._eog_username = self._username
-            driver._eog_password = self._password
-
-            logger.info("Selenium WebDriver initialized successfully")
-            return driver
-
-        except Exception as e:
-            logger.error(f"Failed to initialize Selenium WebDriver: {e}")
-            raise
-
-    def close_selenium_session(self, session):
-        """
-        Closes the selenium session.
-
-        Args:
-            session: The selenium session to close
-        """
-        if session is not None:
-            try:
-                logger.info("Closing Selenium WebDriver for EOG data source")
-
-                # Clean up download directory if it exists
-                if hasattr(session, '_eog_download_dir') and os.path.exists(session._eog_download_dir):
-                    try:
-                        shutil.rmtree(session._eog_download_dir)
-                        logger.info(f"Removed temporary download directory: {session._eog_download_dir}")
-                    except Exception as e:
-                        logger.warning(f"Error removing temporary directory: {e}")
-
-                session.quit()
-            except Exception as e:
-                logger.warning(f"Error closing Selenium session: {e}")
-
     def _check_and_handle_login(self, driver=None):
         """
         Check if login form is present and handle login if needed.
@@ -254,18 +171,6 @@ class _SessionMixin:
                 logger.info("Selenium WebDriver closed")
             except Exception as e:
                 logger.warning(f"Error closing Selenium WebDriver: {e}")
-            finally:
-                self._driver = None
-                self._is_logged_in = False
-
-        # Clean up temporary download directory
-        if self._download_dir and os.path.exists(self._download_dir):
-            try:
-                shutil.rmtree(self._download_dir)
-                logger.info(f"Removed temporary download directory: {self._download_dir}")
-                self._download_dir = None
-            except Exception as e:
-                logger.warning(f"Error removing temporary directory: {e}")
             finally:
                 self._driver = None
                 self._is_logged_in = False

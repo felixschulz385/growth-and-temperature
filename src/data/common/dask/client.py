@@ -9,8 +9,15 @@ import time
 
 logger = logging.getLogger(__name__)
 
-def init_dask_client(threads=None, memory_limit=None, dashboard_port=8787, 
-                     temp_dir=None, worker_threads_per_cpu=2, 
+# Single source of truth for the default Dask dashboard port -- was
+# independently hardcoded as the literal 8787 in six other places
+# (src/data/pipeline/context.py, src/data/assemble/constants.py,
+# src/cli/pipeline/commands.py, src/cli/assemble/{commands,handlers}.py)
+# before being consolidated here.
+DEFAULT_DASHBOARD_PORT = 8787
+
+def init_dask_client(threads=None, memory_limit=None, dashboard_port=DEFAULT_DASHBOARD_PORT,
+                     temp_dir=None, worker_threads_per_cpu=2,
                      worker_fraction=0.5, return_cluster=False):
     """
     Initialize a Dask client for distributed processing with optimized memory management.

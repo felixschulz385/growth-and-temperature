@@ -370,34 +370,39 @@ class AsyncHPCDownloader:
             return False
 
     async def _verify_extracted_files(self, downloaded_files: List[Dict[str, Any]], remote_extract_dir: str) -> bool:
-        """Verify that files were successfully extracted on HPC."""
+        """Verify that files were successfully extracted on HPC.
+
+        Checks the whole sample in one remote round trip via
+        `HPCClient.check_files_exist` rather than one `check_file_exists`
+        call (a separate SSH subprocess each) per sampled file.
+        """
         try:
             loop = asyncio.get_event_loop()
-            
+
             # Sample a few files to verify extraction
             files_to_check = downloaded_files[:min(5, len(downloaded_files))]
-            
-            for file_data in files_to_check:
-                relative_path = file_data['file_info']['relative_path']
-                # Build the remote file path - HPCClient will resolve with base_path
-                remote_file_path = f"{remote_extract_dir}/{relative_path}"
-                
-                logger.debug(f"Verifying extracted file: {remote_file_path}")
-                
-                # Check if file exists on HPC
-                exists = await loop.run_in_executor(
-                    None,
-                    self.hpc_client.check_file_exists,
-                    remote_file_path
-                )
-                
-                if not exists:
-                    logger.warning(f"File not found on HPC after extraction: {remote_file_path}")
-                    return False
-            
+            if not files_to_check:
+                return True
+
+            remote_paths = [
+                f"{remote_extract_dir}/{file_data['file_info']['relative_path']}"
+                for file_data in files_to_check
+            ]
+            logger.debug(f"Verifying extracted files: {remote_paths}")
+
+            results = await loop.run_in_executor(
+                None, self.hpc_client.check_files_exist, remote_paths
+            )
+
+            missing = [path for path, exists in results.items() if not exists]
+            for path in missing:
+                logger.warning(f"File not found on HPC after extraction: {path}")
+            if missing:
+                return False
+
             logger.debug(f"Verified {len(files_to_check)} sample files on HPC")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error verifying extracted files: {e}")
             return False

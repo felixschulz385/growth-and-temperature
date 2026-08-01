@@ -18,7 +18,6 @@ import dataclasses
 import hashlib
 import logging
 import os
-import re
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -120,14 +119,7 @@ class AcagSource(DataSource):
             f"?rm=box_download_shared_file&shared_name={self.shared_name}&file_id=f_{file_id}"
         )
 
-    @staticmethod
-    def _extract_year(filename: str) -> Optional[int]:
-        for pattern in (r"[._\-](\d{4})[._\-]", r"(\d{4})"):
-            for match in re.finditer(pattern, filename):
-                year = int(match.group(1))
-                if 1990 <= year <= 2040:
-                    return year
-        return None
+    # _extract_year: inherited from DataSource (src/data/sources/base.py).
 
     def list_remote_files(self, entrypoint: Optional[dict] = None) -> List[Tuple[str, str]]:
         results = []
@@ -464,16 +456,7 @@ class AcagSource(DataSource):
                     mark_complete(target.output_path)
                 return success
 
-    def _dask_client(self):
-        from src.data.common.dask.client import DaskClientContextManager
-
-        return DaskClientContextManager(
-            threads=self.ctx.dask_threads,
-            memory_limit=self.ctx.dask_memory_limit,
-            dashboard_port=self.ctx.dashboard_port,
-            temp_dir=os.path.join(self.temp_dir, "dask_workspace"),
-        )
-
+    # _dask_client: inherited from DataSource (src/data/sources/base.py).
 
 registry.register(
     AcagSource.ID,

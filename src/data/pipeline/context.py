@@ -15,6 +15,7 @@ import threading
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
+from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
 from src.data.sources.layout import EASE_GRID_ID, LEGACY_GRID_ID
 
 logger = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ class PipelineContext:
         grid_id: str = LEGACY_GRID_ID,
         dask_threads: Optional[int] = None,
         dask_memory_limit: Optional[str] = None,
-        dashboard_port: int = 8787,
+        dashboard_port: int = DEFAULT_DASHBOARD_PORT,
         staging_dir: Optional[str] = None,
     ):
         self.data_root = data_root

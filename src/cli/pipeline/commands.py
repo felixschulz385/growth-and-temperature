@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 
 from src.cli.common import add_config_arg, add_logging_args, add_source_arg
+from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
 
 
 def _add_step_arg(parser: argparse.ArgumentParser, *, required: bool) -> None:
@@ -99,7 +100,10 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     run_p.add_argument("--dask-threads", type=int, help="Number of Dask threads")
     run_p.add_argument("--dask-memory-limit", help='Dask memory limit per worker (e.g. "4GB")')
     run_p.add_argument("--temp-dir", help="Temporary/spill directory for Dask workers")
-    run_p.add_argument("--dashboard-port", type=int, default=8787, help="Dask dashboard port (default: 8787)")
+    run_p.add_argument(
+        "--dashboard-port", type=int, default=DEFAULT_DASHBOARD_PORT,
+        help=f"Dask dashboard port (default: {DEFAULT_DASHBOARD_PORT})",
+    )
     run_p.set_defaults(func=handle_run)
 
     # ── transfer ───────────────────────────────────────────────────────────

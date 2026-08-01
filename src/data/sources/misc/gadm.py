@@ -241,13 +241,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         mark_complete(target.output_path)
         return True
 
-    def _dask_client(self):
-        from src.data.common.dask.client import DaskClientContextManager
-
-        return DaskClientContextManager(
-            threads=self.ctx.dask_threads, memory_limit=self.ctx.dask_memory_limit,
-            dashboard_port=self.ctx.dashboard_port, temp_dir=os.path.join(self.temp_dir, "dask_workspace"),
-        )
+    # _dask_client: inherited from DataSource (src/data/sources/base.py).
 
     @staticmethod
     def _create_empty_gadm_zarr(output_path: str, geobox, include_subdivisions: bool) -> bool:

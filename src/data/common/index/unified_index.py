@@ -799,130 +799,90 @@ class UnifiedDataIndex:
             logger.error(f"Error getting download stats: {e}")
             return {'total': 0, 'completed': 0, 'pending': 0, 'failed': 0, 'downloading': 0}
     
-    def update_file_status(self, file_hash: str, status: str, file_size: int = None):
-        """
-        Update file status using efficient Parquet operations.
-        
-        Args:
-            file_hash: Hash of the file to update
-            status: New download status
-            file_size: Optional file size to update
-        """
-        try:
-            if not self.parquet_file.exists():
-                logger.warning("Cannot update status - parquet index does not exist")
-                return
-            
-            if not PANDAS_AVAILABLE:
-                logger.warning("Pandas not available - cannot update file status")
-                return
-            
-            # Read the full index
-            df = pd.read_parquet(self.parquet_file)
-            
-            # Update the specific file
-            mask = df['file_hash'] == file_hash
-            if mask.any():
-                # Update download status
-                df.loc[mask, 'download_status'] = status
-                df.loc[mask, 'last_updated'] = pd.Timestamp.now()
-                
-                # Update status category for faster future queries
-                if 'status_category' in df.columns:
-                    if status == 'DOWNLOADING':
-                        df.loc[mask, 'status_category'] = 'downloading'
-                    elif status.startswith('FAILED:'):
-                        df.loc[mask, 'status_category'] = 'failed'
-                    elif status == 'completed':
-                        df.loc[mask, 'status_category'] = 'completed'
-                
-                # Update file size if provided
-                if file_size is not None:
-                    df.loc[mask, 'file_size'] = file_size
-                
-                # Write back to parquet
-                df.to_parquet(self.parquet_file, index=False)
-                logger.debug(f"Updated status for {file_hash} to {status}")
-            else:
-                logger.warning(f"File hash {file_hash} not found in index")
-                
-        except Exception as e:
-            logger.error(f"Error updating file status: {e}")
-
     def update_file_statuses_batch(self, updates: List[Dict[str, Any]]):
         """
-        Vectorized batch update of file statuses for maximum efficiency.
-        
+        Vectorized batch update of file statuses.
+
         Args:
             updates: List of update dictionaries with keys:
                     - file_hash: str (required)
                     - status: str (required)
                     - file_size: int (optional)
+
+        Merges *updates* against the index by ``file_hash`` in one
+        `DataFrame.merge` pass. The previous version built an "update"
+        DataFrame for this same purpose but then applied it one row at a
+        time via `.loc[mask, ...]` inside a Python `for` loop -- exactly the
+        per-row cost a merge avoids, despite being labeled "vectorized".
         """
         try:
             if not updates:
                 return
-                
+
             if not self.parquet_file.exists():
                 logger.warning("Cannot update statuses - parquet index does not exist")
                 return
-            
+
             if not PANDAS_AVAILABLE:
                 logger.warning("Pandas not available - cannot update file statuses")
                 return
-            
+
             logger.debug(f"Batch updating {len(updates)} file statuses")
-            
-            # Read the full index
+
             df = pd.read_parquet(self.parquet_file)
-            
-            # Create update dataframe for efficient vectorized operations
             update_df = pd.DataFrame(updates)
-            
-            # Ensure file_hash is in the update dataframe
+
             if 'file_hash' not in update_df.columns:
                 logger.error("file_hash column missing from updates")
                 return
-            
-            # Merge updates with existing data using merge instead of manual indexing
-            # This avoids the broadcasting issue
-            df_before = len(df)
-            
-            # Create a copy for updates
-            df_updated = df.copy()
-            
-            # For each update, find matching rows and update them
-            for update in updates:
-                file_hash = update['file_hash']
-                status = update['status']
-                file_size = update.get('file_size')
-                
-                # Find matching rows
-                mask = df_updated['file_hash'] == file_hash
-                
-                if mask.any():
-                    # Update download status
-                    df_updated.loc[mask, 'download_status'] = status
-                    df_updated.loc[mask, 'last_updated'] = pd.Timestamp.now().floor('ms')
-                    
-                    # Update status category for faster future queries
-                    if 'status_category' in df_updated.columns:
-                        if status == 'DOWNLOADING':
-                            df_updated.loc[mask, 'status_category'] = 'downloading'
-                        elif status.startswith('FAILED:'):
-                            df_updated.loc[mask, 'status_category'] = 'failed'
-                        elif status == 'completed':
-                            df_updated.loc[mask, 'status_category'] = 'completed'
-                    
-                    # Update file size if provided
-                    if file_size is not None:
-                        df_updated.loc[mask, 'file_size'] = file_size
-            
-            # Write back to parquet
-            df_updated.to_parquet(self.parquet_file, index=False)
-            
+
+            # Last update wins for a given file_hash, matching the previous
+            # loop's overwrite-in-list-order behavior.
+            update_df = update_df.drop_duplicates(subset='file_hash', keep='last')
+            if 'file_size' not in update_df.columns:
+                update_df['file_size'] = pd.NA
+
+            def _status_category(status: str) -> Optional[str]:
+                if status == 'DOWNLOADING':
+                    return 'downloading'
+                if status == 'completed':
+                    return 'completed'
+                if status.startswith('FAILED:'):
+                    return 'failed'
+                return None
+
+            update_df = update_df.rename(columns={
+                'status': '_new_status', 'file_size': '_new_file_size',
+            })
+            update_df['_new_status_category'] = update_df['_new_status'].map(_status_category)
+
+            merged = df.merge(
+                update_df[['file_hash', '_new_status', '_new_status_category', '_new_file_size']],
+                on='file_hash', how='left',
+            )
+
+            matched = merged['_new_status'].notna()
+            if not matched.any():
+                logger.debug("No matching file_hash rows found for batch update")
+                return
+
+            now = pd.Timestamp.now().floor('ms')
+            merged.loc[matched, 'download_status'] = merged.loc[matched, '_new_status']
+            merged.loc[matched, 'last_updated'] = now
+
+            if 'status_category' in df.columns:
+                has_category = matched & merged['_new_status_category'].notna()
+                merged.loc[has_category, 'status_category'] = merged.loc[has_category, '_new_status_category']
+
+            has_size = matched & merged['_new_file_size'].notna()
+            if has_size.any():
+                merged.loc[has_size, 'file_size'] = merged.loc[has_size, '_new_file_size']
+
+            df = merged.drop(columns=['_new_status', '_new_status_category', '_new_file_size'])
+            df.to_parquet(self.parquet_file, index=False)
+
             logger.debug(f"Successfully batch updated file statuses")
-            
+
         except Exception as e:
             logger.error(f"Error in batch file status update: {e}")
             import traceback

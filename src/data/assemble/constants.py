@@ -4,6 +4,8 @@ Constants used throughout the assembly module.
 Centralizes magic numbers and configuration defaults for maintainability.
 """
 
+from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
+
 # Default coordinate reference system
 DEFAULT_CRS = 4326
 
@@ -17,8 +19,10 @@ DEFAULT_COMPRESSION = 'snappy'
 # Default resampling method for datasets
 DEFAULT_RESAMPLING_METHOD = 'mode'
 
-# Default Dask configuration
-DEFAULT_DASK_DASHBOARD_PORT = 8787
+# Default Dask configuration -- kept under this module's own name since
+# src/data/assemble/config.py already imports it as such; the value itself
+# comes from the single shared constant, not redefined here.
+DEFAULT_DASK_DASHBOARD_PORT = DEFAULT_DASHBOARD_PORT
 DEFAULT_WORKER_THREADS_PER_CPU = 2
 DEFAULT_WORKER_FRACTION = 0.5
 

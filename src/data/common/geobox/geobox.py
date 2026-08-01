@@ -210,9 +210,5 @@ def _create_geobox_from_viirs(hpc_root: str):
     # Open the file and extract the geobox
     viirs_data = rxr.open_rasterio(viirs_to_open, chunks="auto")
     geobox = viirs_data.odc.geobox
-    
-    return geobox
-    viirs_data = rxr.open_rasterio(viirs_to_open, chunks="auto")
-    geobox = viirs_data.odc.geobox
-    
+
     return geobox

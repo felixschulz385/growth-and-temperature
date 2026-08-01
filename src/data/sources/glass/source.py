@@ -358,7 +358,11 @@ class GlassSource(_CrawlerMixin, DataSource):
                 )
         return targets
 
-    def _initialize_dask_client(self):
+    def _dask_client(self):
+        """Overrides `DataSource._dask_client`: GLASS supports a per-source
+        config override of the dashboard port (`self.dashboard_port`, set in
+        `__init__` from `cfg.raw` falling back to `ctx.dashboard_port`), so
+        it can't use the shared base implementation as-is."""
         from src.data.common.dask.client import DaskClientContextManager
 
         return DaskClientContextManager(
@@ -371,7 +375,7 @@ class GlassSource(_CrawlerMixin, DataSource):
     def _process_file_group_hpc(self, files: List[str], year: int, output_path: str, grid_cell: Optional[str] = None) -> bool:
         """Ported verbatim from GlassPreprocessor._process_file_group_hpc."""
         try:
-            with self._initialize_dask_client() as client:
+            with self._dask_client() as client:
                 if client is None:
                     logger.warning("Failed to initialize Dask client, proceeding without it")
                 else:
@@ -606,7 +610,7 @@ class GlassSource(_CrawlerMixin, DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         try:
-            with self._initialize_dask_client() as client:
+            with self._dask_client() as client:
                 dashboard_link = getattr(client, "dashboard_link", None)
                 if dashboard_link:
                     logger.info("Created Dask client for spatial processing: %s", dashboard_link)

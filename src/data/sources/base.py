@@ -139,3 +139,44 @@ class DataSource(abc.ABC):
     def close(self) -> None:
         """Release sessions/dask clients/etc. Default: nothing to release."""
         return None
+
+    @staticmethod
+    def _extract_year(filename: str) -> int | None:
+        """Generic delimiter-preferring 4-digit-year filename parser.
+
+        Was duplicated byte-for-byte in acag/esacci before being factored out
+        here. ntl_harm's `_extract_year_from_filename` and eog's
+        `_extract_year_from_path` are deliberately NOT merged into this: they
+        use different regex sets and year bounds (real behavioral
+        differences, not copy-paste), so unifying them would risk silently
+        changing what they match rather than removing duplication.
+        """
+        import re
+
+        for pattern in (r"[._\-](\d{4})[._\-]", r"(\d{4})"):
+            for match in re.finditer(pattern, filename):
+                year = int(match.group(1))
+                if 1990 <= year <= 2040:
+                    return year
+        return None
+
+    def _dask_client(self):
+        """Shared Dask client factory for raster/tile-processing sources.
+
+        Was duplicated byte-for-byte across acag/esacci/ntl_harm/gadm/modis/
+        eog before being factored out here. Requires `self.temp_dir` (set by
+        every subclass's own `__init__`, via the shared
+        `cfg.temp_dir or tempfile.mkdtemp(...)` pattern) and reads
+        `self.ctx.dask_threads`/`dask_memory_limit`/`dashboard_port`.
+        Sources needing different client construction (e.g. GLASS, which
+        supports a per-source config override of the dashboard port) should
+        override this method rather than special-case it here.
+        """
+        from src.data.common.dask.client import DaskClientContextManager
+
+        return DaskClientContextManager(
+            threads=self.ctx.dask_threads,
+            memory_limit=self.ctx.dask_memory_limit,
+            dashboard_port=self.ctx.dashboard_port,
+            temp_dir=os.path.join(self.temp_dir, "dask_workspace"),
+        )

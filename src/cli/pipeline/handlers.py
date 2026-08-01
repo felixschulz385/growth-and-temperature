@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 
 from src.cli.common import setup_logging
@@ -60,8 +61,6 @@ def _build(args: argparse.Namespace):
     spec = registry.resolve(args.source)
     cfg = get_source_config(config, spec.id)
     if getattr(args, "temp_dir", None):
-        import dataclasses
-
         cfg = dataclasses.replace(cfg, temp_dir=args.temp_dir)
     _check_requires(spec, ctx, config)
     source = registry.create(args.source, ctx, cfg)
@@ -129,7 +128,7 @@ def handle_run(args: argparse.Namespace) -> None:
     setup_logging(args.log_level, debug=args.debug)
     source, _ = _build(args)
     if args.override:
-        source.cfg = type(source.cfg)(**{**source.cfg.__dict__, "override": True})
+        source.cfg = dataclasses.replace(source.cfg, override=True)
     step = PipelineStep(args.step)
     selection = _selection_from_args(args)
 
@@ -167,8 +166,8 @@ def handle_transfer(args: argparse.Namespace) -> None:
     if args.direction == "pull":
         raise NotImplementedError(
             "--direction pull is not implemented; included in the CLI for interface "
-            "symmetry with HPCIndexSynchronizer's push/pull shape, not because any "
-            "current source needs it (docs/design/08-hpc-transfer.md §4)."
+            "symmetry with the push direction, not because any current source needs "
+            "it (docs/design/08-hpc-transfer.md §4)."
         )
 
     source, _ = _build(args)

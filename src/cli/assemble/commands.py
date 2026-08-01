@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 
 from src.cli.common import add_logging_args
+from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
 
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
@@ -93,8 +94,8 @@ def _add_assemble_common(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--dashboard-port",
         type=int,
-        default=8787,
-        help="Dask dashboard port (default: 8787)",
+        default=DEFAULT_DASHBOARD_PORT,
+        help=f"Dask dashboard port (default: {DEFAULT_DASHBOARD_PORT})",
     )
     parser.add_argument(
         "--local-directory",
