@@ -62,11 +62,28 @@
 #      "Parquet index not found: .../parquet_eog_viirs.parquet" the first
 #      time, on ANY raster source, not just acag. On scicore this pickle
 #      almost certainly already exists under $DATA_NOBACKUP (every raster
-#      GRID job ever run there created or reused it) -- this script copies it
-#      in below; if it's missing there too, generate it once for real via
-#      `pipeline run --source eog_viirs --step grid` before this script, or
-#      see this file's git history for how the pilot run below seeded a
-#      placeholder GeoBox to test the acag-specific logic in isolation.
+#      GRID job ever run there created or reused it); if it's missing there
+#      too, generate it once for real via `pipeline run --source eog_viirs
+#      --step grid` before this script.
+#
+#      This script does NOT copy that pickle in verbatim -- it loads it and
+#      crops it to a small WINDOW_PX x WINDOW_PX window (centered) before
+#      pickling the result into the scratch root instead. `GeoBox` supports
+#      plain numpy-style slicing (`gbox[y0:y1, x0:x1]`) and the result keeps
+#      the same CRS/resolution/affine alignment, just fewer pixels -- so
+#      `get_or_create_geobox()` (which only needs `.shape`/`.affine`/`.crs`
+#      off whatever it unpickles) reprojects onto a tiny grid instead of the
+#      full ~86,401x33,601px global one, with no changes to SpatialProcessor
+#      or either acag.py needed. This matters because, post-migration,
+#      SpatialProcessor (src/data/common/raster/spatial.py) is now the same
+#      function under both OLD and NEW code paths -- this step was never
+#      testing whether reprojection is *correct* at global scale (unchanged
+#      either way), only whether OLD's and NEW's surrounding plumbing calls
+#      it equivalently, which a small window proves just as well. Confirmed
+#      by running the full-grid version first: it took 50+ minutes per code
+#      path and repeatedly hit dask "Unmanaged memory use is high"/worker-
+#      pausing warnings under this job's 2-workers-of-2-threads/12GiB sizing
+#      -- pure overhead the window eliminates, not a data-correctness signal.
 #
 # Also found while dry-running this locally (noted here so it isn't
 # mysterious if hit again): a from-scratch dask LocalCluster with the default
@@ -77,15 +94,20 @@
 # fails with ENOBUFS/worker-churn, rerun with a smaller --dask-threads.
 #
 # Usage:
-#   sbatch orchestration/slurm/validate-hard-gate-acag.sh [YEAR]
+#   sbatch orchestration/slurm/validate-hard-gate-acag.sh [YEAR] [WINDOW_PX]
 #   (YEAR defaults to 2020 -- picked because it matches ACAG's "GL"-prefixed
-#   naming convention; 2000's entry is anomalously "EU"-tagged, avoid it)
+#   naming convention; 2000's entry is anomalously "EU"-tagged, avoid it.
+#   WINDOW_PX defaults to 300 -- centered, so ~150px in from the grid's
+#   midpoint in every direction; large enough that ACAG's global PM2.5
+#   coverage gives compare_step_output.py real numeric variation to check,
+#   small enough that the whole run finishes in well under a minute.)
 
 set -euo pipefail
 
 PROJECT_ROOT="/scicore/home/meiera/schulz0022/projects/growth-and-temperature"
 PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python"
 YEAR="${1:-2020}"
+WINDOW_PX="${2:-300}"
 SOURCE="acag"
 
 cd "$PROJECT_ROOT"
@@ -105,7 +127,7 @@ RAW_REL="GL/Annual/V6GL02.04.CNNPM25.GL.${YEAR}01-${YEAR}12.nc"
 PROD_RAW="${DATA_NOBACKUP}/acag/pm25/raw/${RAW_REL}"
 TEST_RAW="${TEST_ROOT}/acag/pm25/raw/${RAW_REL}"
 
-echo "$(date -Is): Hard-gate pilot -- source=$SOURCE year=$YEAR"
+echo "$(date -Is): Hard-gate pilot -- source=$SOURCE year=$YEAR window_px=$WINDOW_PX"
 echo "Job ID:     $SLURM_JOB_ID"
 echo "Test root:  $TEST_ROOT  (isolated -- production data_nobackup is never written to)"
 echo "Log file:   $LOG_FILE"
@@ -157,19 +179,36 @@ pd.DataFrame([{"relative_path": rel_path, "status_category": "completed"}]).to_p
 print(f"wrote index -> {out_path}")
 PYEOF
 
-# --- REQUIRED: seed the shared VIIRS-derived target geobox cache -----------
-# See the header comment's item 2 -- both old and new GRID code bootstrap
-# their reprojection target grid from this pickle (or, failing that, a real
-# local EOG VIIRS raster + its parquet index), and an empty scratch root has
-# neither. Copy production's already-created cache in; if production doesn't
-# have one either, this is not something this pilot can fix -- generate it
-# for real first (see header comment) and rerun.
+# --- REQUIRED: seed a CROPPED copy of the shared VIIRS-derived target
+# geobox cache -- see the header comment's item 2 for why cropping is safe
+# and why full-grid execution here was pure overhead, not a stronger check.
 PROD_GEOBOX="${DATA_NOBACKUP}/misc/processed/stage_1/misc/viirs_geobox.pkl"
 TEST_GEOBOX_DIR="${TEST_ROOT}/misc/processed/stage_1/misc"
 mkdir -p "$TEST_GEOBOX_DIR"
 if [ -f "$PROD_GEOBOX" ]; then
-    cp "$PROD_GEOBOX" "${TEST_GEOBOX_DIR}/viirs_geobox.pkl"
-    echo "$(date -Is): seeded target geobox cache from production"
+    "$PYTHON_BIN" - "$PROD_GEOBOX" "${TEST_GEOBOX_DIR}/viirs_geobox.pkl" "$WINDOW_PX" <<'PYEOF'
+import pickle
+import sys
+
+prod_path, test_path, window_px = sys.argv[1], sys.argv[2], int(sys.argv[3])
+
+with open(prod_path, "rb") as f:
+    full_geobox = pickle.load(f)
+
+ny, nx = full_geobox.shape
+if window_px > min(ny, nx):
+    raise ValueError(f"window_px={window_px} exceeds full geobox shape {full_geobox.shape}")
+
+cy, cx = ny // 2, nx // 2
+half = window_px // 2
+window = full_geobox[cy - half : cy + half, cx - half : cx + half]
+
+with open(test_path, "wb") as f:
+    pickle.dump(window, f)
+
+print(f"cropped target geobox: {full_geobox.shape} -> {window.shape} (window={window_px}px, centered)")
+PYEOF
+    echo "$(date -Is): seeded cropped target geobox cache from production"
 else
     echo "$(date -Is): ERROR -- no cached target geobox at $PROD_GEOBOX"
     echo "  and no EOG VIIRS raw file + index in this scratch root to build one from."
@@ -247,7 +286,7 @@ GRID_STATUS=0
     "${GRID_DIR}/acag_pm25_timeseries_reprojected.zarr" || GRID_STATUS=$?
 
 echo "=============================================================="
-echo "HARD-GATE PILOT RESULT -- source=$SOURCE year=$YEAR"
+echo "HARD-GATE PILOT RESULT -- source=$SOURCE year=$YEAR window_px=$WINDOW_PX"
 echo "  PREPARE (annual  vs prepare): $([ $PREPARE_STATUS -eq 0 ] && echo EQUIVALENT || echo NOT_EQUIVALENT)"
 echo "  GRID    (spatial vs grid):    $([ $GRID_STATUS -eq 0 ] && echo EQUIVALENT || echo NOT_EQUIVALENT)"
 echo "  Test root (not auto-deleted, inspect or clean up manually): $TEST_ROOT"
