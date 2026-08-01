@@ -40,22 +40,22 @@
 # touching country_classifications at all, not just before its own GRID
 # step.
 #
-# IMPORTANT, found by actually running this pilot, not assumed: OLD's PREPARE
+# CONFIRMED ON REAL SLURM, WAIVED, NOT A BUG IN THIS SCRIPT: OLD's PREPARE
 # step (src/data/preprocess/sources/misc.py's HDI branch,
 # `hdi.loc[:, "year"] = hdi["year"].str[4:].astype(int)`) raises
-# `TypeError: Invalid value ... for dtype 'str'` under pandas>=3.0 -- this
-# repo pins no pandas version (docs/design/05-migration.md §3), so whether
-# OLD can run here at all depends on whatever pandas happens to be installed
-# on this node. NEW's src/data/sources/misc/hdi.py already has this fixed
-# (plain bracket assignment instead of `.loc[:, ...] =`, with a code comment
-# explaining exactly why) -- confirmed NEW's PREPARE+GRID run cleanly start
-# to finish under pandas 3.0.2 in isolation. If OLD fails here with the
-# TypeError above, that is a genuine pre-existing OLD bug this pilot
-# surfaced, not a bug in this script or in NEW -- it just means this
-# particular pilot can't produce an OLD reference to diff against on this
-# node, and country_classifications' migration equivalence has to be
-# reasoned about by code comparison for the HDI-parsing step specifically,
-# not by execution, until run somewhere with an older pandas pinned.
+# `TypeError: Invalid value ... for dtype 'str'` under this HPC's pandas
+# (pyarrow-string-backed, >=3.0) -- this repo pins no pandas version
+# (docs/design/05-migration.md §3), so OLD cannot execute this step at all
+# on this node; no execution-based diff is possible here without a
+# throwaway legacy-pandas environment. NEW's src/data/sources/misc/hdi.py
+# already has this fixed (plain bracket assignment instead of
+# `.loc[:, ...] =`, with a code comment explaining exactly why) -- confirmed
+# NEW's PREPARE+GRID run cleanly start to finish under pandas 3.0.2 in
+# isolation. Decision (see docs/design/09-integrated-pipeline.md §14): the
+# code-level comparison above is accepted as sufficient sign-off for this
+# one step -- OLD is deleted in step 10 regardless -- so this pilot's
+# tabular-join archetype coverage rests on code review for PREPARE's
+# HDI-parsing specifically, not on this script's execution.
 #
 # Safety: everything below runs against an ISOLATED scratch data_root, never
 # against $DATA_NOBACKUP -- same pattern as validate-hard-gate-acag.sh.

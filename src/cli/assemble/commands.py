@@ -5,7 +5,6 @@ Sub-commands
 ------------
 create   Recreate all tiles in an assembled dataset.
 update   Add or refresh one datasource in an existing assembled dataset.
-demean   Run time/cross-sectional demeaning on an assembled dataset.
 """
 
 from __future__ import annotations
@@ -17,11 +16,11 @@ from src.cli.common import add_logging_args
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
     """Register ``assemble`` and its sub-commands on *top_subparsers*."""
-    from .handlers import handle_create, handle_demean, handle_update
+    from .handlers import handle_create, handle_update
 
     assemble_parser = top_subparsers.add_parser(
         "assemble",
-        help="Assemble, update, or demean the panel dataset",
+        help="Assemble or update the panel dataset",
         description="Build or maintain the assembled panel dataset.",
     )
     add_logging_args(assemble_parser)
@@ -65,35 +64,6 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         help="Datasource name to update",
     )
     update_p.set_defaults(func=handle_update)
-
-    # ── demean ─────────────────────────────────────────────────────────────
-    demean_p = sub.add_parser(
-        "demean",
-        help="Run demeaning on an assembled dataset",
-        description="Compute time/cross-sectional demeaned variables.",
-    )
-    add_logging_args(demean_p)
-    demean_p.add_argument(
-        "--config",
-        required=True,
-        help="Path to unified configuration file (YAML or JSON)",
-    )
-    demean_p.add_argument(
-        "--source",
-        required=True,
-        help="Assembly name to demean",
-    )
-    demean_p.add_argument(
-        "--override-level",
-        type=int,
-        choices=[0, 1, 2],
-        default=0,
-        help=(
-            "Override level (0=none, 1=remove results, "
-            "2=remove intermediate+results)"
-        ),
-    )
-    demean_p.set_defaults(func=handle_demean)
 
 
 # ---------------------------------------------------------------------------

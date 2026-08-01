@@ -531,6 +531,10 @@ reading diffs.
 | 10 | Cutover: delete `src/data/download/`, `src/data/preprocess/`, the shims, `src/cli/download/`, `src/cli/preprocess/`; fold in `geobox_patch.py` (1,607 dead lines), dead `demean`/`gcs` wiring. | In place |
 | 11 | *Optional, separate*: `layout: v2` physical rename, with the §3 consumer checklist. Not on the critical path. | In place |
 
+**Status**: steps 0–10 complete. Step 9's hard gate passed (two archetype representatives waived by explicit
+decision, not executed — see §14); step 10's cutover is done. Step 11 (`layout: v2`) remains not started, as
+designed — it was never on the critical path.
+
 **Overlap strategy**: rather than a runtime flag, the switch is *which CLI verb you invoke* —
 `preprocess run --source acag` and `pipeline run --source acag --step prepare` coexist for as long as both
 modules exist, writing the same paths. Commit granularity: one commit per source package, each
@@ -590,6 +594,41 @@ project); no full-panel end-to-end run in tests (that is the step-9 operational 
 
 ## 14. Open items
 
+- **Step-9 hard gate: passed, cutover (step 10) complete.** As run for real on SLURM via
+  `orchestration/slurm/validate-hard-gate-*.sh`: bulk-composite (`acag`), vector (`gadm`, `osm`), and point
+  (`berman_mining`, `plad`, `snl_mining`) archetypes all have a real old-vs-new execution diff, all
+  EQUIVALENT. Full test suite green and `generate_slurm_scripts.py --check` clean (23 jobs, no drift). Two
+  archetype representatives were waived rather than execution-diffed, both by explicit decision rather than
+  left silently unresolved:
+  - **`country_classifications` (tabular-join archetype, its only representative).**
+    `validate-hard-gate-country_classifications.sh`, run for real on SLURM, hit a genuine pre-existing OLD
+    bug: `src/data/preprocess/sources/misc.py:645`'s
+    `hdi.loc[:, "year"] = hdi["year"].str[4:].astype(int)` raised `TypeError` under this HPC's pandas
+    (pyarrow-string-backed, ≥3.0) — OLD could not execute this step at all here, so no execution-based diff
+    was possible without a throwaway legacy-pandas environment. Waived: the code-level comparison already in
+    that script's header comment (OLD's broken in-place `.loc` cast vs. NEW's
+    `src/data/sources/misc/hdi.py`, which already used plain bracket assignment with its own comment
+    explaining the same incompatibility) was accepted as sufficient sign-off for this one step.
+  - **`modis` (streaming archetype).** `validate-hard-gate-modis.sh` diffed GRID EQUIVALENT but never diffed
+    PREPARE — it streams from Microsoft Planetary Computer's STAC API, which needs live internet access
+    neither the sandbox nor (per the DuckDB extension-download failure that motivated
+    `bootstrap_duckdb_extensions.sh`) SLURM compute nodes generally have. Waived: PREPARE was never exercised
+    against OLD either (OLD has no equivalent streaming codepath for MODIS to diff against in the first
+    place — MODIS's `STEPS = (PREPARE, GRID)` was new in this redesign, per §5's per-source mapping), so
+    there was no OLD reference for this step to be equivalent *to*; GRID's diff plus code review stand as
+    this archetype's sign-off.
+  - Both waivers are conditions of the migration's own gate — declared here, not merely defaulted into by an
+    inability to run OLD.
+  - Cutover performed: `src/data/download/`, `src/data/preprocess/`, `src/cli/download/`,
+    `src/cli/preprocess/`, `src/data/common/geobox/geobox_patch.py` (1,607 dead lines),
+    `src/data/common/gcs/` (dead, unimported), `tests/data/preprocess/` (characterization tests against the
+    now-deleted OLD code), and `orchestration/slurm/demean_modis.sh` (already flagged dead in
+    `orchestration/slurm/jobs.yaml`) are all removed. The dead `assemble demean` CLI+config wiring (§12) is
+    removed from `src/cli/assemble/{commands,handlers}.py`, `src/cli/main.py`, and `run.py`. Post-cutover:
+    full test suite still green (same pre-existing, unrelated `test_summary_qos.py` failure), generator
+    `--check` still clean, `run.py pipeline list`/`--help`/`assemble --help` smoke-tested clean. The
+    `validate-hard-gate-*.sh` pilot scripts are kept as-is (audit trail of how the gate was verified) even
+    though their OLD-side invocations can no longer run post-cutover.
 - The per-*variable* (not per-source) resampling override [`04-ingest.md`](04-ingest.md) §1 flags as
   necessary (lights need area-weighted sum, land cover needs nearest) — still unresolved; this redesign
   threads the hook through `common/raster/spatial.py` but does not retune values.

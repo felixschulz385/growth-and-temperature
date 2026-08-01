@@ -1,16 +1,12 @@
 """
 src.cli.main — root parser and top-level entry point.
 
-Usage (new-style):
+Usage:
     python -m src.cli.main pipeline list
     python -m src.cli.main pipeline plan   --config cfg.yaml --source acag --step prepare
     python -m src.cli.main pipeline run    --config cfg.yaml --source acag --step fetch
-    python -m src.cli.main download index  --config cfg.yaml --source glass
-    python -m src.cli.main download run    --config cfg.yaml --source glass
-    python -m src.cli.main preprocess run  --config cfg.yaml --source glass
     python -m src.cli.main assemble create --config cfg.yaml --source main
     python -m src.cli.main assemble update --config cfg.yaml --source main --datasource ntl
-    python -m src.cli.main assemble demean --config cfg.yaml --source main
     python -m src.cli.main analysis run    --model my_model
     python -m src.cli.main analysis submit --tables table_main
     python -m src.cli.main analysis summary
@@ -19,7 +15,7 @@ Usage (new-style):
     python -m src.cli.main analysis subsets generate
     python -m src.cli.main analysis subsets list
 
-The module is also the delegate for the compatibility shim in ``run.py``.
+The module is also the delegate for ``run.py``.
 """
 
 from __future__ import annotations
@@ -35,7 +31,7 @@ _PROJECT_ROOT = _HERE.parents[2]  # src/cli/main.py → project root
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.cli import analysis, assemble, download, pipeline, preprocess
+from src.cli import analysis, assemble, pipeline
 from src.cli.common import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -46,18 +42,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="src",
         description=(
-            "GNT Data System — unified entry point for download, "
-            "preprocessing, assembly, and analysis."
+            "GNT Data System — unified entry point for the fetch/prepare/grid "
+            "pipeline, assembly, and analysis."
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  src download index  --config cfg.yaml --source glass
-  src download run    --config cfg.yaml --source glass
-  src preprocess run  --config cfg.yaml --source glass
+  src pipeline run    --config cfg.yaml --source acag --step fetch
   src assemble create --config cfg.yaml --source main_panel
   src assemble update --config cfg.yaml --source main_panel --datasource ntl
-  src assemble demean --config cfg.yaml --source main_panel
   src analysis run    --model baseline_ols
   src analysis submit --tables table_main table_robustness
   src analysis summary
@@ -74,13 +67,10 @@ Examples:
     )
     subparsers.required = True
 
-    # Register each domain. `pipeline` replaces `download`/`preprocess run`/
-    # `preprocess transfer` (docs/design/09-integrated-pipeline.md §8) but both
-    # sets coexist until every source has migrated (§10) -- migrated sources
-    # are removed from `download`/`preprocess`'s registries, not from these
-    # top-level domains, so unmigrated sources keep working.
-    download.register(subparsers)
-    preprocess.register(subparsers)
+    # `pipeline` replaced `download`/`preprocess run`/`preprocess transfer`
+    # (docs/design/09-integrated-pipeline.md §8); both domains and their
+    # backing src/data/download/ and src/data/preprocess/ packages were
+    # removed at cutover (§10) once the step-9 hard gate passed.
     pipeline.register(subparsers)
     assemble.register(subparsers)
     analysis.register(subparsers)

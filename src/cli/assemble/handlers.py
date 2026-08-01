@@ -85,17 +85,3 @@ def handle_update(args: argparse.Namespace) -> None:
     _run_assembly_workflow(config, args.source, cli_overrides)
 
 
-def handle_demean(args: argparse.Namespace) -> None:
-    """``assemble demean`` — run demeaning on an assembled dataset."""
-    setup_logging(args.log_level, debug=args.debug)
-    config = load_config_with_env_vars(args.config)
-
-    override_level = getattr(args, "override_level", 0) or 0
-    mod = importlib.import_module("src.data.assemble.demean")
-    logger.info(
-        f"Running demeaning workflow for assembly: {args.source} "
-        f"(override_level={override_level})"
-    )
-    mod.run_workflow_with_config(
-        config, assembly_name=args.source, override_level=override_level
-    )

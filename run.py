@@ -3,12 +3,9 @@
 Project-local wrapper for the modular GNT CLI.
 
 Examples:
-  python run.py download run --config config.yaml --source glass
-  python run.py download index --config config.yaml --source glass
-  python run.py preprocess run --config config.yaml --source glass
+  python run.py pipeline run --config config.yaml --source acag --step fetch
   python run.py assemble create --config config.yaml --source main_panel
   python run.py assemble update --config config.yaml --source main_panel --datasource ntl
-  python run.py assemble demean --config config.yaml --source main_panel
   python run.py analysis run --model my_model
   python run.py analysis submit --tables table_main table_robustness
   python run.py analysis summary
