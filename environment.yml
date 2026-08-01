@@ -25,6 +25,14 @@
 #   conda env create -f environment.yml
 #   conda activate src
 #   pip install -e .
+#   ./orchestration/slurm/bootstrap_duckdb_extensions.sh
+#     (one-time, needs internet -- run from a login node, not a compute
+#     node. Pre-installs/caches DuckDB's `spatial` extension, used by
+#     snl_mining and scripts/compare_step_output.py's compare_duckdb, into
+#     the shared $HOME extension cache so later SLURM compute-node jobs
+#     -- which have no internet access -- can `LOAD spatial` without
+#     hitting extensions.duckdb.org. Found necessary by actually running
+#     validate-hard-gate-snl_mining.sh on SLURM, not assumed.)
 name: src
 channels:
   - conda-forge

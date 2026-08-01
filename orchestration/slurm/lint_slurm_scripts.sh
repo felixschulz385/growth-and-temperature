@@ -10,6 +10,7 @@ fail=0
 for f in "${SCRIPT_DIR}"/*.sh; do
     base="$(basename "$f" .sh)"
     [ "$base" = "bootstrap_log_dirs" ] && continue
+    [ "$base" = "bootstrap_duckdb_extensions" ] && continue
     [ "$base" = "lint_slurm_scripts" ] && continue
     [ "$base" = "analysis" ] && continue
 

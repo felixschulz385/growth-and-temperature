@@ -146,6 +146,29 @@ else
     exit 2
 fi
 
+# --- REQUIRED (OLD only): parquet index recording the raw OSM zip as
+# "completed" -- OLD's MiscPreprocessor.get_preprocessing_targets()
+# (src/data/preprocess/sources/misc.py) returns zero targets without this
+# even though the raw file is already on disk (confirmed by actually running
+# this pilot without it: "Parquet index file not found - cannot generate
+# preprocessing targets" / "Processing 0 targets"), then the OLD->NEW
+# snapshot step fails trying to `cp` a stage_1/osm dir that was never
+# written. Matching is by filename substring on `relative_path`'s basename
+# (`_generate_vector_targets`), not by the configured subfolder, but the
+# real file still must exist at misc/raw/osm/<basename> since OLD
+# hard-codes that subfolder when it reconstructs the path. NEW's PREPARE
+# checks raw-file existence directly and does not consult this index at all.
+"$PYTHON_BIN" - "${TEST_ROOT}/hpc_data_index/parquet_misc.parquet" <<'PYEOF'
+import sys
+import pandas as pd
+
+out_path = sys.argv[1]
+pd.DataFrame(
+    [{"relative_path": "osm/land-polygons-complete-4326.zip", "status_category": "completed"}]
+).to_parquet(out_path)
+print(f"wrote index -> {out_path}")
+PYEOF
+
 # --- self-contained test config: isolated data_root, no HPC remote ---------
 # Two source blocks for the SAME on-disk data: `misc` (OLD's nested-subsource
 # shape) and `osm` (NEW's standalone-package shape; url/name defaults

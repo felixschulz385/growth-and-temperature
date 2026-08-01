@@ -54,6 +54,13 @@
 # Safety: everything below runs against an ISOLATED scratch data_root, never
 # against $DATA_NOBACKUP -- same pattern as validate-hard-gate-acag.sh.
 #
+# Prerequisite: DuckDB's `spatial` extension must already be cached locally
+# (run ./orchestration/slurm/bootstrap_duckdb_extensions.sh once from a login
+# node first -- see environment.yml's Install: instructions). Compute nodes
+# have no internet access, so `INSTALL spatial` fails here otherwise
+# (`IOException: ... Connection timed out` fetching extensions.duckdb.org --
+# found by actually running this pilot on SLURM, not assumed).
+#
 # Usage:
 #   sbatch orchestration/slurm/validate-hard-gate-snl_mining.sh [WINDOW_PX] [LON] [LAT]
 #   (WINDOW_PX defaults to 300, LON/LAT default to 10.0/50.0 -- central
@@ -105,7 +112,19 @@ test_root, lon, lat = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 
 duckdb_path = os.path.join(test_root, "snl_mining", "processed", "stage_0", "manual_xls", "snl_mining_manual_export.duckdb")
 con = duckdb.connect(duckdb_path)
-con.execute("INSTALL spatial; LOAD spatial;")
+try:
+    con.execute("LOAD spatial;")
+except Exception:
+    try:
+        con.execute("INSTALL spatial;")
+        con.execute("LOAD spatial;")
+    except Exception as exc:
+        raise RuntimeError(
+            "DuckDB 'spatial' extension is not cached locally and this node has no "
+            "internet access to download it. Run "
+            "./orchestration/slurm/bootstrap_duckdb_extensions.sh once from a login "
+            "node first (see environment.yml's Install: instructions)."
+        ) from exc
 con.execute(
     "CREATE TABLE properties (property_id VARCHAR, latitude DOUBLE, longitude DOUBLE, "
     "actual_start_up_year DOUBLE, actual_closure_year DOUBLE)"

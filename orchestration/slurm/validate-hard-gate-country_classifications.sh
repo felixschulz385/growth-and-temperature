@@ -126,45 +126,64 @@ fi
 # self-contained and because country_classifications only needs the ADM_0
 # (country) rasterization, not GADM's own PREPARE/GRID equivalence (already
 # covered by validate-hard-gate-gadm.sh).
-echo "$(date -Is): building a real GADM GRID prerequisite (two synthetic countries: AAA, BBB)"
-"$PYTHON_BIN" - "$TEST_ROOT" "$LON" "$LAT" <<'PYEOF'
+#
+# This driver is a real .py file, not a `python - <<EOF` stdin heredoc,
+# because GadmSource.execute() spins up a real dask LocalCluster/Client for
+# rasterization -- a stdin-fed script has no on-disk path for
+# multiprocessing's spawned workers to re-exec, which fails with
+# `FileNotFoundError: .../<stdin>` and loops retrying indefinitely (found by
+# actually running this pilot on SLURM, not assumed).
+GADM_PREREQ_SCRIPT="${TEST_ROOT}/build_gadm_prereq.py"
+cat > "$GADM_PREREQ_SCRIPT" <<'PYEOF'
 import os
 import sys
 
 import geopandas as gpd
 from shapely.geometry import MultiPolygon, box
 
-test_root, lon, lat = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 
-sys.path.insert(0, test_root)  # no-op, keeps import style consistent
-from src.data.pipeline.context import PipelineContext
-from src.data.pipeline.config import SourceConfig
-from src.data.sources.misc.gadm import GadmSource
-from src.data.sources.steps import PipelineStep, TargetSelection
+def main():
+    test_root, lon, lat = sys.argv[1], float(sys.argv[2]), float(sys.argv[3])
 
-# Minimal ADM_0-only GADM fixture: two countries side by side.
-adm0 = gpd.GeoDataFrame(
-    [
-        {"GID_0": "AAA", "geometry": MultiPolygon([box(lon - 0.6, lat - 0.3, lon - 0.1, lat + 0.3)])},
-        {"GID_0": "BBB", "geometry": MultiPolygon([box(lon + 0.1, lat - 0.3, lon + 0.6, lat + 0.3)])},
-    ],
-    crs="EPSG:4326",
-)
-prepare_dir = os.path.join(test_root, "misc", "processed", "stage_1", "gadm")
-os.makedirs(prepare_dir, exist_ok=True)
-adm0.to_file(os.path.join(prepare_dir, "gadm_levelADM_0_simplified.gpkg"), driver="GPKG")
+    from src.data.pipeline.context import PipelineContext
+    from src.data.pipeline.config import SourceConfig
+    from src.data.sources.misc.gadm import GadmSource
+    from src.data.sources.steps import PipelineStep, TargetSelection
 
-ctx = PipelineContext(data_root=test_root, local_index_dir=os.path.join(test_root, "hpc_data_index"), dask_threads=2)
-cfg = SourceConfig(source_id="gadm", data_path="misc", namespace="gadm", override=True)
-source = GadmSource(ctx, cfg)
+    # Minimal ADM_0-only GADM fixture: two countries side by side.
+    adm0 = gpd.GeoDataFrame(
+        [
+            {"GID_0": "AAA", "geometry": MultiPolygon([box(lon - 0.6, lat - 0.3, lon - 0.1, lat + 0.3)])},
+            {"GID_0": "BBB", "geometry": MultiPolygon([box(lon + 0.1, lat - 0.3, lon + 0.6, lat + 0.3)])},
+        ],
+        crs="EPSG:4326",
+    )
+    prepare_dir = os.path.join(test_root, "misc", "processed", "stage_1", "gadm")
+    os.makedirs(prepare_dir, exist_ok=True)
+    adm0.to_file(os.path.join(prepare_dir, "gadm_levelADM_0_simplified.gpkg"), driver="GPKG")
 
-grid_targets = source.plan(PipelineStep.GRID, TargetSelection())
-for t in grid_targets:
-    ok = source.execute(t)
-    print(f"GADM GRID prerequisite -> {ok}")
-    if not ok:
-        sys.exit(1)
+    ctx = PipelineContext(data_root=test_root, local_index_dir=os.path.join(test_root, "hpc_data_index"), dask_threads=2)
+    cfg = SourceConfig(source_id="gadm", data_path="misc", namespace="gadm", override=True)
+    source = GadmSource(ctx, cfg)
+
+    grid_targets = source.plan(PipelineStep.GRID, TargetSelection())
+    for t in grid_targets:
+        ok = source.execute(t)
+        print(f"GADM GRID prerequisite -> {ok}")
+        if not ok:
+            sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
 PYEOF
+# PYTHONPATH is required here: unlike a `python -` stdin heredoc (where
+# sys.path[0] is '' -- i.e. resolved against cwd, which `cd "$PROJECT_ROOT"`
+# above already set), a real on-disk .py file gets its OWN directory
+# ($TEST_ROOT) as sys.path[0], which has no `src` package -- confirmed by
+# actually hitting `ModuleNotFoundError: No module named 'src'` running this
+# locally before handing it off.
+PYTHONPATH="${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}" "$PYTHON_BIN" "$GADM_PREREQ_SCRIPT" "$TEST_ROOT" "$LON" "$LAT"
 
 # --- REQUIRED: synthetic HDI/World Bank raw fixtures, iso3 matching the
 # GADM fixture above (AAA, BBB) -- exact shapes proven to parse correctly by
