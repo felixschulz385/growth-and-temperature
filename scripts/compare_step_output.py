@@ -6,9 +6,10 @@ archetype (bulk-raster-with-composite, MODIS streaming, vector, tabular-join,
 point), run the same target through the old code and the new code, then use
 this tool to confirm the outputs are equivalent before deleting the old code.
 
-Supports Zarr stores, single-band/multi-band GeoTIFFs, and parquet tables --
-the three artefact shapes this migration's sources produce. Read-only: never
-modifies either input.
+Supports Zarr stores, single-band/multi-band GeoTIFFs, parquet tables,
+GeoPackage vector layers, and DuckDB databases -- the five artefact shapes
+this migration's sources produce. Read-only: never modifies either input
+(DuckDB files are opened `read_only=True`).
 
 Usage:
     python scripts/compare_step_output.py OLD_PATH NEW_PATH [--rtol 1e-6] [--atol 1e-6]
@@ -39,6 +40,14 @@ def _is_geotiff(path: Path) -> bool:
 
 def _is_parquet(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() == ".parquet"
+
+
+def _is_geopackage(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() == ".gpkg"
+
+
+def _is_duckdb(path: Path) -> bool:
+    return path.is_file() and path.suffix.lower() in (".duckdb", ".db")
 
 
 def compare_zarr(old_path: Path, new_path: Path, rtol: float, atol: float) -> list[str]:
@@ -152,6 +161,115 @@ def compare_parquet(old_path: Path, new_path: Path, rtol: float, atol: float) ->
     return problems
 
 
+def compare_geopackage(old_path: Path, new_path: Path, rtol: float, atol: float) -> list[str]:
+    import geopandas as gpd
+    import pandas as pd
+
+    problems = []
+    old_layers = set(gpd.list_layers(str(old_path)).name)
+    new_layers = set(gpd.list_layers(str(new_path)).name)
+    if old_layers != new_layers:
+        problems.append(f"layers differ: only-in-old={old_layers - new_layers} only-in-new={new_layers - old_layers}")
+
+    for layer in sorted(old_layers & new_layers):
+        old_gdf = gpd.read_file(str(old_path), layer=layer, engine="pyogrio")
+        new_gdf = gpd.read_file(str(new_path), layer=layer, engine="pyogrio")
+
+        old_cols = [c for c in old_gdf.columns if c != "geometry"]
+        new_cols = [c for c in new_gdf.columns if c != "geometry"]
+        if set(old_cols) != set(new_cols):
+            problems.append(f"layer '{layer}': columns differ: old={old_cols} new={new_cols}")
+        if len(old_gdf) != len(new_gdf):
+            problems.append(f"layer '{layer}': row count differs: old={len(old_gdf)} new={len(new_gdf)}")
+            continue
+
+        common_cols = [c for c in old_cols if c in new_cols]
+        # Row order isn't guaranteed to be stable across two independent
+        # reads/writes of the same source file, so sort by whatever looks
+        # like a natural id column before comparing row-for-row -- otherwise
+        # an identical layer with merely reordered rows would falsely report
+        # as different.
+        sort_key = next((c for c in ("GID_0", "GID_1", "GID_2", "GID_3", "id", "ID") if c in common_cols), None)
+        if sort_key:
+            old_gdf = old_gdf.sort_values(sort_key).reset_index(drop=True)
+            new_gdf = new_gdf.sort_values(sort_key).reset_index(drop=True)
+        else:
+            old_gdf = old_gdf.reset_index(drop=True)
+            new_gdf = new_gdf.reset_index(drop=True)
+
+        for col in common_cols:
+            try:
+                pd.testing.assert_series_equal(
+                    old_gdf[col], new_gdf[col], check_exact=False, rtol=rtol, atol=atol, check_names=False
+                )
+            except AssertionError as exc:
+                problems.append(f"layer '{layer}' column '{col}' differs: {exc}")
+
+        geom_matches = old_gdf.geometry.geom_equals_exact(new_gdf.geometry, tolerance=max(atol, 1e-9))
+        mismatch_frac = 1.0 - geom_matches.mean()
+        if mismatch_frac > 0:
+            problems.append(f"layer '{layer}': {mismatch_frac:.4%} of geometries differ beyond tolerance")
+
+    return problems
+
+
+def compare_duckdb(old_path: Path, new_path: Path, rtol: float, atol: float) -> list[str]:
+    import duckdb
+    import pandas as pd
+
+    problems = []
+    old_con = duckdb.connect(str(old_path), read_only=True)
+    new_con = duckdb.connect(str(new_path), read_only=True)
+    try:
+        for con in (old_con, new_con):
+            try:
+                con.execute("INSTALL spatial; LOAD spatial;")
+            except Exception:
+                pass  # geometry columns, if any, are skipped below regardless
+
+        table_query = "SELECT table_name FROM information_schema.tables WHERE table_schema = 'main'"
+        old_tables = {r[0] for r in old_con.execute(table_query).fetchall()}
+        new_tables = {r[0] for r in new_con.execute(table_query).fetchall()}
+        if old_tables != new_tables:
+            problems.append(f"tables differ: only-in-old={old_tables - new_tables} only-in-new={new_tables - old_tables}")
+
+        for table in sorted(old_tables & new_tables):
+            old_df = old_con.execute(f"SELECT * FROM {table}").fetchdf()
+            new_df = new_con.execute(f"SELECT * FROM {table}").fetchdf()
+
+            old_cols, new_cols = list(old_df.columns), list(new_df.columns)
+            if set(old_cols) != set(new_cols):
+                problems.append(f"table '{table}': columns differ: old={old_cols} new={new_cols}")
+                continue
+            if len(old_df) != len(new_df):
+                problems.append(f"table '{table}': row count differs: old={len(old_df)} new={len(new_df)}")
+                continue
+
+            # DuckDB spatial geometry columns are opaque WKB blobs -- compare
+            # every other column's values, but only that a geometry column
+            # is present/absent (already covered by the column-set check
+            # above), not its byte content.
+            geometry_cols = {c for c in old_cols if "geometry" in c.lower()}
+            comparable_cols = [c for c in old_cols if c not in geometry_cols]
+
+            sort_key = [c for c in comparable_cols if c.lower() in ("id", "property_id", "year", "gid_1", "gid_2")] or comparable_cols
+            if sort_key:
+                old_df = old_df.sort_values(sort_key).reset_index(drop=True)
+                new_df = new_df.sort_values(sort_key).reset_index(drop=True)
+
+            for col in comparable_cols:
+                try:
+                    pd.testing.assert_series_equal(
+                        old_df[col], new_df[col], check_exact=False, rtol=rtol, atol=atol, check_names=False
+                    )
+                except AssertionError as exc:
+                    problems.append(f"table '{table}' column '{col}' differs: {exc}")
+    finally:
+        old_con.close()
+        new_con.close()
+    return problems
+
+
 def compare(old_path: Path, new_path: Path, rtol: float, atol: float) -> list[str]:
     if not old_path.exists():
         return [f"old path does not exist: {old_path}"]
@@ -164,6 +282,10 @@ def compare(old_path: Path, new_path: Path, rtol: float, atol: float) -> list[st
         return compare_geotiff(old_path, new_path, rtol, atol)
     if _is_parquet(old_path) and _is_parquet(new_path):
         return compare_parquet(old_path, new_path, rtol, atol)
+    if _is_geopackage(old_path) and _is_geopackage(new_path):
+        return compare_geopackage(old_path, new_path, rtol, atol)
+    if _is_duckdb(old_path) and _is_duckdb(new_path):
+        return compare_duckdb(old_path, new_path, rtol, atol)
     return [f"unsupported or mismatched artefact types: old={old_path} new={new_path}"]
 
 

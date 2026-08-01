@@ -66,9 +66,13 @@
 #      too, generate it once for real via `pipeline run --source eog_viirs
 #      --step grid` before this script.
 #
-#      This script does NOT copy that pickle in verbatim -- it loads it and
-#      crops it to a small WINDOW_PX x WINDOW_PX window (centered) before
-#      pickling the result into the scratch root instead. `GeoBox` supports
+#      This script does NOT copy that pickle in verbatim -- it crops it to a
+#      small WINDOW_PX x WINDOW_PX window (centered) via
+#      scripts/crop_geobox_pickle.py before pickling the result into the
+#      scratch root instead (a small shared tool, since
+#      validate-hard-gate-gadm.sh needs the same crop with a real-content
+#      lon/lat center, not this script's centered default -- see that
+#      script). `GeoBox` supports
 #      plain numpy-style slicing (`gbox[y0:y1, x0:x1]`) and the result keeps
 #      the same CRS/resolution/affine alignment, just fewer pixels -- so
 #      `get_or_create_geobox()` (which only needs `.shape`/`.affine`/`.crs`
@@ -186,28 +190,8 @@ PROD_GEOBOX="${DATA_NOBACKUP}/misc/processed/stage_1/misc/viirs_geobox.pkl"
 TEST_GEOBOX_DIR="${TEST_ROOT}/misc/processed/stage_1/misc"
 mkdir -p "$TEST_GEOBOX_DIR"
 if [ -f "$PROD_GEOBOX" ]; then
-    "$PYTHON_BIN" - "$PROD_GEOBOX" "${TEST_GEOBOX_DIR}/viirs_geobox.pkl" "$WINDOW_PX" <<'PYEOF'
-import pickle
-import sys
-
-prod_path, test_path, window_px = sys.argv[1], sys.argv[2], int(sys.argv[3])
-
-with open(prod_path, "rb") as f:
-    full_geobox = pickle.load(f)
-
-ny, nx = full_geobox.shape
-if window_px > min(ny, nx):
-    raise ValueError(f"window_px={window_px} exceeds full geobox shape {full_geobox.shape}")
-
-cy, cx = ny // 2, nx // 2
-half = window_px // 2
-window = full_geobox[cy - half : cy + half, cx - half : cx + half]
-
-with open(test_path, "wb") as f:
-    pickle.dump(window, f)
-
-print(f"cropped target geobox: {full_geobox.shape} -> {window.shape} (window={window_px}px, centered)")
-PYEOF
+    "$PYTHON_BIN" scripts/crop_geobox_pickle.py \
+        "$PROD_GEOBOX" "${TEST_GEOBOX_DIR}/viirs_geobox.pkl" --window-px "$WINDOW_PX"
     echo "$(date -Is): seeded cropped target geobox cache from production"
 else
     echo "$(date -Is): ERROR -- no cached target geobox at $PROD_GEOBOX"

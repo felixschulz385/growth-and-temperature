@@ -58,3 +58,128 @@ def test_compare_zarr_flags_differing_values(tmp_path):
 
     problems = cso.compare_zarr(old_path, new_path, rtol=1e-6, atol=1e-6)
     assert any("pm25" in p for p in problems)
+
+
+def _write_gpkg(path, *, gid0_value="CHE", area_value=1.0, shift=0.0, layer="ADM_0", row_order=None):
+    import geopandas as gpd
+    from shapely.geometry import box
+
+    rows = [
+        {"GID_0": gid0_value, "area": area_value, "geometry": box(0 + shift, 0, 1 + shift, 1)},
+        {"GID_0": "DEU", "area": 2.0, "geometry": box(2, 0, 3, 1)},
+    ]
+    if row_order == "reversed":
+        rows = list(reversed(rows))
+    gdf = gpd.GeoDataFrame(rows, crs="EPSG:4326")
+    gdf.to_file(path, layer=layer, driver="GPKG")
+
+
+def test_compare_geopackage_equivalent(tmp_path):
+    old_path, new_path = tmp_path / "old.gpkg", tmp_path / "new.gpkg"
+    _write_gpkg(old_path)
+    _write_gpkg(new_path)
+
+    assert cso.compare_geopackage(old_path, new_path, rtol=1e-6, atol=1e-6) == []
+
+
+def test_compare_geopackage_ignores_row_order_when_natural_key_present(tmp_path):
+    old_path, new_path = tmp_path / "old.gpkg", tmp_path / "new.gpkg"
+    _write_gpkg(old_path)
+    _write_gpkg(new_path, row_order="reversed")
+
+    assert cso.compare_geopackage(old_path, new_path, rtol=1e-6, atol=1e-6) == []
+
+
+def test_compare_geopackage_flags_differing_attribute(tmp_path):
+    old_path, new_path = tmp_path / "old.gpkg", tmp_path / "new.gpkg"
+    _write_gpkg(old_path, area_value=1.0)
+    _write_gpkg(new_path, area_value=1.5)
+
+    problems = cso.compare_geopackage(old_path, new_path, rtol=1e-6, atol=1e-6)
+    assert any("area" in p for p in problems)
+
+
+def test_compare_geopackage_flags_differing_geometry(tmp_path):
+    old_path, new_path = tmp_path / "old.gpkg", tmp_path / "new.gpkg"
+    _write_gpkg(old_path, shift=0.0)
+    _write_gpkg(new_path, shift=0.5)
+
+    problems = cso.compare_geopackage(old_path, new_path, rtol=1e-6, atol=1e-6)
+    assert any("geometries differ" in p for p in problems)
+
+
+def test_compare_geopackage_flags_differing_layers(tmp_path):
+    old_path, new_path = tmp_path / "old.gpkg", tmp_path / "new.gpkg"
+    _write_gpkg(old_path, layer="ADM_0")
+    _write_gpkg(new_path, layer="ADM_1")
+
+    problems = cso.compare_geopackage(old_path, new_path, rtol=1e-6, atol=1e-6)
+    assert any("layers differ" in p for p in problems)
+
+
+def test_compare_dispatches_gpkg_by_extension(tmp_path):
+    old_path, new_path = tmp_path / "old.gpkg", tmp_path / "new.gpkg"
+    _write_gpkg(old_path)
+    _write_gpkg(new_path)
+
+    assert cso.compare(old_path, new_path, rtol=1e-6, atol=1e-6) == []
+
+
+def _write_duckdb(path, *, count_value=5, row_order=None):
+    import duckdb
+
+    con = duckdb.connect(str(path))
+    try:
+        rows = [("m1", 2018, count_value), ("m2", 2019, count_value + 1)]
+        if row_order == "reversed":
+            rows = list(reversed(rows))
+        con.execute("CREATE TABLE adm1_year_counts (property_id VARCHAR, year INTEGER, count INTEGER)")
+        con.executemany("INSERT INTO adm1_year_counts VALUES (?, ?, ?)", rows)
+    finally:
+        con.close()
+
+
+def test_compare_duckdb_equivalent(tmp_path):
+    old_path, new_path = tmp_path / "old.duckdb", tmp_path / "new.duckdb"
+    _write_duckdb(old_path)
+    _write_duckdb(new_path)
+
+    assert cso.compare_duckdb(old_path, new_path, rtol=1e-6, atol=1e-6) == []
+
+
+def test_compare_duckdb_ignores_row_order_when_natural_key_present(tmp_path):
+    old_path, new_path = tmp_path / "old.duckdb", tmp_path / "new.duckdb"
+    _write_duckdb(old_path)
+    _write_duckdb(new_path, row_order="reversed")
+
+    assert cso.compare_duckdb(old_path, new_path, rtol=1e-6, atol=1e-6) == []
+
+
+def test_compare_duckdb_flags_differing_values(tmp_path):
+    old_path, new_path = tmp_path / "old.duckdb", tmp_path / "new.duckdb"
+    _write_duckdb(old_path, count_value=5)
+    _write_duckdb(new_path, count_value=99)
+
+    problems = cso.compare_duckdb(old_path, new_path, rtol=1e-6, atol=1e-6)
+    assert any("count" in p for p in problems)
+
+
+def test_compare_duckdb_flags_differing_tables(tmp_path):
+    import duckdb
+
+    old_path, new_path = tmp_path / "old.duckdb", tmp_path / "new.duckdb"
+    _write_duckdb(old_path)
+    con = duckdb.connect(str(new_path))
+    con.execute("CREATE TABLE something_else (x INTEGER)")
+    con.close()
+
+    problems = cso.compare_duckdb(old_path, new_path, rtol=1e-6, atol=1e-6)
+    assert any("tables differ" in p for p in problems)
+
+
+def test_compare_dispatches_duckdb_by_extension(tmp_path):
+    old_path, new_path = tmp_path / "old.duckdb", tmp_path / "new.duckdb"
+    _write_duckdb(old_path)
+    _write_duckdb(new_path)
+
+    assert cso.compare(old_path, new_path, rtol=1e-6, atol=1e-6) == []
