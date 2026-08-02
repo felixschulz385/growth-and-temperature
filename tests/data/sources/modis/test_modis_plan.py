@@ -10,10 +10,10 @@ from src.data.sources.modis.source import ModisSource
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, tiles=("h18v04", "h20v08"), year_range=(2019, 2020), **extra_raw):
+def _make_source(tmp_path, tiles=("h18v04", "h20v08"), year_range=(2019, 2020), layout="legacy", **extra_raw):
     data_root = str(tmp_path / "data_root")
     local_index_dir = str(tmp_path / "index")
-    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir)
+    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout=layout)
     cfg = SourceConfig.from_dict("modis", {"year_range": list(year_range), "tiles": list(tiles), **extra_raw})
     return ModisSource(ctx, cfg), ctx
 
@@ -55,6 +55,19 @@ def test_grid_targets_one_per_year_with_stage1_output(tmp_path):
     assert targets[0].output_path == os.path.join(
         source.output_root(PipelineStep.GRID), "modis_21A2_timeseries_reprojected.zarr"
     )
+
+
+def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    for product, family in (("21A2", "modis_lst_21a2"), ("11A1", "modis_lst_11a1")):
+        source, ctx = _make_source(tmp_path, year_range=(2019, 2020), layout="v2", product=product)
+        stage1 = source.output_root(PipelineStep.PREPARE)
+        year_dir = os.path.join(stage1, "2019")
+        os.makedirs(year_dir, exist_ok=True)
+        open(os.path.join(year_dir, "h18v04.tif"), "w").close()
+
+        targets = source.plan(PipelineStep.GRID, TargetSelection())
+        assert len(targets) == 1
+        assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", f"{family}.zarr")
 
 
 def test_grid_targets_always_never_complete_the_quirk(tmp_path):

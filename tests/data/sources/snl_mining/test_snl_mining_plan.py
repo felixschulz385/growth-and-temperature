@@ -11,9 +11,12 @@ from src.data.sources.snl_mining.source import SnlMiningSource
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, *, grid_id="legacy_4326", **raw):
+def _make_source(tmp_path, *, grid_id="legacy_4326", layout="legacy", **raw):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), grid_id=grid_id
+        data_root=str(tmp_path / "data_root"),
+        local_index_dir=str(tmp_path / "index"),
+        grid_id=grid_id,
+        layout=layout,
     )
     cfg = SourceConfig.from_dict("snl_mining", dict(raw))
     return SnlMiningSource(ctx, cfg), ctx
@@ -82,6 +85,28 @@ def test_output_root_grid_honors_ease6933(tmp_path):
     assert source.output_root(PipelineStep.GRID) == os.path.join(
         ctx.data_root, "snl_mining", "processed", "stage_2_ease6933"
     )
+
+
+def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path, monkeypatch):
+    source, ctx = _make_source(tmp_path, layout="v2")
+    os.makedirs(os.path.dirname(source.prepared_db_path), exist_ok=True)
+    open(source.prepared_db_path, "w").close()
+
+    class _FakeConnection:
+        def execute(self, *args, **kwargs):
+            return self
+
+        def fetchall(self):
+            return [(2020,)]
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(source, "_connect_duckdb", lambda path: _FakeConnection())
+
+    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    assert len(targets) == 1
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "snl_mining.zarr")
 
 
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):

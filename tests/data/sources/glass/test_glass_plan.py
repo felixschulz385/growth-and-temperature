@@ -25,7 +25,7 @@ def _write_index(local_index_dir, data_path, rows):
     pd.DataFrame(rows).to_parquet(os.path.join(local_index_dir, f"parquet_{safe}.parquet"))
 
 
-def _make_source(tmp_path, source_id, year_range=(2019, 2021), rows=None, **extra_raw):
+def _make_source(tmp_path, source_id, year_range=(2019, 2021), rows=None, layout="legacy", **extra_raw):
     data_root = str(tmp_path / "data_root")
     local_index_dir = str(tmp_path / "index")
     if rows is None:
@@ -42,7 +42,7 @@ def _make_source(tmp_path, source_id, year_range=(2019, 2021), rows=None, **extr
             ]
     path_prefix = GlassSource.MODIS_PATH_PREFIX if source_id == "glass_modis" else GlassSource.AVHRR_PATH_PREFIX
     _write_index(local_index_dir, path_prefix.rstrip("/"), rows)
-    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir)
+    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout=layout)
     cfg = SourceConfig.from_dict(
         source_id, {"year_range": list(year_range), "base_url": _BASE_URLS[source_id], **extra_raw}
     )
@@ -113,3 +113,21 @@ def test_avhrr_grid_target_is_single_global_target(tmp_path):
     assert targets[0].key == "global"
     assert targets[0].meta["missing_years"] == [2020]
     assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "avhrr_timeseries_reprojected.zarr")
+
+
+def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    modis_source, modis_ctx = _make_source(tmp_path, "glass_modis", year_range=(2019, 2020), layout="v2")
+    annual_dir = modis_source.output_root(PipelineStep.PREPARE)
+    for year, cell in [(2019, "h25v06"), (2020, "h26v06")]:
+        d = os.path.join(annual_dir, str(year))
+        os.makedirs(d, exist_ok=True)
+        os.makedirs(os.path.join(d, f"{cell}.zarr"))
+    targets = modis_source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2020)))
+    assert targets[0].output_path == os.path.join(modis_ctx.data_root, "grid_v2", "glass_modis_lst.zarr")
+
+    avhrr_source, avhrr_ctx = _make_source(tmp_path, "glass_avhrr", year_range=(2019, 2020), layout="v2")
+    annual_dir = avhrr_source.output_root(PipelineStep.PREPARE)
+    os.makedirs(annual_dir, exist_ok=True)
+    os.makedirs(os.path.join(annual_dir, "2019.zarr"))
+    targets = avhrr_source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2020)))
+    assert targets[0].output_path == os.path.join(avhrr_ctx.data_root, "grid_v2", "glass_avhrr_lst.zarr")

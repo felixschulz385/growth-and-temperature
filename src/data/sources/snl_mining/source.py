@@ -372,7 +372,14 @@ class SnlMiningSource(DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="all",
-                output_path=os.path.join(self._output_root(), self.output_filename),
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    self.output_filename,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family="snl_mining",
+                ),
                 inputs=(self.prepared_db_path,), completion=Completion.PATH_EXISTS,
                 meta={"years": years},
             )

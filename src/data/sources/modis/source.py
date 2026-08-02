@@ -350,8 +350,18 @@ class ModisSource(DataSource):
     # -- GRID ("spatial": mosaic tiles, reproject onto canonical EPSG:6933) --
 
     def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        from src.data.sources import layout
+        from src.data.sources.layout import EASE_GRID_ID
+
         stage1_root = self.output_root(PipelineStep.PREPARE)
-        output_path = os.path.join(self.output_root(PipelineStep.GRID), f"modis_{self.product}_timeseries_reprojected.zarr")
+        output_path = layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            f"modis_{self.product}_timeseries_reprojected.zarr",
+            grid_id=EASE_GRID_ID,
+            layout=self.ctx.layout,
+            v2_family=f"modis_lst_{self.product.lower()}",
+        )
         years = self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1)) or []
 
         targets = []

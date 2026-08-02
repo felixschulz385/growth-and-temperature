@@ -29,7 +29,7 @@ def _write_index(local_index_dir, data_path, rows):
     pd.DataFrame(rows).to_parquet(os.path.join(local_index_dir, f"parquet_{safe}.parquet"))
 
 
-def _make_source(tmp_path, source_type="viirs", year_range=(2019, 2021), rows=None):
+def _make_source(tmp_path, source_type="viirs", year_range=(2019, 2021), rows=None, layout="legacy"):
     data_root = str(tmp_path / "data_root")
     local_index_dir = str(tmp_path / "index")
     data_path = _DATA_PATHS[source_type]
@@ -40,7 +40,7 @@ def _make_source(tmp_path, source_type="viirs", year_range=(2019, 2021), rows=No
             {"relative_path": "F182020.v4d_web.stable_lights.avg_vis.tif", "status_category": "completed"},
         ]
     _write_index(local_index_dir, data_path, rows)
-    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir)
+    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout=layout)
     cfg = SourceConfig.from_dict(
         "eog_viirs", {"data_path": data_path, "year_range": list(year_range), "base_url": _BASE_URLS[source_type]}
     )
@@ -92,3 +92,19 @@ def test_grid_output_filename_uses_source_type(tmp_path):
     targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2020)))
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "dmsp_timeseries_reprojected.zarr")
+
+
+def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    for source_type, family in (
+        ("dmsp", "eog_dmsp"),
+        ("viirs", "eog_viirs_annual"),
+        ("dvnl", "eog_viirs_dvnl"),
+    ):
+        source, ctx = _make_source(tmp_path, source_type, year_range=(2019, 2020), layout="v2")
+        annual_dir = source.output_root(PipelineStep.PREPARE)
+        os.makedirs(annual_dir, exist_ok=True)
+        os.makedirs(os.path.join(annual_dir, "2019.zarr"))
+
+        targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2020)))
+        assert len(targets) == 1
+        assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", f"{family}.zarr")

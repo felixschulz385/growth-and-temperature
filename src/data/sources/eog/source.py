@@ -479,8 +479,14 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 source_id=self.ID,
                 step=PipelineStep.GRID,
                 key="all",
-                output_path=os.path.join(
-                    self.output_root(PipelineStep.GRID), f"{self.source_type}_timeseries_reprojected.zarr"
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    f"{self.source_type}_timeseries_reprojected.zarr",
+                    namespace=self.cfg.namespace,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family=f"eog_{self.source_type}",
                 ),
                 inputs=tuple(f["zarr_path"] for f in annual_files),
                 completion=Completion.MARKER,

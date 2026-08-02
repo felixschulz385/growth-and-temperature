@@ -34,7 +34,7 @@ from zarr.codecs import BloscCodec
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources import registry
+from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 
@@ -152,7 +152,15 @@ class BermanMiningSource(DataSource):
             return [
                 StepTarget(
                     source_id=self.ID, step=PipelineStep.GRID, key="all",
-                    output_path=os.path.join(self.output_root(PipelineStep.GRID), "berman_mining_timeseries_reprojected.zarr"),
+                    output_path=layout.grid_store_path(
+                        self.ctx.data_root,
+                        self.cfg.data_path,
+                        "berman_mining_timeseries_reprojected.zarr",
+                        namespace=self.cfg.namespace,
+                        grid_id=self.ctx.grid_id,
+                        layout=self.ctx.layout,
+                        v2_family="berman_mining",
+                    ),
                     completion=Completion.PATH_EXISTS,
                     meta={"year_range": self.cfg.year_range},
                 )
