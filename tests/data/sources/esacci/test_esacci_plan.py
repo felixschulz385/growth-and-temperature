@@ -47,6 +47,12 @@ def test_output_root_matches_old_get_hpc_output_path(tmp_path):
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "esacci/landcover", "processed", "stage_2")
 
 
+def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "esacci/landcover")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "esacci/landcover")
+
+
 def test_prepare_targets_one_per_year_prefers_nc4(tmp_path):
     source, _ = _make_source(tmp_path)
     targets = source.plan(PipelineStep.PREPARE, TargetSelection(year_range=(2019, 2021)))
@@ -80,4 +86,4 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
     targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2022)))
 
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "land_cover.zarr")
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_cover.zarr")

@@ -36,6 +36,21 @@ def test_osm_and_gadm_share_output_root_but_have_distinct_index_data_path(tmp_pa
     assert osm.data_path != gadm.data_path
 
 
+def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
+    osm, ctx = _make(tmp_path, "osm", layout="v2")
+    gadm, _ = _make(tmp_path, "gadm", layout="v2")
+    cc, _ = _make(tmp_path, "country_classifications", layout="v2")
+
+    assert osm.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "osm")
+    assert osm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "misc", "osm")
+    assert gadm.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "gadm")
+    assert gadm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "misc", "gadm")
+    assert cc.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "country_classifications")
+    assert cc.output_root(PipelineStep.PREPARE) == os.path.join(
+        ctx.data_root, "prepared", "misc", "country_classifications"
+    )
+
+
 def test_osm_prepare_target(tmp_path):
     osm, ctx = _make(tmp_path, "osm")
     raw_dir = osm.output_root(PipelineStep.FETCH)
@@ -125,7 +140,7 @@ def test_osm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
 
     targets = osm.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "land_mask.zarr")
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_mask.zarr")
 
 
 def test_gadm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
@@ -136,7 +151,7 @@ def test_gadm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
 
     targets = gadm.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "country_id.zarr")
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "country_id.zarr")
 
 
 def test_country_classifications_grid_finds_gadm_v2_output_under_layout_v2(tmp_path):
@@ -148,14 +163,14 @@ def test_country_classifications_grid_finds_gadm_v2_output_under_layout_v2(tmp_p
     # GADM's v2 output not yet present -> no target.
     assert cc.plan(PipelineStep.GRID, TargetSelection()) == []
 
-    grid_v2_dir = os.path.join(ctx.data_root, "grid_v2")
-    os.makedirs(grid_v2_dir, exist_ok=True)
-    os.makedirs(os.path.join(grid_v2_dir, "country_id.zarr"))
+    grid_dir = os.path.join(ctx.data_root, "grid", "legacy_4326")
+    os.makedirs(grid_dir, exist_ok=True)
+    os.makedirs(os.path.join(grid_dir, "country_id.zarr"))
 
     targets = cc.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(grid_v2_dir, "classifications.zarr")
+    assert targets[0].output_path == os.path.join(grid_dir, "classifications.zarr")
     assert targets[0].inputs == (
         os.path.join(vector_dir, "classifications.parquet"),
-        os.path.join(grid_v2_dir, "country_id.zarr"),
+        os.path.join(grid_dir, "country_id.zarr"),
     )

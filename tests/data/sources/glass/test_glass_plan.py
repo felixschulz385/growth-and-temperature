@@ -61,6 +61,14 @@ def test_output_root_uses_path_prefix(tmp_path):
     )
 
 
+def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
+    source, ctx = _make_source(tmp_path, "glass_modis", layout="v2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "glass/LST/MODIS/Daily/1KM/")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(
+        ctx.data_root, "prepared", "glass/LST/MODIS/Daily/1KM/"
+    )
+
+
 def test_modis_prepare_targets_grouped_by_year_and_grid_cell(tmp_path):
     source, _ = _make_source(tmp_path, "glass_modis")
     targets = source.plan(PipelineStep.PREPARE, TargetSelection(year_range=(2019, 2021)))
@@ -123,11 +131,11 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
         os.makedirs(d, exist_ok=True)
         os.makedirs(os.path.join(d, f"{cell}.zarr"))
     targets = modis_source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2020)))
-    assert targets[0].output_path == os.path.join(modis_ctx.data_root, "grid_v2", "glass_modis_lst.zarr")
+    assert targets[0].output_path == os.path.join(modis_ctx.data_root, "grid", "legacy_4326", "glass_modis_lst.zarr")
 
     avhrr_source, avhrr_ctx = _make_source(tmp_path, "glass_avhrr", year_range=(2019, 2020), layout="v2")
     annual_dir = avhrr_source.output_root(PipelineStep.PREPARE)
     os.makedirs(annual_dir, exist_ok=True)
     os.makedirs(os.path.join(annual_dir, "2019.zarr"))
     targets = avhrr_source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2020)))
-    assert targets[0].output_path == os.path.join(avhrr_ctx.data_root, "grid_v2", "glass_avhrr_lst.zarr")
+    assert targets[0].output_path == os.path.join(avhrr_ctx.data_root, "grid", "legacy_4326", "glass_avhrr_lst.zarr")

@@ -249,7 +249,7 @@ class AcagSource(DataSource):
     def _resolve_raw_path(self, relative_path: str) -> str:
         if os.path.isabs(relative_path):
             return relative_path
-        return os.path.join(self.ctx.data_root, self.cfg.data_path, "raw", relative_path)
+        return os.path.join(self.output_root(PipelineStep.FETCH), relative_path)
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
         index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)

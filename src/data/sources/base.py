@@ -115,6 +115,7 @@ class DataSource(abc.ABC):
             step,
             namespace=namespace if namespace is not None else self.cfg.namespace,
             grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
         )
 
     def transfer_units(self, step: PipelineStep) -> list[TransferUnit]:

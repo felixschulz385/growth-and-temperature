@@ -234,7 +234,7 @@ class NtlHarmSource(DataSource):
     def _resolve_source_file_path(self, file_path: str) -> str:
         if os.path.isabs(file_path) or (self.ctx.data_root and file_path.startswith(self.ctx.data_root)):
             return file_path
-        return os.path.join(self.ctx.data_root, self.cfg.data_path, "raw", file_path)
+        return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
     @staticmethod
     def _select_best_file_for_year(year_files: List[str]) -> str:

@@ -17,7 +17,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 
 from .generators import generate_partitioned_subset_ids
-from .registry import default_mapping_path, load_country_registry
+from .registry import default_classifications_path, default_mapping_path, load_country_registry
 from .schema import SubsetKind, build_subset_record, read_country_ids, write_subset_record
 
 logger = logging.getLogger(__name__)
@@ -49,6 +49,7 @@ def _resolve_and_cache_partitioned_subset(
     *,
     subsets_dir: Path,
     project_root: Path,
+    layout: str = "legacy",
 ) -> Optional[List[int]]:
     """Lazily generate and cache an HDI/WB partitioned subset, if requested."""
     match = PARTITIONED_SUBSET_RE.fullmatch(subset_name)
@@ -58,16 +59,8 @@ def _resolve_and_cache_partitioned_subset(
     family, bucket, year = match.groups()
     bucket_tokens = bucket.split("_")
 
-    classifications_path = (
-        Path(project_root)
-        / "data_nobackup"
-        / "misc"
-        / "processed"
-        / "stage_1"
-        / "country_classifications"
-        / "classifications.parquet"
-    )
-    mapping_path = default_mapping_path(project_root)
+    classifications_path = default_classifications_path(project_root, layout=layout)
+    mapping_path = default_mapping_path(project_root, layout=layout)
 
     if not classifications_path.exists() or not mapping_path.exists():
         return None
@@ -98,6 +91,7 @@ def resolve_subset(
     *,
     subsets_dir: Path,
     project_root: Path,
+    layout: str = "legacy",
 ) -> List[int]:
     """Resolve a subset name to a list of country ids.
 
@@ -133,6 +127,7 @@ def resolve_subset(
             subset_name,
             subsets_dir=subsets_dir,
             project_root=project_root,
+            layout=layout,
         )
         if generated_country_ids is not None:
             return generated_country_ids

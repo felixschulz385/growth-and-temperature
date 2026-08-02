@@ -78,7 +78,14 @@ class PlaDSource(DataSource):
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         if step is PipelineStep.GRID:
-            return layout.output_root(self.ctx.data_root, self.OUTPUT_PREFIX, step, namespace=namespace, grid_id=self.ctx.grid_id)
+            return layout.output_root(
+                self.ctx.data_root,
+                self.OUTPUT_PREFIX,
+                step,
+                namespace=namespace,
+                grid_id=self.ctx.grid_id,
+                layout=self.ctx.layout,
+            )
         return super().output_root(step, namespace=namespace)
 
     # ------------------------------------------------------------------

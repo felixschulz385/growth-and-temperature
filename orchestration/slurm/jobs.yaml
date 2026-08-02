@@ -26,7 +26,7 @@
 #
 # Scripts NOT covered here (left as hand-maintained, standalone files):
 # assemble_create.sh, assemble_update.sh, analysis.sh, compress.sh,
-# rechunk-zarr.sh, validate-backbone-subset.sh.
+# rechunk-zarr.sh, validate-backbone-subset.sh, migrate-layout-v2.sh.
 # demean_modis.sh is dead (docs/design/04-ingest.md §6's `assemble demean`
 # finding) and removed in migration step 10's cutover, not generated here.
 

@@ -18,11 +18,19 @@ DEFAULT_COUNTRY_MAPPING_PATH = "data_nobackup/misc/processed/stage_2/gadm/countr
 #: Where GADM's country-id sidecar lands under the docs/design/09-integrated-
 #: pipeline.md §14 "layout: v2" single-source-family rename
 #: (src/data/sources/layout.py's grid_store_path(), v2_family="country_id")
-#: -- same sidecar filename, relocated alongside country_id.zarr.
-V2_COUNTRY_MAPPING_PATH = "data_nobackup/grid_v2/country_code_mapping.json"
+#: -- same sidecar filename, relocated alongside country_id.zarr under
+#: grid/<grid_id>/, which is why default_mapping_path() takes a grid_id too.
+V2_COUNTRY_MAPPING_PATH_TEMPLATE = "data_nobackup/grid/{grid_id}/country_code_mapping.json"
 #: PREPARE-stage (stage_1) artefact, unaffected by the GRID-stage-only
 #: layout:v2 rename -- no v2 variant.
 DEFAULT_GADM_PATH = "data_nobackup/misc/processed/stage_1/gadm/gadm_levelADM_0_simplified.gpkg"
+#: country_classifications' PREPARE-stage output (a genuine PREPARE-stage
+#: artefact, unlike DEFAULT_COUNTRY_MAPPING_PATH above which is GRID-stage
+#: despite being read alongside PREPARE data by resolve.py). `layout="v2"`
+#: moves it under the top-level `prepared/` tree
+#: (src/data/sources/layout.py's output_root(..., PipelineStep.PREPARE)).
+DEFAULT_CLASSIFICATIONS_PATH = "data_nobackup/misc/processed/stage_1/country_classifications/classifications.parquet"
+V2_CLASSIFICATIONS_PATH = "data_nobackup/prepared/misc/country_classifications/classifications.parquet"
 
 
 @dataclass(frozen=True)
@@ -47,16 +55,28 @@ class CountryRegistry:
         return self.country_to_id.get(iso3)
 
 
-def default_mapping_path(project_root: Path, *, layout: str = "legacy") -> Path:
-    """`layout="v2"` looks under the layout:v2 rename's shared `grid_v2/`
+def default_mapping_path(project_root: Path, *, layout: str = "legacy", grid_id: str = "legacy_4326") -> Path:
+    """`layout="v2"` looks under the layout:v2 rename's `grid/<grid_id>/`
     directory instead of GADM's legacy per-source path; default is
-    unchanged/legacy so existing callers are unaffected."""
-    rel_path = V2_COUNTRY_MAPPING_PATH if layout == "v2" else DEFAULT_COUNTRY_MAPPING_PATH
+    unchanged/legacy so existing callers are unaffected. `grid_id` is only
+    consulted when `layout="v2"`."""
+    if layout == "v2":
+        rel_path = V2_COUNTRY_MAPPING_PATH_TEMPLATE.format(grid_id=grid_id)
+    else:
+        rel_path = DEFAULT_COUNTRY_MAPPING_PATH
     return Path(project_root) / rel_path
 
 
 def default_gadm_path(project_root: Path) -> Path:
     return Path(project_root) / DEFAULT_GADM_PATH
+
+
+def default_classifications_path(project_root: Path, *, layout: str = "legacy") -> Path:
+    """`layout="v2"` looks under the layout:v2 rename's top-level `prepared/`
+    tree instead of country_classifications' legacy stage_1 path; default is
+    unchanged/legacy so existing callers are unaffected."""
+    rel_path = V2_CLASSIFICATIONS_PATH if layout == "v2" else DEFAULT_CLASSIFICATIONS_PATH
+    return Path(project_root) / rel_path
 
 
 def load_country_registry(

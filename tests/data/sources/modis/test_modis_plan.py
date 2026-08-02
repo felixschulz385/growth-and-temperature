@@ -28,6 +28,12 @@ def test_output_root_uses_ease6933_suffix_for_grid(tmp_path):
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_2_ease6933")
 
 
+def test_output_root_prepare_uses_top_level_tree_under_layout_v2(tmp_path):
+    # No FETCH step (STAC-streamed) -- only PREPARE needs a v2 case here.
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "modis/21A2")
+
+
 def test_data_path_defaults_to_product_specific(tmp_path):
     source, _ = _make_source(tmp_path, product="11A1")
     assert source.cfg.data_path == "modis/11A1"
@@ -67,7 +73,9 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
 
         targets = source.plan(PipelineStep.GRID, TargetSelection())
         assert len(targets) == 1
-        assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", f"{family}.zarr")
+        # MODIS forces grid_id=ease6933 unconditionally (see output_root()),
+        # independent of ctx.grid_id -- so the v2 path reflects that too.
+        assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "ease6933", f"{family}.zarr")
 
 
 def test_grid_targets_always_never_complete_the_quirk(tmp_path):

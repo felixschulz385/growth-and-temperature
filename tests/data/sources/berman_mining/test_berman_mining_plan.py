@@ -42,6 +42,12 @@ def test_hpc_output_path(tmp_path):
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "berman_mining", "processed", "stage_2")
 
 
+def test_output_root_fetch_uses_top_level_tree_under_layout_v2(tmp_path):
+    # No PREPARE step -- only FETCH needs a v2 case here.
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "berman_mining")
+
+
 def test_grid_target(tmp_path):
     source, _ = _make_source(tmp_path, year_range=[2000, 2010])
     targets = source.plan(PipelineStep.GRID, TargetSelection())
@@ -56,7 +62,7 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
     source, ctx = _make_source(tmp_path, year_range=[2000, 2010], layout="v2")
     targets = source.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "berman_mining.zarr")
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "berman_mining.zarr")
 
 
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):

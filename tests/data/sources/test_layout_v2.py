@@ -9,7 +9,7 @@ exercises the new, additive `layout=v2` behaviour.
 
 import os
 
-from src.data.sources.layout import grid_store_path
+from src.data.sources.layout import grid_store_path, output_root, raw_root
 from src.data.sources.steps import PipelineStep
 
 
@@ -19,10 +19,17 @@ def test_default_layout_matches_legacy_output_root_plus_filename():
     )
 
 
-def test_v2_layout_with_family_uses_shared_grid_v2_directory():
+def test_v2_layout_with_family_uses_grid_slash_grid_id_directory():
     assert grid_store_path(
         "/data", "acag/pm25", "acag_pm25_timeseries_reprojected.zarr", layout="v2", v2_family="pm25"
-    ) == os.path.join("/data", "grid_v2", "pm25.zarr")
+    ) == os.path.join("/data", "grid", "legacy_4326", "pm25.zarr")
+
+
+def test_v2_layout_with_family_folds_grid_id_into_the_path():
+    assert grid_store_path(
+        "/data", "acag/pm25", "acag_pm25_timeseries_reprojected.zarr",
+        layout="v2", grid_id="ease6933", v2_family="pm25",
+    ) == os.path.join("/data", "grid", "ease6933", "pm25.zarr")
 
 
 def test_v2_layout_without_family_falls_back_to_legacy_path():
@@ -43,7 +50,7 @@ def test_v2_layout_respects_grid_id_when_falling_back():
 def test_all_in_use_v2_family_names_are_unique():
     # Every literal (or f-string-resolved) v2_family= value passed to
     # grid_store_path() across all sources, kept in sync by hand -- cheap
-    # insurance against a future copy-paste collision in the flat grid_v2/
+    # insurance against a future copy-paste collision in the grid/<grid_id>/
     # namespace. If this test fails, two different sources would silently
     # overwrite each other's store under layout=v2.
     in_use_families = [
@@ -74,3 +81,47 @@ def test_v2_family_ignored_under_legacy_layout():
     assert grid_store_path(
         "/data", "acag/pm25", "acag_pm25_timeseries_reprojected.zarr", v2_family="pm25"
     ) == os.path.join("/data", "acag/pm25", "processed", "stage_2", "acag_pm25_timeseries_reprojected.zarr")
+
+
+def test_raw_root_v2_layout_flips_to_top_level_raw_tree():
+    assert raw_root("/data", "acag/pm25", layout="v2") == os.path.join("/data", "raw", "acag/pm25")
+
+
+def test_raw_root_v2_layout_applies_namespace():
+    assert raw_root("/data", "misc", namespace="gadm", layout="v2") == os.path.join("/data", "raw", "misc", "gadm")
+
+
+def test_raw_root_legacy_layout_unchanged():
+    assert raw_root("/data", "acag/pm25", layout="legacy") == os.path.join("/data", "acag/pm25", "raw")
+
+
+def test_output_root_prepare_v2_layout_flips_to_top_level_prepared_tree():
+    assert output_root("/data", "acag/pm25", PipelineStep.PREPARE, layout="v2") == os.path.join(
+        "/data", "prepared", "acag/pm25"
+    )
+
+
+def test_output_root_prepare_v2_layout_applies_namespace():
+    assert output_root(
+        "/data", "misc", PipelineStep.PREPARE, namespace="osm", layout="v2"
+    ) == os.path.join("/data", "prepared", "misc", "osm")
+
+
+def test_output_root_prepare_legacy_layout_unchanged():
+    assert output_root("/data", "acag/pm25", PipelineStep.PREPARE, layout="legacy") == os.path.join(
+        "/data", "acag/pm25", "processed", "stage_1"
+    )
+
+
+def test_output_root_grid_v2_layout_ignores_namespace():
+    # GRID's v2 directory is flat (grid/<grid_id>) -- namespace is only
+    # meaningful for the legacy per-source layout.
+    assert output_root(
+        "/data", "misc", PipelineStep.GRID, namespace="gadm", layout="v2", grid_id="ease6933"
+    ) == os.path.join("/data", "grid", "ease6933")
+
+
+def test_output_root_fetch_v2_layout_matches_raw_root():
+    assert output_root("/data", "eog/viirs", PipelineStep.FETCH, layout="v2") == raw_root(
+        "/data", "eog/viirs", layout="v2"
+    )

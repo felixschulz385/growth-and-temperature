@@ -37,6 +37,12 @@ def test_output_root_hardcodes_plad_prefix_ignoring_data_path(tmp_path):
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "plad", "processed", "stage_2")
 
 
+def test_output_root_fetch_uses_top_level_tree_under_layout_v2(tmp_path):
+    # No PREPARE step -- only FETCH needs a v2 case here.
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "plad")
+
+
 def test_admin_level_must_be_1_or_2(tmp_path):
     import pytest
 
@@ -71,8 +77,8 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
     s2, ctx2 = _make_source(tmp_path, admin_level=2, layout="v2")
     t1 = s1.plan(PipelineStep.GRID, TargetSelection())[0]
     t2 = s2.plan(PipelineStep.GRID, TargetSelection())[0]
-    assert t1.output_path == os.path.join(ctx1.data_root, "grid_v2", "admin_panel_adm1.zarr")
-    assert t2.output_path == os.path.join(ctx2.data_root, "grid_v2", "admin_panel_adm2.zarr")
+    assert t1.output_path == os.path.join(ctx1.data_root, "grid", "legacy_4326", "admin_panel_adm1.zarr")
+    assert t2.output_path == os.path.join(ctx2.data_root, "grid", "legacy_4326", "admin_panel_adm2.zarr")
 
 
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):

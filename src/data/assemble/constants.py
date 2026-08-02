@@ -43,8 +43,11 @@ EXCLUDED_VARIABLES = ['spatial_ref']
 # order and uses the first that exists, so this list is how it stays
 # layout-aware: the legacy per-source path is tried first, then the
 # layout:v2 single-source-family path (src/data/sources/layout.py's
-# grid_store_path(), v2_family="land_mask") if that's what was written.
+# grid_store_path(), v2_family="land_mask") under each grid this repo
+# supports -- only one will ever exist for a given run, since layout:v2 is
+# only ever run against one grid at a time.
 LAND_MASK_RELATIVE_PATHS = [
     "misc/processed/stage_2/osm/land_mask.zarr",
-    "grid_v2/land_mask.zarr",
+    "grid/legacy_4326/land_mask.zarr",
+    "grid/ease6933/land_mask.zarr",
 ]

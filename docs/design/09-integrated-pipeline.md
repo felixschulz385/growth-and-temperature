@@ -161,9 +161,30 @@ Legacy mapping (the default, byte-identical to today):
 The `stage_N` numbering becomes an internal implementation detail of one function, no longer a vocabulary
 anyone reads or writes elsewhere. `grid_id` also finally implements the `grid: ease6933 | legacy_4326`
 config switch [`05-migration.md`](05-migration.md) §1 recommended and that today only MODIS honours ad hoc.
-A physical rename (`raw/`, `prepared/`, `grid/<grid_id>/`) is left as an explicitly separate, optional
+A physical rename (`raw/`, `prepared/`, `grid/<grid_id>/`) was left as an explicitly separate, optional
 `layout: v2` future task (§14) with the eight-consumer list above as its checklist — not on this
 redesign's critical path.
+
+**Update: `layout: v2` is now implemented**, additive and opt-in via `pipeline.layout` in `data.yaml`
+(default `legacy`, unchanged from the table above). `output_root()`/`raw_root()`/`grid_store_path()`
+(`src/data/sources/layout.py`) all take a `layout` parameter; every registered source honours it for
+FETCH/PREPARE/GRID. Physical layout under `layout: v2`:
+
+| Step | Path |
+|---|---|
+| `FETCH` | `<data_root>/raw/<data_path>[/<namespace>]` |
+| `PREPARE` | `<data_root>/prepared/<data_path>[/<namespace>]` |
+| `GRID` | `<data_root>/grid/<grid_id>/<family>.zarr` -- one store per variable family (§2's original decision was scoped to single-contributing-source families only; every registered GRID-capable source turned out to fit that shape, so no multi-source write-coordination mechanism was needed) |
+
+Of the eight originally-listed consumers, `assemble:`'s `stage_3` blocks were found to be disconnected
+from any code currently in `src/data/assemble/*.py` (no code produces or reads the `*_tabular.parquet`
+filenames those blocks reference) and were deliberately left untouched rather than migrated -- flagged as
+likely-dead config, not a live consumer. The other seven were updated to be `layout`-aware, plus two
+previously-undocumented hardcoded consumers found during that work
+(`src/analysis/subsets/resolve.py`'s classifications path, and a fragile `glass/source.py` hack that
+derived a temp path by string-splitting a GRID output path on the literal substring `"stage_2"`).
+A migration script (`scripts/migrate_layout_v2.py`, `orchestration/slurm/migrate-layout-v2.sh`) physically
+moves already-computed legacy-layout data into the new layout; dry-run by default, requires `--execute`.
 
 ### Completion / resumability, generalized from the MODIS lesson
 
@@ -529,11 +550,11 @@ reading diffs.
 | 8 | Orchestration + config changes; regenerate all SLURM scripts; `git rm` the old ones. | In place |
 | 9 | **Hard validation gate**: one target per archetype (bulk-composite, streaming, vector, tabular-join, point) diffed old-code-vs-new-code output; full test suite green; generator `--check` clean. **Nothing in step 10 starts before this passes.** | — |
 | 10 | Cutover: delete `src/data/download/`, `src/data/preprocess/`, the shims, `src/cli/download/`, `src/cli/preprocess/`; fold in `geobox_patch.py` (1,607 dead lines), dead `demean`/`gcs` wiring. | In place |
-| 11 | *Optional, separate*: `layout: v2` physical rename, with the §3 consumer checklist. Not on the critical path. | In place |
+| 11 | *Optional, separate*: `layout: v2` physical rename, with the §3 consumer checklist. Not on the critical path. | Implemented |
 
 **Status**: steps 0–10 complete. Step 9's hard gate passed (two archetype representatives waived by explicit
-decision, not executed — see §14); step 10's cutover is done. Step 11 (`layout: v2`) remains not started, as
-designed — it was never on the critical path.
+decision, not executed — see §14); step 10's cutover is done. Step 11 (`layout: v2`) is now implemented (§3),
+additive and opt-in — was never on the critical path, but is no longer outstanding either.
 
 **Overlap strategy**: rather than a runtime flag, the switch is *which CLI verb you invoke* —
 `preprocess run --source acag` and `pipeline run --source acag --step prepare` coexist for as long as both
@@ -634,7 +655,9 @@ project); no full-panel end-to-end run in tests (that is the step-9 operational 
   threads the hook through `common/raster/spatial.py` but does not retune values.
 - GLASS's naive daily→annual mean (§5) — fixed in a follow-on commit, not this one.
 - Whether `country_classifications` should later become four sources (§7's escape hatch).
-- The `layout: v2` physical directory rename (§3) — deferred, with its consumer checklist recorded.
+- ~~The `layout: v2` physical directory rename (§3) — deferred, with its consumer checklist recorded.~~
+  Implemented (§3's "Update" note); still opt-in, `assemble:`'s stage_3 blocks deliberately excluded
+  (found disconnected from current `src/data/assemble/*.py` code, likely dead config).
 - Job-dependency chaining (`--dependency=afterok`) — `REQUIRES` now makes the dependency graph derivable,
   but nothing yet emits SLURM dependency flags from it; a natural next step, not done here.
 - A `run.py neighbourhood run` CLI verb — `src/data/common/neighbourhood/` has none today (§2).

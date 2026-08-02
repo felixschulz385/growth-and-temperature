@@ -390,7 +390,13 @@ class SnlMiningSource(DataSource):
         # ignore ctx.grid_id entirely -- so a run with pipeline.grid: ease6933
         # would still land in a legacy-named directory. Route through the
         # shared layout function like DataSource.output_root() does.
-        return layout.output_root(self.ctx.data_root, self.cfg.data_path, PipelineStep.GRID, grid_id=self.ctx.grid_id)
+        return layout.output_root(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            PipelineStep.GRID,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+        )
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         if step is PipelineStep.GRID:

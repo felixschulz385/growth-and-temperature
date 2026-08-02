@@ -71,7 +71,7 @@ class BermanMiningSource(DataSource):
         super().__init__(ctx, cfg)
 
         self.mining_data_path = cfg.raw.get("mining_data_path") or os.path.join(
-            self.ctx.data_root, self.cfg.data_path, "raw", "baseline", "BCRT_baseline.dta"
+            self.output_root(PipelineStep.FETCH), "baseline", "BCRT_baseline.dta"
         )
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="berman_mining_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)

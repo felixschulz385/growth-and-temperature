@@ -117,7 +117,14 @@ class ModisSource(DataSource):
         from src.data.sources.layout import EASE_GRID_ID
 
         if step is PipelineStep.GRID:
-            return layout.output_root(self.ctx.data_root, self.cfg.data_path, step, namespace=namespace, grid_id=EASE_GRID_ID)
+            return layout.output_root(
+                self.ctx.data_root,
+                self.cfg.data_path,
+                step,
+                namespace=namespace,
+                grid_id=EASE_GRID_ID,
+                layout=self.ctx.layout,
+            )
         return super().output_root(step, namespace=namespace)
 
     # ------------------------------------------------------------------

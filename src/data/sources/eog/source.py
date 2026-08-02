@@ -335,7 +335,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     def _resolve_source_file_path(self, file_path: str) -> str:
         if os.path.isabs(file_path) or (self.ctx.data_root and file_path.startswith(self.ctx.data_root)):
             return file_path
-        return os.path.join(self.ctx.data_root, self.cfg.data_path, "raw", file_path)
+        return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
         index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)

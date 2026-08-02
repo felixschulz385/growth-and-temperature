@@ -109,7 +109,12 @@ class GlassSource(_CrawlerMixin, DataSource):
         exists only for index-file naming, matching old
         `GlassPreprocessor.get_hpc_output_path` using `self.path_prefix`)."""
         return layout.output_root(
-            self.ctx.data_root, self.path_prefix, step, namespace=namespace, grid_id=self.ctx.grid_id
+            self.ctx.data_root,
+            self.path_prefix,
+            step,
+            namespace=namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
         )
 
     # ------------------------------------------------------------------
@@ -734,7 +739,10 @@ class GlassSource(_CrawlerMixin, DataSource):
                 logger.info("Processing year %s with %d files", year, len(year_files))
 
                 if len(year_files) > 1:
-                    annual_temp_path = f'{output_path.split("stage_2")[0]}stage_1/{year}/temp_combined.tzarr'
+                    prepare_root = layout.output_root(
+                        self.ctx.data_root, self.path_prefix, PipelineStep.PREPARE, layout=self.ctx.layout
+                    )
+                    annual_temp_path = os.path.join(prepare_root, str(year), "temp_combined.tzarr")
                     if not self._aggregate_year_files(year_files, annual_temp_path, year):
                         logger.error("Failed to aggregate files for year %s", year)
                         return False

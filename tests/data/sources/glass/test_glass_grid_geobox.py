@@ -23,9 +23,12 @@ def _coarse_ease_geobox():
     return canonical_ease_geobox(resolution_m=50_000.0, lat_clip_deg=60.0)
 
 
-def _make_source(tmp_path, grid_id="legacy_4326"):
+def _make_source(tmp_path, grid_id="legacy_4326", layout="legacy"):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), grid_id=grid_id
+        data_root=str(tmp_path / "data_root"),
+        local_index_dir=str(tmp_path / "index"),
+        grid_id=grid_id,
+        layout=layout,
     )
     cfg = SourceConfig.from_dict("glass_modis", {"base_url": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"})
     return GlassSource(ctx, cfg), ctx
@@ -85,3 +88,36 @@ def test_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypat
 
 class _FakeClient:
     dashboard_link = None
+
+
+def test_multi_file_year_temp_path_uses_layout_output_root_not_string_split(tmp_path, monkeypatch):
+    # Regression test: _process_years_chunked used to derive the PREPARE-
+    # stage temp path by string-splitting the GRID output_path on the
+    # literal substring "stage_2" -- a hack that silently breaks once GRID
+    # output no longer contains that substring at all (layout=v2's
+    # grid/<grid_id>/ paths never do).
+    import os
+
+    import src.data.sources.layout as layout_module
+
+    for layout in ("legacy", "v2"):
+        source, ctx = _make_source(tmp_path, layout=layout)
+        captured = {}
+
+        def fake_aggregate(self_unused, year_files, annual_temp_path, year):
+            captured["annual_temp_path"] = annual_temp_path
+            return True
+
+        monkeypatch.setattr(GlassSource, "_aggregate_year_files", fake_aggregate)
+        monkeypatch.setattr(source, "_process_year_tiles", lambda *a, **k: True)
+
+        geobox = _coarse_ease_geobox()
+        # data_source_kind="MODIS" (default for glass_modis) extracts the
+        # year from a "/YYYY/" path segment, not the filename.
+        year_files = ["/2019/h18v04.zarr", "/2019/h20v08.zarr"]
+        source._process_years_chunked(year_files, "unused_output_path", geobox, [2019])
+
+        prepare_root = layout_module.output_root(
+            ctx.data_root, source.path_prefix, PipelineStep.PREPARE, layout=layout
+        )
+        assert captured["annual_temp_path"] == os.path.join(prepare_root, "2019", "temp_combined.tzarr")

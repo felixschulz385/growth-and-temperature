@@ -37,6 +37,12 @@ def _make_source(tmp_path, year_range=(2019, 2021), rows=None, layout="legacy"):
     return NtlHarmSource(ctx, cfg), ctx
 
 
+def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "ntl_harm/harmonized")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "ntl_harm/harmonized")
+
+
 def test_default_resampling_is_sum(tmp_path):
     source, _ = _make_source(tmp_path)
     assert source.resampling == "sum"
@@ -86,4 +92,4 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
 
     targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2022)))
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "ntl_harm.zarr")
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "ntl_harm.zarr")

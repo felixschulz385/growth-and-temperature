@@ -40,6 +40,20 @@ def test_default_duckdb_and_prepared_db_paths(tmp_path):
     assert source.prepared_db_path == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb")
 
 
+def test_prepared_db_path_is_a_documented_layout_v2_exception(tmp_path):
+    # snl_mining's PREPARE artefact is resolved from cfg.raw/aggregation
+    # config or a hand-built default entirely independent of layout.py --
+    # unlike every other source, layout="v2" must NOT move it (its DuckDB-
+    # based PREPARE step doesn't share the shape layout.py's raw/prepared/
+    # grid tree assumes).
+    legacy_source, legacy_ctx = _make_source(tmp_path, layout="legacy")
+    v2_source, v2_ctx = _make_source(tmp_path, layout="v2")
+    assert legacy_source.prepared_db_path == v2_source.prepared_db_path
+    assert v2_source.prepared_db_path == os.path.join(
+        v2_ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb"
+    )
+
+
 def test_default_radius_and_admin_variables(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.buffer_tables == {
@@ -106,7 +120,7 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path, monkeypatch):
 
     targets = source.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "snl_mining.zarr")
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "snl_mining.zarr")
 
 
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):

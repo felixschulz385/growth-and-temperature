@@ -20,10 +20,11 @@ remote:
 # switch, finally implemented generically rather than MODIS-only ad hoc).
 pipeline:
   grid: legacy_4326  # or "ease6933"
-  # docs/design/09-integrated-pipeline.md §14's deferred "layout: v2" task
-  # (docs/design/02-storage.md §2's one-store-per-variable-family decision),
-  # implemented so far only for single-source families (acag, esacci, osm,
-  # gadm, country_classifications, plad) -- see src/data/sources/layout.py.
+  # docs/design/09-integrated-pipeline.md §14's "layout: v2" physical rename:
+  # raw/<data_path>, prepared/<data_path>, grid/<grid_id>/<family>.zarr,
+  # replacing the legacy <data_path>/{raw,processed/stage_1,processed/stage_2}
+  # nesting -- see src/data/sources/layout.py. Every registered source
+  # supports it; still opt-in, "legacy" stays the default everywhere.
   layout: legacy  # or "v2"
 
 # Data source configurations
