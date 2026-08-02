@@ -186,15 +186,33 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
         # REQUIRES=(("gadm", GRID),) -- resolve gadm's own layout directly
         # rather than importing gadm's class (docs/design/09-integrated-pipeline.md
         # §2: cross-source coupling is on artefact paths, never a class import).
-        gadm_grid_dir = layout.output_root(self.ctx.data_root, "misc", PipelineStep.GRID, namespace="gadm", grid_id=self.ctx.grid_id)
-        gadm_zarr = os.path.join(gadm_grid_dir, "countries_grid.zarr")
+        # Must mirror GadmSource._plan_grid()'s own grid_store_path() call
+        # (same v2_family="country_id") so this keeps finding gadm's output
+        # under layout=v2 too, not just the legacy layout.
+        gadm_zarr = layout.grid_store_path(
+            self.ctx.data_root,
+            "misc",
+            "countries_grid.zarr",
+            namespace="gadm",
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            v2_family="country_id",
+        )
         if not os.path.exists(gadm_zarr):
             return []
 
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="country_classifications",
-                output_path=os.path.join(self.output_root(PipelineStep.GRID), "classifications_grid.zarr"),
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    "classifications_grid.zarr",
+                    namespace=self.cfg.namespace,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family="classifications",
+                ),
                 inputs=(classifications_parquet, gadm_zarr), completion=Completion.PATH_EXISTS,
             )
         ]

@@ -169,7 +169,15 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="osm",
-                output_path=os.path.join(self.output_root(PipelineStep.GRID), "land_mask.zarr"),
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    "land_mask.zarr",
+                    namespace=self.cfg.namespace,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family="land_mask",
+                ),
                 inputs=(vector_path,), completion=Completion.MARKER,
             )
         ]
@@ -180,7 +188,7 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         from odc.geo.geom import Geometry
         from odc.geo.xr import rasterize
 
-        from src.data.common.geobox import get_or_create_geobox
+        from src.data.common.geobox import get_target_geobox
         from src.data.sources.steps import is_complete, mark_complete
 
         if not self.cfg.override and is_complete(target):
@@ -192,13 +200,14 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         gdf = gpd.read_file(target.inputs[0], engine="pyogrio")
-        geobox = get_or_create_geobox(self.ctx.data_root)
+        geobox = get_target_geobox(self.ctx)
 
         land_polygons = shapely.MultiPolygon(gdf.geometry.tolist())
         geom = Geometry(land_polygons, crs=str(gdf.crs))
         land_mask = rasterize(geom, geobox)
-        land_mask.coords["latitude"] = land_mask.coords["latitude"].values.round(5)
-        land_mask.coords["longitude"] = land_mask.coords["longitude"].values.round(5)
+        dim_y, dim_x = geobox.dimensions
+        land_mask.coords[dim_y] = land_mask.coords[dim_y].values.round(5)
+        land_mask.coords[dim_x] = land_mask.coords[dim_x].values.round(5)
 
         ds = xr.Dataset(
             data_vars={"land_mask": land_mask},

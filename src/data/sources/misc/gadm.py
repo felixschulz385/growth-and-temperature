@@ -184,7 +184,15 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="gadm",
-                output_path=os.path.join(self.output_root(PipelineStep.GRID), "countries_grid.zarr"),
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    "countries_grid.zarr",
+                    namespace=self.cfg.namespace,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family="country_id",
+                ),
                 inputs=inputs, completion=Completion.MARKER,
             )
         ]
@@ -192,7 +200,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
     def _execute_grid(self, target: StepTarget) -> bool:
         from odc.geo import GeoboxTiles
 
-        from src.data.common.geobox import get_or_create_geobox
+        from src.data.common.geobox import get_target_geobox
         from src.data.sources.steps import is_complete, mark_complete
 
         if not self.cfg.override and is_complete(target):
@@ -223,7 +231,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             if dashboard_link:
                 logger.info("Created Dask client for GADM rasterization: %s", dashboard_link)
 
-            geobox = get_or_create_geobox(self.ctx.data_root)
+            geobox = get_target_geobox(self.ctx)
             tile_size = 2048
             tiles = GeoboxTiles(geobox, (tile_size, tile_size))
 
@@ -251,22 +259,23 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
 
         try:
             ny, nx = geobox.shape
-            lat_coords = geobox.coords["latitude"].values.round(5)
-            lon_coords = geobox.coords["longitude"].values.round(5)
+            dim_y, dim_x = geobox.dimensions
+            y_coords = geobox.coords[dim_y].values.round(5)
+            x_coords = geobox.coords[dim_x].values.round(5)
 
             data_vars = {
                 "country": xr.DataArray(
                     da.zeros((ny, nx), dtype=np.uint16, chunks=(512, 512)),
-                    dims=["latitude", "longitude"],
-                    coords={"latitude": lat_coords, "longitude": lon_coords},
+                    dims=[dim_y, dim_x],
+                    coords={dim_y: y_coords, dim_x: x_coords},
                     attrs={"description": "Country ID grid (0=no country)", "_FillValue": 0},
                 )
             }
             if include_subdivisions:
                 data_vars["subdivision"] = xr.DataArray(
                     da.zeros((ny, nx), dtype=np.uint16, chunks=(512, 512)),
-                    dims=["latitude", "longitude"],
-                    coords={"latitude": lat_coords, "longitude": lon_coords},
+                    dims=[dim_y, dim_x],
+                    coords={dim_y: y_coords, dim_x: x_coords},
                     attrs={"description": "Subdivision ID grid (0=no subdivision)", "_FillValue": 0},
                 )
 
@@ -333,22 +342,19 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                                 subdivision_mask = rasterize(geom, tile_geobox)
                                 subdivision_tile = np.where(subdivision_mask, value, subdivision_tile)
 
+                        tile_dim_y, tile_dim_x = tile_geobox.dimensions
+                        tile_coords = {
+                            tile_dim_y: tile_geobox.coords[tile_dim_y].values.round(5),
+                            tile_dim_x: tile_geobox.coords[tile_dim_x].values.round(5),
+                        }
                         tile_data_vars = {
                             "country": xr.DataArray(
-                                country_tile, dims=["latitude", "longitude"],
-                                coords={
-                                    "latitude": tile_geobox.coords["latitude"].values.round(5),
-                                    "longitude": tile_geobox.coords["longitude"].values.round(5),
-                                },
+                                country_tile, dims=[tile_dim_y, tile_dim_x], coords=tile_coords,
                             )
                         }
                         if subdivision_tile is not None:
                             tile_data_vars["subdivision"] = xr.DataArray(
-                                subdivision_tile, dims=["latitude", "longitude"],
-                                coords={
-                                    "latitude": tile_geobox.coords["latitude"].values.round(5),
-                                    "longitude": tile_geobox.coords["longitude"].values.round(5),
-                                },
+                                subdivision_tile, dims=[tile_dim_y, tile_dim_x], coords=tile_coords,
                             )
 
                         xr.Dataset(tile_data_vars).to_zarr(output_path, region="auto", mode="r+", consolidated=False)

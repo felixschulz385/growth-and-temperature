@@ -15,6 +15,13 @@ from pathlib import Path
 from typing import Dict, Optional
 
 DEFAULT_COUNTRY_MAPPING_PATH = "data_nobackup/misc/processed/stage_2/gadm/country_code_mapping.json"
+#: Where GADM's country-id sidecar lands under the docs/design/09-integrated-
+#: pipeline.md §14 "layout: v2" single-source-family rename
+#: (src/data/sources/layout.py's grid_store_path(), v2_family="country_id")
+#: -- same sidecar filename, relocated alongside country_id.zarr.
+V2_COUNTRY_MAPPING_PATH = "data_nobackup/grid_v2/country_code_mapping.json"
+#: PREPARE-stage (stage_1) artefact, unaffected by the GRID-stage-only
+#: layout:v2 rename -- no v2 variant.
 DEFAULT_GADM_PATH = "data_nobackup/misc/processed/stage_1/gadm/gadm_levelADM_0_simplified.gpkg"
 
 
@@ -40,8 +47,12 @@ class CountryRegistry:
         return self.country_to_id.get(iso3)
 
 
-def default_mapping_path(project_root: Path) -> Path:
-    return Path(project_root) / DEFAULT_COUNTRY_MAPPING_PATH
+def default_mapping_path(project_root: Path, *, layout: str = "legacy") -> Path:
+    """`layout="v2"` looks under the layout:v2 rename's shared `grid_v2/`
+    directory instead of GADM's legacy per-source path; default is
+    unchanged/legacy so existing callers are unaffected."""
+    rel_path = V2_COUNTRY_MAPPING_PATH if layout == "v2" else DEFAULT_COUNTRY_MAPPING_PATH
+    return Path(project_root) / rel_path
 
 
 def default_gadm_path(project_root: Path) -> Path:

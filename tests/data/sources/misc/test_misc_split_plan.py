@@ -11,12 +11,14 @@ from src.data.sources import registry
 from src.data.sources.steps import MissingPrerequisiteError, PipelineStep, TargetSelection
 
 
-def _ctx(tmp_path):
-    return PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+def _ctx(tmp_path, layout="legacy"):
+    return PipelineContext(
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
+    )
 
 
-def _make(tmp_path, source_id, **raw):
-    ctx = _ctx(tmp_path)
+def _make(tmp_path, source_id, layout="legacy", **raw):
+    ctx = _ctx(tmp_path, layout=layout)
     cfg = SourceConfig.from_dict(source_id, dict(raw))
     cls = registry.load(source_id)
     return cls(ctx, cfg), ctx
@@ -113,3 +115,47 @@ def test_country_classifications_grid_requires_gadm_output_via_shared_layout(tmp
 def test_country_classifications_requires_gadm_grid():
     spec = registry.resolve("country_classifications")
     assert spec.requires == (("gadm", PipelineStep.GRID),)
+
+
+def test_osm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    osm, ctx = _make(tmp_path, "osm", layout="v2")
+    vector_dir = osm.output_root(PipelineStep.PREPARE)
+    os.makedirs(vector_dir, exist_ok=True)
+    open(os.path.join(vector_dir, "land_polygons_simplified.gpkg"), "w").close()
+
+    targets = osm.plan(PipelineStep.GRID, TargetSelection())
+    assert len(targets) == 1
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "land_mask.zarr")
+
+
+def test_gadm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    gadm, ctx = _make(tmp_path, "gadm", layout="v2")
+    vector_dir = gadm.output_root(PipelineStep.PREPARE)
+    os.makedirs(vector_dir, exist_ok=True)
+    open(os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg"), "w").close()
+
+    targets = gadm.plan(PipelineStep.GRID, TargetSelection())
+    assert len(targets) == 1
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "country_id.zarr")
+
+
+def test_country_classifications_grid_finds_gadm_v2_output_under_layout_v2(tmp_path):
+    cc, ctx = _make(tmp_path, "country_classifications", layout="v2")
+    vector_dir = cc.output_root(PipelineStep.PREPARE)
+    os.makedirs(vector_dir, exist_ok=True)
+    open(os.path.join(vector_dir, "classifications.parquet"), "w").close()
+
+    # GADM's v2 output not yet present -> no target.
+    assert cc.plan(PipelineStep.GRID, TargetSelection()) == []
+
+    grid_v2_dir = os.path.join(ctx.data_root, "grid_v2")
+    os.makedirs(grid_v2_dir, exist_ok=True)
+    os.makedirs(os.path.join(grid_v2_dir, "country_id.zarr"))
+
+    targets = cc.plan(PipelineStep.GRID, TargetSelection())
+    assert len(targets) == 1
+    assert targets[0].output_path == os.path.join(grid_v2_dir, "classifications.zarr")
+    assert targets[0].inputs == (
+        os.path.join(vector_dir, "classifications.parquet"),
+        os.path.join(grid_v2_dir, "country_id.zarr"),
+    )

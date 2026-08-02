@@ -155,8 +155,13 @@ class PlaDSource(DataSource):
             return [
                 StepTarget(
                     source_id=self.ID, step=PipelineStep.GRID, key=f"adm{self.admin_level}",
-                    output_path=os.path.join(
-                        self.output_root(PipelineStep.GRID), f"plad_adm{self.admin_level}_timeseries_reprojected.zarr"
+                    output_path=layout.grid_store_path(
+                        self.ctx.data_root,
+                        self.OUTPUT_PREFIX,
+                        f"plad_adm{self.admin_level}_timeseries_reprojected.zarr",
+                        grid_id=self.ctx.grid_id,
+                        layout=self.ctx.layout,
+                        v2_family=f"admin_panel_adm{self.admin_level}",
                     ),
                     completion=Completion.PATH_EXISTS,
                     meta={"admin_level": self.admin_level, "year_range": self.cfg.year_range},
@@ -230,11 +235,9 @@ class PlaDSource(DataSource):
         return None
 
     def _get_or_create_geobox(self):
-        from src.data.common.geobox import get_or_create_geobox
+        from src.data.common.geobox import get_target_geobox
 
-        misc_level1_dir = os.path.join(self.ctx.data_root, "misc", "processed", "stage_1", "misc")
-        os.makedirs(misc_level1_dir, exist_ok=True)
-        return get_or_create_geobox(self.ctx.data_root, misc_level1_dir)
+        return get_target_geobox(self.ctx)
 
     def _create_plad_panel(self):
         import geopandas as gpd
@@ -292,13 +295,14 @@ class PlaDSource(DataSource):
         try:
             time_coords = pd.to_datetime([f"{year}-12-31" for year in years])
             ny, nx = geobox.shape
-            lat_coords = geobox.coords["latitude"].values.round(5)
-            lon_coords = geobox.coords["longitude"].values.round(5)
+            dim_y, dim_x = geobox.dimensions
+            y_coords = geobox.coords[dim_y].values.round(5)
+            x_coords = geobox.coords[dim_x].values.round(5)
 
             data_var = xr.DataArray(
                 da.zeros((len(years), 1, ny, nx), dtype=bool),
-                dims=["time", "band", "latitude", "longitude"],
-                coords={"time": time_coords, "band": [1], "latitude": lat_coords, "longitude": lon_coords},
+                dims=["time", "band", dim_y, dim_x],
+                coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
                 attrs={
                     "long_name": "Regional Favoritism Indicator",
                     "description": f"Boolean indicator for regional favoritism at ADM{self.admin_level} level",
@@ -343,8 +347,9 @@ class PlaDSource(DataSource):
 
                 data_array = data_array.expand_dims("time").assign_coords(time=[pd.Timestamp(f"{year}-12-31")])
                 data_array = data_array.expand_dims("band").assign_coords(band=[1])
+                dim_y, dim_x = geobox.dimensions
                 data_array = data_array.assign_coords(
-                    {"latitude": geobox.coords["latitude"].values.round(5), "longitude": geobox.coords["longitude"].values.round(5)}
+                    {dim_y: geobox.coords[dim_y].values.round(5), dim_x: geobox.coords[dim_x].values.round(5)}
                 )
                 data_array = data_array.drop_vars(["spatial_ref"])
                 dataset = data_array.to_dataset(name="reg_fav")

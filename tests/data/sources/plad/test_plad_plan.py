@@ -10,8 +10,13 @@ from src.data.sources.plad import PlaDSource
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, admin_level=1, year_range=(1980, 2022)):
-    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+def _make_source(tmp_path, admin_level=1, year_range=(1980, 2022), grid_id="legacy_4326", layout="legacy"):
+    ctx = PipelineContext(
+        data_root=str(tmp_path / "data_root"),
+        local_index_dir=str(tmp_path / "index"),
+        grid_id=grid_id,
+        layout=layout,
+    )
     cfg = SourceConfig.from_dict("plad", {"admin_level": admin_level, "year_range": list(year_range)})
     return PlaDSource(ctx, cfg), ctx
 
@@ -59,3 +64,29 @@ def test_resolve_gadm_files_reads_from_gadm_prepare_output(tmp_path):
 
     files = source._resolve_gadm_files_from_preprocessed()
     assert files == {"gadm_adm1": os.path.join(gadm_dir, "gadm_levelADM_1_simplified.gpkg")}
+
+
+def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    s1, ctx1 = _make_source(tmp_path, admin_level=1, layout="v2")
+    s2, ctx2 = _make_source(tmp_path, admin_level=2, layout="v2")
+    t1 = s1.plan(PipelineStep.GRID, TargetSelection())[0]
+    t2 = s2.plan(PipelineStep.GRID, TargetSelection())[0]
+    assert t1.output_path == os.path.join(ctx1.data_root, "grid_v2", "admin_panel_adm1.zarr")
+    assert t2.output_path == os.path.join(ctx2.data_root, "grid_v2", "admin_panel_adm2.zarr")
+
+
+def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):
+    source, ctx = _make_source(tmp_path, grid_id="ease6933")
+
+    import src.data.common.geobox as geobox_module
+
+    calls = []
+
+    def fake_get_target_geobox(passed_ctx):
+        calls.append(passed_ctx)
+        return "fake-canonical-geobox"
+
+    monkeypatch.setattr(geobox_module, "get_target_geobox", fake_get_target_geobox)
+
+    assert source._get_or_create_geobox() == "fake-canonical-geobox"
+    assert calls == [ctx]

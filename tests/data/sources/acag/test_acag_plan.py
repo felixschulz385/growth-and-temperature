@@ -24,7 +24,7 @@ def _write_index(local_index_dir, data_path, rows):
     pd.DataFrame(rows).to_parquet(path)
 
 
-def _make_source(tmp_path, year_range=(2019, 2021), rows=None):
+def _make_source(tmp_path, year_range=(2019, 2021), rows=None, layout="legacy"):
     data_root = str(tmp_path / "data_root")
     local_index_dir = str(tmp_path / "index")
     data_path = "acag/pm25"
@@ -36,7 +36,7 @@ def _make_source(tmp_path, year_range=(2019, 2021), rows=None):
             {"relative_path": "GL/Annual/V6GL02.04.CNNPM25.GL.202201-202212.nc", "status_category": "pending"},
         ]
     _write_index(local_index_dir, data_path, rows)
-    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir)
+    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout=layout)
     cfg = SourceConfig.from_dict("acag", {"data_path": data_path, "year_range": list(year_range)})
     return AcagSource(ctx, cfg), ctx
 
@@ -93,6 +93,18 @@ def test_grid_target_lists_available_annual_zarrs(tmp_path):
     assert target.output_path == os.path.join(
         source.output_root(PipelineStep.GRID), "acag_pm25_timeseries_reprojected.zarr"
     )
+
+
+def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    source, ctx = _make_source(tmp_path, year_range=(2019, 2022), layout="v2")
+    annual_dir = source.output_root(PipelineStep.PREPARE)
+    os.makedirs(annual_dir, exist_ok=True)
+    os.makedirs(os.path.join(annual_dir, "2019.zarr"))
+
+    targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2022)))
+
+    assert len(targets) == 1
+    assert targets[0].output_path == os.path.join(ctx.data_root, "grid_v2", "pm25.zarr")
 
 
 def test_fetch_step_is_declared_and_prepare_grid_reject_undeclared_steps():

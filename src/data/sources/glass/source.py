@@ -600,7 +600,7 @@ class GlassSource(_CrawlerMixin, DataSource):
         """Ported verbatim from GlassPreprocessor._process_spatial_target and
         its chunked-tile helpers -- GLASS's own bespoke tiled reprojection,
         not the shared SpatialProcessor (see module docstring)."""
-        from src.data.common.geobox import get_or_create_geobox
+        from src.data.common.geobox import get_target_geobox
         from src.data.sources.steps import is_complete, mark_complete
 
         if not self.cfg.override and is_complete(target):
@@ -626,7 +626,7 @@ class GlassSource(_CrawlerMixin, DataSource):
                     }
                 ):
                     try:
-                        target_geobox = get_or_create_geobox(self.ctx.data_root)
+                        target_geobox = get_target_geobox(self.ctx)
                     except Exception:
                         logger.exception("Failed to get target geobox")
                         return False
@@ -654,8 +654,9 @@ class GlassSource(_CrawlerMixin, DataSource):
             time_coords = pd.to_datetime([f"{year}-12-31" for year in years])
 
             ny, nx = target_geobox.shape
-            lat_coords = target_geobox.coords["latitude"].values.round(5)
-            lon_coords = target_geobox.coords["longitude"].values.round(5)
+            dim_y, dim_x = target_geobox.dimensions
+            y_coords = target_geobox.coords[dim_y].values.round(5)
+            x_coords = target_geobox.coords[dim_x].values.round(5)
 
             data_vars = {}
             default_attrs = {"_FillValue": 0}
@@ -666,8 +667,8 @@ class GlassSource(_CrawlerMixin, DataSource):
                     var_attrs |= packaging_attrs
                 data_vars[var] = xr.DataArray(
                     da.zeros((len(years), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 512, 512)),
-                    dims=["time", "band", "latitude", "longitude"],
-                    coords={"time": time_coords, "band": [1], "latitude": lat_coords, "longitude": lon_coords},
+                    dims=["time", "band", dim_y, dim_x],
+                    coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
                     attrs=var_attrs,
                 )
             sample_ds.close()
@@ -842,9 +843,10 @@ class GlassSource(_CrawlerMixin, DataSource):
 
                         reprojected_ds = xr_reproject(clipped_ds, tile_geobox, resampling="mode", dst_nodata=np.nan)
                         reprojected_ds = reprojected_ds.drop_vars(["spatial_ref"]).drop_attrs()
-                        reprojected_ds.coords["longitude"] = reprojected_ds.coords["longitude"].round(5)
-                        reprojected_ds.coords["latitude"] = reprojected_ds.coords["latitude"].round(5)
-                        reprojected_ds = reprojected_ds.chunk({"band": 1, "time": 1, "latitude": 512, "longitude": 512})
+                        tile_dim_y, tile_dim_x = tile_geobox.dimensions
+                        reprojected_ds.coords[tile_dim_x] = reprojected_ds.coords[tile_dim_x].round(5)
+                        reprojected_ds.coords[tile_dim_y] = reprojected_ds.coords[tile_dim_y].round(5)
+                        reprojected_ds = reprojected_ds.chunk({"band": 1, "time": 1, tile_dim_y: 512, tile_dim_x: 512})
 
                         reprojected_ds.to_zarr(output_path, region="auto", align_chunks=True, zarr_format=3, consolidated=False)
                         reprojected_ds.close()

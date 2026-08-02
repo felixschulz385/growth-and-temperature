@@ -400,8 +400,14 @@ class AcagSource(DataSource):
                 source_id=self.ID,
                 step=PipelineStep.GRID,
                 key="all",
-                output_path=os.path.join(
-                    self.output_root(PipelineStep.GRID), "acag_pm25_timeseries_reprojected.zarr"
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    "acag_pm25_timeseries_reprojected.zarr",
+                    namespace=self.cfg.namespace,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family="pm25",
                 ),
                 inputs=tuple(f["zarr_path"] for f in annual_files),
                 completion=Completion.MARKER,
@@ -410,6 +416,7 @@ class AcagSource(DataSource):
         ]
 
     def _execute_grid(self, target: StepTarget) -> bool:
+        from src.data.common.geobox import get_target_geobox
         from src.data.common.raster.spatial import SpatialProcessor
         from src.data.sources.steps import is_complete, mark_complete
 
@@ -423,7 +430,12 @@ class AcagSource(DataSource):
         with self._dask_client() as client:
             if client is None:
                 return False
-            processor = SpatialProcessor(hpc_root=self.ctx.data_root, temp_dir=self.temp_dir, dask_client=client)
+            processor = SpatialProcessor(
+                hpc_root=self.ctx.data_root,
+                temp_dir=self.temp_dir,
+                dask_client=client,
+                target_geobox=get_target_geobox(self.ctx),
+            )
             with processor.setup_dask_config():
 
                 def year_from_path(p: str) -> Optional[int]:

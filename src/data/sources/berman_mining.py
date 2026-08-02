@@ -194,11 +194,9 @@ class BermanMiningSource(DataSource):
     # -- GRID ("spatial") -------------------------------------------------
 
     def _get_or_create_geobox(self):
-        from src.data.common.geobox import get_or_create_geobox
+        from src.data.common.geobox import get_target_geobox
 
-        misc_level1_dir = os.path.join(self.ctx.data_root, "misc", "processed", "stage_1", "misc")
-        os.makedirs(misc_level1_dir, exist_ok=True)
-        return get_or_create_geobox(self.ctx.data_root, misc_level1_dir)
+        return get_target_geobox(self.ctx)
 
     def _create_mining_dataset(self, year_range: Optional[tuple]):
         import pandas as pd
@@ -238,11 +236,12 @@ class BermanMiningSource(DataSource):
             reprojected_ds = reprojected_ds.rename({"year": "time"})
             reprojected_ds["time"] = pd.to_datetime([f"{year}-12-31" for year in years])
             reprojected_ds = reprojected_ds.expand_dims("band").assign_coords(band=[1])
+            dim_y, dim_x = geobox.dimensions
             reprojected_ds = reprojected_ds.assign_coords(
-                {"latitude": geobox.coords["latitude"].values.round(5), "longitude": geobox.coords["longitude"].values.round(5)}
+                {dim_y: geobox.coords[dim_y].values.round(5), dim_x: geobox.coords[dim_x].values.round(5)}
             )
             reprojected_ds = reprojected_ds.drop_vars(["spatial_ref"], errors="ignore")
-            reprojected_ds = reprojected_ds.chunk({"time": 1, "band": 1, "latitude": 512, "longitude": 512})
+            reprojected_ds = reprojected_ds.chunk({"time": 1, "band": 1, dim_y: 512, dim_x: 512})
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
             encoding = {

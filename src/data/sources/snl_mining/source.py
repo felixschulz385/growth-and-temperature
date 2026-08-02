@@ -31,9 +31,10 @@ import os
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.data.common.geobox import get_target_geobox
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources import registry
+from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 
@@ -179,11 +180,7 @@ class SnlMiningSource(DataSource):
         return con
 
     def _get_or_create_geobox(self):
-        from src.data.common.geobox.geobox import get_or_create_geobox
-
-        misc_level1_dir = os.path.join(self.ctx.data_root, "misc", "processed", "stage_1", "misc")
-        os.makedirs(misc_level1_dir, exist_ok=True)
-        return get_or_create_geobox(self.ctx.data_root, misc_level1_dir)
+        return get_target_geobox(self.ctx)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.sources.steps import is_complete
@@ -382,7 +379,11 @@ class SnlMiningSource(DataSource):
         ]
 
     def _output_root(self) -> str:
-        return os.path.join(self.ctx.data_root, self.cfg.data_path, "processed", "stage_2")
+        # Unlike every other source, this used to hardcode "stage_2" and
+        # ignore ctx.grid_id entirely -- so a run with pipeline.grid: ease6933
+        # would still land in a legacy-named directory. Route through the
+        # shared layout function like DataSource.output_root() does.
+        return layout.output_root(self.ctx.data_root, self.cfg.data_path, PipelineStep.GRID, grid_id=self.ctx.grid_id)
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         if step is PipelineStep.GRID:
@@ -399,14 +400,15 @@ class SnlMiningSource(DataSource):
         try:
             time_coords = pd.to_datetime([f"{year}-12-31" for year in sorted(years)])
             ny, nx = geobox.shape
-            lat_coords = geobox.coords["latitude"].values.round(5)
-            lon_coords = geobox.coords["longitude"].values.round(5)
+            dim_y, dim_x = geobox.dimensions
+            y_coords = geobox.coords[dim_y].values.round(5)
+            x_coords = geobox.coords[dim_x].values.round(5)
 
             data_vars = {
                 var: xr.DataArray(
                     da.zeros((len(time_coords), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, self.tile_size, self.tile_size)),
-                    dims=["time", "band", "latitude", "longitude"],
-                    coords={"time": time_coords, "band": [1], "latitude": lat_coords, "longitude": lon_coords},
+                    dims=["time", "band", dim_y, dim_x],
+                    coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
                     attrs={"_FillValue": 0, "nodata": 0},
                 )
                 for var in self.output_variables
@@ -481,16 +483,17 @@ class SnlMiningSource(DataSource):
                                 tile_arrays[var_name] = np.where(mask, np.uint16(value), tile_arrays[var_name])
 
                         if any_data:
+                            dim_y, dim_x = tile_geobox.dimensions
                             tile_ds = xr.Dataset(
                                 {
                                     var: xr.DataArray(
                                         tile_arrays[var][None, None, :, :],
-                                        dims=["time", "band", "latitude", "longitude"],
+                                        dims=["time", "band", dim_y, dim_x],
                                         coords={
                                             "time": pd.to_datetime([f"{year}-12-31"]),
                                             "band": [1],
-                                            "latitude": tile_geobox.coords["latitude"].values.round(5),
-                                            "longitude": tile_geobox.coords["longitude"].values.round(5),
+                                            dim_y: tile_geobox.coords[dim_y].values.round(5),
+                                            dim_x: tile_geobox.coords[dim_x].values.round(5),
                                         },
                                     )
                                     for var in self.output_variables

@@ -11,8 +11,10 @@ from src.data.sources.snl_mining.source import SnlMiningSource
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, **raw):
-    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+def _make_source(tmp_path, *, grid_id="legacy_4326", **raw):
+    ctx = PipelineContext(
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), grid_id=grid_id
+    )
     cfg = SourceConfig.from_dict("snl_mining", dict(raw))
     return SnlMiningSource(ctx, cfg), ctx
 
@@ -71,3 +73,29 @@ def test_grid_plan_empty_when_prepared_db_missing(tmp_path):
 def test_output_root_grid_matches_old_get_hpc_output_path(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_2")
+
+
+def test_output_root_grid_honors_ease6933(tmp_path):
+    # Regression test: _output_root() used to hardcode "stage_2" and ignore
+    # ctx.grid_id entirely, unlike every other source's output_root().
+    source, ctx = _make_source(tmp_path, grid_id="ease6933")
+    assert source.output_root(PipelineStep.GRID) == os.path.join(
+        ctx.data_root, "snl_mining", "processed", "stage_2_ease6933"
+    )
+
+
+def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):
+    source, ctx = _make_source(tmp_path, grid_id="ease6933")
+
+    calls = []
+
+    def fake_get_target_geobox(passed_ctx):
+        calls.append(passed_ctx)
+        return "fake-canonical-geobox"
+
+    import src.data.sources.snl_mining.source as snl_source_module
+
+    monkeypatch.setattr(snl_source_module, "get_target_geobox", fake_get_target_geobox)
+
+    assert source._get_or_create_geobox() == "fake-canonical-geobox"
+    assert calls == [ctx]

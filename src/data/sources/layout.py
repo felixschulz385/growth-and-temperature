@@ -20,6 +20,14 @@ from src.data.sources.steps import PipelineStep
 LEGACY_GRID_ID = "legacy_4326"
 EASE_GRID_ID = "ease6933"
 
+#: docs/design/09-integrated-pipeline.md §3/§14's deferred "layout: v2" task
+#: (docs/design/02-storage.md §2's "one Zarr store per variable family"
+#: decision), finally given a real implementation for the single-source
+#: families only -- see grid_store_path(). Additive: LEGACY_LAYOUT is the
+#: default everywhere, so today's physical paths are unaffected.
+LEGACY_LAYOUT = "legacy"
+V2_LAYOUT = "v2"
+
 _STAGE_DIR = {
     PipelineStep.PREPARE: "stage_1",
     # GRID's stage_2 directory name depends on grid_id -- see output_root().
@@ -71,6 +79,36 @@ def output_root(
     if namespace:
         base = os.path.join(base, namespace)
     return base
+
+
+def grid_store_path(
+    data_root: str,
+    data_path: str,
+    legacy_filename: str,
+    *,
+    namespace: str | None = None,
+    grid_id: str = LEGACY_GRID_ID,
+    layout: str = LEGACY_LAYOUT,
+    v2_family: str | None = None,
+) -> str:
+    """The full GRID-stage store path for one source's output.
+
+    `layout=legacy` (default): `<output_root(GRID)>/<legacy_filename>` --
+    byte-identical to what every source already builds by hand today.
+
+    `layout=v2` with `v2_family` given: `<data_root>/grid_v2/<v2_family>.zarr`,
+    per docs/design/02-storage.md §2's "one store per variable family"
+    decision -- a shared flat directory of per-family stores, replacing the
+    per-source `processed/stage_2[/<namespace>]` convention. Only meaningful
+    for the "single contributing source" families (docs/design/09-integrated-
+    pipeline.md §14's deferred layout:v2 task, scoped narrowly here); pass
+    `v2_family=None` (the default) for sources not yet part of that scope --
+    they fall back to the legacy path even when `layout=v2` is selected.
+    """
+    if layout == V2_LAYOUT and v2_family is not None:
+        return os.path.join(data_root, "grid_v2", f"{v2_family}.zarr")
+    root = output_root(data_root, data_path, PipelineStep.GRID, namespace=namespace, grid_id=grid_id)
+    return os.path.join(root, legacy_filename)
 
 
 def index_path(local_index_dir: str, data_path: str) -> str:

@@ -415,6 +415,7 @@ class NtlHarmSource(DataSource):
         ]
 
     def _execute_grid(self, target: StepTarget) -> bool:
+        from src.data.common.geobox import get_target_geobox
         from src.data.common.raster.spatial import SpatialProcessor
         from src.data.sources.steps import is_complete, mark_complete
 
@@ -428,7 +429,12 @@ class NtlHarmSource(DataSource):
         with self._dask_client() as client:
             if client is None:
                 return False
-            processor = SpatialProcessor(hpc_root=self.ctx.data_root, temp_dir=self.temp_dir, dask_client=client)
+            processor = SpatialProcessor(
+                hpc_root=self.ctx.data_root,
+                temp_dir=self.temp_dir,
+                dask_client=client,
+                target_geobox=get_target_geobox(self.ctx),
+            )
             with processor.setup_dask_config():
 
                 def year_from_path(p: str) -> Optional[int]:

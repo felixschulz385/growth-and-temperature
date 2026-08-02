@@ -39,7 +39,12 @@ YEAR_COORD = 'year'
 # Variables to exclude from processing
 EXCLUDED_VARIABLES = ['spatial_ref']
 
-# Land mask paths (relative to hpc_root)
+# Land mask paths (relative to hpc_root). load_land_mask() tries each in
+# order and uses the first that exists, so this list is how it stays
+# layout-aware: the legacy per-source path is tried first, then the
+# layout:v2 single-source-family path (src/data/sources/layout.py's
+# grid_store_path(), v2_family="land_mask") if that's what was written.
 LAND_MASK_RELATIVE_PATHS = [
     "misc/processed/stage_2/osm/land_mask.zarr",
+    "grid_v2/land_mask.zarr",
 ]
