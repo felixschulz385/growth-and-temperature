@@ -66,3 +66,13 @@ def test_index_path_mirrors_unified_data_index_filename_derivation():
     # data_path values so each gets its own index file, unlike today's single
     # shared parquet_misc.parquet.
     assert index_path("/idx", "misc/gadm") == "/idx/parquet_misc_gadm.parquet"
+
+
+def test_index_path_returns_none_when_local_index_dir_unset():
+    # paths.local_index_dir left unset in data.yaml (empty string/omitted)
+    # resolves to None on PipelineContext -- callers (every source's
+    # _plan_prepare()) must get None back, not a TypeError from
+    # os.path.join(None, ...), so they can treat "no index configured" the
+    # same as "index file not found" (warn + return no targets).
+    assert index_path(None, "acag/pm25") is None
+    assert index_path("", "acag/pm25") is None

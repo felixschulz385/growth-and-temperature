@@ -143,7 +143,7 @@ def grid_store_path(
     return os.path.join(root, legacy_filename)
 
 
-def index_path(local_index_dir: str, data_path: str) -> str:
+def index_path(local_index_dir: str | None, data_path: str) -> str | None:
     """The completion-index parquet path for a given `data_path`:
     <local_index_dir>/parquet_<safe(data_path)>.parquet.
 
@@ -167,6 +167,15 @@ def index_path(local_index_dir: str, data_path: str) -> str:
     hardcoded `<hpc_root>/hpc_data_index` -- the two only coincided today
     because local config happens to point `local_index_dir` at
     `~/hpc_data_index`.
+
+    Returns `None` when `local_index_dir` isn't configured (`paths.local_index_dir`
+    left unset in `data.yaml`) rather than raising -- every `_plan_prepare()`
+    caller already treats "index file not found" as a normal, warn-and-return-[]
+    outcome (the completion index just hasn't been built yet); "index directory
+    not configured" is the same outcome from the caller's perspective; it should
+    not be a different, unhandled `TypeError` from `os.path.join(None, ...)`.
     """
+    if not local_index_dir:
+        return None
     safe = data_path.replace("/", "_").replace("\\", "_")
     return os.path.join(local_index_dir, f"parquet_{safe}.parquet")

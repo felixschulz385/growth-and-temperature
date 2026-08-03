@@ -233,7 +233,7 @@ class PlaDSource(DataSource):
         import pandas as pd
 
         index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-        if not os.path.exists(index_file):
+        if not index_file or not os.path.exists(index_file):
             return None
         df = pd.read_parquet(index_file)
         status_col = "status_category" if "status_category" in df.columns else (

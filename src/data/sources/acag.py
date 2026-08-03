@@ -253,7 +253,7 @@ class AcagSource(DataSource):
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
         index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-        if not os.path.exists(index_file):
+        if not index_file or not os.path.exists(index_file):
             logger.warning("Parquet index not found: %s", index_file)
             return []
 
