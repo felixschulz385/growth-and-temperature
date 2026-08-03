@@ -94,26 +94,10 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         if not self.ctx.ssh_target:
             logger.warning("Fetch requires an HPC/remote target to be configured.")
             return False
-        import asyncio
 
-        from src.data.common.fetch.async_downloader import run_async_download_workflow
-        from src.data.common.hpc.client import HPCClient
-        from src.data.common.index.unified_index import UnifiedDataIndex
+        from src.data.common.fetch.driver import run_fetch
 
-        index = UnifiedDataIndex(
-            bucket_name="", data_source=self, local_index_dir=self.ctx.local_index_dir,
-            key_file=self.ctx.key_file, hpc_mode=bool(self.ctx.ssh_target),
-        )
-        index.build_index_from_source(data_source=self, rebuild=False, only_missing_entrypoints=True)
-        index.save()
-
-        hpc_client = HPCClient(target=self.ctx.ssh_target, key_file=self.ctx.key_file)
-        return asyncio.run(
-            run_async_download_workflow(
-                data_source=self, index=index, hpc_client=hpc_client, context=self.ctx,
-                config=dict(self.cfg.raw.get("download", {})),
-            )
-        )
+        return run_fetch(self, **self.cfg.raw.get("download", {}))
 
     # -- PREPARE ("vector") -- produces one .gpkg per ADM level -------------
 

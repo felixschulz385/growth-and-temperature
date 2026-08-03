@@ -187,26 +187,10 @@ class PlaDSource(DataSource):
         if not self.ctx.ssh_target:
             logger.warning("Fetch requires an HPC/remote target to be configured.")
             return False
-        import asyncio
 
-        from src.data.common.fetch.async_downloader import run_async_download_workflow
-        from src.data.common.hpc.client import HPCClient
-        from src.data.common.index.unified_index import UnifiedDataIndex
+        from src.data.common.fetch.driver import run_fetch
 
-        index = UnifiedDataIndex(
-            bucket_name="", data_source=self, local_index_dir=self.ctx.local_index_dir,
-            key_file=self.ctx.key_file, hpc_mode=bool(self.ctx.ssh_target),
-        )
-        index.build_index_from_source(data_source=self, rebuild=False, only_missing_entrypoints=True)
-        index.save()
-
-        hpc_client = HPCClient(target=self.ctx.ssh_target, key_file=self.ctx.key_file)
-        return asyncio.run(
-            run_async_download_workflow(
-                data_source=self, index=index, hpc_client=hpc_client, context=self.ctx,
-                config=dict(self.cfg.raw.get("download", {})),
-            )
-        )
+        return run_fetch(self, **self.cfg.raw.get("download", {}))
 
     # -- GRID ("spatial": panel construction + rasterization) ---------------
 
@@ -230,19 +214,15 @@ class PlaDSource(DataSource):
         return data_files
 
     def _resolve_plad_data_file(self) -> Optional[str]:
-        import pandas as pd
+        from src.data.common.ledger.paths import ledger_path
+        from src.data.common.ledger.store import SourceLedger
 
-        index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-        if not index_file or not os.path.exists(index_file):
+        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
+        if not local_ledger_path or not os.path.exists(local_ledger_path):
             return None
-        df = pd.read_parquet(index_file)
-        status_col = "status_category" if "status_category" in df.columns else (
-            "download_status" if "download_status" in df.columns else None
-        )
-        if status_col is None or "relative_path" not in df.columns:
-            return None
-        df = df[df[status_col] == "completed"]
-        for rel_path in df["relative_path"].tolist():
+        with SourceLedger.open(local_ledger_path, data_path=self.data_path, read_only=True) as ledger:
+            relative_paths = ledger.completed_fetch_files()
+        for rel_path in relative_paths:
             filename = os.path.basename(rel_path).lower()
             if "plad" in filename and filename.endswith(".dta"):
                 raw = rel_path if os.path.isabs(rel_path) else os.path.join(self.output_root(PipelineStep.FETCH), rel_path)

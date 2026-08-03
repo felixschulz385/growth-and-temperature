@@ -12,7 +12,10 @@ from __future__ import annotations
 import enum
 import os
 from dataclasses import dataclass, field
-from typing import Any, Mapping, Sequence
+from typing import TYPE_CHECKING, Any, Mapping, Sequence
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import SourceLedger
 
 
 class PipelineStep(enum.StrEnum):
@@ -50,14 +53,31 @@ class Completion(enum.StrEnum):
     NEVER = "never"
 
 
-def is_complete(target: "StepTarget") -> bool:
+def is_complete(target: "StepTarget", ledger: "SourceLedger | None" = None) -> bool:
+    """Local-disk completion, same as always -- unless *target* declares
+    `require_remote=True` (docs/design/10-fetch-ledger.md §6: today, only
+    MODIS's PREPARE targets do, since that's the one step producing output on
+    a machine other than the one GRID later reads it from). In that case,
+    also requires *ledger* to confirm HPC-side verification, so a target
+    isn't reported "complete" just because it happens to still be sitting on
+    the machine that produced it. Passing no *ledger* falls back to the
+    local-only check (preserves every existing caller's behavior unchanged)."""
     if target.completion is Completion.NEVER:
         return False
     if target.completion is Completion.PATH_EXISTS:
-        return os.path.exists(target.output_path)
-    if target.completion is Completion.MARKER:
-        return os.path.exists(marker_path(target.output_path))
-    raise ValueError(f"Unknown completion policy: {target.completion}")
+        local_ok = os.path.exists(target.output_path)
+    elif target.completion is Completion.MARKER:
+        local_ok = os.path.exists(marker_path(target.output_path))
+    else:
+        raise ValueError(f"Unknown completion policy: {target.completion}")
+
+    if not target.require_remote or ledger is None:
+        return local_ok
+    if not local_ok:
+        return False
+    from src.data.common.ledger.schema import RemoteState
+
+    return ledger.remote_state(target.step.value, target.key) == RemoteState.VERIFIED
 
 
 def marker_path(output_path: str) -> str:
@@ -80,6 +100,12 @@ class StepTarget:
     output_path: str
     inputs: tuple[str, ...] = ()
     completion: Completion = Completion.MARKER
+    #: True only for targets a *different* machine/job than the one that
+    #: produces them will read (today: MODIS's PREPARE, which streams from
+    #: Planetary Computer off-cluster and must be pushed to HPC before GRID's
+    #: SLURM job can read it). Default False preserves every other source's
+    #: existing local-only completion semantics unchanged.
+    require_remote: bool = False
     meta: Mapping[str, Any] = field(default_factory=dict)
 
 

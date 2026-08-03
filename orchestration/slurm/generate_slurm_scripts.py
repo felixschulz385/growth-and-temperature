@@ -173,6 +173,31 @@ def render_egress_job(job: dict) -> str:
             ),
             "",
         ]
+
+    if job.get("submit_dependents"):
+        # Best-effort only (docs/design/10-fetch-ledger.md §6): this script
+        # runs on whatever host has internet egress, which may or may not
+        # also have a SLURM client -- no-op with instructions if not, rather
+        # than failing the egress job over something orchestration-only.
+        from_step = job.get("submit_dependents_from_step", "grid")
+        lines += [
+            "if command -v sbatch >/dev/null 2>&1; then",
+            f'    echo "Submitting SLURM chain for {job["source"]} starting at {from_step}..."',
+            " \\\n        ".join(
+                [
+                    f'    {PYTHON_BIN} "{PROJECT_ROOT}/orchestration/slurm/submit_chain.py"',
+                    f"--source {job['source']}",
+                    f"--from-step {from_step}",
+                ]
+            ),
+            "else",
+            (
+                '    echo "sbatch not found on this host -- submit the SLURM chain manually: '
+                f"orchestration/slurm/submit_chain.py --source {job['source']} --from-step {from_step}\""
+            ),
+            "fi",
+            "",
+        ]
     return "\n".join(lines)
 
 
@@ -226,9 +251,17 @@ def validate_jobs(jobs: list) -> list[str]:
 
     errors = []
     data_yaml_sources = _load_data_yaml_source_keys()
+    job_names = {job["name"] for job in jobs}
 
     for job in jobs:
         name = job["name"]
+
+        # submit_chain.py's escape hatch (docs/design/10-fetch-ledger.md §6) --
+        # every depends_on entry must name a real job, or the dependency
+        # silently no-ops at submission time (job_ids.get() returns nothing).
+        for dep_name in job.get("depends_on", []):
+            if dep_name not in job_names:
+                errors.append(f"{name}: depends_on references unknown job '{dep_name}'")
         try:
             spec = registry.resolve(job["source"])
         except ValueError:

@@ -127,6 +127,10 @@ def handle_summary(args: argparse.Namespace) -> None:
 
 
 def _check_requires(spec: registry.SourceSpec, ctx, config) -> None:
+    import os
+
+    from src.data.common.ledger.paths import ledger_path
+    from src.data.common.ledger.store import SourceLedger
     from src.data.sources import layout
 
     for requires_id, requires_step in spec.requires:
@@ -139,12 +143,21 @@ def _check_requires(spec: registry.SourceSpec, ctx, config) -> None:
             grid_id=ctx.grid_id,
             layout=ctx.layout,
         )
-        # A directory existing with a MARKER-completion file, or any content
-        # for a step whose target completion policy this handler cannot know
-        # ahead of instantiating that other source -- treat "the directory has
-        # something in it" as the observable proxy here; the runner itself
-        # checks the source's own StepTarget.completion when it plans.
-        import os
+
+        # Prefer the prerequisite's own ledger when one exists
+        # (docs/design/10-fetch-ledger.md §6): `step_complete()` knows about
+        # HPC-verified state a bare local os.path.exists() can't see (e.g. a
+        # prerequisite whose step ran on a different machine and was pushed,
+        # not produced locally here). Falls back to the local-disk check
+        # below when the prerequisite hasn't been through the ledger yet
+        # (e.g. adopted from pre-ledger local output) -- same proxy as
+        # always: "the directory has something in it," since the runner
+        # itself checks the source's own StepTarget.completion when it plans.
+        requires_ledger_path = ledger_path(ctx.local_index_dir, requires_cfg.data_path)
+        if requires_ledger_path and os.path.exists(requires_ledger_path):
+            with SourceLedger.open(requires_ledger_path, data_path=requires_cfg.data_path, read_only=True) as ledger:
+                if ledger.step_complete(requires_step.value):
+                    continue
 
         if not os.path.exists(expected):
             raise MissingPrerequisiteError(spec.id, requires_id, requires_step, expected)
@@ -212,26 +225,31 @@ def handle_plan(args: argparse.Namespace) -> None:
 
 
 def handle_index(args: argparse.Namespace) -> None:
-    """``pipeline index`` -- build/refresh a FETCH-capable source's completion index."""
+    """``pipeline index`` -- build/refresh a FETCH-capable source's ledger
+    crawl catalog (docs/design/10-fetch-ledger.md). ``--rebuild`` forces
+    every entrypoint to be re-crawled, but -- unlike the old
+    ``UnifiedDataIndex(rebuild=True)`` -- does not discard already-tracked
+    download/transfer state; see `SourceLedger.reset_crawl_state()`.
+    """
     setup_logging(args.log_level, debug=args.debug)
     source, _ = _build(args)
     if PipelineStep.FETCH not in source.STEPS:
         raise ValueError(f"Source '{args.source}' does not implement 'fetch'; nothing to index.")
 
-    from src.data.common.index.unified_index import UnifiedDataIndex
+    from src.data.common.ledger import catalog
+    from src.data.common.ledger.paths import ledger_path
+    from src.data.common.ledger.store import SourceLedger
 
-    index = UnifiedDataIndex(
-        bucket_name="",
-        data_source=source,
-        local_index_dir=source.ctx.local_index_dir,
-        key_file=source.ctx.key_file,
-        hpc_mode=bool(source.ctx.ssh_target),
-    )
-    files_indexed = index.build_index_from_source(
-        data_source=source, rebuild=args.rebuild, only_missing_entrypoints=True
-    )
-    index.save()
-    logger.info("Indexed %s file(s) for source '%s'", files_indexed, args.source)
+    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
+    if local_ledger_path is None:
+        raise ValueError("paths.local_index_dir is not configured -- cannot build/refresh a ledger.")
+
+    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
+        if args.rebuild:
+            ledger.reset_crawl_state()
+        files_indexed = catalog.refresh(ledger, source)
+
+    logger.info("Indexed %s new file(s) for source '%s'", files_indexed, args.source)
     source.close()
 
 
@@ -265,21 +283,144 @@ def handle_run(args: argparse.Namespace) -> None:
         raise RuntimeError(f"{len(failures)} target(s) failed for source='{args.source}' step='{step.value}': {failures}")
 
 
+def handle_reconcile(args: argparse.Namespace) -> None:
+    """``pipeline reconcile`` -- rebuild a source's DuckDB ledger from real
+    on-disk/HPC filesystem state (docs/design/10-fetch-ledger.md §5). A
+    manual/occasional operator command, not part of the normal fetch/run hot
+    path: run once per source when adopting the ledger, or after any
+    out-of-band filesystem surgery. Never converts the old
+    `UnifiedDataIndex`/`TransferManifest` Parquet files -- the real
+    filesystem/HPC state is ground truth.
+    """
+    setup_logging(args.log_level, debug=args.debug)
+    config = load_config_with_env_vars(args.config)
+    ctx = build_context(config)
+    sources_cfg = config.get("sources", {}) or {}
+
+    if args.source not in sources_cfg:
+        raise KeyError(f"Source '{args.source}' not found in configuration. Available: {sorted(sources_cfg)}")
+
+    import os
+
+    from src.data.common.ledger.bootstrap import reconcile_fetch
+    from src.data.common.ledger.paths import ledger_path
+    from src.data.common.ledger.store import SourceLedger
+    from src.data.sources import layout
+    from src.data.sources.reconcile import reconcile_step
+
+    spec = registry.resolve(args.source)
+    cfg = get_source_config(config, args.source)
+    source = registry.create(args.source, ctx, cfg)
+
+    requested_steps = list(spec.steps) if getattr(args, "step", "all") == "all" else [PipelineStep(args.step)]
+    requested_steps = [s for s in requested_steps if s in spec.steps]
+    if not requested_steps:
+        raise ValueError(f"Source '{args.source}' does not implement step '{args.step}'.")
+
+    client = None
+    if ctx.ssh_target:
+        from src.data.common.hpc.client import HPCClient
+
+        client = HPCClient(target=ctx.ssh_target, key_file=ctx.key_file)
+
+    local_ledger_path = ledger_path(ctx.local_index_dir, source.data_path)
+    if local_ledger_path is None:
+        raise ValueError("paths.local_index_dir is not configured -- cannot open/create a ledger")
+
+    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
+        if client is not None:
+            tmp_dir = os.path.join(ctx.staging_dir or ctx.local_index_dir, "reconcile_tmp")
+            ledger.merge_from_remote(client, tmp_dir)
+
+        for step in requested_steps:
+            if step is PipelineStep.FETCH:
+                # NOTE: `source.cfg.data_path`/`source.cfg.namespace` (the
+                # resolved, post-__init__-default config), not
+                # `source.data_path` -- that property is overridden by the
+                # misc-split sources (gadm/osm/country_classifications) to a
+                # combined "<data_path>/<namespace>" string purely for index-
+                # file naming (base.py's own docstring), which would double
+                # up the namespace segment if fed into raw_root() alongside
+                # `namespace=` too.
+                raw_root = layout.raw_root(
+                    "", source.cfg.data_path, namespace=source.cfg.namespace, layout=ctx.layout
+                )
+                result = reconcile_fetch(ledger, source, raw_root=raw_root, client=client)
+                logger.info(
+                    "%s/fetch: discovered=%d verified_present=%d",
+                    args.source, result["discovered"], result["verified_present"],
+                )
+            else:
+                result = reconcile_step(source, step, ledger, client=client, remote_data_root=ctx.remote_data_root)
+                logger.info(
+                    "%s/%s: total=%d local_complete=%d remote_verified=%d",
+                    args.source, step.value, result["total"], result["local_complete"], result["remote_verified"],
+                )
+
+        if client is not None:
+            ledger.push_to_remote(client)
+
+    source.close()
+
+
+def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_size_mb: int) -> list:
+    """Route `TransferUnit`s to the right `HPCPusher` strategy.
+
+    One unit (every source except MODIS's PREPARE, which is the only
+    override of `transfer_units()`): `push_unit()` -- a single directory
+    (tar+extract) or file (direct rsync).
+
+    Many units, all single files sharing one output tree (MODIS's per-
+    tile-year GeoTIFFs): batch-tar them via `push_batched()` -- pushing
+    hundreds of files one rsync+extract round trip *each* (as the old
+    `transfer_units()` serial loop did) is exactly the inefficiency
+    docs/design/10-fetch-ledger.md §1 flags. `remote_base_dir` is the
+    longest common ancestor of every unit's `remote_path`; each unit's
+    `PushUnit.remote_path` becomes the tar arcname relative to it, so nested
+    structure (e.g. `<year>/<tile>.tif`) survives extraction intact.
+
+    Anything else (mixed files/directories) -- concurrent per-unit pushes.
+    """
+    import os
+
+    from src.data.common.hpc.push import PushUnit
+
+    if len(units) == 1:
+        u = units[0]
+        return [pusher.push_unit(PushUnit(unit_id=u.unit_id, local_path=u.local_path, remote_path=u.remote_path))]
+
+    if len(units) > 1 and all(os.path.isfile(u.local_path) for u in units):
+        remote_base_dir = os.path.commonpath([u.remote_path for u in units])
+        push_units = [
+            PushUnit(
+                unit_id=u.unit_id, local_path=u.local_path,
+                remote_path=os.path.relpath(u.remote_path, remote_base_dir),
+            )
+            for u in units
+        ]
+        return pusher.push_batched(
+            push_units, remote_base_dir, max_files=tar_max_files, max_bytes=tar_max_size_mb * 1024 * 1024,
+        )
+
+    push_units = [PushUnit(unit_id=u.unit_id, local_path=u.local_path, remote_path=u.remote_path) for u in units]
+    return pusher.push_units_concurrent(push_units)
+
+
 def handle_transfer(args: argparse.Namespace) -> None:
     """``pipeline transfer`` -- push a step's local output to the HPC target.
 
-    docs/design/08-hpc-transfer.md, renamed per
-    docs/design/09-integrated-pipeline.md §8 -- generic across sources via
-    `DataSource.transfer_units(step)`. Structurally unchanged from the old
-    `preprocess transfer`: still a thin CLI wrapper over
-    `src/data/common/hpc/transfer.py::transfer_units`.
+    docs/design/10-fetch-ledger.md §2 -- generic across sources via
+    `DataSource.transfer_units(step)`, now driven by the same unified
+    `HPCPusher` FETCH uses (`common/hpc/push.py`) instead of the old
+    dedicated, duplicated `common/hpc/transfer.py`. Push status is tracked in
+    the source's own DuckDB ledger, not a separate Parquet manifest.
     """
     setup_logging(args.log_level, debug=args.debug)
     if args.direction == "pull":
         raise NotImplementedError(
             "--direction pull is not implemented; included in the CLI for interface "
             "symmetry with the push direction, not because any current source needs "
-            "it (docs/design/08-hpc-transfer.md §4)."
+            "it (docs/design/10-fetch-ledger.md)."
         )
 
     source, _ = _build(args)
@@ -296,21 +437,51 @@ def handle_transfer(args: argparse.Namespace) -> None:
     import os
 
     from src.data.common.hpc.client import HPCClient
-    from src.data.common.hpc.transfer import transfer_units
+    from src.data.common.hpc.push import HPCPusher
+    from src.data.common.ledger.paths import ledger_path
+    from src.data.common.ledger.schema import RemoteState
+    from src.data.common.ledger.store import PushResult as LedgerPushResult
+    from src.data.common.ledger.store import SourceLedger
 
-    manifest_path = None
-    if source.ctx.local_index_dir:
-        manifest_path = os.path.join(source.ctx.local_index_dir, f"transfer_{args.source}_{step.value}.parquet")
+    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
+    if local_ledger_path is None:
+        raise ValueError("paths.local_index_dir is not configured -- cannot track transfer state")
 
-    logger.info("Transferring %d unit(s) for source '%s' step '%s'", len(units), args.source, step.value)
-    unit_dicts = [{"unit_id": u.unit_id, "local_path": u.local_path, "remote_path": u.remote_path} for u in units]
-    success = transfer_units(
-        ssh_target=source.ctx.ssh_target,
-        key_file=source.ctx.key_file,
-        units=unit_dicts,
-        manifest_path=manifest_path,
-        override=args.override,
-    )
+    client = HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file)
+
+    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
+        for u in units:
+            ledger.ensure_artifact(step.value, u.unit_id, local_path=u.local_path, remote_path=u.remote_path)
+
+        if not args.override:
+            pending = [u for u in units if ledger.remote_state(step.value, u.unit_id) != RemoteState.VERIFIED]
+            skipped = len(units) - len(pending)
+            if skipped:
+                logger.info("Skipping %d already-transferred unit(s)", skipped)
+            units = pending
+
+        if not units:
+            logger.info("Nothing to transfer for source='%s' step='%s'.", args.source, step.value)
+            source.close()
+            return
+
+        logger.info("Transferring %d unit(s) for source '%s' step '%s'", len(units), args.source, step.value)
+        pusher = HPCPusher(client)
+        results = _push_transfer_units(
+            pusher, units,
+            tar_max_files=source.cfg.raw.get("download", {}).get("tar_max_files", 100),
+            tar_max_size_mb=source.cfg.raw.get("download", {}).get("tar_max_size_mb", 500),
+        )
+        ledger.record_push_batch(
+            LedgerPushResult(step=step.value, unit_id=r.unit_id, ok=r.ok, bytes=r.bytes, error=r.error)
+            for r in results
+        )
+        ledger.push_to_remote(client)
+
     source.close()
-    if not success:
-        raise RuntimeError(f"Transfer failed for source='{args.source}' step='{step.value}'")
+    failures = [r for r in results if not r.ok]
+    if failures:
+        raise RuntimeError(
+            f"Transfer failed for source='{args.source}' step='{step.value}': "
+            f"{[(r.unit_id, r.error) for r in failures]}"
+        )

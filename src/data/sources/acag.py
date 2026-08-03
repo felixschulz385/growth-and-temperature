@@ -29,8 +29,6 @@ import rioxarray as rxr
 import xarray as xr
 from zarr.codecs import BloscCodec
 
-from src.data.common.hpc.client import HPCClient
-from src.data.common.index.unified_index import UnifiedDataIndex
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -199,8 +197,7 @@ class AcagSource(DataSource):
 
     # ------------------------------------------------------------------
     # FETCH -- one target = "sync + download whatever is missing", delegating
-    # to the untouched UnifiedDataIndex/AsyncHPCDownloader machinery rather
-    # than reimplementing async batch downloads (docs/design/09-integrated-pipeline.md §4).
+    # to common.fetch.driver.run_fetch (docs/design/10-fetch-ledger.md).
     # ------------------------------------------------------------------
 
     def _plan_fetch(self) -> List[StepTarget]:
@@ -214,33 +211,14 @@ class AcagSource(DataSource):
             )
         ]
 
-    def _build_index(self) -> UnifiedDataIndex:
-        return UnifiedDataIndex(
-            bucket_name="",
-            data_source=self,
-            local_index_dir=self.ctx.local_index_dir,
-            key_file=self.ctx.key_file,
-            hpc_mode=bool(self.ctx.ssh_target),
-        )
-
     def _execute_fetch(self, target: StepTarget) -> bool:
         if not self.ctx.ssh_target:
             logger.warning("Fetch requires an HPC/remote target to be configured.")
             return False
 
-        from src.data.common.fetch.async_downloader import run_async_download_workflow
+        from src.data.common.fetch.driver import run_fetch
 
-        index = self._build_index()
-        index.build_index_from_source(data_source=self, rebuild=False, only_missing_entrypoints=True)
-        index.save()
-
-        hpc_client = HPCClient(target=self.ctx.ssh_target, key_file=self.ctx.key_file)
-        download_cfg = dict(self.cfg.raw.get("download", {}))
-        return asyncio.run(
-            run_async_download_workflow(
-                data_source=self, index=index, hpc_client=hpc_client, context=self.ctx, config=download_cfg
-            )
-        )
+        return run_fetch(self, **self.cfg.raw.get("download", {}))
 
     # ------------------------------------------------------------------
     # PREPARE ("annual" in the old vocabulary)
@@ -252,24 +230,21 @@ class AcagSource(DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), relative_path)
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-        if not index_file or not os.path.exists(index_file):
-            logger.warning("Parquet index not found: %s", index_file)
+        from src.data.common.ledger.paths import ledger_path
+        from src.data.common.ledger.store import SourceLedger
+
+        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
+        if not local_ledger_path or not os.path.exists(local_ledger_path):
+            logger.warning("Ledger not found: %s", local_ledger_path)
             return []
 
-        df = pd.read_parquet(index_file)
-        status_col = "status_category" if "status_category" in df.columns else (
-            "download_status" if "download_status" in df.columns else None
-        )
-        if status_col is None:
-            logger.warning("No status column found in parquet index.")
-            return []
-        df = df[df[status_col] == "completed"]
-        if df.empty or "relative_path" not in df.columns:
+        with SourceLedger.open(local_ledger_path, data_path=self.data_path, read_only=True) as ledger:
+            relative_paths = ledger.completed_fetch_files()
+        if not relative_paths:
             return []
 
         files_by_year: Dict[int, List[str]] = {}
-        for rel_path in df["relative_path"].tolist():
+        for rel_path in relative_paths:
             year = self._extract_year(os.path.basename(rel_path))
             if year is None or not selection.matches_year(year):
                 continue

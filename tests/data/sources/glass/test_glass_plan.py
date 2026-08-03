@@ -6,8 +6,7 @@ Oracle: tests/data/preprocess/sources/test_characterization_glass.py.
 
 import os
 
-import pandas as pd
-
+from src.data.common.ledger.store import PushResult, SourceLedger
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.glass.source import GlassSource
@@ -20,9 +19,18 @@ _BASE_URLS = {
 
 
 def _write_index(local_index_dir, data_path, rows):
+    """Build a ledger with the given (relative_path, status_category) rows --
+    "completed" means HPC-verified (docs/design/10-fetch-ledger.md), matching
+    what `_plan_prepare`'s `completed_fetch_files()` actually reads."""
     safe = data_path.replace("/", "_").replace("\\", "_")
     os.makedirs(local_index_dir, exist_ok=True)
-    pd.DataFrame(rows).to_parquet(os.path.join(local_index_dir, f"parquet_{safe}.parquet"))
+    path = os.path.join(local_index_dir, f"{safe}.duckdb")
+    with SourceLedger.open(path, data_path=data_path) as ledger:
+        files = [(row["relative_path"], row["relative_path"]) for row in rows]
+        ledger.add_remote_files(files, get_file_hash=lambda url: url)
+        completed = [row["relative_path"] for row in rows if row["status_category"] == "completed"]
+        if completed:
+            ledger.record_push_batch(PushResult(step="fetch", unit_id=p, ok=True) for p in completed)
 
 
 def _make_source(tmp_path, source_id, year_range=(2019, 2021), rows=None, layout="legacy", **extra_raw):

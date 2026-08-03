@@ -3,14 +3,15 @@ Argument registration for the ``pipeline`` domain.
 
 Sub-commands
 ------------
-list      List registered sources, their aliases, steps, and requirements.
-summary   Print a concise data-availability overview across all sources/steps.
-plan      Print the target list for a (source, step) without running anything.
-index     Build/refresh a source's completion index (FETCH-capable sources only).
-run       Execute a (source, step)'s pending targets.
-transfer  Push a step's local output to the HPC target over SSH.
+list       List registered sources, their aliases, steps, and requirements.
+summary    Print a concise data-availability overview across all sources/steps.
+plan       Print the target list for a (source, step) without running anything.
+index      Build/refresh a source's completion index (FETCH-capable sources only).
+reconcile  Rebuild a source's ledger from real on-disk/HPC filesystem state.
+run        Execute a (source, step)'s pending targets.
+transfer   Push a step's local output to the HPC target over SSH.
 
-docs/design/09-integrated-pipeline.md §8.
+docs/design/09-integrated-pipeline.md §8, docs/design/10-fetch-ledger.md.
 """
 
 from __future__ import annotations
@@ -48,7 +49,15 @@ def _add_selection_args(parser: argparse.ArgumentParser) -> None:
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
     """Register ``pipeline`` and its sub-commands on *top_subparsers*."""
-    from .handlers import handle_index, handle_list, handle_plan, handle_run, handle_summary, handle_transfer
+    from .handlers import (
+        handle_index,
+        handle_list,
+        handle_plan,
+        handle_reconcile,
+        handle_run,
+        handle_summary,
+        handle_transfer,
+    )
 
     pipeline_parser = top_subparsers.add_parser(
         "pipeline",
@@ -108,6 +117,27 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     add_source_arg(index_p)
     index_p.add_argument("--rebuild", action="store_true", help="Rebuild the index from scratch")
     index_p.set_defaults(func=handle_index)
+
+    # ── reconcile ──────────────────────────────────────────────────────────
+    reconcile_p = sub.add_parser(
+        "reconcile",
+        help="Rebuild a source's ledger from real on-disk/HPC filesystem state",
+        description=(
+            "One-time/occasional bootstrap: reconcile a source's DuckDB ledger against "
+            "what's actually on disk and (if configured) on the HPC target, rather than "
+            "trusting the ledger's own prior state (docs/design/10-fetch-ledger.md §5)."
+        ),
+    )
+    add_logging_args(reconcile_p)
+    add_config_arg(reconcile_p)
+    add_source_arg(reconcile_p)
+    reconcile_p.add_argument(
+        "--step",
+        choices=["fetch", "prepare", "grid", "all"],
+        default="all",
+        help="Restrict reconciliation to one step (default: all steps the source implements)",
+    )
+    reconcile_p.set_defaults(func=handle_reconcile)
 
     # ── run ────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Execute a (source, step)'s pending targets")

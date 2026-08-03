@@ -223,29 +223,9 @@ class GlassSource(_CrawlerMixin, DataSource):
             logger.warning("Fetch requires an HPC/remote target to be configured.")
             return False
 
-        import asyncio
+        from src.data.common.fetch.driver import run_fetch
 
-        from src.data.common.fetch.async_downloader import run_async_download_workflow
-        from src.data.common.hpc.client import HPCClient
-        from src.data.common.index.unified_index import UnifiedDataIndex
-
-        index = UnifiedDataIndex(
-            bucket_name="",
-            data_source=self,
-            local_index_dir=self.ctx.local_index_dir,
-            key_file=self.ctx.key_file,
-            hpc_mode=bool(self.ctx.ssh_target),
-        )
-        index.build_index_from_source(data_source=self, rebuild=False, only_missing_entrypoints=True)
-        index.save()
-
-        hpc_client = HPCClient(target=self.ctx.ssh_target, key_file=self.ctx.key_file)
-        download_cfg = dict(self.cfg.raw.get("download", {}))
-        return asyncio.run(
-            run_async_download_workflow(
-                data_source=self, index=index, hpc_client=hpc_client, context=self.ctx, config=download_cfg
-            )
-        )
+        return run_fetch(self, **self.cfg.raw.get("download", {}))
 
     # -- PREPARE ("annual") -----------------------------------------------
 
@@ -305,22 +285,20 @@ class GlassSource(_CrawlerMixin, DataSource):
         return self._parse_avhrr_filenames(filenames)
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-        if not index_file or not os.path.exists(index_file):
-            logger.warning("Parquet index not found: %s", index_file)
+        from src.data.common.ledger.paths import ledger_path
+        from src.data.common.ledger.store import SourceLedger
+
+        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
+        if not local_ledger_path or not os.path.exists(local_ledger_path):
+            logger.warning("Ledger not found: %s", local_ledger_path)
             return []
 
-        df = pd.read_parquet(index_file)
-        status_col = "status_category" if "status_category" in df.columns else (
-            "download_status" if "download_status" in df.columns else None
-        )
-        if status_col is None:
-            return []
-        df = df[df[status_col] == "completed"]
-        if df.empty or "relative_path" not in df.columns:
+        with SourceLedger.open(local_ledger_path, data_path=self.data_path, read_only=True) as ledger:
+            relative_paths = ledger.completed_fetch_files()
+        if not relative_paths:
             return []
 
-        files_df = self._parse_filenames(df["relative_path"].tolist())
+        files_df = self._parse_filenames(relative_paths)
         if files_df.empty:
             return []
         if selection.year_range:

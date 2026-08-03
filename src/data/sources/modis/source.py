@@ -196,6 +196,12 @@ class ModisSource(DataSource):
                         key=key,
                         output_path=os.path.join(stage1_root, str(year), f"{tile}.tif"),
                         completion=Completion.PATH_EXISTS,
+                        # PREPARE streams from Planetary Computer off-cluster
+                        # (needs internet egress SLURM compute nodes may lack)
+                        # and must be pushed to HPC before GRID's SLURM job
+                        # can read it -- so "complete" here must mean
+                        # HPC-verified, not just locally present (docs/design/10-fetch-ledger.md §6).
+                        require_remote=True,
                         meta={"year": year, "tile": tile},
                     )
                 )
