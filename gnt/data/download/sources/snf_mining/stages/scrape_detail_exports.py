@@ -7,7 +7,7 @@ import logging
 import sys
 from typing import Callable, Iterable
 
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
@@ -30,6 +30,7 @@ from ..config import (
 )
 from ..scrapers.geometry import extract_property_and_linked_geometries
 from ..storage.database import (
+    count_stage_mines,
     get_all_mine_ids,
     get_stage_pending_mine_ids,
     mark_stage_complete,
@@ -40,7 +41,7 @@ from ..storage.subsections import (
     clear_stage_outputs,
     clear_subsection_stage_output,
     ensure_detail_tables,
-    get_completed_stage_keys,
+    get_stage_keys_by_status,
     insert_export_row,
     insert_geometry_rows,
     insert_subsection_records,
@@ -52,6 +53,8 @@ logger = logging.getLogger(__name__)
 
 _EXCEL_SUFFIXES = (".xls", ".xlsx")
 _STAGE_NAME = "detail_exports"
+_NON_RETRYABLE_SUBSECTION_STATUSES = ("completed", "timeout_exhausted", "failed")
+_STATUS_PRINT_EVERY_SUBSECTIONS = 25
 
 
 
@@ -101,7 +104,8 @@ _TEMPORARILY_SKIPPED_SUBSECTIONS = {
 @dataclass(slots=True)
 class _DetailScrapeStatus:
     total_mines: int
-    processed_mines: int = 0
+    processed_mines_overall: int = 0
+    processed_mines_run: int = 0
     exported_mines: int = 0
     exported_subsections: int = 0
 
@@ -109,7 +113,7 @@ class _DetailScrapeStatus:
 def _print_status_window(status: _DetailScrapeStatus, current_mine_id: str | None = None) -> None:
     lines = [
         "SNF Detail Export Status",
-        f"Mines processed    : {status.processed_mines}/{status.total_mines}",
+        f"Mines processed    : {status.processed_mines_overall}/{status.total_mines}",
         f"Mines exported     : {status.exported_mines}",
         f"Subsections export : {status.exported_subsections}",
     ]
@@ -120,6 +124,47 @@ def _print_status_window(status: _DetailScrapeStatus, current_mine_id: str | Non
     border = "+" + ("-" * (width + 2)) + "+"
     window = [border, *[f"| {line.ljust(width)} |" for line in lines], border]
     print("\n".join(window), file=sys.stdout, flush=True)
+
+
+class _StatusPrinter:
+    def __init__(self, subsection_interval: int = _STATUS_PRINT_EVERY_SUBSECTIONS) -> None:
+        self.subsection_interval = max(1, subsection_interval)
+        self._last_snapshot: tuple[int, int, int, str | None] | None = None
+        self._last_subsection_checkpoint = -1
+
+    def maybe_print(
+        self,
+        status: _DetailScrapeStatus,
+        *,
+        current_mine_id: str | None = None,
+        force: bool = False,
+    ) -> None:
+        snapshot = (
+            status.processed_mines_overall,
+            status.exported_mines,
+            status.exported_subsections,
+            current_mine_id,
+        )
+        reached_subsection_checkpoint = (
+            status.exported_subsections // self.subsection_interval
+        ) > self._last_subsection_checkpoint
+
+        should_print = force
+        if self._last_snapshot is None:
+            should_print = True
+        elif snapshot[0] != self._last_snapshot[0] or snapshot[1] != self._last_snapshot[1]:
+            should_print = True
+        elif snapshot[3] != self._last_snapshot[3]:
+            should_print = True
+        elif reached_subsection_checkpoint:
+            should_print = True
+
+        if not should_print:
+            return
+
+        _print_status_window(status, current_mine_id=current_mine_id)
+        self._last_snapshot = snapshot
+        self._last_subsection_checkpoint = status.exported_subsections // self.subsection_interval
 
 
 def scrape_detail_exports(
@@ -134,6 +179,7 @@ def scrape_detail_exports(
     subsections: Iterable[str] | None = None,
     force: bool = False,
     recover_driver: Callable[[], object] | None = None,
+    purge_stale_browser_processes: Callable[[], None] | None = None,
     restart_session_every_mines: int | None = PERIODIC_BROWSER_RESTART_MINE_INTERVAL,
 ) -> dict[str, int]:
     """Scrape subsection XLS exports and Property Profile geometries."""
@@ -148,6 +194,7 @@ def scrape_detail_exports(
         force,
     )
     ensure_detail_tables(conn)
+    known_export_filenames = _current_export_filenames(EXPORT_DIR)
 
     if mine_ids is None:
         pending = get_all_mine_ids(conn) if force else get_stage_pending_mine_ids(conn, _STAGE_NAME)
@@ -162,30 +209,42 @@ def scrape_detail_exports(
         for mine_id in pending:
             clear_stage_outputs(conn, mine_id, _STAGE_NAME)
 
+    countable_mine_ids = set(get_stage_pending_mine_ids(conn, _STAGE_NAME))
     total_exports = 0
     total_geometry_rows = 0
     mine_failures = 0
     subsection_failures = 0
     subsection_skips = 0
-    status = _DetailScrapeStatus(total_mines=len(pending))
-    _print_status_window(status)
+    total_mines, processed_mines_overall = count_stage_mines(conn, _STAGE_NAME)
+    status = _DetailScrapeStatus(
+        total_mines=total_mines,
+        processed_mines_overall=processed_mines_overall,
+    )
+    status_printer = _StatusPrinter()
+    status_printer.maybe_print(status, force=True)
 
     for mine_id in pending:
         if (
-            recover_driver is not None
-            and restart_session_every_mines is not None
+            restart_session_every_mines is not None
             and restart_session_every_mines > 0
-            and status.processed_mines > 0
-            and status.processed_mines % restart_session_every_mines == 0
+            and status.processed_mines_run > 0
+            and status.processed_mines_run % restart_session_every_mines == 0
         ):
-            logger.info(
-                "Periodically restarting browser session after %d processed mine(s).",
-                status.processed_mines,
-            )
-            driver = recover_driver()
+            if purge_stale_browser_processes is not None:
+                logger.info(
+                    "Periodically purging stale scraper-owned Chrome processes after %d processed mine(s).",
+                    status.processed_mines_run,
+                )
+                purge_stale_browser_processes()
+            if recover_driver is not None:
+                logger.info(
+                    "Periodically restarting browser session after %d processed mine(s).",
+                    status.processed_mines_run,
+                )
+                driver = recover_driver()
 
         logger.info("Starting detail export processing for mine_id=%s", mine_id)
-        _print_status_window(status, current_mine_id=mine_id)
+        status_printer.maybe_print(status, current_mine_id=mine_id, force=True)
         mine_setup_attempt = 0
         setup_ok = False
         mine_export_completed = False
@@ -234,8 +293,10 @@ def scrape_detail_exports(
                     driver = recover_driver()
                     continue
                 mine_failures += 1
-                status.processed_mines += 1
-                _print_status_window(status, current_mine_id=mine_id)
+                if mine_id in countable_mine_ids:
+                    status.processed_mines_run += 1
+                    status.processed_mines_overall += 1
+                status_printer.maybe_print(status, current_mine_id=mine_id, force=True)
                 logger.warning(
                     "Skipping mine_id=%s due to setup/discovery failure: %s",
                     mine_id,
@@ -264,7 +325,16 @@ def scrape_detail_exports(
             logger.debug("Inserted subsection metadata for mine_id=%s", mine_id)
 
         subsection_debug = subsection_filter is not None and mine_ids is not None
-        completed_keys = set() if (force or subsection_debug) else get_completed_stage_keys(conn, mine_id, _STAGE_NAME)
+        completed_keys = (
+            set()
+            if (force or subsection_debug)
+            else get_stage_keys_by_status(
+                conn,
+                mine_id,
+                _STAGE_NAME,
+                statuses=_NON_RETRYABLE_SUBSECTION_STATUSES,
+            )
+        )
         records_to_process = [
             record
             for record in records
@@ -272,7 +342,7 @@ def scrape_detail_exports(
         ]
         subsection_skips += len(records) - len(records_to_process)
         logger.info(
-            "Mine_id=%s has %d completed subsection export(s) already; %d pending.",
+            "Mine_id=%s has %d non-retryable subsection export(s) already; %d pending.",
             mine_id,
             len(records) - len(records_to_process),
             len(records_to_process),
@@ -307,6 +377,7 @@ def scrape_detail_exports(
                 continue
 
             subsection_attempt = 0
+            recovery_timeout_attempted = False
             while True:
                 try:
                     logger.info(
@@ -318,10 +389,10 @@ def scrape_detail_exports(
                         record.subsection_label,
                     )
                     clear_subsection_stage_output(conn, mine_id, record, _STAGE_NAME)
-                    driver.get(record.subsection_href)
-                    sleep_politely(step_sleep_seconds)
 
                     if normalize_subsection_label(record.subsection_label) == PROPERTY_PROFILE_LABEL:
+                        driver.get(record.subsection_href)
+                        sleep_politely(step_sleep_seconds)
                         logger.debug("Extracting property geometries for mine_id=%s", mine_id)
                         try:
                             geometries = retry(
@@ -346,18 +417,13 @@ def scrape_detail_exports(
                                 mine_id,
                             )
 
-                    known = {
-                        path.name
-                        for suffix in _EXCEL_SUFFIXES
-                        for path in EXPORT_DIR.glob(f"*{suffix}")
-                    }
                     downloaded = retry(
                         lambda: _export_subsection_xls_once(
                             driver=driver,
                             subsection_href=record.subsection_href,
                             subsection_label=record.subsection_label,
                             download_dir=EXPORT_DIR,
-                            known_filenames=known,
+                            known_filenames=known_export_filenames,
                             timeout=wait,
                             download_wait=download_wait,
                             step_sleep_seconds=step_sleep_seconds,
@@ -366,6 +432,7 @@ def scrape_detail_exports(
                         sleep_seconds=step_sleep_seconds,
                         label=f"export xls mine_id={mine_id}, subsection={record.subsection_label}",
                     )
+                    known_export_filenames.add(downloaded.name)
 
                     managed_xls = _rename_exported_xls(
                         downloaded_xls=downloaded,
@@ -375,6 +442,8 @@ def scrape_detail_exports(
                         subsection_label=record.subsection_label,
                         target_dir=export_dir,
                     )
+                    if downloaded.parent == EXPORT_DIR and not downloaded.exists():
+                        known_export_filenames.discard(downloaded.name)
 
                     insert_export_row(conn, mine_id, record, str(managed_xls))
                     upsert_subsection_stage_status(
@@ -386,16 +455,50 @@ def scrape_detail_exports(
                     )
                     total_exports += 1
                     status.exported_subsections = total_exports
-                    _print_status_window(status, current_mine_id=mine_id)
+                    status_printer.maybe_print(status, current_mine_id=mine_id)
                     logger.info(
                         "Recorded export %d for mine_id=%s subsection=%s",
                         total_exports,
                         mine_id,
                         record.subsection_label,
                     )
-                    sleep_politely(step_sleep_seconds)
                     break
                 except Exception as exc:
+                    if _is_timeout_error(exc):
+                        timeout_error = exception_brief(exc)
+                        if recover_driver is not None and not recovery_timeout_attempted:
+                            recovery_timeout_attempted = True
+                            logger.warning(
+                                "Subsection export timed out after max retry attempts for mine_id=%s subsection=%s; restarting browser/session and retrying subsection once. Error: %s",
+                                mine_id,
+                                record.subsection_label,
+                                timeout_error,
+                            )
+                            driver = recover_driver()
+                            continue
+
+                        subsection_skips += 1
+                        upsert_subsection_stage_status(
+                            conn,
+                            mine_id,
+                            record,
+                            stage_name=_STAGE_NAME,
+                            status="timeout_exhausted",
+                            error_msg=(
+                                "Timed out after maximum retry attempts"
+                                + (" even after browser/session restart" if recovery_timeout_attempted else "")
+                                + f": {timeout_error}"
+                            ),
+                        )
+                        logger.warning(
+                            "Marking subsection as non-retryable timeout for mine_id=%s subsection=%s after exhausting timeout retries%s. Error: %s",
+                            mine_id,
+                            record.subsection_label,
+                            " and browser/session recovery" if recovery_timeout_attempted else "",
+                            timeout_error,
+                        )
+                        break
+
                     if _is_restartable_browser_error(exc):
                         crash_error = exception_brief(exc)
                         if recover_driver is not None:
@@ -436,7 +539,7 @@ def scrape_detail_exports(
                         error_msg=exception_brief(exc),
                     )
                     logger.warning(
-                        "Skipping subsection due to failure (mine_id=%s, subsection=%s): %s",
+                        "Marking subsection as non-retryable failure for future runs (mine_id=%s, subsection=%s): %s",
                         mine_id,
                         record.subsection_label,
                         exception_brief(exc),
@@ -447,10 +550,12 @@ def scrape_detail_exports(
             mark_stage_complete(conn, mine_id, _STAGE_NAME)
             mine_export_completed = True
 
-        status.processed_mines += 1
+        if mine_id in countable_mine_ids:
+            status.processed_mines_run += 1
+            status.processed_mines_overall += 1
         if mine_export_completed:
             status.exported_mines += 1
-        _print_status_window(status, current_mine_id=mine_id)
+        status_printer.maybe_print(status, current_mine_id=mine_id, force=True)
 
         logger.info(
             "Completed detail export processing for mine_id=%s (%d subsection record(s)).",
@@ -563,6 +668,14 @@ def _normalize_subsection_filter(subsections: Iterable[str] | None) -> set[str] 
         if str(subsection).strip()
     }
     return normalized or None
+
+
+def _current_export_filenames(download_dir) -> set[str]:
+    return {
+        path.name
+        for suffix in _EXCEL_SUFFIXES
+        for path in download_dir.glob(f"*{suffix}")
+    }
 
 
 def _should_temporarily_skip_subsection(subsection_label: str) -> bool:
@@ -1156,6 +1269,33 @@ def _xpath_literal(value: str) -> str:
     return "concat(" + ", \"'\", ".join(f"'{part}'" for part in parts) + ")"
 
 
+def _is_timeout_error(exc: Exception) -> bool:
+    seen: set[int] = set()
+    pending: list[BaseException] = [exc]
+
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+
+        text = f"{type(current).__module__}.{type(current).__name__}: {current}".lower()
+        if isinstance(current, TimeoutException | TimeoutError):
+            return True
+        if "timed out" in text or "timeout" in text:
+            return True
+
+        cause = getattr(current, "__cause__", None)
+        if cause is not None:
+            pending.append(cause)
+
+        context = getattr(current, "__context__", None)
+        if context is not None:
+            pending.append(context)
+
+    return False
+
+
 def _is_restartable_browser_error(exc: Exception) -> bool:
     seen: set[int] = set()
     pending: list[BaseException] = [exc]
@@ -1167,7 +1307,7 @@ def _is_restartable_browser_error(exc: Exception) -> bool:
         seen.add(id(current))
 
         text = f"{type(current).__module__}.{type(current).__name__}: {current}".lower()
-        if isinstance(current, TimeoutException | WebDriverException):
+        if isinstance(current, TimeoutException):
             return True
 
         if any(
@@ -1182,7 +1322,11 @@ def _is_restartable_browser_error(exc: Exception) -> bool:
                 "invalid session id",
                 "disconnected",
                 "target window already closed",
+                "browser window not found",
                 "chrome not reachable",
+                "no such window",
+                "session deleted",
+                "unable to connect to renderer",
             )
         ):
             return True

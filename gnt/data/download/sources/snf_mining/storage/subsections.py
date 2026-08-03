@@ -520,16 +520,33 @@ def insert_parsed_workbook(
 
 
 def get_completed_stage_keys(conn, mine_id: str, stage_name: str) -> set[tuple[str, str]]:
+    return get_stage_keys_by_status(conn, mine_id, stage_name, statuses=("completed",), require_completed_at=True)
+
+
+def get_stage_keys_by_status(
+    conn,
+    mine_id: str,
+    stage_name: str,
+    statuses: Iterable[str],
+    *,
+    require_completed_at: bool = False,
+) -> set[tuple[str, str]]:
+    status_list = [str(status) for status in statuses if str(status).strip()]
+    if not status_list:
+        return set()
+
+    placeholders = ",".join(["?"] * len(status_list))
+    completed_clause = "AND completed_at IS NOT NULL" if require_completed_at else ""
     rows = conn.execute(
-        """
+        f"""
         SELECT section_label, subsection_label
         FROM mine_subsection_stage_status
         WHERE mine_id = ?
           AND stage_name = ?
-          AND status = 'completed'
-          AND completed_at IS NOT NULL
+          AND status IN ({placeholders})
+          {completed_clause}
         """,
-        [mine_id, stage_name],
+        [mine_id, stage_name, *status_list],
     ).fetchall()
     return {(row[0], row[1]) for row in rows}
 

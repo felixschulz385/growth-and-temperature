@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import time
 from typing import Iterable, Type
 
 import duckdb
@@ -11,8 +10,9 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 
 from ..blocks.base import BaseBlock
 from ..blocks.subsection_xls import SubsectionXlsBlock
-from ..config import DEFAULT_WAIT_SECONDS, PROFILE_URL_TEMPLATE, SMALL_SLEEP_SECONDS
+from ..config import DEFAULT_WAIT_SECONDS, PROFILE_URL_TEMPLATE
 from ..storage.database import get_unscraped_ids, log_error, mark_detail_scraped
+from ..utils.workflow_helpers import reset_profile_page_state
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +68,12 @@ class DetailScraper:
         logger.debug("Processing mine_id=%s", mine_id)
 
         profile_url = PROFILE_URL_TEMPLATE.format(mine_id=mine_id)
-        logger.debug("Resetting profile page state for mine_id=%s via double navigation.", mine_id)
-        driver.get(profile_url)
-        time.sleep(SMALL_SLEEP_SECONDS)
-        driver.get(profile_url)
-        time.sleep(SMALL_SLEEP_SECONDS)
+        reset_profile_page_state(
+            driver=driver,
+            profile_url=profile_url,
+            step_sleep_seconds=0.0,
+            mine_id=mine_id,
+        )
 
         all_ok = True
         for block in self._blocks:

@@ -7,7 +7,6 @@ import re
 from typing import Any
 from urllib.parse import urljoin
 
-from time import sleep
 import cv2
 import numpy as np
 import requests
@@ -43,6 +42,7 @@ COMPOSITE_TARGETS = {
     "property": COLOR_RANGES["property_fill"],
     "linked": COLOR_RANGES["linked"],
 }
+_TO_WGS84 = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
 
 
 def build_color_mask(img_rgba, target: str = "property") -> np.ndarray:
@@ -157,19 +157,26 @@ def get_wms_tiles(driver: WebDriver, components: str = "1") -> list[dict[str, An
 def _wait_for_map_tiles(driver: WebDriver) -> None:
     """Wait for the Leaflet map and overlay tiles to become visible and settle."""
     stable_samples = 0
-    last_state: tuple[int, int] | None = None
+    last_state: tuple[str, ...] | None = None
 
     def _tiles_ready(current_driver: WebDriver) -> bool:
         nonlocal stable_samples, last_state
-        base_tiles = len(current_driver.find_elements(By.CSS_SELECTOR, ".leaflet-tile-loaded"))
-        overlay_tiles = len(
-            current_driver.find_elements(
-                By.CSS_SELECTOR,
-                ".leaflet-overlay-pane img.leaflet-image-layer:not([style*='visibility: hidden']):not([style*='display: none'])",
-            )
+        visible_sources = current_driver.execute_script(
+            """
+            return [...document.querySelectorAll('.leaflet-overlay-pane img.leaflet-image-layer')]
+                .filter(img => {
+                    const style = window.getComputedStyle(img);
+                    return img.offsetParent !== null
+                        && style.visibility !== 'hidden'
+                        && style.display !== 'none';
+                })
+                .map(img => img.getAttribute('src') || '')
+                .filter(Boolean)
+                .sort();
+            """
         )
-        current_state = (base_tiles, overlay_tiles)
-        if overlay_tiles == 0:
+        current_state = tuple(visible_sources)
+        if not current_state:
             stable_samples = 0
             last_state = current_state
             return False
@@ -178,19 +185,27 @@ def _wait_for_map_tiles(driver: WebDriver) -> None:
         else:
             stable_samples = 1
             last_state = current_state
-        return stable_samples >= 3
+        return stable_samples >= 2
 
-    WebDriverWait(driver, MAP_LOAD_WAIT_SECONDS, poll_frequency=1.0).until(_tiles_ready)
-    sleep(min(5, MAP_LOAD_WAIT_SECONDS / 6))
+    WebDriverWait(driver, MAP_LOAD_WAIT_SECONDS, poll_frequency=0.4).until(_tiles_ready)
 
 
 def tiles_to_polygons(driver: WebDriver, target: str = "property", components: str = "1"):
+    polygons_by_target = _tiles_to_polygons_by_target(driver, targets=(target,), components=components)
+    return polygons_by_target[target]
+
+
+def _tiles_to_polygons_by_target(
+    driver: WebDriver,
+    targets: tuple[str, ...],
+    components: str = "1",
+) -> dict[str, list[Any]]:
     tiles = get_wms_tiles(driver, components=components)
     if not tiles:
         raise ValueError("No WMS tiles found.")
 
     session = _build_authenticated_session(driver)
-    all_polys_3857 = []
+    polygons_by_target: dict[str, list[Any]] = {target: [] for target in targets}
     for tile in tiles:
         arr = fetch_tile(driver, tile["src"], session=session)
         minx, miny, maxx, maxy = tile["bbox"]
@@ -199,30 +214,44 @@ def tiles_to_polygons(driver: WebDriver, target: str = "property", components: s
         if arr[:, :, 3].max() == 0:
             continue
 
-        mask = build_color_mask(arr, target=target)
-        if mask.max() == 0:
-            continue
-
         transform = from_bounds(minx, miny, maxx, maxy, w, h)
-        for geom, val in shapes(mask, mask=(mask > 0), transform=transform):
-            if val > 0:
-                all_polys_3857.append(shape(geom))
+        for target in targets:
+            mask = build_color_mask(arr, target=target)
+            if mask.max() == 0:
+                continue
+            for geom, val in shapes(mask, mask=(mask > 0), transform=transform):
+                if val > 0:
+                    polygons_by_target[target].append(shape(geom))
 
-    return all_polys_3857
+    return polygons_by_target
 
 
 def extract_claim_geometry_from_tiles(driver: WebDriver, target: str = "property", components: str = "1"):
     polys_3857 = tiles_to_polygons(driver, target=target, components=components)
+    return _transform_polygons_to_wgs84(polys_3857, target=target)
+
+
+def _transform_polygons_to_wgs84(polys_3857, target: str):
     if not polys_3857:
         raise ValueError(f"No polygons found for target='{target}'.")
 
     unioned_3857 = unary_union(polys_3857)
-    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    return shp_transform(transformer.transform, unioned_3857)
+    return shp_transform(_TO_WGS84.transform, unioned_3857)
 
 
 def extract_property_and_linked_geometries(driver: WebDriver, components: str = "1") -> dict[str, Any]:
+    polygons_by_target = _tiles_to_polygons_by_target(
+        driver,
+        targets=("linked", "property"),
+        components=components,
+    )
+    available_targets = [
+        target for target in ("linked", "property") if polygons_by_target[target]
+    ]
+    if not available_targets:
+        raise ValueError("No polygons found for targets=('linked', 'property').")
+
     return {
-        "linked": extract_claim_geometry_from_tiles(driver, target="linked", components=components),
-        "property": extract_claim_geometry_from_tiles(driver, target="property", components=components),
+        target: _transform_polygons_to_wgs84(polygons_by_target[target], target=target)
+        for target in available_targets
     }

@@ -122,6 +122,28 @@ def get_stage_pending_mine_ids(conn: duckdb.DuckDBPyConnection, stage_name: str)
     raise ValueError(f"Unsupported stage name: {stage_name}")
 
 
+def count_stage_mines(conn: duckdb.DuckDBPyConnection, stage_name: str) -> tuple[int, int]:
+    if stage_name == "detail_exports":
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   COUNT(detail_exports_completed_at) AS processed
+            FROM mines
+            """
+        ).fetchone()
+        return row[0], row[1]
+    if stage_name == "detail_parse":
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   COUNT(detail_parse_completed_at) AS processed
+            FROM mines
+            """
+        ).fetchone()
+        return row[0], row[1]
+    raise ValueError(f"Unsupported stage name: {stage_name}")
+
+
 def get_mine_ids_with_exports(conn: duckdb.DuckDBPyConnection) -> list[str]:
     rows = conn.execute("""
         SELECT DISTINCT m.mine_id

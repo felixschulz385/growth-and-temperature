@@ -95,6 +95,7 @@ def run_full_workflow(
                             subsections=subsections,
                             force=Stage.DETAIL_EXPORTS in forced_stages,
                             recover_driver=_recover_driver,
+                            purge_stale_browser_processes=browser.purge_stale_processes,
                             restart_session_every_mines=restart_session_every_mines,
                         )
                 finally:

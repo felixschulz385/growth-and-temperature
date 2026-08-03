@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from pathlib import Path
+from typing import Callable
 
 import duckdb
 import pandas as pd
@@ -21,6 +22,7 @@ from ..config import (
     SEL,
 )
 from ..storage.database import upsert_mine_ids
+from ..utils.workflow_helpers import ImmediateRetryError
 
 logger = logging.getLogger(__name__)
 
@@ -107,12 +109,19 @@ def wait_for_new_download(
     download_dir: str | Path,
     timeout: int,
     known_filenames: set[str] | None = None,
+    failure_checker: Callable[[], str | None] | None = None,
 ) -> Path:
     download_dir = Path(download_dir)
     known_filenames = known_filenames or set()
-    start = time.time()
+    start = time.monotonic()
+    first_seen_sizes: dict[Path, tuple[int, float]] = {}
 
-    while time.time() - start < timeout:
+    while time.monotonic() - start < timeout:
+        if failure_checker is not None:
+            failure_message = failure_checker()
+            if failure_message:
+                raise DownloadFailedError(failure_message)
+
         candidates = sorted(
             (
                 p
@@ -125,17 +134,34 @@ def wait_for_new_download(
         for candidate in candidates:
             if candidate.name in known_filenames:
                 continue
-            if candidate.stat().st_size <= 0:
+            stat = candidate.stat()
+            if stat.st_size <= 0:
                 continue
             crdownload = candidate.with_suffix(candidate.suffix + ".crdownload")
             if crdownload.exists():
                 continue
-            return candidate
-        time.sleep(0.5)
+            seen_size, seen_at = first_seen_sizes.get(candidate, (None, None))
+            now = time.monotonic()
+            if seen_size == stat.st_size and seen_at is not None and now - seen_at >= 0.15:
+                return candidate
+            first_seen_sizes[candidate] = (stat.st_size, now)
+
+        elapsed = time.monotonic() - start
+        if elapsed < 2:
+            sleep_seconds = 0.1
+        elif elapsed < 10:
+            sleep_seconds = 0.25
+        else:
+            sleep_seconds = 0.5
+        time.sleep(sleep_seconds)
 
     raise TimeoutError(
         f"Timed out waiting for exported Excel file in {download_dir} after {timeout}s"
     )
+
+
+class DownloadFailedError(ImmediateRetryError):
+    """Raised when the UI reports that the export failed."""
 
 
 def extract_ids_from_xls(xls_path: str | Path) -> list[str]:

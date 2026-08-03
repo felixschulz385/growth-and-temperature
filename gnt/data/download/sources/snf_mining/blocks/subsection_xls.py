@@ -65,6 +65,7 @@ class SubsectionXlsBlock(BaseBlock):
         export_dir = EXPORT_DIR / "detail" / "subsections" / mine_sort_id
         export_dir.mkdir(parents=True, exist_ok=True)
         logger.debug("[%s] Export directory prepared: %s", self.name, export_dir)
+        known_export_filenames = _current_export_filenames(EXPORT_DIR)
 
         subsections = get_sidebar_sections_and_subsections(driver, timeout=self.wait)
         logger.info(
@@ -121,25 +122,21 @@ class SubsectionXlsBlock(BaseBlock):
                     mine_id,
                 )
 
-            known = {
-                p.name
-                for suffix in _EXCEL_SUFFIXES
-                for p in EXPORT_DIR.glob(f"*{suffix}")
-            }
             logger.debug(
                 "[%s] Known XLS files before export for mine_id=%s subsection=%s: %d",
                 self.name,
                 mine_id,
                 record.subsection_label,
-                len(known),
+                len(known_export_filenames),
             )
             xls_path = export_current_subsection_xls(
                 driver,
                 download_dir=EXPORT_DIR,
-                known_filenames=known,
+                known_filenames=known_export_filenames,
                 timeout=self.wait,
                 download_wait=DOWNLOAD_WAIT_SECONDS,
             )
+            known_export_filenames.add(xls_path.name)
             logger.debug("[%s] Downloaded XLS path: %s", self.name, xls_path)
 
             managed_xls_path = _rename_exported_xls(
@@ -150,6 +147,8 @@ class SubsectionXlsBlock(BaseBlock):
                 subsection_label=record.subsection_label,
                 target_dir=export_dir,
             )
+            if xls_path.parent == EXPORT_DIR and not xls_path.exists():
+                known_export_filenames.discard(xls_path.name)
             logger.debug("[%s] Managed XLS path: %s", self.name, managed_xls_path)
 
             insert_export_row(self.conn, mine_id, record, str(managed_xls_path))
@@ -258,6 +257,14 @@ def _get_sidebar_nav(driver: WebDriver, timeout: int = 8):
         EC.presence_of_element_located((By.CSS_SELECTOR, "nav[data-testid='side-navigation']"))
     )
     return wrapper, nav
+
+
+def _current_export_filenames(download_dir: Path) -> set[str]:
+    return {
+        path.name
+        for suffix in _EXCEL_SUFFIXES
+        for path in download_dir.glob(f"*{suffix}")
+    }
 
 
 def _is_sidebar_expanded(driver: WebDriver, timeout: int = 3) -> bool:
@@ -489,8 +496,48 @@ def export_current_subsection_xls(
         download_dir=download_dir,
         timeout=download_wait,
         known_filenames=known_filenames,
+        failure_checker=lambda: _get_export_failure_message(driver),
     )
     logger.debug("XLS export complete: %s", downloaded)
     return downloaded
+
+
+def _get_export_failure_message(driver: WebDriver) -> str | None:
+    try:
+        toasts = driver.find_elements(By.CSS_SELECTOR, "#toast-container .toast.toast-error .toast-message")
+    except Exception:
+        return None
+
+    for toast in toasts:
+        try:
+            if not toast.is_displayed():
+                continue
+            message = " ".join(toast.text.split())
+        except Exception:
+            continue
+        if message.casefold() == "export failed":
+            logger.warning("Detected export failure toast from page UI.")
+            _dismiss_export_failure_toasts(driver)
+            return "Export Failed"
+
+    return None
+
+
+def _dismiss_export_failure_toasts(driver: WebDriver) -> None:
+    try:
+        close_buttons = driver.find_elements(By.CSS_SELECTOR, "#toast-container .toast.toast-error .toast-close-button")
+    except Exception:
+        return
+
+    for button in close_buttons:
+        try:
+            if not button.is_displayed():
+                continue
+            button.click()
+        except Exception:
+            try:
+                driver.execute_script("arguments[0].click();", button)
+            except Exception:
+                continue
 
 
