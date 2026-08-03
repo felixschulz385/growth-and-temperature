@@ -40,18 +40,19 @@ def test_default_duckdb_and_prepared_db_paths(tmp_path):
     assert source.prepared_db_path == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb")
 
 
-def test_prepared_db_path_is_a_documented_layout_v2_exception(tmp_path):
-    # snl_mining's PREPARE artefact is resolved from cfg.raw/aggregation
-    # config or a hand-built default entirely independent of layout.py --
-    # unlike every other source, layout="v2" must NOT move it (its DuckDB-
-    # based PREPARE step doesn't share the shape layout.py's raw/prepared/
-    # grid tree assumes).
-    legacy_source, legacy_ctx = _make_source(tmp_path, layout="legacy")
+def test_prepared_db_path_honors_layout_v2(tmp_path):
+    # PREPARE is snl_mining's own artefact, like every other source's --
+    # routed through output_root() so it moves under layout="v2" too,
+    # instead of hardcoding the legacy processed/stage_1 shape.
     v2_source, v2_ctx = _make_source(tmp_path, layout="v2")
-    assert legacy_source.prepared_db_path == v2_source.prepared_db_path
     assert v2_source.prepared_db_path == os.path.join(
-        v2_ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb"
+        v2_ctx.data_root, "prepared", "snl_mining", "snl_mining_prepared.duckdb"
     )
+
+
+def test_prepared_db_path_config_override_still_wins(tmp_path):
+    source, ctx = _make_source(tmp_path, layout="v2", aggregation={"prepared_db_path": "custom/prepared.duckdb"})
+    assert source.prepared_db_path == os.path.join(ctx.data_root, "custom", "prepared.duckdb")
 
 
 def test_default_radius_and_admin_variables(tmp_path):
@@ -63,6 +64,19 @@ def test_default_radius_and_admin_variables(tmp_path):
     }
     assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
         ctx.data_root, "misc", "processed", "stage_1", "gadm", "gadm_levelADM_1_simplified.gpkg"
+    )
+
+
+def test_default_admin_variables_geometry_path_honors_layout_v2(tmp_path):
+    # Cross-source reference to gadm's own PREPARE output -- must keep
+    # finding it under layout="v2" too (mirrors
+    # CountryClassificationsSource._plan_grid()'s equivalent gadm reference).
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
+        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_1_simplified.gpkg"
+    )
+    assert source.admin_tables["mine_count_adm2"]["geometry_path"] == os.path.join(
+        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_2_simplified.gpkg"
     )
 
 

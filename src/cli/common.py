@@ -98,12 +98,25 @@ def add_logging_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def add_config_arg(parser: argparse.ArgumentParser) -> None:
-    """Add the ``--config`` argument to *parser* (in-place)."""
+#: Repo-relative path to the pipeline's standard config file, resolved
+#: against the current working directory (matches the `analysis run
+#: --config` default convention of a relative `orchestration/configs/...`
+#: path -- both assume invocation from the repo root, e.g. via `run.py`).
+DEFAULT_PIPELINE_CONFIG = "orchestration/configs/data.yaml"
+
+
+def add_config_arg(parser: argparse.ArgumentParser, *, default: Optional[str] = DEFAULT_PIPELINE_CONFIG) -> None:
+    """Add the ``--config`` argument to *parser* (in-place).
+
+    Defaults to `DEFAULT_PIPELINE_CONFIG` so `--config` can be omitted in the
+    common case. Pass `default=None` to make it required instead.
+    """
     parser.add_argument(
         "--config",
-        required=True,
-        help="Path to unified configuration file (YAML or JSON)",
+        default=default,
+        required=default is None,
+        help="Path to unified configuration file (YAML or JSON)"
+        + (f" (default: {default})" if default else ""),
     )
 
 

@@ -19,13 +19,13 @@ remote:
 # Backbone-wide pipeline settings (docs/design/05-migration.md §1's grid
 # switch, finally implemented generically rather than MODIS-only ad hoc).
 pipeline:
-  grid: legacy_4326  # or "ease6933"
+  grid: ease6933  # or "legacy_4326"
   # docs/design/09-integrated-pipeline.md §14's "layout: v2" physical rename:
   # raw/<data_path>, prepared/<data_path>, grid/<grid_id>/<family>.zarr,
   # replacing the legacy <data_path>/{raw,processed/stage_1,processed/stage_2}
   # nesting -- see src/data/sources/layout.py. Every registered source
   # supports it; still opt-in, "legacy" stays the default everywhere.
-  layout: legacy  # or "v2"
+  layout: v2 # or "legacy"
 
 # Data source configurations
 sources:
@@ -228,7 +228,11 @@ sources:
     llm_opening_year_column: "llm_opening_year"
     llm_closing_year_column: "llm_closing_year"
     aggregation:
-      prepared_db_path: "snl_mining/processed/stage_1/snl_mining_prepared.duckdb"
+      # prepared_db_path / admin_variables[*].geometry_path: no longer pinned
+      # here -- both used to hardcode the legacy processed/stage_1 shape,
+      # which silently ignored `pipeline.layout: v2` above. Left unset, the
+      # source computes them via layout.output_root(..., layout=ctx.layout)
+      # (src/data/sources/snl_mining/source.py), matching every other source.
       output_filename: "snl_mining_timeseries_reprojected.zarr"
       metric_crs: "ESRI:54009"
       tile_size: 512
@@ -245,15 +249,6 @@ sources:
         mine_count_50km:
           radius_km: 50
           table_name: "mine_buffers_50km"
-      admin_variables:
-        mine_count_adm1:
-          table_name: "adm1_year_counts"
-          geometry_path: "misc/processed/stage_1/gadm/gadm_levelADM_1_simplified.gpkg"
-          code_column: "GID_1"
-        mine_count_adm2:
-          table_name: "adm2_year_counts"
-          geometry_path: "misc/processed/stage_1/gadm/gadm_levelADM_2_simplified.gpkg"
-          code_column: "GID_2"
       output_variables:
         - "mine_count_10km"
         - "mine_count_20km"

@@ -252,7 +252,11 @@ class GlassSource(_CrawlerMixin, DataSource):
     def _resolve_source_file_path(self, file_path: str) -> str:
         if os.path.isabs(file_path) or (self.ctx.data_root and file_path.startswith(self.ctx.data_root)):
             return file_path
-        return os.path.join(self.ctx.data_root, self.path_prefix, "raw", file_path)
+        # Route through output_root(FETCH) rather than hand-building
+        # "<path_prefix>/raw/..." -- that hardcodes the legacy shape and
+        # ignores ctx.layout="v2", which relocates FETCH output to
+        # "raw/<data_path>/..." (src/data/sources/layout.py).
+        return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
     def _parse_modis_filenames(self, filenames: List[str]) -> pd.DataFrame:
         """Expected format: GLASS06A01.V01.A2000055.h00v10.2022021.hdf"""

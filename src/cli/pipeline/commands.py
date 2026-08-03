@@ -4,6 +4,7 @@ Argument registration for the ``pipeline`` domain.
 Sub-commands
 ------------
 list      List registered sources, their aliases, steps, and requirements.
+summary   Print a concise data-availability overview across all sources/steps.
 plan      Print the target list for a (source, step) without running anything.
 index     Build/refresh a source's completion index (FETCH-capable sources only).
 run       Execute a (source, step)'s pending targets.
@@ -47,7 +48,7 @@ def _add_selection_args(parser: argparse.ArgumentParser) -> None:
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
     """Register ``pipeline`` and its sub-commands on *top_subparsers*."""
-    from .handlers import handle_index, handle_list, handle_plan, handle_run, handle_transfer
+    from .handlers import handle_index, handle_list, handle_plan, handle_run, handle_summary, handle_transfer
 
     pipeline_parser = top_subparsers.add_parser(
         "pipeline",
@@ -65,6 +66,31 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     list_p = sub.add_parser("list", help="List registered sources")
     add_logging_args(list_p)
     list_p.set_defaults(func=handle_list)
+
+    # ── summary ────────────────────────────────────────────────────────────
+    summary_p = sub.add_parser(
+        "summary",
+        help="Print a concise data-availability overview across all sources/steps",
+        description=(
+            "For every configured source, show which of fetch/prepare/grid it "
+            "supports and how much of that step's output already exists locally."
+        ),
+    )
+    add_logging_args(summary_p)
+    add_config_arg(summary_p)
+    summary_p.add_argument(
+        "--source",
+        help="Restrict the overview to a single source name (default: all configured sources)",
+    )
+    # Per-target INFO/WARNING chatter from individual sources' plan() (e.g.
+    # MODIS logging one line per missing stage-1 year) defeats the point of a
+    # *concise* overview across every source -- default this subcommand's
+    # --log-level to ERROR (an explicit `--log-level`/`--debug` still wins).
+    for action in summary_p._actions:
+        if action.dest == "log_level":
+            action.default = "ERROR"
+            action.help = "Set the logging level (default: ERROR, quieter than other subcommands)"
+    summary_p.set_defaults(func=handle_summary)
 
     # ── plan ───────────────────────────────────────────────────────────────
     plan_p = sub.add_parser("plan", help="Print targets for (source, step) without running them")

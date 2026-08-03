@@ -45,18 +45,6 @@ DEFAULT_RADIUS_VARIABLES = {
     "mine_count_20km": {"radius_km": 20, "table_name": "mine_buffers_20km"},
     "mine_count_50km": {"radius_km": 50, "table_name": "mine_buffers_50km"},
 }
-DEFAULT_ADMIN_VARIABLES = {
-    "mine_count_adm1": {
-        "table_name": "adm1_year_counts",
-        "geometry_path": "misc/processed/stage_1/gadm/gadm_levelADM_1_simplified.gpkg",
-        "code_column": "GID_1",
-    },
-    "mine_count_adm2": {
-        "table_name": "adm2_year_counts",
-        "geometry_path": "misc/processed/stage_1/gadm/gadm_levelADM_2_simplified.gpkg",
-        "code_column": "GID_2",
-    },
-}
 
 
 class SnlMiningSource(DataSource):
@@ -74,13 +62,22 @@ class SnlMiningSource(DataSource):
 
         aggregation = cfg.raw.get("aggregation", {}) or {}
 
+        # stage-0 is a pre-pipeline manual export (module docstring), not a
+        # FETCH/PREPARE/GRID artefact -- layout:v2's raw/prepared/grid rename
+        # has no stage-0 equivalent, so this path is legacy-shaped regardless
+        # of ctx.layout, on purpose.
         self.duckdb_path = self._resolve_path(
             cfg.raw.get("duckdb_path")
             or os.path.join(self.cfg.data_path, "processed", "stage_0", "manual_xls", "snl_mining_manual_export.duckdb")
         )
-        self.prepared_db_path = self._resolve_path(
-            cfg.raw.get("prepared_db_path", aggregation.get("prepared_db_path"))
-            or os.path.join(self.cfg.data_path, "processed", "stage_1", "snl_mining_prepared.duckdb")
+        prepared_db_override = cfg.raw.get("prepared_db_path", aggregation.get("prepared_db_path"))
+        self.prepared_db_path = (
+            self._resolve_path(prepared_db_override)
+            if prepared_db_override
+            # PREPARE's own output -- route through output_root() like every
+            # other source so this respects ctx.layout (docs/design/09-integrated-pipeline.md
+            # §14's v2 rename) instead of hardcoding the legacy stage_1 shape.
+            else os.path.join(self.output_root(PipelineStep.PREPARE), "snl_mining_prepared.duckdb")
         )
 
         self.properties_table = cfg.raw.get("properties_table", "properties")
@@ -101,7 +98,7 @@ class SnlMiningSource(DataSource):
         )
 
         radius_variables = aggregation.get("radius_variables") or DEFAULT_RADIUS_VARIABLES
-        admin_variables = aggregation.get("admin_variables") or DEFAULT_ADMIN_VARIABLES
+        admin_variables = aggregation.get("admin_variables") or self._default_admin_variables()
 
         self.buffer_tables = {
             variable: (spec.get("table_name", f"{variable}_buffer"), int(spec["radius_km"]) * 1000)
@@ -126,6 +123,30 @@ class SnlMiningSource(DataSource):
         if os.path.isabs(path):
             return path
         return os.path.join(self.ctx.data_root, path)
+
+    def _default_admin_variables(self) -> Dict[str, Dict[str, str]]:
+        """Cross-source reference to gadm's own PREPARE output (REQUIRES on
+        gadm's PREPARE, see module docstring). Resolved through
+        `layout.output_root()` -- not hardcoded to the legacy `misc/processed/
+        stage_1/gadm` shape -- so this keeps finding gadm's simplified vector
+        files under `ctx.layout="v2"` too, matching how
+        `CountryClassificationsSource._plan_grid()` resolves its own
+        cross-source gadm reference (src/data/sources/misc/country_classifications.py)."""
+        gadm_prepare_dir = layout.output_root(
+            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout
+        )
+        return {
+            "mine_count_adm1": {
+                "table_name": "adm1_year_counts",
+                "geometry_path": os.path.join(gadm_prepare_dir, "gadm_levelADM_1_simplified.gpkg"),
+                "code_column": "GID_1",
+            },
+            "mine_count_adm2": {
+                "table_name": "adm2_year_counts",
+                "geometry_path": os.path.join(gadm_prepare_dir, "gadm_levelADM_2_simplified.gpkg"),
+                "code_column": "GID_2",
+            },
+        }
 
     # ------------------------------------------------------------------
     # plan()/execute() dispatch

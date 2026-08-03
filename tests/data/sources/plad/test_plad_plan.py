@@ -72,6 +72,19 @@ def test_resolve_gadm_files_reads_from_gadm_prepare_output(tmp_path):
     assert files == {"gadm_adm1": os.path.join(gadm_dir, "gadm_levelADM_1_simplified.gpkg")}
 
 
+def test_resolve_gadm_files_honors_layout_v2(tmp_path):
+    # Cross-source reference to gadm's own PREPARE output -- must keep
+    # finding it under layout="v2" too (mirrors
+    # CountryClassificationsSource._plan_grid()'s equivalent gadm reference).
+    source, ctx = _make_source(tmp_path, layout="v2")
+    gadm_dir = os.path.join(ctx.data_root, "prepared", "misc", "gadm")
+    os.makedirs(gadm_dir, exist_ok=True)
+    open(os.path.join(gadm_dir, "gadm_levelADM_1_simplified.gpkg"), "w").close()
+
+    files = source._resolve_gadm_files_from_preprocessed()
+    assert files == {"gadm_adm1": os.path.join(gadm_dir, "gadm_levelADM_1_simplified.gpkg")}
+
+
 def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
     s1, ctx1 = _make_source(tmp_path, admin_level=1, layout="v2")
     s2, ctx2 = _make_source(tmp_path, admin_level=2, layout="v2")

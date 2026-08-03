@@ -69,6 +69,21 @@ def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_p
     )
 
 
+def test_resolve_source_file_path_matches_fetch_output_root(tmp_path):
+    # PREPARE reads raw files back in by relative_path -- must resolve them
+    # under wherever FETCH actually wrote them, not a hardcoded
+    # "<path_prefix>/raw/" shape, so this stays correct under either layout.
+    legacy_source, legacy_ctx = _make_source(tmp_path, "glass_modis", layout="legacy")
+    assert legacy_source._resolve_source_file_path("foo/bar.hdf") == os.path.join(
+        legacy_ctx.data_root, "glass/LST/MODIS/Daily/1KM/", "raw", "foo/bar.hdf"
+    )
+
+    v2_source, v2_ctx = _make_source(tmp_path, "glass_modis", layout="v2")
+    assert v2_source._resolve_source_file_path("foo/bar.hdf") == os.path.join(
+        v2_ctx.data_root, "raw", "glass/LST/MODIS/Daily/1KM/", "foo/bar.hdf"
+    )
+
+
 def test_modis_prepare_targets_grouped_by_year_and_grid_cell(tmp_path):
     source, _ = _make_source(tmp_path, "glass_modis")
     targets = source.plan(PipelineStep.PREPARE, TargetSelection(year_range=(2019, 2021)))

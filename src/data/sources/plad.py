@@ -19,9 +19,9 @@ here via an `output_root()` override, mirroring the identical pattern already
 used for GLASS's `path_prefix`.
 
 `REQUIRES` on gadm's **PREPARE** (not GRID) -- confirmed by reading
-`_resolve_gadm_files_from_preprocessed`, which reads
-`misc/processed/stage_1/gadm/gadm_levelADM_{1,2}_simplified.gpkg`, i.e. GADM's
-simplified vector output, not its rasterized grid.
+`_resolve_gadm_files_from_preprocessed`, which reads GADM's simplified vector
+output (`gadm_levelADM_{1,2}_simplified.gpkg`, via `layout.output_root()` so
+it resolves under either layout), not its rasterized grid.
 """
 
 from __future__ import annotations
@@ -211,7 +211,15 @@ class PlaDSource(DataSource):
     # -- GRID ("spatial": panel construction + rasterization) ---------------
 
     def _resolve_gadm_files_from_preprocessed(self) -> Dict[str, str]:
-        gadm_base_path = os.path.join(self.ctx.data_root, "misc", "processed", "stage_1", "gadm")
+        # Cross-source reference to gadm's own PREPARE output -- resolved
+        # through layout.output_root() (not hardcoded to the legacy
+        # misc/processed/stage_1/gadm shape) so this keeps finding gadm's
+        # simplified vector files under ctx.layout="v2" too, matching
+        # CountryClassificationsSource._plan_grid()'s own cross-source gadm
+        # reference (src/data/sources/misc/country_classifications.py).
+        gadm_base_path = layout.output_root(
+            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout
+        )
         data_files = {}
         adm1_path = os.path.join(gadm_base_path, "gadm_levelADM_1_simplified.gpkg")
         adm2_path = os.path.join(gadm_base_path, "gadm_levelADM_2_simplified.gpkg")
