@@ -153,20 +153,33 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                 source_id=self.ID, step=PipelineStep.PREPARE, key="gadm",
                 output_path=self.output_root(PipelineStep.PREPARE),
                 inputs=(raw_file,),
-                # Custom skip logic below (matches old "any level file exists"
-                # check) rather than a single-file Completion policy.
-                completion=Completion.NEVER,
+                # Directory output (variable number of per-level .gpkg files) --
+                # same MARKER policy _execute_grid already uses for its own
+                # directory (zarr) output, so `pipeline plan`/is_complete() can
+                # actually see completion instead of always reporting pending.
+                completion=Completion.MARKER,
             )
         ]
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         import geopandas as gpd
 
+        from src.data.sources.steps import is_complete, mark_complete
+
         output_base = target.output_path
+        if not self.cfg.override and is_complete(target):
+            logger.info("Skipping GADM processing, outputs already exist in: %s", output_base)
+            return True
         if not self.cfg.override and os.path.exists(output_base):
+            # Pre-existing runs from before the MARKER policy was added: the
+            # marker won't exist yet even though the level files do. Fall
+            # back to the old glob check so completed output isn't silently
+            # redone, and write the marker now so future runs see it via
+            # is_complete() above.
             existing = [f for f in os.listdir(output_base) if f.startswith("gadm_level") and f.endswith("_simplified.gpkg")]
             if existing:
                 logger.info("Skipping GADM processing, outputs already exist in: %s", output_base)
+                mark_complete(output_base)
                 return True
 
         os.makedirs(output_base, exist_ok=True)
@@ -192,6 +205,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             out_path = f"{output_base}/gadm_level{level}_simplified.gpkg"
             gdf_simplified.to_file(out_path, driver="GPKG")
             logger.info("GADM level %s processing complete: %s", level, out_path)
+        mark_complete(output_base)
         return True
 
     # -- GRID ("spatial") -- tiled rasterization -----------------------------
