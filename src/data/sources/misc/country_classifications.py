@@ -5,19 +5,27 @@ docs/design/09-integrated-pipeline.md §7 (the misc split): the third of the
 three sources `misc.py` used to bundle. Two independently-fetched origins
 (HDI csv, World Bank xlsx) sharing one joined prepare+grid step -- kept
 together deliberately (not a 4-way split) because they're joined into one
-`iso3`-keyed table and written into one Zarr store via sequential
-`mode='a'` writes; see the design doc for the full reasoning and the
+`iso3`-keyed table; see the design doc for the full reasoning and the
 recorded escape hatch to split further later. `REQUIRES` on gadm's GRID
 output is the first real use of that mechanism in this codebase -- it needs
-GADM's country-id raster and `country_code_mapping.json` to rasterize onto.
+`GID_0_code_mapping.json` to translate `iso3` into gadm's integer `GID_0` ids.
+
+**No longer rasterized.** Every classification value (HDI tier, World Bank
+income group) is constant across all of a country's pixels -- it varies only
+by `GID_0`, never by pixel location -- so GRID now writes a tiny
+`GID_0`-keyed parquet table instead of a full pixel-grid zarr. Assembly
+merges it directly onto rows via `src.data.assemble.processors.TileProcessor`'s
+`join_on` mechanism (matching an existing `GID_0` column contributed by a
+gadm dataset entry in the same assemble config), rather than every pixel in
+a country carrying an identical rasterized boolean.
 
 Ports `src/data/download/sources/misc.py::MiscDataSource` (hdi + worldbank_
 income_classes configured files) and `src/data/preprocess/sources/misc.py::
-MiscPreprocessor`'s `_process_country_classifications_target`/
-`_rasterize_country_classifications_target` (`stage="vector"` -> PREPARE,
-`stage="spatial"` -> GRID). Output paths unchanged: `misc/processed/stage_1/
-country_classifications/classifications.parquet`, `misc/processed/stage_2/
-country_classifications/classifications_grid.zarr`.
+MiscPreprocessor`'s `_process_country_classifications_target` (`stage="vector"`
+-> PREPARE). Output paths: `misc/processed/stage_1/country_classifications/
+classifications.parquet` (unchanged), `misc/processed/stage_2/
+country_classifications/classifications_by_gid0.parquet` (was
+`classifications_grid.zarr`).
 """
 
 from __future__ import annotations
@@ -28,8 +36,6 @@ import os
 import tempfile
 from pathlib import Path
 from typing import List
-
-from zarr.codecs import BloscCodec
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -50,7 +56,7 @@ DEFAULT_WB_NAME = "DR0095334.xlsx"
 
 class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
     """UNDP HDI + World Bank income-group classifications, joined on `iso3`
-    and rasterized onto GADM's country-id grid."""
+    and keyed by GADM's `GID_0` id for a direct merge during assembly."""
 
     ID = "country_classifications"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
@@ -188,14 +194,18 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="country_classifications",
+                # v2_family intentionally omitted: this is a small per-GID
+                # parquet table, not a `<family>.zarr` pixel-grid store, so it
+                # doesn't participate in layout:v2's "one store per family"
+                # zarr directory -- grid_store_path() falls back to the
+                # legacy per-source path shape regardless of ctx.layout.
                 output_path=layout.grid_store_path(
                     self.ctx.data_root,
                     self.cfg.data_path,
-                    "classifications_grid.zarr",
+                    "classifications_by_gid0.parquet",
                     namespace=self.cfg.namespace,
                     grid_id=self.ctx.grid_id,
                     layout=self.ctx.layout,
-                    v2_family="classifications",
                 ),
                 inputs=(classifications_parquet, gadm_zarr), completion=Completion.PATH_EXISTS,
             )
@@ -203,21 +213,19 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
 
     def _execute_grid(self, target: StepTarget) -> bool:
         import pandas as pd
-        import xarray as xr
 
         if not self.cfg.override and os.path.exists(target.output_path):
-            logger.info("Skipping country classifications rasterization, output already exists: %s", target.output_path)
+            logger.info("Skipping country classifications GID_0 table, output already exists: %s", target.output_path)
             return True
 
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
+        from src.data.sources.misc.gadm import gid_mapping_path
+
         classifications_parquet, gadm_zarr = target.inputs
         classifications_df = pd.read_parquet(classifications_parquet)
 
-        gadm_grid = xr.open_zarr(gadm_zarr, chunks="auto", consolidated=False)
-        country_grid = gadm_grid.country.astype("int16").compute()
-
-        country_mapping_file = os.path.join(os.path.dirname(gadm_zarr), "country_code_mapping.json")
+        country_mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, "GID_0")
         if not os.path.exists(country_mapping_file):
             logger.error("Country mapping file not found: %s", country_mapping_file)
             return False
@@ -225,31 +233,16 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
         from src.analysis.subsets.registry import load_country_registry
 
         country_code_to_id = load_country_registry(Path(country_mapping_file)).country_to_id
-        classifications_df["country_id"] = classifications_df["iso3"].map(lambda x: country_code_to_id.get(x, 0))
+        classifications_df["GID_0"] = classifications_df["iso3"].map(lambda x: country_code_to_id.get(x, 0))
+        classifications_df = classifications_df[classifications_df["GID_0"] != 0]
 
-        classification_cols = [c for c in classifications_df.columns if c not in ("iso3", "country_id")]
-        for col in classification_cols:
-            country_ids_with_classification = classifications_df.query(f"{col} & country_id!=0").country_id.unique()
-            classification_array = country_grid.isin(country_ids_with_classification)
-            classification_array.attrs = {"description": f"{col} classification grid (True/False)"}
-            if "crs" in country_grid.attrs:
-                classification_array = classification_array.rio.write_crs(country_grid.attrs["crs"])
-                classification_array = classification_array.odc.assign_crs(country_grid.attrs["crs"])
-
-            single_ds = xr.Dataset(
-                {col: classification_array},
-                attrs={
-                    "description": "Country classifications grid (HDI and World Bank income groups)",
-                    "source": "UNDP HDI and World Bank income classifications",
-                    "note": "Boolean values: True where classification applies, False otherwise",
-                },
-            )
-            compressor = BloscCodec(cname="lz4", clevel=5, shuffle="bitshuffle", blocksize=0)
-            encoding = {col: {"chunks": (512, 512), "compressors": compressor, "dtype": "bool"}}
-            single_ds.to_zarr(target.output_path, mode="a", encoding=encoding, zarr_format=3, consolidated=False)
-            del classification_array, single_ds
-
-        gadm_grid.close()
+        value_cols = [c for c in classifications_df.columns if c not in ("iso3", "GID_0")]
+        out_df = classifications_df[["GID_0"] + value_cols]
+        out_df.to_parquet(target.output_path, index=False)
+        logger.info(
+            "Country classifications GID_0 table complete: %d countries, columns %s",
+            len(out_df), value_cols,
+        )
         return True
 
 

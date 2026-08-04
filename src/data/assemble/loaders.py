@@ -255,8 +255,18 @@ def load_all_datasets(
     if datasource_filter:
         if datasource_filter not in datasets_config:
             raise ValueError(f"Datasource '{datasource_filter}' not found in assembly configuration")
+        if datasets_config[datasource_filter].get('join_on'):
+            raise ValueError(
+                f"Datasource '{datasource_filter}' uses 'join_on' -- it's merged directly during "
+                f"assembly rather than reprojected, and update mode doesn't support it yet"
+            )
         datasets_config = {datasource_filter: datasets_config[datasource_filter]}
         logger.info(f"Filtering to single datasource: {datasource_filter}")
+    else:
+        # join_on datasets are small GID-keyed tables merged directly onto
+        # assembled rows (TileProcessor._apply_join_tables), not reprojected
+        # pixel-grid data -- they never go through this zarr-loading path.
+        datasets_config = {name: cfg for name, cfg in datasets_config.items() if not cfg.get('join_on')}
     
     loaded = []
     

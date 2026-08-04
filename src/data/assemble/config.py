@@ -191,6 +191,8 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
     if 'output_path' not in assembly_config:
         errors.append("Missing required 'output_path' in assembly configuration")
     
+    spatial_partition_early = assembly_config.get('processing', {}).get('spatial_partition', 'grid')
+
     if 'datasets' not in assembly_config:
         errors.append("Missing required 'datasets' in assembly configuration")
     elif not assembly_config['datasets']:
@@ -201,7 +203,19 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 errors.append(f"Dataset '{name}' missing required 'path' field")
             elif not os.path.exists(config['path']):
                 logger.warning(f"Dataset path does not exist: {config['path']}")
-            
+
+            # join_on datasets are small GID-keyed tables merged directly onto
+            # assembled rows (not reprojected pixel-grid data) -- see
+            # TileProcessor._apply_join_tables.
+            join_on = config.get('join_on')
+            if join_on is not None:
+                if not isinstance(join_on, str) or not join_on.strip():
+                    errors.append(f"Dataset '{name}' join_on must be a non-empty string")
+                if spatial_partition_early == 'geometry':
+                    errors.append(
+                        f"Dataset '{name}': 'join_on' is not supported with spatial_partition='geometry'"
+                    )
+
             # Validate index_cols if specified
             index_cols = config.get('index_cols')
             if index_cols is not None:

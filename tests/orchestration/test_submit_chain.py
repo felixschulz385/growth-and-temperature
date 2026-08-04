@@ -73,9 +73,14 @@ def test_job_dependencies_only_on_source_own_first_job():
         job_ids[job["name"]] = f"id-{job['name']}"
 
     # snl_mining-prepare (its first own job in the chain) carries the
-    # cross-source REQUIRES dependency on gadm-prepare...
+    # cross-source REQUIRES dependency on both gadm-prepare (polygon
+    # geometries for the admin-count spatial join) and gadm-grid
+    # (GID_N_code_mapping.json, for src/data/sources/snl_mining/source.py's
+    # _export_admin_count_tables) -- REQUIRES is source-level, not per-step,
+    # so both apply even though only snl_mining's own GRID step actually
+    # reads gadm-grid's output.
     prepare_deps = sc._job_dependencies(chain[2], chain, {"gadm-prepare": "id-gadm-prepare", "gadm-grid": "id-gadm-grid"})
-    assert prepare_deps == ["id-gadm-prepare"]
+    assert prepare_deps == ["id-gadm-prepare", "id-gadm-grid"]
 
     # ...but snl_mining-grid (a later step of the same source) depends only
     # on snl_mining-prepare, not redundantly on gadm-prepare again.

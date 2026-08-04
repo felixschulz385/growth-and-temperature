@@ -14,13 +14,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
-DEFAULT_COUNTRY_MAPPING_PATH = "data_nobackup/misc/processed/stage_2/gadm/country_code_mapping.json"
-#: Where GADM's country-id sidecar lands under the docs/design/09-integrated-
-#: pipeline.md §14 "layout: v2" single-source-family rename
+DEFAULT_COUNTRY_MAPPING_PATH = "data_nobackup/misc/processed/stage_2/gadm/GID_0_code_mapping.json"
+#: Where GADM's country-id (GID_0) sidecar lands under the docs/design/09-
+#: integrated-pipeline.md §14 "layout: v2" single-source-family rename
 #: (src/data/sources/layout.py's grid_store_path(), v2_family="country_id")
 #: -- same sidecar filename, relocated alongside country_id.zarr under
 #: grid/<grid_id>/, which is why default_mapping_path() takes a grid_id too.
-V2_COUNTRY_MAPPING_PATH_TEMPLATE = "data_nobackup/grid/{grid_id}/country_code_mapping.json"
+V2_COUNTRY_MAPPING_PATH_TEMPLATE = "data_nobackup/grid/{grid_id}/GID_0_code_mapping.json"
 #: PREPARE-stage (stage_1) artefact, unaffected by the GRID-stage-only
 #: layout:v2 rename -- no v2 variant.
 DEFAULT_GADM_PATH = "data_nobackup/misc/processed/stage_1/gadm/gadm_levelADM_0_simplified.gpkg"

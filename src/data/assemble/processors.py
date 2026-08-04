@@ -141,7 +141,8 @@ class TileProcessor:
                 "will not be produced."
             )
 
-        # Pre-build column order map from dataset configs
+        # Pre-build column order map from dataset configs (raster datasets only --
+        # join_on datasets are handled below, never reprojected).
         self._build_column_order_map_from_config()
         if self.grid_shake_active:
             for dataset_name, cols in self.column_order_map.items():
@@ -151,6 +152,14 @@ class TileProcessor:
                     for label, _, _ in self.grid_shake_specs
                 ]
                 self.column_order_map[dataset_name] = cols + shake_cols
+
+        # join_on datasets: small GID-keyed tables merged directly onto assembled
+        # rows by an existing GID_N column (e.g. from gadm's own GID grid dataset),
+        # instead of being reprojected onto the pixel grid -- their value is
+        # constant within a GID and rasterizing them would be pure waste.
+        self.join_tables: Dict[str, Tuple[str, pd.DataFrame]] = self._load_join_tables()
+        for dataset_name, (join_col, table) in self.join_tables.items():
+            self.column_order_map[dataset_name] = [c for c in table.columns if c != join_col]
 
         # Log index column configuration
         logger.info(f"Unified index columns for merging: {self.all_index_cols}")
@@ -167,17 +176,24 @@ class TileProcessor:
                 "Grid-shake enabled: %s",
                 ", ".join(f"{label}=({dx},{dy})" for label, dx, dy in self.grid_shake_specs),
             )
-    
+        if self.join_tables:
+            logger.info(
+                "Join-on datasets enabled: %s",
+                ", ".join(f"{name}@{join_col}" for name, (join_col, _) in self.join_tables.items()),
+            )
+
     def _build_column_order_map_from_config(self) -> None:
         """
         Build column_order_map by loading all datasets from config.
-        
+
         This reads zarr files to get actual variable names, ensuring
         the column order map is consistent and complete.
         """
         datasets_config = self.assembly_config.get('datasets', {})
-        
+
         for dataset_name, dataset_config in datasets_config.items():
+            if dataset_config.get('join_on'):
+                continue  # handled by _load_join_tables instead
             zarr_path = dataset_config.get('path')
             if not zarr_path:
                 logger.warning(f"No path specified for dataset '{dataset_name}'")
@@ -298,6 +314,76 @@ class TileProcessor:
             (label, shift_geobox_origin(target_geobox_zoomed, dx, dy))
             for label, dx, dy in self.grid_shake_specs
         ]
+
+    def _load_join_tables(self) -> Dict[str, Tuple[str, pd.DataFrame]]:
+        """Load every `join_on`-configured dataset as a small in-memory table.
+
+        Returns {dataset_name: (join_column, table)}. These tables are tiny
+        (one row per GID, not per pixel) so loading them fully at init time is
+        cheap and lets every tile's merge be a plain in-memory pandas join.
+        """
+        join_tables: Dict[str, Tuple[str, pd.DataFrame]] = {}
+        for dataset_name, dataset_config in self.assembly_config.get('datasets', {}).items():
+            join_col = dataset_config.get('join_on')
+            if not join_col:
+                continue
+
+            path = dataset_config.get('path')
+            if not path or not os.path.exists(path):
+                logger.warning(f"join_on dataset '{dataset_name}': path not found: {path}")
+                continue
+
+            table = pd.read_parquet(path, columns=dataset_config.get('columns'))
+            if join_col not in table.columns:
+                logger.warning(
+                    f"join_on dataset '{dataset_name}': table at {path} has no '{join_col}' "
+                    f"column, skipping"
+                )
+                continue
+
+            column_prefix = dataset_config.get('column_prefix')
+            if column_prefix:
+                table = table.rename(
+                    columns={c: f"{column_prefix}{c}" for c in table.columns if c != join_col}
+                )
+
+            if table[join_col].duplicated().any():
+                logger.warning(
+                    f"join_on dataset '{dataset_name}': duplicate '{join_col}' values, "
+                    f"keeping the first occurrence of each"
+                )
+                table = table.drop_duplicates(subset=[join_col], keep='first')
+
+            join_tables[dataset_name] = (join_col, table)
+            logger.info(
+                f"Loaded join table '{dataset_name}': {len(table)} rows keyed by '{join_col}', "
+                f"columns: {[c for c in table.columns if c != join_col]}"
+            )
+        return join_tables
+
+    def _apply_join_tables(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Merge every configured join_on dataset onto assembled rows by an
+        existing GID_N column, instead of reprojecting them onto the pixel
+        grid -- their value is constant within a GID (docs/design/04-ingest.md).
+        """
+        for dataset_name, (join_col, table) in self.join_tables.items():
+            if join_col not in df.columns:
+                logger.warning(
+                    f"join_on dataset '{dataset_name}': column '{join_col}' not present in "
+                    f"assembled rows -- add a dataset that provides it (e.g. gadm's GID grid) "
+                    f"to this assembly config. Skipping."
+                )
+                continue
+
+            value_cols = [c for c in table.columns if c != join_col]
+            drop_cols = [c for c in value_cols if c in df.columns]
+            if drop_cols:
+                df = df.drop(columns=drop_cols)
+
+            df = df.merge(table, on=join_col, how='left')
+            dataset_config = self.assembly_config['datasets'][dataset_name]
+            df = self._fill_dataset_columns(df, dataset_name, dataset_config)
+        return df
 
     def _extract_dataset_tile(
         self,
@@ -770,6 +856,7 @@ class TileProcessor:
         if combined is None:
             return False
         combined = self._fill_dataset_columns(combined, dataset_name, dataset_config)
+        combined = self._apply_join_tables(combined)
         combined = self._apply_derived_pixel_id_columns(
             combined,
             ix=ix,
@@ -1274,6 +1361,7 @@ class TileProcessor:
         combined = self._combine_dataset_tables(dataset_tables, ix, iy)
         for dataset_name, _, dataset_config in datasets:
             combined = self._fill_dataset_columns(combined, dataset_name, dataset_config)
+        combined = self._apply_join_tables(combined)
         combined = self._apply_derived_pixel_id_columns(
             combined,
             ix=ix,
@@ -1281,14 +1369,14 @@ class TileProcessor:
             tile_geobox=tile_geobox,
             source_geobox=target_geobox_zoomed,
         )
-        
+
         # Check for empty result
         if combined is None or combined.empty:
             logger.debug(f"No data in tile ix={ix}, iy={iy}")
             return False
-        
+
         # Reorder columns based on dataset order in config
-        dataset_order = [name for name, _, _ in datasets]
+        dataset_order = [name for name, _, _ in datasets] + list(self.join_tables.keys())
         combined = self._reorder_columns(combined, self.all_index_cols, dataset_order)
         logger.debug(f"Tile [{ix}, {iy}]: reordered columns to: {list(combined.columns)}")
         

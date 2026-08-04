@@ -31,13 +31,13 @@ def test_gadm_create_empty_zarr_uses_y_x_dims_for_ease_geobox(tmp_path):
     geobox = _coarse_ease_geobox()
     output_path = str(tmp_path / "countries_grid.zarr")
 
-    assert GadmSource._create_empty_gadm_zarr(output_path, geobox, include_subdivisions=True)
+    assert GadmSource._create_empty_gadm_zarr(output_path, geobox, ["GID_0", "GID_1"])
 
     import xarray as xr
 
     ds = xr.open_zarr(output_path, consolidated=False)
-    assert set(ds["country"].dims) == {"y", "x"}
-    assert set(ds["subdivision"].dims) == {"y", "x"}
+    assert set(ds["GID_0"].dims) == {"y", "x"}
+    assert set(ds["GID_1"].dims) == {"y", "x"}
 
 
 def test_gadm_create_empty_zarr_uses_lat_lon_dims_for_legacy_geobox(tmp_path, monkeypatch):
@@ -61,12 +61,12 @@ def test_gadm_create_empty_zarr_uses_lat_lon_dims_for_legacy_geobox(tmp_path, mo
             self.values = values
 
     output_path = str(tmp_path / "countries_grid_legacy.zarr")
-    assert GadmSource._create_empty_gadm_zarr(output_path, _FakeLegacyGeobox(), include_subdivisions=False)
+    assert GadmSource._create_empty_gadm_zarr(output_path, _FakeLegacyGeobox(), ["GID_0"])
 
     import xarray as xr
 
     ds = xr.open_zarr(output_path, consolidated=False)
-    assert set(ds["country"].dims) == {"latitude", "longitude"}
+    assert set(ds["GID_0"].dims) == {"latitude", "longitude"}
 
 
 def test_gadm_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypatch):
@@ -95,7 +95,7 @@ def test_gadm_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monk
     from shapely.geometry import Point
 
     gdf_adm0 = gpd.GeoDataFrame({"GID_0": ["AAA"]}, geometry=[Point(0, 0)])
-    adm0_path = str(tmp_path / "adm0.gpkg")
+    adm0_path = str(tmp_path / "gadm_levelADM_0_simplified.gpkg")
     gdf_adm0.to_file(adm0_path, driver="GPKG")
 
     monkeypatch.setattr(gpd, "read_file", lambda path, engine=None: gdf_adm0)

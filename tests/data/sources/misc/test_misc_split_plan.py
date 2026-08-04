@@ -77,7 +77,7 @@ def test_osm_grid_target_depends_on_prepare_output(tmp_path):
     assert targets[0].output_path == os.path.join(osm.output_root(PipelineStep.GRID), "land_mask.zarr")
 
 
-def test_gadm_grid_target_includes_adm1_when_present(tmp_path):
+def test_gadm_grid_target_includes_all_present_levels(tmp_path):
     gadm, _ = _make(tmp_path, "gadm")
     vector_dir = gadm.output_root(PipelineStep.PREPARE)
     os.makedirs(vector_dir, exist_ok=True)
@@ -85,11 +85,18 @@ def test_gadm_grid_target_includes_adm1_when_present(tmp_path):
 
     targets = gadm.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert len(targets[0].inputs) == 1  # no ADM_1 file yet
+    assert len(targets[0].inputs) == 1  # only ADM_0 present so far
 
     open(os.path.join(vector_dir, "gadm_levelADM_1_simplified.gpkg"), "w").close()
+    open(os.path.join(vector_dir, "gadm_levelADM_2_simplified.gpkg"), "w").close()
     targets = gadm.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets[0].inputs) == 2
+    assert len(targets[0].inputs) == 3
+    # Sorted by level number, not filesystem/glob order.
+    assert [os.path.basename(p) for p in targets[0].inputs] == [
+        "gadm_levelADM_0_simplified.gpkg",
+        "gadm_levelADM_1_simplified.gpkg",
+        "gadm_levelADM_2_simplified.gpkg",
+    ]
 
 
 def test_country_classifications_prepare_target_tracks_which_sources_present(tmp_path):
@@ -123,7 +130,7 @@ def test_country_classifications_grid_requires_gadm_output_via_shared_layout(tmp
     targets = cc.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(
-        cc.output_root(PipelineStep.GRID), "classifications_grid.zarr"
+        cc.output_root(PipelineStep.GRID), "classifications_by_gid0.parquet"
     )
 
 
@@ -155,6 +162,12 @@ def test_gadm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
 
 
 def test_country_classifications_grid_finds_gadm_v2_output_under_layout_v2(tmp_path):
+    # country_classifications' own GRID output is a small per-GID_0 parquet
+    # table now, not a `<family>.zarr` pixel-grid store, so it doesn't
+    # participate in layout:v2's shared grid/<grid_id>/ directory -- it falls
+    # back to the legacy per-source path shape regardless of ctx.layout (see
+    # module docstring / gadm.grid_store_path()'s v2_family=None fallback).
+    # GADM's own dependency lookup (which *is* a v2 zarr family) is unaffected.
     cc, ctx = _make(tmp_path, "country_classifications", layout="v2")
     vector_dir = cc.output_root(PipelineStep.PREPARE)
     os.makedirs(vector_dir, exist_ok=True)
@@ -169,7 +182,10 @@ def test_country_classifications_grid_finds_gadm_v2_output_under_layout_v2(tmp_p
 
     targets = cc.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(grid_dir, "classifications.zarr")
+    assert targets[0].output_path == os.path.join(
+        ctx.data_root, "misc", "processed", "stage_2", "country_classifications",
+        "classifications_by_gid0.parquet",
+    )
     assert targets[0].inputs == (
         os.path.join(vector_dir, "classifications.parquet"),
         os.path.join(grid_dir, "country_id.zarr"),

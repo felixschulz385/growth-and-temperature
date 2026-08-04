@@ -27,7 +27,7 @@ def test_default_mapping_path_uses_v2_when_requested():
 def test_default_mapping_path_v2_folds_grid_id_into_path():
     assert default_mapping_path(Path("/root"), layout="v2", grid_id="ease6933") == Path(
         "/root"
-    ) / "data_nobackup/grid/ease6933/country_code_mapping.json"
+    ) / "data_nobackup/grid/ease6933/GID_0_code_mapping.json"
 
 
 def test_default_classifications_path_uses_legacy_by_default():

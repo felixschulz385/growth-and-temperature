@@ -196,7 +196,7 @@ def _write_partitioned_fixture(project_root, rows, mapping, layout="legacy"):
     classifications_dir.mkdir(parents=True)
     mapping_dir.mkdir(parents=True)
     pd.DataFrame(rows).to_parquet(classifications_dir / "classifications.parquet", index=False)
-    mapping_dir.joinpath("country_code_mapping.json").write_text(json.dumps(mapping))
+    mapping_dir.joinpath("GID_0_code_mapping.json").write_text(json.dumps(mapping))
 
 
 def test_resolve_subset_generates_partitioned_hdi_subset_from_classifications(tmp_path):
@@ -360,7 +360,7 @@ def test_generate_all_default_subsets_continues_after_one_category_fails(tmp_pat
     project_root = tmp_path
     mapping_dir = project_root / "data_nobackup" / "misc" / "processed" / "stage_2" / "gadm"
     mapping_dir.mkdir(parents=True)
-    mapping_dir.joinpath("country_code_mapping.json").write_text(
+    mapping_dir.joinpath("GID_0_code_mapping.json").write_text(
         json.dumps({"USA": 1, "BBB": 2})
     )
     # No continents.csv and no GADM geopackage present, so continent

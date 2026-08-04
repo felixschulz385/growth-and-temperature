@@ -18,9 +18,21 @@ matching the PREPARE/GRID vocabulary used everywhere else and letting a
 retried rasterization skip the expensive DuckDB rebuild.
 
 Ports `src/data/preprocess/sources/snl_mining.py::SnlMiningPreprocessor`.
-`REQUIRES` on gadm's PREPARE (not GRID) -- reads
-`misc/processed/stage_1/gadm/gadm_levelADM_{1,2}_simplified.gpkg`, the same
-GADM artefact PLAD depends on.
+`REQUIRES` on gadm's PREPARE (reads `misc/processed/stage_1/gadm/
+gadm_levelADM_{1,2}_simplified.gpkg`, the same GADM artefact PLAD depends on)
+**and** gadm's GRID (reads `GID_1`/`GID_2_code_mapping.json`, to translate
+this source's own admin-count tables into gadm's integer ids -- see below).
+
+**Admin-polygon mine counts are no longer rasterized.** `mine_count_adm1`/
+`mine_count_adm2` are constant across every pixel of their containing ADM
+polygon for a given year -- they vary only by `GID_1`/`GID_2` and year, never
+by pixel location -- so GRID now writes them as tiny `(GID_N, year)`-keyed
+parquet sidecars instead of full pixel-grid zarr variables. Assembly merges
+them directly onto rows via
+`src.data.assemble.processors.TileProcessor`'s `join_on` mechanism. The
+radius-buffer counts (`mine_count_10km`/`20km`/`50km`) are genuinely
+per-pixel (a pixel's count of mines within a fixed-radius circle varies
+continuously with location) and stay in the rasterized zarr unchanged.
 """
 
 from __future__ import annotations
@@ -48,12 +60,13 @@ DEFAULT_RADIUS_VARIABLES = {
 
 
 class SnlMiningSource(DataSource):
-    """SNL/S&P Global mining property tables -- gridded mine-count variables
-    (metric-radius buffer counts + containing-ADM-polygon counts)."""
+    """SNL/S&P Global mining property tables -- gridded metric-radius buffer
+    counts (zarr) + per-GID containing-ADM-polygon counts (parquet, merged
+    directly during assembly rather than rasterized)."""
 
     ID = "snl_mining"
     STEPS = (PipelineStep.PREPARE, PipelineStep.GRID)
-    REQUIRES = (("gadm", PipelineStep.PREPARE),)
+    REQUIRES = (("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID))
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -112,8 +125,11 @@ class SnlMiningSource(DataSource):
             }
             for variable, spec in admin_variables.items()
         }
+        # Rasterized zarr variables: radius-buffer counts only (genuinely
+        # per-pixel). Admin-polygon counts (self.admin_tables) are exported as
+        # per-GID parquet sidecars instead -- see module docstring.
         self.output_variables = list(
-            cfg.raw.get("output_variables", aggregation.get("output_variables", list(self.buffer_tables) + list(self.admin_tables)))
+            cfg.raw.get("output_variables", aggregation.get("output_variables", list(self.buffer_tables)))
         )
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="snl_mining_processor_")
@@ -454,7 +470,6 @@ class SnlMiningSource(DataSource):
                     "prepared_duckdb_path": self.prepared_db_path,
                     "metric_crs": self.metric_crs,
                     "radius_semantics": "count of active mine buffers covering pixel center",
-                    "admin_semantics": "count of active mines in containing ADM polygon",
                 },
             ).rio.write_crs(geobox.crs)
 
@@ -508,14 +523,6 @@ class SnlMiningSource(DataSource):
                                 mask = rasterize(geom, tile_geobox).values
                                 tile_arrays[var_name] = tile_arrays[var_name] + (mask.astype(np.uint16) * int(value))
 
-                        for var_name, table_spec in self.admin_tables.items():
-                            rows = self._fetch_features(con, table_spec["table_name"], year, tile_wkt)
-                            any_data = any_data or bool(rows)
-                            for value, geom_wkb in rows:
-                                geom = Geometry(shapely.wkb.loads(bytes(geom_wkb)), crs=str(tile_geobox.crs))
-                                mask = rasterize(geom, tile_geobox).values
-                                tile_arrays[var_name] = np.where(mask, np.uint16(value), tile_arrays[var_name])
-
                         if any_data:
                             dim_y, dim_x = tile_geobox.dimensions
                             tile_ds = xr.Dataset(
@@ -554,10 +561,52 @@ class SnlMiningSource(DataSource):
             years = target.meta["years"]
             if not self._create_empty_target_zarr(target.output_path, geobox, years):
                 return False
-            return self._rasterize_tiles_to_zarr(target.output_path, geobox, years)
+            if not self._rasterize_tiles_to_zarr(target.output_path, geobox, years):
+                return False
+            return self._export_admin_count_tables(os.path.dirname(target.output_path))
         except Exception:
             logger.exception("Error processing SNL mining GRID target")
             return False
+
+    def _export_admin_count_tables(self, output_dir: str) -> bool:
+        """Write each admin-polygon mine-count table as a small `(GID_N, year)`-
+        keyed parquet sidecar instead of rasterizing it -- the value is
+        constant within a GID (module docstring). One file per admin level,
+        e.g. `mine_count_adm1.parquet`, named after the variable."""
+        import json
+
+        from src.data.sources.misc.gadm import gid_mapping_path
+
+        con = self._connect_duckdb(self.prepared_db_path)
+        try:
+            for variable, table_spec in self.admin_tables.items():
+                gid_col = table_spec["code_column"]
+                mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, gid_col)
+                if not os.path.exists(mapping_file):
+                    logger.error("GADM %s mapping file not found: %s", gid_col, mapping_file)
+                    return False
+                with open(mapping_file) as f:
+                    code_to_id: Dict[str, int] = json.load(f)
+
+                counts_df = con.execute(
+                    f"SELECT year, adm_code, value FROM {table_spec['table_name']}"
+                ).df()
+                counts_df[gid_col] = counts_df["adm_code"].map(lambda c: code_to_id.get(c, 0))
+                counts_df = counts_df[counts_df[gid_col] != 0]
+                out_df = counts_df[[gid_col, "year", "value"]].rename(columns={"value": variable})
+
+                out_path = os.path.join(output_dir, f"{variable}.parquet")
+                out_df.to_parquet(out_path, index=False)
+                logger.info(
+                    "SNL mining %s table complete: %d (%s, year) rows -> %s",
+                    variable, len(out_df), gid_col, out_path,
+                )
+            return True
+        except Exception:
+            logger.exception("Error exporting SNL mining admin-count tables")
+            return False
+        finally:
+            con.close()
 
 
 registry.register(SnlMiningSource.ID, __name__, SnlMiningSource.__name__, SnlMiningSource.STEPS, requires=SnlMiningSource.REQUIRES)

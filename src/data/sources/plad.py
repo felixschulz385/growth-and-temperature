@@ -6,11 +6,21 @@ API fetch -- registered under aliases `harvard_plad`/`harvard`, never
 actually wired to the old preprocessor, which built its own `create_source()`
 `None` special-case instead) and
 `src/data/preprocess/sources/plad.py::PLADPreprocessor` (`stage="spatial"`
--> GRID). **No PREPARE step**: unlike acag/esacci/glass, PLAD's panel
-construction (merging the raw PLAD .dta table with GADM administrative
-boundaries into a per-year boolean favoritism panel) and its rasterization
-happen together in one stage the old code calls "spatial" -- there never was
-a separate "annual"/"vector" pre-step, so none is invented here.
+-> GRID). **No PREPARE step**: PLAD's raw `.dta` table already carries GADM's
+native `gid_1`/`gid_2` string codes directly, so there's no vector-boundary
+pre-step to build.
+
+**No longer rasterized.** Regional favoritism (`reg_fav`) is constant across
+every pixel of the favored admin unit for a given year -- it varies only by
+`GID_1`/`GID_2` and year, never by pixel location -- so GRID now writes a
+tiny `(GID_N, year)`-keyed parquet table of favored units instead of a full
+pixel-grid zarr, and no longer needs GADM's polygon geometries at all (only
+`GID_N_code_mapping.json`, to translate PLAD's native `gid_1`/`gid_2` string
+codes into the same integer ids gadm's own per-pixel `GID_N` grid uses).
+Assembly merges it directly onto rows via
+`src.data.assemble.processors.TileProcessor`'s `join_on` mechanism, keyed on
+`GID_N` (fillna=False for admin units absent from the favored-unit table, via
+the assemble config, not baked in here).
 
 **Quirk preserved, not "fixed"**: `get_hpc_output_path` hardcodes the string
 `"plad"` as the output path prefix, never `self.data_path` -- so even a
@@ -18,22 +28,20 @@ configured `data_path` override would not change where output lands. Modeled
 here via an `output_root()` override, mirroring the identical pattern already
 used for GLASS's `path_prefix`.
 
-`REQUIRES` on gadm's **PREPARE** (not GRID) -- confirmed by reading
-`_resolve_gadm_files_from_preprocessed`, which reads GADM's simplified vector
-output (`gadm_levelADM_{1,2}_simplified.gpkg`, via `layout.output_root()` so
-it resolves under either layout), not its rasterized grid.
+`REQUIRES` on gadm's **GRID** (not PREPARE) -- changed from PREPARE now that
+rasterization (and the polygon geometries it needed) is gone; only the
+integer-id mapping sidecar (`GID_N_code_mapping.json`, produced by gadm's
+GRID step) is still needed.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import tempfile
-from itertools import product
 from typing import Any, Dict, List, Optional
-
-from zarr.codecs import BloscCodec
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -47,12 +55,12 @@ DEFAULT_DOI = "doi:10.7910/DVN/YUS575"
 
 
 class PlaDSource(DataSource):
-    """Political Leaders and Development: regional-favoritism boolean grid."""
+    """Political Leaders and Development: regional-favoritism (GID_N, year) table."""
 
     ID = "plad"
     ALIASES = ("harvard_plad", "harvard")
     STEPS = (PipelineStep.FETCH, PipelineStep.GRID)
-    REQUIRES = (("gadm", PipelineStep.PREPARE),)
+    REQUIRES = (("gadm", PipelineStep.GRID),)
 
     DATA_SOURCE_NAME = "harvard"
     has_entrypoints = False
@@ -75,6 +83,10 @@ class PlaDSource(DataSource):
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="plad_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+
+    @property
+    def _gid_column(self) -> str:
+        return f"GID_{self.admin_level}"
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         if step is PipelineStep.GRID:
@@ -159,22 +171,25 @@ class PlaDSource(DataSource):
                 )
             ]
         if step is PipelineStep.GRID:
-            return [
-                StepTarget(
-                    source_id=self.ID, step=PipelineStep.GRID, key=f"adm{self.admin_level}",
-                    output_path=layout.grid_store_path(
-                        self.ctx.data_root,
-                        self.OUTPUT_PREFIX,
-                        f"plad_adm{self.admin_level}_timeseries_reprojected.zarr",
-                        grid_id=self.ctx.grid_id,
-                        layout=self.ctx.layout,
-                        v2_family=f"admin_panel_adm{self.admin_level}",
-                    ),
-                    completion=Completion.PATH_EXISTS,
-                    meta={"admin_level": self.admin_level, "year_range": self.cfg.year_range},
-                )
-            ]
+            return self._plan_grid()
         raise AssertionError(f"unreachable: {step}")
+
+    def _plan_grid(self) -> List[StepTarget]:
+        mapping_file = self._gid_mapping_file()
+        if not os.path.exists(mapping_file):
+            return []
+        return [
+            StepTarget(
+                source_id=self.ID, step=PipelineStep.GRID, key=f"adm{self.admin_level}",
+                output_path=os.path.join(
+                    self.output_root(PipelineStep.GRID),
+                    f"plad_adm{self.admin_level}_reg_fav.parquet",
+                ),
+                inputs=(mapping_file,),
+                completion=Completion.PATH_EXISTS,
+                meta={"admin_level": self.admin_level, "year_range": self.cfg.year_range},
+            )
+        ]
 
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
@@ -192,26 +207,12 @@ class PlaDSource(DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- GRID ("spatial": panel construction + rasterization) ---------------
+    # -- GRID: build the (GID_N, year) favored-unit table --------------------
 
-    def _resolve_gadm_files_from_preprocessed(self) -> Dict[str, str]:
-        # Cross-source reference to gadm's own PREPARE output -- resolved
-        # through layout.output_root() (not hardcoded to the legacy
-        # misc/processed/stage_1/gadm shape) so this keeps finding gadm's
-        # simplified vector files under ctx.layout="v2" too, matching
-        # CountryClassificationsSource._plan_grid()'s own cross-source gadm
-        # reference (src/data/sources/misc/country_classifications.py).
-        gadm_base_path = layout.output_root(
-            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout
-        )
-        data_files = {}
-        adm1_path = os.path.join(gadm_base_path, "gadm_levelADM_1_simplified.gpkg")
-        adm2_path = os.path.join(gadm_base_path, "gadm_levelADM_2_simplified.gpkg")
-        if os.path.exists(adm1_path):
-            data_files["gadm_adm1"] = adm1_path
-        if os.path.exists(adm2_path):
-            data_files["gadm_adm2"] = adm2_path
-        return data_files
+    def _gid_mapping_file(self) -> str:
+        from src.data.sources.misc.gadm import gid_mapping_path
+
+        return gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, self._gid_column)
 
     def _resolve_plad_data_file(self) -> Optional[str]:
         from src.data.common.ledger.paths import ledger_path
@@ -229,158 +230,66 @@ class PlaDSource(DataSource):
                 return raw
         return None
 
-    def _get_or_create_geobox(self):
-        from src.data.common.geobox import get_target_geobox
-
-        return get_target_geobox(self.ctx)
-
-    def _create_plad_panel(self):
-        import geopandas as gpd
+    def _build_reg_fav_table(self, mapping_file: str):
+        """One row per (favored GID_N, year): PLAD's raw table already carries
+        native `gid_1`/`gid_2` GADM string codes directly, so building this is
+        just an expand-by-year-range + translate-to-gadm's-integer-id, no
+        GADM polygon geometry needed."""
         import pandas as pd
 
         plad_data_path = self._resolve_plad_data_file()
         if not plad_data_path:
             raise ValueError("PLAD data file not found")
-        gadm_files = self._resolve_gadm_files_from_preprocessed()
 
         plad = pd.read_table(plad_data_path)
+        raw_gid_col = f"gid_{self.admin_level}"
+        if raw_gid_col not in plad.columns:
+            raise ValueError(f"PLAD data file missing expected column '{raw_gid_col}'")
 
-        if self.admin_level == 1:
-            gadm_path = gadm_files.get("gadm_adm1")
-            if not gadm_path:
-                raise ValueError("GADM ADM1 file not found - ensure gadm's PREPARE step has been run")
-            gid_col, reg_fav_col = "GID_1", "reg_fav_adm_1"
-        else:
-            gadm_path = gadm_files.get("gadm_adm2")
-            if not gadm_path:
-                raise ValueError("GADM ADM2 file not found - ensure gadm's PREPARE step has been run")
-            gid_col, reg_fav_col = "GID_2", "reg_fav_adm_2"
+        with open(mapping_file) as f:
+            code_to_id: Dict[str, int] = json.load(f)
 
-        adm_gdf = gpd.read_file(gadm_path)
-        years_to_process = list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1))
+        start_year, end_year = self.cfg.year_range
+        rows = []
+        for _, row in plad.iterrows():
+            code = row[raw_gid_col]
+            if pd.isna(code):
+                continue
+            row_start = max(int(row["startyear"]), start_year)
+            row_end = min(int(row["endyear"]), end_year)
+            for year in range(row_start, row_end + 1):
+                rows.append((code, year))
 
-        adm_panel = pd.DataFrame(list(product(adm_gdf[gid_col].unique(), years_to_process)), columns=[gid_col, "year"])
-        adm_panel = pd.merge(adm_panel, adm_gdf[[gid_col, "geometry"]])
+        if not rows:
+            return pd.DataFrame(columns=[self._gid_column, "year", "reg_fav"])
 
-        plad_panel = pd.DataFrame(list(product(plad.gid_0.unique(), years_to_process)), columns=["gid_0", "year"])
-
-        def processor(row):
-            qresults = plad.loc[
-                (plad.startyear <= row["year"]) & (plad.endyear >= row["year"]) & (plad.gid_0 == row["gid_0"]),
-                ["gid_1", "gid_2"],
-            ]
-            return pd.Series() if qresults.empty else qresults.iloc[0]
-
-        plad_panel[["reg_fav_adm_1", "reg_fav_adm_2"]] = plad_panel.apply(processor, axis=1)
-
-        reg_fav_panel = pd.merge(
-            adm_panel, plad_panel, left_on=[gid_col, "year"], right_on=[reg_fav_col, "year"], how="left"
+        panel = pd.DataFrame(rows, columns=["gid_code", "year"]).drop_duplicates()
+        panel[self._gid_column] = panel["gid_code"].map(lambda c: code_to_id.get(c, 0))
+        panel = panel[panel[self._gid_column] != 0]
+        panel["reg_fav"] = True
+        return panel[[self._gid_column, "year", "reg_fav"]].drop_duplicates(
+            subset=[self._gid_column, "year"]
         )
-        reg_fav_panel["reg_fav"] = (~reg_fav_panel[reg_fav_col].isna()).astype(int)
-        reg_fav_panel = reg_fav_panel.drop(
-            columns=[c for c in ("gid_0", "reg_fav_adm_1", "reg_fav_adm_2") if c in reg_fav_panel.columns]
-        )
-        return gpd.GeoDataFrame(reg_fav_panel)
-
-    def _create_empty_plad_zarr(self, output_path: str, geobox, years: List[int]) -> bool:
-        import dask.array as da
-        import pandas as pd
-        import xarray as xr
-
-        try:
-            time_coords = pd.to_datetime([f"{year}-12-31" for year in years])
-            ny, nx = geobox.shape
-            dim_y, dim_x = geobox.dimensions
-            y_coords = geobox.coords[dim_y].values.round(5)
-            x_coords = geobox.coords[dim_x].values.round(5)
-
-            data_var = xr.DataArray(
-                da.zeros((len(years), 1, ny, nx), dtype=bool),
-                dims=["time", "band", dim_y, dim_x],
-                coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
-                attrs={
-                    "long_name": "Regional Favoritism Indicator",
-                    "description": f"Boolean indicator for regional favoritism at ADM{self.admin_level} level",
-                    "admin_level": self.admin_level,
-                    "dtype": "bool",
-                },
-            )
-            empty_ds = xr.Dataset({"reg_fav": data_var}).rio.write_crs(geobox.crs)
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            empty_ds.to_zarr(
-                output_path, mode="w",
-                encoding={"reg_fav": {"chunks": (1, 1, 512, 512), "compressors": (compressor,), "dtype": "bool"}},
-                compute=False, zarr_format=3, consolidated=False,
-            )
-            return True
-        except Exception:
-            logger.exception("Error creating empty PLAD zarr")
-            return False
-
-    @staticmethod
-    def _rasterize_panel(panel_gdf, output_path: str, geobox, years: List[int]) -> bool:
-        import pandas as pd
-        import shapely
-        import xarray as xr
-        from odc.geo.geom import Geometry
-        from odc.geo.xr import rasterize, xr_zeros
-
-        try:
-            for year in years:
-                year_data = panel_gdf[panel_gdf["year"] == year]
-                if year_data.empty:
-                    data_array = xr_zeros(geobox, dtype=bool)
-                else:
-                    favoritism_regions = year_data[year_data["reg_fav"] == 1]
-                    if favoritism_regions.empty:
-                        data_array = xr_zeros(geobox, dtype=bool)
-                    else:
-                        geom_list = [geom for mgeom in favoritism_regions.geometry for geom in mgeom.geoms]
-                        favoritism_polygons = shapely.MultiPolygon(geom_list)
-                        geom = Geometry(favoritism_polygons, crs=str(year_data.crs))
-                        data_array = rasterize(geom, geobox).astype(bool)
-
-                data_array = data_array.expand_dims("time").assign_coords(time=[pd.Timestamp(f"{year}-12-31")])
-                data_array = data_array.expand_dims("band").assign_coords(band=[1])
-                dim_y, dim_x = geobox.dimensions
-                data_array = data_array.assign_coords(
-                    {dim_y: geobox.coords[dim_y].values.round(5), dim_x: geobox.coords[dim_x].values.round(5)}
-                )
-                data_array = data_array.drop_vars(["spatial_ref"])
-                dataset = data_array.to_dataset(name="reg_fav")
-
-                from zarr.codecs import BloscCodec as _BloscCodec
-
-                compressor = _BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-                encoding = {var: {"compressors": (compressor,), "dtype": "bool"} for var in dataset.data_vars}
-                dataset.to_zarr(output_path, region="auto", consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error rasterizing PLAD panel")
-            return False
 
     def _execute_grid(self, target: StepTarget) -> bool:
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
-            logger.info("Skipping spatial processing, output already exists: %s", target.output_path)
+            logger.info("Skipping PLAD reg_fav table, output already exists: %s", target.output_path)
             return True
 
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
         try:
-            panel_gdf = self._create_plad_panel()
-            if panel_gdf is None or panel_gdf.empty:
-                logger.error("Failed to create PLAD panel")
-                return False
-
-            geobox = self._get_or_create_geobox()
-            years = sorted(panel_gdf["year"].unique())
-
-            if not self._create_empty_plad_zarr(target.output_path, geobox, years):
-                return False
-            return self._rasterize_panel(panel_gdf, target.output_path, geobox, years)
+            mapping_file = target.inputs[0]
+            reg_fav_table = self._build_reg_fav_table(mapping_file)
+            reg_fav_table.to_parquet(target.output_path, index=False)
+            logger.info(
+                "PLAD reg_fav table complete: %d favored (%s, year) rows",
+                len(reg_fav_table), self._gid_column,
+            )
+            return True
         except Exception:
-            logger.exception("Error in PLAD spatial processing")
+            logger.exception("Error building PLAD reg_fav table")
             return False
 
 

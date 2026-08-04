@@ -238,7 +238,6 @@ sources:
       tile_size: 512
       semantics:
         radius: "count of active mine buffers covering pixel center"
-        admin: "count of active mines in containing ADM polygon"
       radius_variables:
         mine_count_10km:
           radius_km: 10
@@ -249,12 +248,14 @@ sources:
         mine_count_50km:
           radius_km: 50
           table_name: "mine_buffers_50km"
+      # Rasterized (zarr) variables: radius-buffer counts only -- genuinely
+      # per-pixel. mine_count_adm1/mine_count_adm2 (constant within a GID_1/
+      # GID_2 admin polygon) are exported as GID-keyed parquet sidecars
+      # instead and merged during assembly, not listed here.
       output_variables:
         - "mine_count_10km"
         - "mine_count_20km"
         - "mine_count_50km"
-        - "mine_count_adm1"
-        - "mine_count_adm2"
 
 # Data assembly configurations
 assemble:

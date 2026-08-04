@@ -84,7 +84,7 @@ def test_load_subset_generates_partitioned_hdi_subset_from_classifications(tmp_p
             {"iso3": "CCC", "HDI_LO_1999": False, "HDI_ME_1999": False, "HDI_HI_1999": False},
         ]
     ).to_parquet(classifications_dir / "classifications.parquet", index=False)
-    mapping_dir.joinpath("country_code_mapping.json").write_text(
+    mapping_dir.joinpath("GID_0_code_mapping.json").write_text(
         '{"AAA": 10, "BBB": 20, "CCC": 30}'
     )
 
@@ -127,7 +127,7 @@ def test_load_subset_generates_partitioned_wb_subset_from_classifications(tmp_pa
             {"iso3": "CCC", "WB_LO_1999": False, "WB_LM_1999": True, "WB_UM_1999": True},
         ]
     ).to_parquet(classifications_dir / "classifications.parquet", index=False)
-    mapping_dir.joinpath("country_code_mapping.json").write_text(
+    mapping_dir.joinpath("GID_0_code_mapping.json").write_text(
         '{"AAA": 10, "BBB": 20, "CCC": 30}'
     )
 

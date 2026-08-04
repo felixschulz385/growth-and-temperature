@@ -26,10 +26,24 @@ def test_no_fetch_step():
     assert SnlMiningSource.STEPS == (PipelineStep.PREPARE, PipelineStep.GRID)
 
 
-def test_requires_gadm_prepare():
+def test_requires_gadm_prepare_and_grid():
+    # PREPARE for GADM's polygon geometries (admin-count spatial join), GRID
+    # for GID_N_code_mapping.json (translating admin-count tables into
+    # gadm's integer ids for the join_on merge -- see module docstring).
     from src.data.sources import registry
 
-    assert registry.resolve("snl_mining").requires == (("gadm", PipelineStep.PREPARE),)
+    assert registry.resolve("snl_mining").requires == (
+        ("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID),
+    )
+
+
+def test_default_output_variables_is_radius_only(tmp_path):
+    # Admin-polygon counts (mine_count_adm1/2) are no longer rasterized --
+    # they're exported as per-GID parquet sidecars instead (see
+    # _export_admin_count_tables), so they must not appear in the zarr's
+    # output_variables.
+    source, _ = _make_source(tmp_path)
+    assert source.output_variables == ["mine_count_10km", "mine_count_20km", "mine_count_50km"]
 
 
 def test_default_duckdb_and_prepared_db_paths(tmp_path):
@@ -135,6 +149,67 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path, monkeypatch):
     targets = source.plan(PipelineStep.GRID, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "snl_mining.zarr")
+
+
+def test_export_admin_count_tables_writes_gid_keyed_parquet(tmp_path):
+    import json
+
+    import duckdb
+    import pandas as pd
+
+    from src.data.sources.misc.gadm import gid_mapping_path
+
+    source, ctx = _make_source(tmp_path)
+
+    os.makedirs(os.path.dirname(source.prepared_db_path), exist_ok=True)
+    con = duckdb.connect(source.prepared_db_path)
+    con.execute("CREATE TABLE adm1_year_counts (year INTEGER, adm_code VARCHAR, value INTEGER)")
+    con.execute(
+        "INSERT INTO adm1_year_counts VALUES (2019, 'USA.1_1', 3), (2020, 'USA.1_1', 5), (2020, 'FRA.2_1', 1)"
+    )
+    con.execute("CREATE TABLE adm2_year_counts (year INTEGER, adm_code VARCHAR, value INTEGER)")
+    con.execute("INSERT INTO adm2_year_counts VALUES (2020, 'USA.1.1_1', 2)")
+    con.close()
+
+    mapping_path_1 = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_1")
+    os.makedirs(os.path.dirname(mapping_path_1), exist_ok=True)
+    with open(mapping_path_1, "w") as f:
+        json.dump({"USA.1_1": 5}, f)  # FRA.2_1 deliberately absent
+
+    mapping_path_2 = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_2")
+    with open(mapping_path_2, "w") as f:
+        json.dump({"USA.1.1_1": 7}, f)
+
+    output_dir = tmp_path / "grid_output"
+    output_dir.mkdir()
+    assert source._export_admin_count_tables(str(output_dir)) is True
+
+    adm1_df = pd.read_parquet(output_dir / "mine_count_adm1.parquet")
+    assert list(adm1_df.columns) == ["GID_1", "year", "mine_count_adm1"]
+    # FRA.2_1 has no gadm mapping entry -> dropped, not zeroed.
+    assert set(zip(adm1_df["GID_1"], adm1_df["year"], adm1_df["mine_count_adm1"])) == {
+        (5, 2019, 3), (5, 2020, 5),
+    }
+
+    adm2_df = pd.read_parquet(output_dir / "mine_count_adm2.parquet")
+    assert list(adm2_df.columns) == ["GID_2", "year", "mine_count_adm2"]
+    assert set(zip(adm2_df["GID_2"], adm2_df["year"], adm2_df["mine_count_adm2"])) == {(7, 2020, 2)}
+
+
+def test_export_admin_count_tables_fails_clearly_when_mapping_missing(tmp_path):
+    import duckdb
+
+    source, ctx = _make_source(tmp_path)
+
+    os.makedirs(os.path.dirname(source.prepared_db_path), exist_ok=True)
+    con = duckdb.connect(source.prepared_db_path)
+    con.execute("CREATE TABLE adm1_year_counts (year INTEGER, adm_code VARCHAR, value INTEGER)")
+    con.execute("CREATE TABLE adm2_year_counts (year INTEGER, adm_code VARCHAR, value INTEGER)")
+    con.close()
+
+    output_dir = tmp_path / "grid_output"
+    output_dir.mkdir()
+    assert source._export_admin_count_tables(str(output_dir)) is False
 
 
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):
