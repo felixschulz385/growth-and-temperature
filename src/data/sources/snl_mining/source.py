@@ -76,12 +76,13 @@ class SnlMiningSource(DataSource):
         aggregation = cfg.raw.get("aggregation", {}) or {}
 
         # stage-0 is a pre-pipeline manual export (module docstring), not a
-        # FETCH/PREPARE/GRID artefact -- layout:v2's raw/prepared/grid rename
-        # has no stage-0 equivalent, so this path is legacy-shaped regardless
-        # of ctx.layout, on purpose.
+        # FETCH/PREPARE/GRID artefact in the pipeline's own sense -- but it is
+        # this source's raw input, so it lives under output_root(FETCH) (->
+        # layout.raw_root()) like every other source's downloaded bytes,
+        # respecting ctx.layout instead of hardcoding the legacy shape.
         self.duckdb_path = self._resolve_path(
             cfg.raw.get("duckdb_path")
-            or os.path.join(self.cfg.data_path, "processed", "stage_0", "manual_xls", "snl_mining_manual_export.duckdb")
+            or os.path.join(self.output_root(PipelineStep.FETCH), "manual_xls", "snl_mining_manual_export.duckdb")
         )
         prepared_db_override = cfg.raw.get("prepared_db_path", aggregation.get("prepared_db_path"))
         self.prepared_db_path = (

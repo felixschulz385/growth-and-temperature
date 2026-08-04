@@ -49,9 +49,20 @@ def test_default_output_variables_is_radius_only(tmp_path):
 def test_default_duckdb_and_prepared_db_paths(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.duckdb_path == os.path.join(
-        ctx.data_root, "snl_mining", "processed", "stage_0", "manual_xls", "snl_mining_manual_export.duckdb"
+        ctx.data_root, "snl_mining", "raw", "manual_xls", "snl_mining_manual_export.duckdb"
     )
     assert source.prepared_db_path == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb")
+
+
+def test_duckdb_path_honors_layout_v2(tmp_path):
+    # Stage-0's manual export is this source's raw input -- routed through
+    # output_root(FETCH) (-> layout.raw_root()) so it moves under
+    # layout="v2" too, instead of hardcoding the legacy processed/stage_0
+    # shape.
+    v2_source, v2_ctx = _make_source(tmp_path, layout="v2")
+    assert v2_source.duckdb_path == os.path.join(
+        v2_ctx.data_root, "raw", "snl_mining", "manual_xls", "snl_mining_manual_export.duckdb"
+    )
 
 
 def test_prepared_db_path_honors_layout_v2(tmp_path):

@@ -36,8 +36,11 @@ def handle_list(args: argparse.Namespace) -> None:
         print(f"{spec.id}{aliases} -- steps: {steps}{requires}")
 
 
-def _summarize_targets(targets: list) -> str:
-    """One-line status for a (source, step)'s target list.
+def _summarize_targets(targets: list) -> tuple[str, "bool | None"]:
+    """One-line status for a (source, step)'s target list, plus whether that
+    step is fully complete (`True`/`False`), or `None` if completeness isn't
+    a meaningful concept for this step (the FETCH sync-missing pseudo-target
+    below, which is `Completion.NEVER` by design and never "completes").
 
     FETCH steps (docs/design/09-integrated-pipeline.md §4) are universally
     modeled as a single `Completion.NEVER` "sync whatever is missing" pseudo-
@@ -49,7 +52,7 @@ def _summarize_targets(targets: list) -> str:
     uses the normal is_complete() count.
     """
     if not targets:
-        return "no targets"
+        return "no targets", True  # nothing to do -> vacuously complete
     if len(targets) == 1 and targets[0].completion is Completion.NEVER:
         import os
 
@@ -60,21 +63,22 @@ def _summarize_targets(targets: list) -> str:
             count = sum(len(files) for _, _, files in os.walk(output_path))
         else:
             count = 0
-        return "no local data" if count == 0 else f"{count} file(s) fetched"
+        return ("no local data" if count == 0 else f"{count} file(s) fetched"), None
     complete = sum(1 for t in targets if is_complete(t))
     total = len(targets)
     pct = round(100 * complete / total) if total else 0
-    return f"{complete}/{total} ({pct}%)"
+    return f"{complete}/{total} ({pct}%)", complete == total
 
 
 def _print_source_summary(rows: dict) -> None:
     if not rows:
         print("No sources found.")
         return
-    headers = ["source", *(step.value for step in STEP_ORDER)]
+    headers = ["source", *(step.value for step in STEP_ORDER), "complete"]
     widths = [max(len(headers[0]), *(len(name) for name in rows))]
     for i, step in enumerate(STEP_ORDER, start=1):
         widths.append(max(len(headers[i]), *(len(row[step.value]) for row in rows.values())))
+    widths.append(max(len(headers[-1]), *(len(row["complete"]) for row in rows.values())))
 
     def fmt(cells: list) -> str:
         return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths))
@@ -82,7 +86,8 @@ def _print_source_summary(rows: dict) -> None:
     print(fmt(headers))
     print(fmt(["-" * w for w in widths]))
     for name in sorted(rows):
-        print(fmt([name, *(rows[name][step.value] for step in STEP_ORDER)]))
+        row = rows[name]
+        print(fmt([name, *(row[step.value] for step in STEP_ORDER), row["complete"]]))
 
 
 def handle_summary(args: argparse.Namespace) -> None:
@@ -110,17 +115,30 @@ def handle_summary(args: argparse.Namespace) -> None:
             cfg = get_source_config(config, name)
             source = registry.create(name, ctx, cfg)
         except Exception as exc:
-            rows[name] = {step.value: f"error: {exc}" for step in STEP_ORDER}
+            rows[name] = {**{step.value: f"error: {exc}" for step in STEP_ORDER}, "complete": "error"}
             continue
 
+        had_error = False
+        step_complete: list = []  # bools for steps where completeness is meaningful (excludes FETCH)
         for step in STEP_ORDER:
             if step not in spec.steps:
                 continue
             try:
-                row[step.value] = _summarize_targets(source.plan(step, TargetSelection()))
+                summary, complete = _summarize_targets(source.plan(step, TargetSelection()))
+                row[step.value] = summary
+                if complete is not None:
+                    step_complete.append(complete)
             except Exception as exc:
                 row[step.value] = f"error: {exc}"
+                had_error = True
         source.close()
+
+        if had_error:
+            row["complete"] = "error"
+        elif not step_complete:
+            row["complete"] = "-"
+        else:
+            row["complete"] = "yes" if all(step_complete) else "no"
         rows[name] = row
 
     _print_source_summary(rows)

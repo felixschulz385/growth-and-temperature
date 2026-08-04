@@ -12,7 +12,7 @@ Purpose:
 - write the cleaned result to DuckDB
 
 Expected output:
-- `data/snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb`
+- `data/snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb`
 
 Tables written:
 - `source_files`
@@ -33,10 +33,10 @@ Purpose:
 - write model-imputed opening and closing years into the DuckDB table `property_llm_years`
 
 Expected outputs:
-- `data/snl_mining/processed/stage_0/llm/mine_year_extract_manifest.parquet`
-- `data/snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb` table `property_llm_years`
-- `data/snl_mining/processed/stage_0/llm/batch_requests/*.jsonl`
-- `data/snl_mining/processed/stage_0/llm/batch_outputs/*.jsonl`
+- `data/snl_mining/raw/llm/mine_year_extract_manifest.parquet`
+- `data/snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb` table `property_llm_years`
+- `data/snl_mining/raw/llm/batch_requests/*.jsonl`
+- `data/snl_mining/raw/llm/batch_outputs/*.jsonl`
 
 Stored fields in `property_llm_years`:
 - `property_id`

@@ -201,23 +201,25 @@ sources:
       max_concurrent_downloads: 1
       timeout: 600  # 10 minutes for large files
 
-  # Berman Mining Conflict Data (Manual Download Required)
-  berman_mining:
-    type: "berman_mining"
-    data_path: "berman_mining"
-
-    download:
-      batch_size: 1
-      max_concurrent_downloads: 1
-      tar_max_files: 5
-      tar_max_size_mb: 500
-      timeout: 60
+  # Berman Mining Conflict Data (Manual Download Required) -- disabled, not
+  # run by the pipeline. Left commented rather than deleted so it can be
+  # re-enabled by uncommenting.
+  # berman_mining:
+  #   type: "berman_mining"
+  #   data_path: "berman_mining"
+  #
+  #   download:
+  #     batch_size: 1
+  #     max_concurrent_downloads: 1
+  #     tar_max_files: 5
+  #     tar_max_size_mb: 500
+  #     timeout: 60
 
   # SNL/S&P Global Mining Property Tables -> GRID
   snl_mining:
     type: "snl_mining"
     data_path: "snl_mining"  # fixed: was "snf_mining", inconsistent with the debug config (docs/design/09-integrated-pipeline.md §5)
-    duckdb_path: "snl_mining/processed/stage_0/manual_xls/snl_mining_manual_export.duckdb"
+    duckdb_path: "snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb"
     properties_table: "properties"
     llm_years_table: "property_llm_years"
     work_history_table: "property_work_history_events"

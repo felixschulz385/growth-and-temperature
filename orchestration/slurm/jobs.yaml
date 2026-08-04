@@ -53,17 +53,19 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: acag
 
-  - name: berman_mining-grid
-    log_key: berman_mining
-    source: berman_mining
-    step: grid
-    partition: bigmem
-    time: "00:30:00"
-    qos: 30min
-    cpus: 8
-    mem: 256G
-    mem_fraction: 0.6
-    temp_dir_prefix: berman_mining
+  # berman_mining disabled as a source (orchestration/configs/data.yaml) --
+  # job left commented rather than deleted so it can be re-enabled together.
+  # - name: berman_mining-grid
+  #   log_key: berman_mining
+  #   source: berman_mining
+  #   step: grid
+  #   partition: bigmem
+  #   time: "00:30:00"
+  #   qos: 30min
+  #   cpus: 8
+  #   mem: 256G
+  #   mem_fraction: 0.6
+  #   temp_dir_prefix: berman_mining
 
   - name: eog-viirs-grid
     log_key: eog_viirs
