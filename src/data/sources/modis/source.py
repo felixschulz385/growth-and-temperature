@@ -1,14 +1,31 @@
-"""MODIS LST (Planetary Computer STAC streaming): prepare + grid, no fetch.
+"""MODIS LST (Planetary Computer STAC streaming): fetch + grid.
 
 docs/design/09-integrated-pipeline.md §5/§6: MODIS was already closest to the
-target shape before this migration -- no download-side counterpart exists
-(it streams via STAC inside its own "annual"/PREPARE step), and its output is
-already atomically-written GeoTIFFs with per-tile-year transfer units. This
-migration is mostly a rename: `stage="annual"` -> PREPARE, `stage="spatial"`
--> GRID, ported from `src/data/preprocess/sources/modis.py::MODISPreprocessor`.
+target shape before that migration -- no separate download-side counterpart
+exists (it streams via STAC inside its own "annual" step), and its output is
+already atomically-written GeoTIFFs with per-tile-year transfer units. That
+migration was mostly a rename: `stage="annual"` -> what was then called
+PREPARE, `stage="spatial"` -> GRID, ported from
+`src/data/preprocess/sources/modis.py::MODISPreprocessor`.
 
-**Real bug fixed here, not silently ported**: the old
-`get_preprocessor_class()` only matched `--source` values `"modis"`/
+docs/design/10-fetch-ledger.md §6/§3 later named this step's placement the
+one deliberate exception to "FETCH means a crawlable remote file catalog":
+STAC search + `odc.stac.load` + QC-mask + annual-compositing genuinely *is*
+the download from Planetary Computer, it just also transforms as it goes
+(there is no separate raw-asset-on-disk stage to insert a real FETCH before).
+This migration renames the step to FETCH -- matching what it actually is,
+"fetch this source's remote data" -- rather than continuing to call it
+PREPARE. It does **not** implement the full `RemoteFileCatalog` crawler
+protocol other FETCH sources (GLASS, EOG, ...) satisfy: MODIS has no flat
+remote file list to crawl, only per-(tile, year) STAC queries, so it is
+excluded from `tests/data/sources/test_fetch_protocol.py`'s parametrization.
+Instead it tracks each (year, tile) unit's local/remote state directly in the
+generic `artifacts` table (`SourceLedger.ensure_artifact`/`set_local_state`),
+giving `pipeline summary`/retries the same per-unit visibility other sources
+get from the crawl catalog, without pretending MODIS has one.
+
+**Real bug fixed in the original PREPARE migration, not silently ported**:
+the old `get_preprocessor_class()` only matched `--source` values `"modis"`/
 `"modis_lst"`; `orchestration/configs/data.yaml`'s second MODIS config block
 is keyed `modis_robustness_11a1`, which does not match either string and
 falls through to the generic camelcase-import branch, raising
@@ -79,7 +96,7 @@ SPATIAL_RESAMPLING = "nearest"
 class ModisSource(DataSource):
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
-    STEPS = (PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.GRID)
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         self.product = cfg.raw.get("product", "21A2")
@@ -106,13 +123,28 @@ class ModisSource(DataSource):
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="modis_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
 
+        self._ledger = None
+
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
-        """Overrides the base default: the old MODISPreprocessor hardcodes
-        `stage_2_ease6933` for its spatial output regardless of any global
-        grid config -- the one deliberate MODIS-only ad hoc case
-        docs/design/05-migration.md §1 / docs/design/09-integrated-pipeline.md
-        §3 describe. Force `grid_id="ease6933"` for GRID here rather than
-        deferring to `self.ctx.grid_id` (which defaults to legacy_4326)."""
+        """Overrides the base default in two places:
+
+        - GRID: the old MODISPreprocessor hardcodes `stage_2_ease6933` for
+          its spatial output regardless of any global grid config -- the one
+          deliberate MODIS-only ad hoc case docs/design/05-migration.md §1 /
+          docs/design/09-integrated-pipeline.md §3 describe. Force
+          `grid_id="ease6933"` here rather than deferring to `self.ctx.grid_id`
+          (which defaults to legacy_4326).
+        - FETCH: this step is a rename of what used to be called PREPARE
+          (module docstring) -- the physical artifact tree
+          (`processed/stage_1` legacy / `prepared/<data_path>` v2) is
+          unchanged, it is still STAC-streamed-then-composited annual
+          GeoTIFFs, not a bag of raw bytes under `layout.raw_root()`'s bare
+          `<data_path>/raw` convention every crawler-based FETCH source uses.
+          Reusing that convention here would silently orphan already-fetched
+          local/HPC GeoTIFFs on this rename. `PipelineStep.PREPARE` below is
+          a path-computation implementation detail only -- MODIS no longer
+          declares that step (`STEPS`).
+        """
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
@@ -125,18 +157,27 @@ class ModisSource(DataSource):
                 grid_id=EASE_GRID_ID,
                 layout=self.ctx.layout,
             )
+        if step is PipelineStep.FETCH:
+            return layout.output_root(
+                self.ctx.data_root,
+                self.cfg.data_path,
+                PipelineStep.PREPARE,
+                namespace=namespace if namespace is not None else self.cfg.namespace,
+                grid_id=self.ctx.grid_id,
+                layout=self.ctx.layout,
+            )
         return super().output_root(step, namespace=namespace)
 
     # ------------------------------------------------------------------
-    # transfer_units -- per-(year, tile) files for PREPARE, default for GRID
+    # transfer_units -- per-(year, tile) files for FETCH, default for GRID
     # ------------------------------------------------------------------
 
     def transfer_units(self, step: PipelineStep) -> List[TransferUnit]:
         self._require_step(step)
-        if step is not PipelineStep.PREPARE:
+        if step is not PipelineStep.FETCH:
             return super().transfer_units(step)
 
-        stage1_root = self.output_root(PipelineStep.PREPARE)
+        stage1_root = self.output_root(PipelineStep.FETCH)
         remote_base = self.ctx.remote_data_root or self.ctx.data_root
         units = []
         if not os.path.isdir(stage1_root):
@@ -163,23 +204,47 @@ class ModisSource(DataSource):
     # ------------------------------------------------------------------
 
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        if step is PipelineStep.PREPARE:
-            return self._plan_prepare(selection)
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch(selection)
         if step is PipelineStep.GRID:
             return self._plan_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
-        if target.step is PipelineStep.PREPARE:
-            return self._execute_prepare(target)
+        if target.step is PipelineStep.FETCH:
+            return self._execute_fetch(target)
         if target.step is PipelineStep.GRID:
             return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
-    # -- PREPARE ("annual": STAC streaming ingest + compositing) -----------
+    def _get_ledger(self):
+        """Lazily opened, reused across `_execute_fetch()` calls within one
+        run (docs/design/10-fetch-ledger.md): tracks each (year, tile) unit's
+        local/remote state in the generic `artifacts` table so retries and
+        `pipeline summary` have per-unit visibility, the same way every other
+        FETCH-capable source's crawl-catalog-backed units do -- MODIS has no
+        crawl catalog to seed `artifacts` from, so it ensures its own rows
+        directly. Returns None if `local_index_dir` isn't configured (matches
+        every other ledger-aware call site's same fallback)."""
+        if self._ledger is None:
+            from src.data.common.ledger.paths import ledger_path
+            from src.data.common.ledger.store import SourceLedger
 
-    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        stage1_root = self.output_root(PipelineStep.PREPARE)
+            local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
+            if local_ledger_path is None:
+                return None
+            self._ledger = SourceLedger.open(local_ledger_path, data_path=self.data_path)
+        return self._ledger
+
+    def close(self) -> None:
+        if self._ledger is not None:
+            self._ledger.close()
+            self._ledger = None
+
+    # -- FETCH ("annual": STAC streaming ingest + compositing) -------------
+
+    def _plan_fetch(self, selection: TargetSelection) -> List[StepTarget]:
+        stage1_root = self.output_root(PipelineStep.FETCH)
         targets = []
         for tile in self.tiles:
             years = self.cfg.year_range and range(self.cfg.year_range[0], self.cfg.year_range[1] + 1) or []
@@ -192,11 +257,11 @@ class ModisSource(DataSource):
                 targets.append(
                     StepTarget(
                         source_id=self.cfg.source_id,
-                        step=PipelineStep.PREPARE,
+                        step=PipelineStep.FETCH,
                         key=key,
                         output_path=os.path.join(stage1_root, str(year), f"{tile}.tif"),
                         completion=Completion.PATH_EXISTS,
-                        # PREPARE streams from Planetary Computer off-cluster
+                        # FETCH streams from Planetary Computer off-cluster
                         # (needs internet egress SLURM compute nodes may lack)
                         # and must be pushed to HPC before GRID's SLURM job
                         # can read it -- so "complete" here must mean
@@ -264,9 +329,13 @@ class ModisSource(DataSource):
             renamed[key] = data
         return xr.Dataset(renamed).assign_attrs(ds.attrs)
 
-    def _execute_prepare(self, target: StepTarget) -> bool:
+    def _execute_fetch(self, target: StepTarget) -> bool:
         from src.data.common.raster.compositing import composite_to_annual
         from src.data.sources.steps import is_complete
+
+        ledger = self._get_ledger()
+        if ledger is not None:
+            ledger.ensure_artifact(PipelineStep.FETCH.value, target.key, local_path=target.output_path)
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping %s/%s -- output exists: %s", target.meta["year"], target.meta["tile"], target.output_path)
@@ -276,11 +345,15 @@ class ModisSource(DataSource):
         items = self._search_items(tile, year)
         if not items:
             logger.warning("No STAC items found for tile=%s year=%d", tile, year)
+            if ledger is not None:
+                ledger.set_local_state(PipelineStep.FETCH.value, target.key, "failed")
             return False
 
         ds = self._load_tile_year(items)
         if ds is None or "lst" not in ds.data_vars or "qc" not in ds.data_vars:
             logger.error("Failed to load required bands for tile=%s year=%d", tile, year)
+            if ledger is not None:
+                ledger.set_local_state(PipelineStep.FETCH.value, target.key, "failed")
             return False
 
         valid_mask = modis_util.decode_qc_valid_mask(ds["qc"], self.qc_max_lst_error_k)
@@ -302,7 +375,11 @@ class ModisSource(DataSource):
         out_ds.attrs.update(
             {"source_type": "modis", "product": self.product, "tile": tile, "collection": self.collection_id, "platform": self.platform}
         )
-        return self._write_annual_geotiff(out_ds, target.output_path)
+        ok = self._write_annual_geotiff(out_ds, target.output_path)
+        if ledger is not None:
+            size_bytes = os.path.getsize(target.output_path) if ok and os.path.exists(target.output_path) else None
+            ledger.set_local_state(PipelineStep.FETCH.value, target.key, "complete" if ok else "failed", size_bytes=size_bytes)
+        return ok
 
     @staticmethod
     def _write_annual_geotiff(ds: xr.Dataset, output_path: str) -> bool:
@@ -366,7 +443,7 @@ class ModisSource(DataSource):
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
-        stage1_root = self.output_root(PipelineStep.PREPARE)
+        stage1_root = self.output_root(PipelineStep.FETCH)
         output_path = layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,

@@ -31,8 +31,14 @@ def reconcile_step(
     remote_data_root: Optional[str] = None,
 ) -> dict[str, int]:
     """Reconcile *ledger*'s `artifacts` rows for `(source, step)` against
-    real filesystem state. *step* must be PREPARE or GRID -- FETCH's
-    catalog-shaped reconciliation is `common.ledger.bootstrap.reconcile_fetch`.
+    real filesystem state. For PREPARE/GRID, and for any FETCH step whose
+    targets come from `plan()` rather than a crawl catalog (today: MODIS,
+    which streams per-(year, tile) STAC queries instead of listing a flat
+    remote file catalog -- see `src/data/sources/modis/source.py`'s module
+    docstring). Catalog-shaped FETCH sources (GLASS/EOG/...) use
+    `common.ledger.bootstrap.reconcile_fetch` instead; the caller
+    (`handle_reconcile`) picks between the two based on whether the source
+    implements `RemoteFileCatalog`, not on the step name alone.
 
     Enumerates `source.plan(step, TargetSelection())` (every target this
     source currently believes should exist) as ground truth, checks local
@@ -40,9 +46,6 @@ def reconcile_step(
     *remote_data_root* are both given -- checks remote presence for every
     target in one batched round trip.
     """
-    if step is PipelineStep.FETCH:
-        raise ValueError("reconcile_step is for PREPARE/GRID; use common.ledger.bootstrap.reconcile_fetch for FETCH")
-
     targets = source.plan(step, TargetSelection())
     result = {"total": len(targets), "local_complete": 0, "remote_verified": 0}
 

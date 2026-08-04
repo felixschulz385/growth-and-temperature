@@ -497,7 +497,8 @@ class SourceLedger:
             return False
 
         try:
-            self._con.execute("ATTACH ? AS remote_ledger (READ_ONLY)", [local_tmp])
+            escaped_path = local_tmp.replace("'", "''")
+            self._con.execute(f"ATTACH '{escaped_path}' AS remote_ledger (READ_ONLY)")
             try:
                 self._con.execute(
                     "INSERT INTO remote_files SELECT * FROM remote_ledger.remote_files "

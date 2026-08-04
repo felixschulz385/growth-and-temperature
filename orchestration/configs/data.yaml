@@ -54,7 +54,7 @@ sources:
     stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
     # tiles: []                # optional explicit override, e.g. the robustness arm's bounded subset
     transfer:
-      steps: ["prepare"]
+      steps: ["fetch"]
 
   modis_robustness_11a1:
     type: "modis"

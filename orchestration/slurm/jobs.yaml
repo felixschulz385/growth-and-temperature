@@ -6,7 +6,7 @@
 # their own entries instead of `source: misc, subsource: ...`). `host: egress`
 # (default `slurm`) folds the previously-hand-maintained
 # orchestration/scripts/modis-ingest-annual.sh into this generator -- MODIS's
-# PREPARE step needs outbound internet egress to Planetary Computer, which
+# FETCH step needs outbound internet egress to Planetary Computer, which
 # scicore's SLURM compute nodes may not have, so it runs wherever that access
 # exists and pushes results via `transfer_after`.
 #
@@ -252,13 +252,13 @@ jobs:
     temp_dir_prefix: snl_mining
     extra_args: ["--override"]
 
-  - name: modis-prepare
+  - name: modis-fetch
     log_key: modis
     source: modis
-    step: prepare
+    step: fetch
     host: egress
     simple: true
-    transfer_after: prepare
+    transfer_after: fetch
 
   - name: modis-grid
     log_key: modis

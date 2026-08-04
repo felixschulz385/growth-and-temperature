@@ -56,7 +56,7 @@ class Completion(enum.StrEnum):
 def is_complete(target: "StepTarget", ledger: "SourceLedger | None" = None) -> bool:
     """Local-disk completion, same as always -- unless *target* declares
     `require_remote=True` (docs/design/10-fetch-ledger.md §6: today, only
-    MODIS's PREPARE targets do, since that's the one step producing output on
+    MODIS's FETCH targets do, since that's the one step producing output on
     a machine other than the one GRID later reads it from). In that case,
     also requires *ledger* to confirm HPC-side verification, so a target
     isn't reported "complete" just because it happens to still be sitting on
@@ -101,7 +101,7 @@ class StepTarget:
     inputs: tuple[str, ...] = ()
     completion: Completion = Completion.MARKER
     #: True only for targets a *different* machine/job than the one that
-    #: produces them will read (today: MODIS's PREPARE, which streams from
+    #: produces them will read (today: MODIS's FETCH, which streams from
     #: Planetary Computer off-cluster and must be pushed to HPC before GRID's
     #: SLURM job can read it). Default False preserves every other source's
     #: existing local-only completion semantics unchanged.

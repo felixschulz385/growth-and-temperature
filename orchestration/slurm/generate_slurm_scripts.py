@@ -9,7 +9,7 @@ docs/design/09-integrated-pipeline.md §9: emits `run.py pipeline run
 --source X --step Y` (replacing `preprocess run --source X --stage Y
 [--subsource Z]`). `host: egress` (default `host: slurm`) folds what used to
 be the hand-maintained `orchestration/scripts/modis-ingest-annual.sh` into
-this generator: MODIS's PREPARE step needs outbound internet egress to
+this generator: MODIS's FETCH step needs outbound internet egress to
 Planetary Computer, which scicore's SLURM compute nodes may not have, so it
 is emitted as a plain shell script into `orchestration/scripts/` instead of
 an `#SBATCH` script into `orchestration/slurm/`, with an optional

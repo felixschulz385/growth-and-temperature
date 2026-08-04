@@ -97,3 +97,48 @@ files — those are left for an operator to delete once bootstrap has run.
 6. Location-aware completion (`StepTarget.require_remote`, ledger-aware
    `is_complete()`/`_check_requires`).
 7. SLURM dependency chaining (`submit_chain.py` + `jobs.yaml` additions).
+
+## 7. Addendum: MODIS's PREPARE renamed to FETCH
+
+§3/§6 above describe MODIS's STAC-streaming step as "PREPARE" -- accurate at
+the time, but a mislabel: STAC search + `odc.stac.load` + QC-mask + annual
+compositing genuinely *is* the download from Planetary Computer, it just also
+transforms as it goes (there's no separate raw-asset-on-disk stage to insert
+a real FETCH before). `ModisSource.STEPS` is now `(FETCH, GRID)`, not
+`(PREPARE, GRID)` -- `StepTarget.require_remote=True` now applies to MODIS's
+FETCH targets, same mechanism, renamed step.
+
+This does **not** make MODIS satisfy `RemoteFileCatalog` like every other
+FETCH source (GLASS/EOG/...): MODIS has no flat crawlable remote file list,
+only per-(year, tile) STAC queries, so `list_remote_files`/`download_async`/
+`get_all_entrypoints` are not implemented, and MODIS is excluded from
+`tests/data/sources/test_fetch_protocol.py`'s parametrization. Instead
+`ModisSource._execute_fetch()` tracks each (year, tile) unit's local state
+directly in the ledger's generic `artifacts` table
+(`ensure_artifact`/`set_local_state`) -- the same table PREPARE/GRID units
+already use, just written to directly instead of seeded from a crawl catalog.
+This gives partial/resumable FETCH runs: a tile-year that fails (e.g. a
+transient STAC error) is left `failed` rather than silently retried forever,
+and the next `pipeline run --source modis --step fetch` call picks up
+whatever isn't yet complete on disk, same as before -- now with per-unit
+state visible via the ledger rather than only inferrable from the filesystem.
+
+`handle_index`/`pipeline reconcile`'s FETCH branch both now check
+`isinstance(source, RemoteFileCatalog)` before assuming a crawl catalog
+exists, rather than switching purely on the step name -- MODIS's FETCH
+reconciles via the same `reconcile_step()` PREPARE/GRID use (enumerate
+`plan()`, check `is_complete()`/local existence), not
+`common.ledger.bootstrap.reconcile_fetch()`.
+
+The physical output path is unchanged (`processed/stage_1` legacy /
+`prepared/<data_path>` v2) -- `ModisSource.output_root()` special-cases
+FETCH to preserve it, rather than adopting `layout.raw_root()`'s bare
+`<data_path>/raw` convention every crawler-based FETCH source uses, which
+would have silently orphaned already-fetched local/HPC GeoTIFFs on this
+rename.
+
+Orchestration: `orchestration/slurm/jobs.yaml`'s `modis-prepare` job (host:
+egress, `step: prepare`) is renamed `modis-fetch` (`step: fetch`,
+`transfer_after: fetch`); `orchestration/scripts/modis-prepare.sh` is
+regenerated as `modis-fetch.sh`. `submit_chain.py`'s FETCH-skip logic is
+unaffected (MODIS's SLURM chain still starts at GRID, unchanged).

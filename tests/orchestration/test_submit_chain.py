@@ -46,14 +46,14 @@ def test_country_classifications_chain_includes_gadm_grid_prerequisite():
     ]
 
 
-def test_modis_from_step_grid_skips_egress_prepare():
-    # modis-prepare is host: egress, never submitted via this script.
+def test_modis_from_step_grid_skips_egress_fetch():
+    # modis-fetch is host: egress, never submitted via this script.
     chain = sc.build_chain("modis", _jobs(), from_step="grid")
     assert [j["name"] for j in chain] == ["modis-grid"]
 
 
 def test_modis_default_from_step_also_only_yields_grid():
-    # No SLURM job exists for modis's prepare step at all (host: egress) --
+    # No SLURM job exists for modis's fetch step at all (host: egress) --
     # the default "earliest SLURM step" naturally lands on grid.
     chain = sc.build_chain("modis", _jobs())
     assert [j["name"] for j in chain] == ["modis-grid"]

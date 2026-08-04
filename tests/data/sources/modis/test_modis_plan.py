@@ -18,20 +18,22 @@ def _make_source(tmp_path, tiles=("h18v04", "h20v08"), year_range=(2019, 2020), 
     return ModisSource(ctx, cfg), ctx
 
 
-def test_no_fetch_step():
-    assert PipelineStep.FETCH not in ModisSource.STEPS
+def test_fetch_and_grid_are_the_only_steps():
+    assert ModisSource.STEPS == (PipelineStep.FETCH, PipelineStep.GRID)
 
 
 def test_output_root_uses_ease6933_suffix_for_grid(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_1")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_1")
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_2_ease6933")
 
 
-def test_output_root_prepare_uses_top_level_tree_under_layout_v2(tmp_path):
-    # No FETCH step (STAC-streamed) -- only PREPARE needs a v2 case here.
+def test_output_root_fetch_uses_top_level_tree_under_layout_v2(tmp_path):
+    # FETCH is a rename of the old PREPARE ("annual") step -- the physical
+    # artifact tree is unchanged, not layout.raw_root()'s bare <data_path>/raw
+    # convention every crawler-based FETCH source uses (module docstring).
     source, ctx = _make_source(tmp_path, layout="v2")
-    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "modis/21A2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "prepared", "modis/21A2")
 
 
 def test_data_path_defaults_to_product_specific(tmp_path):
@@ -39,17 +41,17 @@ def test_data_path_defaults_to_product_specific(tmp_path):
     assert source.cfg.data_path == "modis/11A1"
 
 
-def test_prepare_targets_one_per_tile_year(tmp_path):
+def test_fetch_targets_one_per_tile_year(tmp_path):
     source, _ = _make_source(tmp_path, tiles=("h18v04", "h20v08"), year_range=(2019, 2020))
-    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
+    targets = source.plan(PipelineStep.FETCH, TargetSelection())
     assert {t.key for t in targets} == {"2019/h18v04", "2019/h20v08", "2020/h18v04", "2020/h20v08"}
     sample = next(t for t in targets if t.key == "2019/h18v04")
-    assert sample.output_path == os.path.join(source.output_root(PipelineStep.PREPARE), "2019", "h18v04.tif")
+    assert sample.output_path == os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h18v04.tif")
 
 
 def test_grid_targets_one_per_year_with_stage1_output(tmp_path):
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
-    stage1 = source.output_root(PipelineStep.PREPARE)
+    stage1 = source.output_root(PipelineStep.FETCH)
     year_dir = os.path.join(stage1, "2019")
     os.makedirs(year_dir, exist_ok=True)
     open(os.path.join(year_dir, "h18v04.tif"), "w").close()
@@ -66,7 +68,7 @@ def test_grid_targets_one_per_year_with_stage1_output(tmp_path):
 def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
     for product, family in (("21A2", "modis_lst_21a2"), ("11A1", "modis_lst_11a1")):
         source, ctx = _make_source(tmp_path, year_range=(2019, 2020), layout="v2", product=product)
-        stage1 = source.output_root(PipelineStep.PREPARE)
+        stage1 = source.output_root(PipelineStep.FETCH)
         year_dir = os.path.join(stage1, "2019")
         os.makedirs(year_dir, exist_ok=True)
         open(os.path.join(year_dir, "h18v04.tif"), "w").close()
@@ -82,7 +84,7 @@ def test_grid_targets_always_never_complete_the_quirk(tmp_path):
     from src.data.sources.steps import Completion, is_complete
 
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
-    stage1 = source.output_root(PipelineStep.PREPARE)
+    stage1 = source.output_root(PipelineStep.FETCH)
     year_dir = os.path.join(stage1, "2019")
     os.makedirs(year_dir, exist_ok=True)
     open(os.path.join(year_dir, "h18v04.tif"), "w").close()
@@ -93,15 +95,15 @@ def test_grid_targets_always_never_complete_the_quirk(tmp_path):
     assert is_complete(targets[0]) is False
 
 
-def test_transfer_units_one_per_tile_year_file_for_prepare(tmp_path):
+def test_transfer_units_one_per_tile_year_file_for_fetch(tmp_path):
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
-    stage1 = source.output_root(PipelineStep.PREPARE)
+    stage1 = source.output_root(PipelineStep.FETCH)
     for year, tile in [("2019", "h18v04"), ("2019", "h20v08")]:
         d = os.path.join(stage1, year)
         os.makedirs(d, exist_ok=True)
         open(os.path.join(d, f"{tile}.tif"), "w").close()
 
-    units = source.transfer_units(PipelineStep.PREPARE)
+    units = source.transfer_units(PipelineStep.FETCH)
     assert {u.unit_id for u in units} == {"2019/h18v04.tif", "2019/h20v08.tif"}
 
 

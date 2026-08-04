@@ -1,6 +1,6 @@
 """is_complete()'s local/remote state matrix -- docs/design/10-fetch-ledger.md §6.
 
-`require_remote=False` (every source except MODIS's PREPARE) must behave
+`require_remote=False` (every source except MODIS's FETCH) must behave
 exactly as before: local-disk-only, ledger argument ignored entirely.
 `require_remote=True` additionally requires ledger-confirmed HPC verification.
 """
@@ -26,7 +26,7 @@ def _path_exists_target(tmp_path, *, require_remote=False, exists=True):
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
         open(output_path, "w").close()
     return StepTarget(
-        source_id="modis", step=PipelineStep.PREPARE, key="2020/h09v05",
+        source_id="modis", step=PipelineStep.FETCH, key="2020/h09v05",
         output_path=output_path, completion=Completion.PATH_EXISTS, require_remote=require_remote,
     )
 
@@ -52,21 +52,21 @@ def test_require_remote_without_ledger_falls_back_to_local(tmp_path):
 def test_require_remote_false_locally_even_with_ledger_verified(tmp_path, ledger):
     # Local file missing -- remote verification can't make it "complete".
     target = _path_exists_target(tmp_path, require_remote=True, exists=False)
-    ledger.ensure_artifact("prepare", "2020/h09v05")
-    ledger.record_push_batch([PushResult(step="prepare", unit_id="2020/h09v05", ok=True)])
+    ledger.ensure_artifact("fetch", "2020/h09v05")
+    ledger.record_push_batch([PushResult(step="fetch", unit_id="2020/h09v05", ok=True)])
     assert is_complete(target, ledger=ledger) is False
 
 
 def test_require_remote_false_when_not_yet_verified(tmp_path, ledger):
     target = _path_exists_target(tmp_path, require_remote=True, exists=True)
-    ledger.ensure_artifact("prepare", "2020/h09v05")
+    ledger.ensure_artifact("fetch", "2020/h09v05")
     assert is_complete(target, ledger=ledger) is False
 
 
 def test_require_remote_true_when_local_and_remote_verified(tmp_path, ledger):
     target = _path_exists_target(tmp_path, require_remote=True, exists=True)
-    ledger.ensure_artifact("prepare", "2020/h09v05")
-    ledger.record_push_batch([PushResult(step="prepare", unit_id="2020/h09v05", ok=True)])
+    ledger.ensure_artifact("fetch", "2020/h09v05")
+    ledger.record_push_batch([PushResult(step="fetch", unit_id="2020/h09v05", ok=True)])
     assert is_complete(target, ledger=ledger) is True
 
 

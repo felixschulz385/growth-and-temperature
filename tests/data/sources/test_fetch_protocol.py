@@ -26,9 +26,21 @@ _EXTRA_CONFIG: dict[str, dict] = {
     "glass_avhrr": {"base_url": "https://example.invalid/glass/avhrr/"},
 }
 
+#: FETCH-capable sources that deliberately do NOT implement RemoteFileCatalog
+#: (src/data/sources/modis/source.py module docstring): MODIS's FETCH streams
+#: per-(year, tile) STAC queries from Planetary Computer, not a crawlable flat
+#: file list, so there is no `list_remote_files()`/`download_async()` to
+#: satisfy -- it tracks per-unit state directly in the ledger's generic
+#: `artifacts` table instead (`_get_ledger()`/`_execute_fetch()`).
+_CRAWLER_PROTOCOL_EXEMPT = {"modis"}
+
 
 def _fetch_capable_specs():
-    return [spec for spec in registry.all_specs() if PipelineStep.FETCH in spec.steps]
+    return [
+        spec
+        for spec in registry.all_specs()
+        if PipelineStep.FETCH in spec.steps and spec.id not in _CRAWLER_PROTOCOL_EXEMPT
+    ]
 
 
 @pytest.mark.parametrize("spec", _fetch_capable_specs(), ids=lambda s: s.id)

@@ -207,6 +207,23 @@ def _apply_cli_overrides(ctx, args: argparse.Namespace) -> None:
         ctx.dashboard_port = args.dashboard_port
 
 
+def _open_ledger_readonly(source):
+    """Best-effort read-only `SourceLedger` for *source*, or None if
+    `local_index_dir` isn't configured or no ledger file exists yet.
+    Lets `is_complete()` honor `StepTarget.require_remote` (today: only
+    MODIS's FETCH targets) from the CLI's hot paths, not just when a caller
+    happens to pass one explicitly (docs/design/10-fetch-ledger.md §6)."""
+    import os
+
+    from src.data.common.ledger.paths import ledger_path
+    from src.data.common.ledger.store import SourceLedger
+
+    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
+    if local_ledger_path is None or not os.path.exists(local_ledger_path):
+        return None
+    return SourceLedger.open(local_ledger_path, data_path=source.data_path, read_only=True)
+
+
 def handle_plan(args: argparse.Namespace) -> None:
     """``pipeline plan`` -- print targets for (source, step) without running them."""
     setup_logging(args.log_level, debug=args.debug)
@@ -218,9 +235,14 @@ def handle_plan(args: argparse.Namespace) -> None:
     if not targets:
         print(f"No targets for source='{args.source}' step='{step.value}'.")
         return
-    for target in targets:
-        status = "complete" if is_complete(target) else "pending"
-        print(f"[{status}] {target.key}  ->  {target.output_path}")
+    ledger = _open_ledger_readonly(source)
+    try:
+        for target in targets:
+            status = "complete" if is_complete(target, ledger=ledger) else "pending"
+            print(f"[{status}] {target.key}  ->  {target.output_path}")
+    finally:
+        if ledger is not None:
+            ledger.close()
     source.close()
 
 
@@ -235,6 +257,15 @@ def handle_index(args: argparse.Namespace) -> None:
     source, _ = _build(args)
     if PipelineStep.FETCH not in source.STEPS:
         raise ValueError(f"Source '{args.source}' does not implement 'fetch'; nothing to index.")
+
+    from src.data.sources.base import RemoteFileCatalog
+
+    if not isinstance(source, RemoteFileCatalog):
+        raise ValueError(
+            f"Source '{args.source}' declares 'fetch' but has no crawlable remote file catalog to index "
+            "(e.g. MODIS streams per-(year, tile) STAC queries instead of listing a flat file list) -- "
+            "nothing to index; its fetch state is tracked directly via `pipeline run --step fetch`."
+        )
 
     from src.data.common.ledger import catalog
     from src.data.common.ledger.paths import ledger_path
@@ -267,9 +298,22 @@ def handle_run(args: argparse.Namespace) -> None:
         logger.warning("No targets for source='%s' step='%s'.", args.source, step.value)
         return
 
+    # Completeness (incl. any StepTarget.require_remote gate) is resolved
+    # once, up front, against a read-only ledger connection -- then closed
+    # before any target executes. A source's own execute() may need its own
+    # read-write ledger connection (today: MODIS's FETCH, tracking per-unit
+    # local/remote state directly), and DuckDB allows only one read-write
+    # connection per file at a time, so the two must never overlap.
+    ledger = _open_ledger_readonly(source)
+    try:
+        already_complete = {target.key for target in targets if is_complete(target, ledger=ledger)}
+    finally:
+        if ledger is not None:
+            ledger.close()
+
     failures = []
     for target in targets:
-        if not source.cfg.override and is_complete(target):
+        if not source.cfg.override and target.key in already_complete:
             logger.info("Skipping %s -- already complete: %s", target.key, target.output_path)
             continue
         logger.info("Running %s/%s -> %s", args.source, target.key, target.output_path)
@@ -306,6 +350,7 @@ def handle_reconcile(args: argparse.Namespace) -> None:
     from src.data.common.ledger.paths import ledger_path
     from src.data.common.ledger.store import SourceLedger
     from src.data.sources import layout
+    from src.data.sources.base import RemoteFileCatalog
     from src.data.sources.reconcile import reconcile_step
 
     spec = registry.resolve(args.source)
@@ -333,7 +378,7 @@ def handle_reconcile(args: argparse.Namespace) -> None:
             ledger.merge_from_remote(client, tmp_dir)
 
         for step in requested_steps:
-            if step is PipelineStep.FETCH:
+            if step is PipelineStep.FETCH and isinstance(source, RemoteFileCatalog):
                 # NOTE: `source.cfg.data_path`/`source.cfg.namespace` (the
                 # resolved, post-__init__-default config), not
                 # `source.data_path` -- that property is overridden by the

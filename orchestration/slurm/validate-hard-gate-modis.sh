@@ -13,14 +13,14 @@
 # SCOPE, deliberately narrower than the acag/gadm/berman_mining pilots --
 # read before trusting a PASS here as full equivalence:
 #
-# PREPARE (src/data/preprocess/sources/modis.py stage=annual / src/data/
-# sources/modis/source.py step=prepare) streams directly from Microsoft
+# FETCH (src/data/preprocess/sources/modis.py stage=annual / src/data/
+# sources/modis/source.py step=fetch) streams directly from Microsoft
 # Planetary Computer's STAC catalog -- no local raw-file read path exists at
 # all in either OLD or NEW, and there is no cached/mocked STAC response or
 # real GeoTIFF fixture anywhere in this repo to substitute (checked). A
 # compute node without outbound internet to planetarycomputer.microsoft.com
-# + Azure blob storage cannot run PREPARE, full stop -- this script does NOT
-# attempt it. PREPARE's target *paths* are already covered by the existing
+# + Azure blob storage cannot run FETCH, full stop -- this script does NOT
+# attempt it. FETCH's target *paths* are already covered by the existing
 # plan()-level oracle tests (tests/data/sources/modis/test_modis_plan.py,
 # tests/data/preprocess/sources/test_characterization_modis.py); its actual
 # *streamed bytes* are not verified equivalent by execution anywhere,
@@ -30,7 +30,7 @@
 # This script instead stages a small SYNTHETIC multi-band GeoTIFF shaped
 # exactly like `_write_annual_geotiff`'s real output (right CRS -- MODIS
 # Sinusoidal -- right band-naming/filtering convention) directly at GRID's
-# expected PREPARE-output input path, then validates GRID
+# expected FETCH-output input path, then validates GRID
 # (mosaic-and-reproject) equivalence only. GRID's reprojection is the same
 # `SpatialProcessor.create_empty_target_zarr`/`write_year_to_zarr` engine
 # validate-hard-gate-acag.sh already exercises (confirmed by reading both
@@ -93,7 +93,7 @@ echo "Log file:   $LOG_FILE"
 STAGE1_DIR="${TEST_ROOT}/modis/${PRODUCT}/processed/stage_1/${YEAR}"
 mkdir -p "$STAGE1_DIR"
 
-# --- REQUIRED: stage a synthetic annual GeoTIFF at PREPARE's output path,
+# --- REQUIRED: stage a synthetic annual GeoTIFF at FETCH's output path,
 # shaped like _write_annual_geotiff's real output (see header comment) ------
 echo "$(date -Is): generating synthetic annual GeoTIFF (no PC network access needed)"
 "$PYTHON_BIN" - "$TILE" "${STAGE1_DIR}/${TILE}.tif" <<'PYEOF'
@@ -200,7 +200,7 @@ GRID_STATUS=0
 echo "=============================================================="
 echo "HARD-GATE PILOT RESULT -- source=modis (GRID only) year=$YEAR tile=$TILE"
 echo "  GRID (spatial vs grid): $([ $GRID_STATUS -eq 0 ] && echo EQUIVALENT || echo NOT_EQUIVALENT)"
-echo "  PREPARE: NOT exercised -- needs live Planetary Computer network access, see header comment"
+echo "  FETCH: NOT exercised -- needs live Planetary Computer network access, see header comment"
 echo "  Test root (not auto-deleted, inspect or clean up manually): $TEST_ROOT"
 echo "=============================================================="
 
