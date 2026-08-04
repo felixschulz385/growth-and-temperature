@@ -77,6 +77,37 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: eog_viirs
 
+  # eog_dmsp/eog_dvnl (docs/design/09-integrated-pipeline.md §5's three
+  # equally-registered eog_dmsp/eog_viirs/eog_dvnl ids) never had PREPARE/GRID
+  # jobs -- only eog_viirs did, since its first commit. Resources below are
+  # NOT transcribed from a prior committed script (none ever existed for
+  # these two); they're a starting point copied from the closest sibling
+  # (eog_viirs) and should be re-tuned against real DMSP/DVNL run behavior,
+  # unlike every other resource value in this file.
+  - name: eog-dmsp-grid
+    log_key: eog_dmsp
+    source: eog_dmsp
+    step: grid
+    partition: scicore
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.9
+    temp_dir_prefix: eog_dmsp
+
+  - name: eog-dvnl-grid
+    log_key: eog_dvnl
+    source: eog_dvnl
+    step: grid
+    partition: scicore
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.9
+    temp_dir_prefix: eog_dvnl
+
   - name: esacci-prepare
     log_key: esacci
     source: esacci
@@ -216,6 +247,23 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: country_classifications
 
+  # ntl_harm declares PREPARE (STEPS = FETCH, PREPARE, GRID) but only ever
+  # had a GRID job. Resources below are NOT transcribed from a prior
+  # committed script (none ever existed for this step); modeled on the
+  # repo-wide PREPARE-uses-roughly-half-of-GRID's-cpu/mem pattern
+  # (acag/esacci's own prepare-vs-grid split) rather than guessed outright,
+  # but should still be re-tuned against a real run.
+  - name: ntl_harm-prepare
+    log_key: ntl_harm
+    source: ntl_harm
+    step: prepare
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 4
+    mem: 128G
+    mem_fraction: 0.6
+    temp_dir_prefix: ntl_harm
+
   - name: ntl_harm-grid
     log_key: ntl_harm
     source: ntl_harm
@@ -271,11 +319,57 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: modis
 
+  # modis_robustness_11a1 (data.yaml's second MODIS config block, a bounded
+  # tile/year subset -- see its own comment there) resolves to ModisSource
+  # too but never had its own GRID job. FETCH is unaffected -- it's the same
+  # egress/manual `pipeline run --source modis_robustness_11a1 --step fetch`
+  # path modis-fetch.sh documents, just not SLURM-generated (no source-
+  # specific script needed there, unlike GRID). Resources copied from
+  # modis-grid as a conservative starting point (not transcribed from a
+  # prior committed script); the robustness arm is a handful of tiles/years,
+  # so this is likely over-provisioned and can be right-sized down later.
+  - name: modis-robustness-11a1-grid
+    log_key: modis_robustness_11a1
+    source: modis_robustness_11a1
+    step: grid
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: modis_robustness_11a1
+
   # "simple" jobs: no dask-threads/memory-limit/temp-dir/dashboard-port,
   # matching their prior (lighter-weight) invocation exactly.
-  - name: eog-prepare
+  # Renamed from "eog-prepare" -- that name was ambiguous (looked like it
+  # covered all eog_* variants; it only ever ran eog_viirs), which is
+  # exactly the confusion that surfaced the eog_dmsp/eog_dvnl gap below.
+  - name: eog-viirs-prepare
     log_key: eog_viirs
     source: eog_viirs
+    step: prepare
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 128G
+    simple: true
+
+  # eog_dmsp/eog_dvnl PREPARE -- see the eog-dmsp-grid/eog-dvnl-grid comment
+  # above; same "never had a job, resources copied from the eog_viirs
+  # sibling, needs real-run re-tuning" caveat applies here.
+  - name: eog-dmsp-prepare
+    log_key: eog_dmsp
+    source: eog_dmsp
+    step: prepare
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 128G
+    simple: true
+
+  - name: eog-dvnl-prepare
+    log_key: eog_dvnl
+    source: eog_dvnl
     step: prepare
     time: "06:00:00"
     qos: 6hours
