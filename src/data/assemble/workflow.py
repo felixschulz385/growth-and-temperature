@@ -188,7 +188,7 @@ def _process_all_tiles(
     assembly_mode = processing_config.get('assembly_mode', 'create')
     uses_geometry_output = uses_geometry_aggregation(assembly_config)
     
-    processor = TileProcessor(assembly_config, output_path)
+    processor = TileProcessor(assembly_config, output_path, target_geobox=target_geobox)
     processed_count = 0
     skipped_count = 0
     overwrite = processing_config.get('overwrite', True)  # Default to True for backward compatibility
@@ -345,7 +345,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
             logger.warning("Failed to create assembly metadata")
         
         # Step 3: Process pixel tiles or geometry-aggregated output
-        processor = TileProcessor(assembly_config, output_path)
+        processor = TileProcessor(assembly_config, output_path, target_geobox=target_geobox)
         if uses_geometry_aggregation(assembly_config):
             logger.info(
                 f"Step 3: Geometry-aggregated {assembly_mode.upper()} mode: building grid-cell tables, "

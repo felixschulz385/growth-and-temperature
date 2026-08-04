@@ -18,6 +18,7 @@ from src.data.assemble.constants import (
     DEFAULT_WORKER_THREADS_PER_CPU,
     DEFAULT_WORKER_FRACTION,
 )
+from src.data.assemble.grid_shake import normalize_grid_shake_offsets
 
 logger = logging.getLogger(__name__)
 
@@ -233,6 +234,17 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                     errors.append(
                         f"Derived pixel ID resolution for {column_name!r} must be numeric or a known grid label"
                     )
+
+    grid_shake = processing.get('grid_shake')
+    if grid_shake is not None:
+        try:
+            normalize_grid_shake_offsets(grid_shake)
+        except ValueError as exc:
+            errors.append(f"Invalid 'processing.grid_shake': {exc}")
+        if spatial_partition == 'geometry':
+            errors.append(
+                "'processing.grid_shake' is not supported with spatial_partition='geometry'"
+            )
 
     if spatial_partition == 'geometry':
         geometry_source = assembly_config.get('geometry_source')

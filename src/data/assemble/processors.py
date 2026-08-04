@@ -27,6 +27,10 @@ from src.data.assemble.utils import (
     normalize_derived_pixel_id_specs,
     winsorize,
 )
+from src.data.assemble.grid_shake import (
+    normalize_grid_shake_offsets,
+    shift_geobox_origin,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -96,13 +100,17 @@ class TileProcessor:
         self,
         assembly_config: Dict[str, Any],
         output_base_path: str,
+        target_geobox: Optional[Any] = None,
     ):
         """
         Initialize tile processor.
-        
+
         Args:
             assembly_config: Assembly configuration
             output_base_path: Base path for output files
+            target_geobox: Full assembly target geobox, used to detect whether
+                `processing.resolution` downsamples below the native/zarr resolution
+                (required for grid-shake; optional otherwise)
         """
         self.assembly_config = assembly_config
         self.output_base_path = output_base_path
@@ -114,10 +122,36 @@ class TileProcessor:
         self.derived_pixel_id_specs = normalize_derived_pixel_id_specs(
             self.processing_config.get("derived_pixel_ids")
         )
-        
+        self.grid_shake_specs = normalize_grid_shake_offsets(
+            self.processing_config.get("grid_shake")
+        )
+
+        target_resolution = self.processing_config.get('resolution')
+        native_res = abs(target_geobox.resolution.x) if target_geobox is not None else None
+        self.grid_shake_active = bool(
+            self.grid_shake_specs
+            and target_resolution is not None
+            and native_res is not None
+            and (target_resolution - native_res) >= 1e-10
+        )
+        if self.grid_shake_specs and not self.grid_shake_active:
+            logger.warning(
+                "processing.grid_shake is configured but this assembly is not downsampling "
+                "(target resolution is not coarser than native resolution) -- shake columns "
+                "will not be produced."
+            )
+
         # Pre-build column order map from dataset configs
         self._build_column_order_map_from_config()
-        
+        if self.grid_shake_active:
+            for dataset_name, cols in self.column_order_map.items():
+                shake_cols = [
+                    f"{col}__shake_{label}"
+                    for col in cols
+                    for label, _, _ in self.grid_shake_specs
+                ]
+                self.column_order_map[dataset_name] = cols + shake_cols
+
         # Log index column configuration
         logger.info(f"Unified index columns for merging: {self.all_index_cols}")
         for dataset_name, dataset_config in self.assembly_config.get('datasets', {}).items():
@@ -127,6 +161,11 @@ class TileProcessor:
             logger.info(
                 "Derived pixel ID columns enabled: %s",
                 ", ".join(f"{name}@{resolution}" for name, resolution in self.derived_pixel_id_specs),
+            )
+        if self.grid_shake_active:
+            logger.info(
+                "Grid-shake enabled: %s",
+                ", ".join(f"{label}=({dx},{dy})" for label, dx, dy in self.grid_shake_specs),
             )
     
     def _build_column_order_map_from_config(self) -> None:
@@ -245,7 +284,21 @@ class TileProcessor:
             target_geobox_zoomed = tile_geobox
         
         return padded_tile_geobox, target_geobox_zoomed
-    
+
+    def _get_shaken_geoboxes(self, target_geobox_zoomed) -> List[Tuple[str, Any]]:
+        """Build origin-shifted target geoboxes for the grid-shake robustness check.
+
+        Returns an empty list unless grid-shake is active (see __init__) -- i.e. unless
+        this assembly is downsampling below the native resolution and grid_shake is
+        configured.
+        """
+        if not self.grid_shake_active or target_geobox_zoomed is None:
+            return []
+        return [
+            (label, shift_geobox_origin(target_geobox_zoomed, dx, dy))
+            for label, dx, dy in self.grid_shake_specs
+        ]
+
     def _extract_dataset_tile(
         self,
         ds: xr.Dataset,
@@ -258,22 +311,27 @@ class TileProcessor:
         land_mask: Optional[xr.DataArray] = None,
         keep_spatial_coords: bool = False,
         include_pixel_id: bool = True,
+        shaken_geoboxes: Optional[List[Tuple[str, Any]]] = None,
     ) -> Optional[pd.DataFrame]:
         """
         Extract and process a single dataset tile.
-        
+
         Processing pipeline:
         1. Extract tile from padded bounds
         2. Apply winsorization if configured
         3. Apply land mask at native resolution (using xarray .where())
         4. Reproject to target resolution if needed
-        5. Assign pixel_id variable
-        6. Convert to DataFrame
-        7. Drop NaN rows
-        
+        5. Reproject to any grid-shake origin-shifted geoboxes (robustness check)
+        6. Assign pixel_id variable
+        7. Convert to DataFrame
+        8. Drop NaN rows
+
         Args:
             land_mask: Optional boolean DataArray for masking pixels at native resolution (True=land, False=ocean)
-        
+            shaken_geoboxes: Optional list of (label, geobox) pairs for the grid-shake
+                robustness check; each variable gets an extra `{var}__shake_{label}` column
+                reprojected onto that origin-shifted geobox (docs/design/04-ingest.md §6)
+
         Returns:
             DataFrame with pixel_id, or None if tile is empty
         """
@@ -310,13 +368,39 @@ class TileProcessor:
                     tile_ds[var] = tile_ds[var].where(land_mask)
             
             # Reproject to target resolution if needed
+            pre_reproject_ds = tile_ds
             if target_geobox_zoomed is not None and hasattr(tile_ds, 'odc'):
                 tile_ds = tile_ds.odc.reproject(
                     target_geobox_zoomed,
                     resampling=resampling_method,
                     dst_nodata=np.nan
                 )
-            
+
+            # Grid-shake robustness check: reproject the pre-reprojection (native-resolution)
+            # data onto each origin-shifted geobox and attach as extra columns. Each shake
+            # variant is independent -- a failure fills that column with NaN rather than
+            # dropping the tile, so every tile in a run keeps the same schema.
+            if shaken_geoboxes:
+                for label, shaken_geobox in shaken_geoboxes:
+                    try:
+                        shaken_ds = pre_reproject_ds.odc.reproject(
+                            shaken_geobox,
+                            resampling=resampling_method,
+                            dst_nodata=np.nan
+                        )
+                        for var in pre_reproject_ds.data_vars:
+                            tile_ds[f"{var}__shake_{label}"] = (tile_ds[var].dims, shaken_ds[var].values)
+                    except Exception as e:
+                        logger.warning(
+                            f"Tile [{ix}, {iy}]: grid-shake variant '{label}' failed, "
+                            f"filling with NaN: {e}"
+                        )
+                        for var in pre_reproject_ds.data_vars:
+                            tile_ds[f"{var}__shake_{label}"] = (
+                                tile_ds[var].dims,
+                                np.full(tile_ds[var].shape, np.nan, dtype="float32"),
+                            )
+
             # Assign pixel_id when requested for pixel-partitioned assemblies.
             if include_pixel_id:
                 if pixel_id_ds is None:
@@ -646,28 +730,30 @@ class TileProcessor:
         
         # Create geoboxes
         padded_tile_geobox, target_geobox_zoomed = self._create_tile_geoboxes(tile_geobox)
-        
+        shaken_geoboxes = self._get_shaken_geoboxes(target_geobox_zoomed)
+
         # Create pixel IDs
         pixel_id_ds = make_pixel_ids(ix, iy, target_geobox_zoomed)
         if pixel_id_ds is None or pixel_id_ds.sizes.get(LATITUDE_COORD, 0) == 0:
             logger.warning(f"Failed to create pixel_id for tile [{ix}, {iy}]")
             return False
-        
+
         # Process only the target datasource
         if not datasets:
             logger.error(f"No datasource provided for update mode")
             return False
-        
+
         dataset_name, ds, dataset_config = datasets[0]
         logger.info(f"Tile [{ix}, {iy}]: updating datasource '{dataset_name}'")
-        
+
         # Get index_cols for this specific dataset for logging
         dataset_index_cols = dataset_config.get('index_cols', ['pixel_id'])
         logger.debug(f"Tile [{ix}, {iy}]: '{dataset_name}' configured index_cols: {dataset_index_cols}")
-        
+
         df = self._extract_dataset_tile(
             ds, dataset_config, ix, iy,
-            padded_tile_geobox, target_geobox_zoomed, pixel_id_ds
+            padded_tile_geobox, target_geobox_zoomed, pixel_id_ds,
+            shaken_geoboxes=shaken_geoboxes,
         )
         
         if df is None or df.empty:
@@ -1138,13 +1224,14 @@ class TileProcessor:
         """
         # Create geoboxes
         padded_tile_geobox, target_geobox_zoomed = self._create_tile_geoboxes(tile_geobox)
-        
+        shaken_geoboxes = self._get_shaken_geoboxes(target_geobox_zoomed)
+
         # Create pixel IDs
         pixel_id_ds = make_pixel_ids(ix, iy, target_geobox_zoomed)
         if pixel_id_ds is None or pixel_id_ds.sizes.get(LATITUDE_COORD, 0) == 0:
             logger.warning(f"Failed to create pixel_id for tile [{ix}, {iy}]")
             return False
-        
+
         # Returns None if tile has no land pixels (early exit)
         land_mask = self._load_land_mask_as_dataarray(
             land_mask_ds, ix, iy,
@@ -1164,9 +1251,10 @@ class TileProcessor:
             df = self._extract_dataset_tile(
                 ds, dataset_config, ix, iy,
                 padded_tile_geobox, target_geobox_zoomed, pixel_id_ds,
-                land_mask=land_mask
+                land_mask=land_mask,
+                shaken_geoboxes=shaken_geoboxes,
             )
-            
+
             # If no data, create skeleton with NaN columns
             if df is None or df.empty:
                 df = pd.DataFrame(columns=self.all_index_cols + self.column_order_map[dataset_name])
