@@ -50,17 +50,43 @@ def _make_source(tmp_path, source_type="viirs", year_range=(2019, 2021), rows=No
     _write_index(local_index_dir, data_path, rows)
     ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout=layout)
     cfg = SourceConfig.from_dict(
-        "eog_viirs", {"data_path": data_path, "year_range": list(year_range), "base_url": _BASE_URLS[source_type]}
+        f"eog_{source_type}",
+        {"data_path": data_path, "year_range": list(year_range), "base_url": _BASE_URLS[source_type]},
     )
     return EogSource(ctx, cfg), ctx
 
 
-def test_source_type_derivation_from_data_path(tmp_path, monkeypatch):
+def test_source_type_derivation_from_source_id(tmp_path, monkeypatch):
     monkeypatch.setenv("EOG_USERNAME", "x")
     monkeypatch.setenv("EOG_PASSWORD", "x")
     assert _make_source(tmp_path, "dmsp")[0].source_type == "dmsp"
     assert _make_source(tmp_path, "viirs")[0].source_type == "viirs_annual"
     assert _make_source(tmp_path, "dvnl")[0].source_type == "viirs_dvnl"
+
+
+def test_source_type_derivation_ignores_data_path_and_base_url(tmp_path, monkeypatch):
+    # The bug being fixed: source_type used to be guessed from data_path/
+    # base_url content, disconnected from the actual source_id/alias -- so a
+    # "dmsp"-labeled data_path/base_url under a genuinely different
+    # source_id must NOT flip the derived variant anymore.
+    monkeypatch.setenv("EOG_USERNAME", "x")
+    monkeypatch.setenv("EOG_PASSWORD", "x")
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    cfg = SourceConfig.from_dict(
+        "eog_viirs", {"data_path": "eog/dmsp", "base_url": _BASE_URLS["dmsp"], "year_range": [2019, 2020]}
+    )
+    assert EogSource(ctx, cfg).source_type == "viirs_annual"
+
+
+def test_source_type_derivation_raises_on_unrecognized_source_id(tmp_path, monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("EOG_USERNAME", "x")
+    monkeypatch.setenv("EOG_PASSWORD", "x")
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    cfg = SourceConfig.from_dict("eog", {"data_path": "eog/misc", "base_url": _BASE_URLS["viirs"]})
+    with pytest.raises(ValueError, match="Cannot derive EOG source_type"):
+        EogSource(ctx, cfg)
 
 
 def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):

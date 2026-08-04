@@ -21,6 +21,21 @@ this codebase already uses (acag/esacci/ntl_harm's `_extract_year`); best-file
 selection prefers extensions in the order the source's own
 `file_extensions` config already declares (default `.tif > .tgz > .tar.gz >
 .gz`) rather than inventing an unrelated preference.
+
+**Bug fixed later, not part of the original migration**: `_derive_source_type`
+used to guess the DMSP/VIIRS-annual/DVNL variant from substrings of
+`cfg.data_path`/`base_url` (in that order, with a silent `viirs_dvnl` default
+if nothing matched), rather than from `cfg.source_id` -- the literal
+`sources.<id>:` config-block key this instance was actually built from
+(`eog_dmsp`/`eog_viirs`/`eog_dvnl`, per `_build()`'s alias-block lookup in
+`src/cli/pipeline/handlers.py`). It happened to agree with the alias for
+every config committed in `orchestration/configs/data.yaml`, but the two were
+never actually pinned together -- editing `data_path`/`base_url` without
+touching the block key would have silently mis-set `source_type`, which
+drives PREPARE's output variable name and GRID's output filename/`v2_family`.
+Now derived from `cfg.source_id` directly, the same authoritative signal
+`GlassSource.__init__` already uses for its own MODIS/AVHRR variant
+(`data_source_kind`).
 """
 
 from __future__ import annotations
@@ -67,8 +82,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     has_entrypoints = False
 
     EOG_LOGIN_URL = "https://eogdata.mines.edu/nighttime_light/login/"
-    DMSP_VARIABLE_NAME = "avg_vis"
-    VIIRS_VARIABLE_NAME = "DNB_BRDF_Corrected_NTL"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -94,27 +107,26 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         os.makedirs(self.temp_dir, exist_ok=True)
 
     def _derive_source_type(self) -> str:
-        """Ports EOGPreprocessor._derive_source_type verbatim."""
-        output_path = self.cfg.data_path
-        base_url = self.base_url
-        if "dmsp" in output_path.lower():
+        """Which variant: derived from `cfg.source_id` -- the literal
+        `sources.<id>:` config-block key this instance was built from
+        (module docstring) -- mirroring `GlassSource.__init__`'s identical
+        `cfg.source_id`-based derivation of its own MODIS/AVHRR variant.
+        Raises rather than guessing from `data_path`/`base_url` content
+        (the old behavior) if `source_id` doesn't name a known variant, so a
+        misconfigured/renamed source_id fails loudly instead of silently
+        mislabeling PREPARE's output variable / GRID's output filename."""
+        source_id = self.cfg.source_id.lower()
+        if "dmsp" in source_id:
             return "dmsp"
-        if "annual" in output_path.lower() or "stable_lights" in output_path.lower():
-            return "viirs_annual"
-        if "dvnl" in output_path.lower():
+        if "dvnl" in source_id:
             return "viirs_dvnl"
-        if "dmsp" in base_url.lower():
-            return "dmsp"
-        if "annual" in base_url.lower():
+        if "viirs" in source_id:
             return "viirs_annual"
-        if "dvnl" in base_url.lower() or "viirs_products" in base_url.lower():
-            return "viirs_dvnl"
-        if any("stable_lights" in ext for ext in self.file_extensions):
-            return "dmsp"
-        if any("median_masked" in ext for ext in self.file_extensions):
-            return "viirs_annual"
-        logger.warning("Could not determine source_type from config. Defaulting to viirs_dvnl")
-        return "viirs_dvnl"
+        raise ValueError(
+            f"Cannot derive EOG source_type from source_id={self.cfg.source_id!r} -- "
+            f"expected it to contain one of 'dmsp'/'dvnl'/'viirs' "
+            f"(matching one of the registered aliases {EogSource.ALIASES})."
+        )
 
     # ------------------------------------------------------------------
     # RemoteFileCatalog contract -- list_remote_files comes from
@@ -255,7 +267,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     def _plan_fetch(self) -> List[StepTarget]:
         return [
             StepTarget(
-                source_id=self.ID,
+                source_id=self.cfg.source_id,
                 step=PipelineStep.FETCH,
                 key="all",
                 output_path=self.output_root(PipelineStep.FETCH),
@@ -348,7 +360,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             selected = self._select_best_file_for_year(year_files)
             targets.append(
                 StepTarget(
-                    source_id=self.ID,
+                    source_id=self.cfg.source_id,
                     step=PipelineStep.PREPARE,
                     key=str(year),
                     output_path=os.path.join(self.output_root(PipelineStep.PREPARE), f"{year}.zarr"),
@@ -456,7 +468,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             return []
         return [
             StepTarget(
-                source_id=self.ID,
+                source_id=self.cfg.source_id,
                 step=PipelineStep.GRID,
                 key="all",
                 output_path=layout.grid_store_path(

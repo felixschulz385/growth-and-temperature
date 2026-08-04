@@ -26,6 +26,15 @@ _EXTRA_CONFIG: dict[str, dict] = {
     "glass_avhrr": {"base_url": "https://example.invalid/glass/avhrr/"},
 }
 
+#: `source_id` to actually construct with, for sources whose bare `spec.id`
+#: isn't itself a valid config-block key (EOG's `source_type` -- DMSP/VIIRS-
+#: annual/DVNL -- is derived from `cfg.source_id`, src/data/sources/eog/
+#: source.py, so it must be built with one of its real aliases, not the
+#: generic "eog"). Defaults to `spec.id` when a source has no entry here.
+_CONSTRUCT_AS: dict[str, str] = {
+    "eog": "eog_viirs",
+}
+
 #: FETCH-capable sources that deliberately do NOT implement RemoteFileCatalog
 #: (src/data/sources/modis/source.py module docstring): MODIS's FETCH streams
 #: per-(year, tile) STAC queries from Planetary Computer, not a crawlable flat
@@ -47,7 +56,8 @@ def _fetch_capable_specs():
 def test_fetch_capable_source_satisfies_remote_file_catalog(spec, tmp_path):
     cls = registry.load(spec.id)
     ctx = PipelineContext(data_root=str(tmp_path / "data"), local_index_dir=str(tmp_path / "index"))
-    cfg = SourceConfig.from_dict(spec.id, {"data_path": spec.id, **_EXTRA_CONFIG.get(spec.id, {})})
+    source_id = _CONSTRUCT_AS.get(spec.id, spec.id)
+    cfg = SourceConfig.from_dict(source_id, {"data_path": spec.id, **_EXTRA_CONFIG.get(spec.id, {})})
     source = cls(ctx, cfg)
 
     assert isinstance(source, RemoteFileCatalog), f"{spec.id} does not satisfy RemoteFileCatalog"
