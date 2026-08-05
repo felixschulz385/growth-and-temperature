@@ -40,6 +40,72 @@ def test_gadm_create_empty_zarr_uses_y_x_dims_for_ease_geobox(tmp_path):
     assert set(ds["GID_1"].dims) == {"y", "x"}
 
 
+def test_process_gadm_tiles_needs_gdf_reprojected_to_target_crs_first(tmp_path):
+    """Regression test for a confirmed real-data bug: `_process_gadm_tiles`'s
+    per-tile overlap pre-filter compares a `tile_polygon` built in the
+    *target* geobox's CRS (e.g. EASE6933 projected meters) against each
+    GeoDataFrame's geometries via plain shapely `.intersects()`, which never
+    reprojects. Left in GADM's native WGS84 lon/lat degrees, that comparison
+    is numerically incompatible (~1e7-magnitude meters vs +/-180/+/-90
+    degrees) and silently finds ~no overlap for ~every tile -- confirmed on
+    real HPC output via src.data.sources.verify: every GID_N level came back
+    ~99.98% nodata despite valid input geometries and a clean (no-exception)
+    run. `_execute_grid` now reprojects each level's GeoDataFrame to the
+    target CRS once, up front, before calling this method.
+
+    Uses a single tile (taken from a real geobox, so it has genuine
+    lon/lat<->projected-meters georeferencing) as the *entire* test grid,
+    rather than a subregion of a larger one -- selecting one tile's region
+    back out of a bigger store via `.sel()` on unrounded tile coordinates
+    against the store's own `.round(5)`-written ones is its own source of
+    flakiness, orthogonal to what this test is actually about. Checks
+    `.notnull()`, not `!= 0`: unwritten/no-unit pixels decode to NaN via
+    this variable's `_FillValue=0`, and `NaN != 0` is `True` in IEEE float
+    semantics -- `!= 0` alone can't distinguish "genuinely painted" from
+    "never written."
+    """
+    import geopandas as gpd
+    import shapely.geometry
+    import xarray as xr
+    from odc.geo import GeoboxTiles
+
+    from src.data.sources.misc.gadm import GadmSource
+
+    geobox = _coarse_ease_geobox()
+    tiles = GeoboxTiles(geobox, (16, 16))
+    # A tile comfortably away from the meter-CRS origin in both dims (real
+    # bounds ~[-11.0M, -2.4M] to [-10.2M, -1.6M] meters) -- no plausible
+    # degree-valued geometry can numerically fall inside it by accident, so
+    # the bug can't be masked by a spurious near-origin-tile "hit".
+    target_tile = tiles[10, 8]
+    single_tile_grid = GeoboxTiles(target_tile, (16, 16))  # tiles the tile itself -> exactly one tile
+
+    # A small WGS84 polygon centered on this tile's own real geographic
+    # footprint -- should legitimately rasterize once reprojected to the
+    # target CRS, and *only* then.
+    wgs84_bounds = target_tile.extent.to_crs("EPSG:4326").boundingbox
+    cx = (wgs84_bounds.left + wgs84_bounds.right) / 2
+    cy = (wgs84_bounds.bottom + wgs84_bounds.top) / 2
+    polygon = shapely.geometry.box(cx - 0.5, cy - 0.5, cx + 0.5, cy + 0.5)
+    gdf_wgs84 = gpd.GeoDataFrame({"GID_0": ["AAA"]}, geometry=[polygon], crs="EPSG:4326")
+    level_code_to_id = {"GID_0": {"AAA": 1}}
+
+    buggy_path = str(tmp_path / "buggy.zarr")
+    assert GadmSource._create_empty_gadm_zarr(buggy_path, target_tile, ["GID_0"])
+    # Bug reproduction: pass the GeoDataFrame in its native (unreprojected) CRS.
+    assert GadmSource._process_gadm_tiles(single_tile_grid, buggy_path, {"GID_0": gdf_wgs84}, level_code_to_id)
+    buggy_ds = xr.open_zarr(buggy_path, consolidated=False)
+    assert int(buggy_ds["GID_0"].notnull().sum()) == 0
+
+    fixed_path = str(tmp_path / "fixed.zarr")
+    assert GadmSource._create_empty_gadm_zarr(fixed_path, target_tile, ["GID_0"])
+    # Fix: reproject to the target geobox's own CRS first, like _execute_grid does now.
+    reprojected = {"GID_0": gdf_wgs84.to_crs(geobox.crs)}
+    assert GadmSource._process_gadm_tiles(single_tile_grid, fixed_path, reprojected, level_code_to_id)
+    fixed_ds = xr.open_zarr(fixed_path, consolidated=False)
+    assert int(fixed_ds["GID_0"].notnull().sum()) > 0
+
+
 def test_gadm_create_empty_zarr_crs_is_readable_after_round_trip(tmp_path):
     """Regression test: `.rio.write_crs()` records the CRS as each data
     variable's own `encoding["grid_mapping"]`, not an attr -- the explicit
@@ -116,7 +182,7 @@ def test_gadm_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monk
     import geopandas as gpd
     from shapely.geometry import Point
 
-    gdf_adm0 = gpd.GeoDataFrame({"GID_0": ["AAA"]}, geometry=[Point(0, 0)])
+    gdf_adm0 = gpd.GeoDataFrame({"GID_0": ["AAA"]}, geometry=[Point(0, 0)], crs="EPSG:4326")
     adm0_path = str(tmp_path / "gadm_levelADM_0_simplified.gpkg")
     gdf_adm0.to_file(adm0_path, driver="GPKG")
 

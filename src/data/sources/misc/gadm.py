@@ -295,6 +295,19 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             tile_size = 2048
             tiles = GeoboxTiles(geobox, (tile_size, tile_size))
 
+            # Reproject once, up front -- _process_gadm_tiles's per-tile
+            # overlap pre-filter compares each level's geometries directly
+            # against a tile_polygon built in the *target* geobox's CRS
+            # (e.g. EASE6933 projected meters) via plain shapely
+            # `.intersects()`, which never reprojects. Left in GADM's native
+            # WGS84 lon/lat degrees, that comparison is numerically
+            # incompatible (~1e7-magnitude meters vs +/-180/+/-90 degrees) and
+            # silently finds ~no overlap for ~every tile -- confirmed via
+            # src.data.sources.verify catching real ~100%-null GRID output
+            # for every GID_N level despite valid input geometries and a
+            # clean (no-exception) run.
+            level_gdfs = {gid_col: gdf.to_crs(geobox.crs) for gid_col, gdf in level_gdfs.items()}
+
             if not self._create_empty_gadm_zarr(target.output_path, geobox, list(level_gdfs.keys())):
                 return False
             if not self._process_gadm_tiles(tiles, target.output_path, level_gdfs, level_code_to_id):
