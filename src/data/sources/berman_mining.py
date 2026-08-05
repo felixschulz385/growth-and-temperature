@@ -37,6 +37,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -164,8 +165,9 @@ class BermanMiningSource(DataSource):
                     completion=Completion.PATH_EXISTS,
                     meta={
                         "year_range": self.cfg.year_range,
-                        "expected_vars": ("nb_mines_a", "nb_diamond"),
-                        "value_range": (0, 50),
+                        **verify.verification_meta(
+                            self.cfg.raw, expected_vars=("nb_mines_a", "nb_diamond"), value_range=(0, 50)
+                        ),
                     },
                 )
             ]
@@ -236,12 +238,28 @@ class BermanMiningSource(DataSource):
             reprojected_ds = reprojected_ds.assign_coords(
                 {dim_y: geobox.coords[dim_y].values.round(5), dim_x: geobox.coords[dim_x].values.round(5)}
             )
+            # xr_reproject's own "spatial_ref" is dropped (its coords don't
+            # match the rounded/renamed ones assigned above) and rewritten
+            # fresh below -- .rio.write_crs() records the CRS as each data
+            # variable's own encoding["grid_mapping"], not an attr, so the
+            # "grid_mapping" entry in the encoding dict is required or the
+            # explicit encoding= passed to to_zarr() silently drops that
+            # link. Also stash a plain string fallback attr (must come after
+            # write_crs(), which strips any pre-existing "crs" attr key).
             reprojected_ds = reprojected_ds.drop_vars(["spatial_ref"], errors="ignore")
+            reprojected_ds = reprojected_ds.rio.write_crs(geobox.crs)
+            reprojected_ds.attrs["crs"] = str(geobox.crs)
             reprojected_ds = reprojected_ds.chunk({"time": 1, "band": 1, dim_y: 512, dim_x: 512})
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
             encoding = {
-                var: {"chunks": (1, 512, 512, 1), "compressors": (compressor,), "dtype": "uint8", "fill_value": 255}
+                var: {
+                    "chunks": (1, 512, 512, 1),
+                    "compressors": (compressor,),
+                    "dtype": "uint8",
+                    "fill_value": 255,
+                    "grid_mapping": "spatial_ref",
+                }
                 for var in reprojected_ds.data_vars
             }
             reprojected_ds.to_zarr(target.output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False)

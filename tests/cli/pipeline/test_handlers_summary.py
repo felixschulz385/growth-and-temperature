@@ -126,6 +126,26 @@ def test_handle_summary_reports_verified_dash_when_prepare_is_pending(tmp_path, 
     assert row.split()[-1] == "-"
 
 
+def test_handle_summary_fetch_column_reports_mismatched_filename_not_generic_count(tmp_path, monkeypatch, capsys):
+    # gadm is a ConfiguredFilesFetchMixin source: a file present under the
+    # wrong name must be surfaced as a specific mismatch (via verify_fetch()),
+    # not folded into a generic "N file(s) fetched" count that looks
+    # identical whether the right file is there or not.
+    monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
+    args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
+
+    raw_dir = tmp_path / "data_root" / "misc" / "raw" / "gadm"
+    os.makedirs(raw_dir, exist_ok=True)
+    open(raw_dir / "some_other_export.zip", "w").close()
+
+    handlers.handle_summary(args)
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if line.startswith("gadm"))
+    assert "gadm_410-levels.zip" in row  # what was expected
+    assert "some_other_export.zip" in row  # what's actually there
+    assert "file(s) fetched" not in row
+
+
 def _complete_gadm_grid_target(tmp_path, monkeypatch):
     """Plans a real GRID target for gadm (needs PREPARE's ADM_0 vector file
     to exist) and marks its output complete, without writing an actual zarr

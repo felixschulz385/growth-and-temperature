@@ -48,6 +48,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,9 @@ class PlaDSource(DataSource):
                 meta={
                     "admin_level": self.admin_level,
                     "year_range": self.cfg.year_range,
-                    "expected_vars": (self._gid_column, "year", "reg_fav"),
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=(self._gid_column, "year", "reg_fav")
+                    ),
                 },
             )
         ]

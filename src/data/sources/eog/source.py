@@ -58,6 +58,7 @@ from src.data.sources.base import DataSource
 from src.data.sources.eog.crawler import _CrawlerMixin
 from src.data.sources.eog.session import _SessionMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -484,10 +485,14 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 completion=Completion.MARKER,
                 meta={
                     "years_available": [f["year"] for f in annual_files],
-                    "expected_vars": (self.source_type,),
-                    # DMSP is a classic 6-bit DN (0-63); VIIRS/DVNL radiance is
-                    # continuous and can spike much higher over cities/flares.
-                    "value_range": (0, 63) if self.source_type == "dmsp" else (0, 1000),
+                    **verify.verification_meta(
+                        self.cfg.raw,
+                        expected_vars=(self.source_type,),
+                        # DMSP is a classic 6-bit DN (0-63); VIIRS/DVNL
+                        # radiance is continuous and can spike much higher
+                        # over cities/flares.
+                        value_range=(0, 63) if self.source_type == "dmsp" else (0, 1000),
+                    ),
                 },
             )
         ]

@@ -124,6 +124,16 @@ def handle_summary(args: argparse.Namespace) -> None:
             if step not in spec.steps:
                 continue
             try:
+                if step is PipelineStep.FETCH and hasattr(source, "verify_fetch"):
+                    # ConfiguredFilesFetchMixin sources (osm/gadm/
+                    # country_classifications) fetch a small, fixed list of
+                    # named files -- report exactly which are missing/
+                    # mismatched instead of the generic disk-walk count,
+                    # which can't tell "N files fetched" from "N files
+                    # fetched under the wrong names."
+                    result = source.verify_fetch()
+                    row[step.value] = result.detail
+                    continue
                 targets = source.plan(step, TargetSelection())
                 summary, _complete = _summarize_targets(targets)
                 row[step.value] = summary

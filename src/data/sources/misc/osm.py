@@ -30,6 +30,7 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +164,9 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
                     v2_family="land_mask",
                 ),
                 inputs=(vector_path,), completion=Completion.MARKER,
-                meta={"expected_vars": ("land_mask",), "value_range": (0, 1)},
+                meta=verify.verification_meta(
+                    self.cfg.raw, expected_vars=("land_mask",), value_range=(0, 1)
+                ),
             )
         ]
 

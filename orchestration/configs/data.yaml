@@ -42,6 +42,16 @@ sources:
       tar_max_files: 100
       tar_max_size_mb: 500
 
+    # GRID-output verification (src/data/sources/verify.py): overrides the
+    # Python-side defaults GlassSource passes in -- edit here rather than in
+    # code to loosen/tighten a check per deployment. "std" is excluded from
+    # the Kelvin range_vars check since it's a spread, not an absolute
+    # temperature.
+    verification:
+      expected_vars: ["mean", "median", "std", "max", "min", "rollmax3", "rollmin3"]
+      value_range: [150, 350]
+      range_vars: ["mean", "median", "max", "min", "rollmax3", "rollmin3"]
+
   # MODIS LST (Planetary Computer STAC) -- MYD21A2 primary, MYD11A1 bounded
   # robustness arm. docs/design/07-modis-ingest.md / 07a-modis-band-reference.md
   modis:
@@ -55,6 +65,12 @@ sources:
     # tiles: []                # optional explicit override, e.g. the robustness arm's bounded subset
     transfer:
       steps: ["fetch"]
+
+    # GRID-output verification -- "lst_night" is already Kelvin (scale/offset
+    # applied at FETCH time), so no packed decode is needed on read.
+    verification:
+      expected_vars: ["lst_night"]
+      value_range: [150, 350]
 
   modis_robustness_11a1:
     type: "modis"
@@ -70,6 +86,10 @@ sources:
     qc_max_lst_error_k: 2.0
     stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
 
+    verification:
+      expected_vars: ["lst_night"]
+      value_range: [150, 350]
+
   # GLASS AVHRR LST Daily 0.05D
   glass_avhrr:
     type: "glass_avhrr"
@@ -83,6 +103,11 @@ sources:
       tar_max_files: 100
       tar_max_size_mb: 500
 
+    verification:
+      expected_vars: ["mean", "median", "std", "max", "min", "rollmax3", "rollmin3"]
+      value_range: [150, 350]
+      range_vars: ["mean", "median", "max", "min", "rollmax3", "rollmin3"]
+
   # EOG DMSP Nightlights
   eog_dmsp:
     type: "eog_dmsp"
@@ -90,6 +115,10 @@ sources:
     data_path: "eog/dmsp"
     year_range: [1992, 2013]  # DMSP data availability period
 
+    # DMSP is a classic 6-bit DN (0-63).
+    verification:
+      expected_vars: ["dmsp"]
+      value_range: [0, 63]
 
   # EOG VIIRS
   eog_viirs:
@@ -98,12 +127,21 @@ sources:
     data_path: "eog/viirs"
     year_range: [2012, 2021]  # VIIRS data availability period
 
+    # VIIRS radiance is continuous and can spike much higher over cities/flares.
+    verification:
+      expected_vars: ["viirs_annual"]
+      value_range: [0, 1000]
+
   # EOG DVNL
   eog_dvnl:
     type: "eog_dvnl"
     base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
     data_path: "eog/dvnl"
     year_range: [2013, 2019]  # DVNL data availability period
+
+    verification:
+      expected_vars: ["viirs_dvnl"]
+      value_range: [0, 1000]
 
   # Harmonized Nighttime Lights (DMSP-VIIRS)
   ntl_harm:
@@ -121,17 +159,29 @@ sources:
       tar_max_size_mb: 2000
       timeout: 600  # 10 minutes for large files
 
+    verification:
+      expected_vars: ["ntl_harm"]
+      value_range: [0, 2000]
+
   # ACAG PM2.5 (Washington University in St. Louis, Box shared folder)
   acag:
     type: "acag"
     data_path: "acag/pm25"
     year_range: [1998, 2023]
 
+    verification:
+      expected_vars: ["pm25"]
+      value_range: [0, 500]
+
   # ESA CCI Land Cover (Copernicus CDS API)
   esacci:
     type: "esacci"
     data_path: "esacci/landcover"
     year_range: [1992, 2022]
+
+    verification:
+      expected_vars: ["lccs_class"]
+      value_range: [0, 220]
 
   # OpenStreetMap land polygons -- one of the three sources split out of the
   # old `misc` source (docs/design/09-integrated-pipeline.md §7).
@@ -150,6 +200,10 @@ sources:
       tar_max_size_mb: 100
       timeout: 600
 
+    verification:
+      expected_vars: ["land_mask"]
+      value_range: [0, 1]
+
   # GADM v4.1 administrative boundaries -- second of the three misc-split sources.
   gadm:
     type: "gadm"
@@ -165,6 +219,14 @@ sources:
       tar_max_files: 2
       tar_max_size_mb: 100
       timeout: 600
+
+    # No verification block by default: expected_vars (GID_0, GID_1, ...) is
+    # discovered dynamically from whichever ADM level files PREPARE produced,
+    # and there's no fixed upper bound for value_range (0 = "no unit at this
+    # level", else a sequential id sized by how many polygons that level
+    # has). Uncomment to pin/narrow it explicitly:
+    # verification:
+    #   expected_vars: ["GID_0", "GID_1", "GID_2"]
 
   # UNDP HDI + World Bank income-group classifications, joined on iso3 --
   # third of the three misc-split sources; kept together deliberately, not a
@@ -187,6 +249,11 @@ sources:
       tar_max_size_mb: 100
       timeout: 600
 
+    # value_cols vary by which of hdi/worldbank were available at PREPARE
+    # time, so only the always-present join key is checked by default.
+    verification:
+      expected_vars: ["GID_0"]
+
   # PLAD Harvard Dataverse
   plad:
     type: "plad"
@@ -200,6 +267,10 @@ sources:
       batch_size: 1
       max_concurrent_downloads: 1
       timeout: 600  # 10 minutes for large files
+
+    # expected_vars' GID_N column must match admin_level above (2 -> GID_2).
+    verification:
+      expected_vars: ["GID_2", "year", "reg_fav"]
 
   # Berman Mining Conflict Data (Manual Download Required) -- disabled, not
   # run by the pipeline. Left commented rather than deleted so it can be
@@ -261,6 +332,11 @@ sources:
         - "mine_count_10km"
         - "mine_count_20km"
         - "mine_count_50km"
+
+    # expected_vars must track aggregation.output_variables above.
+    verification:
+      expected_vars: ["mine_count_10km", "mine_count_20km", "mine_count_50km"]
+      value_range: [0, 200]
 
 # Data assembly configurations
 assemble:

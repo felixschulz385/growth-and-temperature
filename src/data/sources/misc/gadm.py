@@ -41,6 +41,7 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -234,11 +235,15 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                     v2_family="country_id",
                 ),
                 inputs=inputs, completion=Completion.MARKER,
-                # No value_range: 0 = "no unit at this level", else a sequential
-                # id -- there's no fixed upper bound (depends on how many
-                # polygons the level has), so verification only checks these
-                # variables are present and not all-nodata.
-                meta={"expected_vars": gid_cols},
+                # No value_range by default: 0 = "no unit at this level",
+                # else a sequential id -- there's no fixed upper bound
+                # (depends on how many polygons the level has), so
+                # verification only checks these variables are present and
+                # not all-nodata unless a source `verification:` config
+                # block adds one. verify.verification_meta() lets that
+                # config block (orchestration/configs/data.yaml) override
+                # any of these without a code change.
+                meta=verify.verification_meta(self.cfg.raw, expected_vars=gid_cols),
             )
         ]
 
@@ -332,14 +337,24 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                     "description": "GADM administrative boundaries grid",
                     "source": "GADM administrative boundaries",
                     "date_created": datetime.now().isoformat(),
-                    "crs": str(geobox.crs),
                     "levels_included": ", ".join(sorted(gid_columns)),
                 },
             )
+            # .rio.write_crs() records the CRS as each data variable's own
+            # encoding["grid_mapping"] = "spatial_ref" (not an attr) and
+            # strips any pre-existing "crs" attr key -- so both the
+            # `"grid_mapping"` entry below (without it, the explicit
+            # encoding= dict passed to to_zarr() silently drops the link)
+            # and re-setting the "crs" attr *after* write_crs() (a redundant
+            # fallback) must come after this call, not before.
             ds = ds.rio.write_crs(geobox.crs)
+            ds.attrs["crs"] = str(geobox.crs)
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32"} for v in data_vars}
+            encoding = {
+                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32", "grid_mapping": "spatial_ref"}
+                for v in data_vars
+            }
             ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, consolidated=False)
             return True
         except Exception:

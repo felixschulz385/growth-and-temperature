@@ -14,6 +14,18 @@ from src.data.common.geobox.geobox import get_or_create_geobox
 
 logger = logging.getLogger(__name__)
 
+# Names rioxarray's CRS grid-mapping coordinate can leak into `data_vars`
+# under when a sample zarr is opened without `decode_coords="all"`/`="all"`
+# (every `get_variables_func` callback in the sources using this module
+# does exactly that). If left in the `variables` list passed to
+# `create_empty_target_zarr`, it gets treated as a real (time, band, y, x)
+# data variable and zarr-encoded with the wrong chunked/packed encoding --
+# which then silently corrupts the real CRS coordinate `.rio.write_crs()`
+# tries to write under the same name right afterward, into a tiny
+# metadata-less scalar. Filtered out wherever a variable list is assembled.
+_NON_DATA_VAR_NAMES = {"spatial_ref", "crs", "grid_mapping"}
+
+
 class SpatialProcessor:
     """
     Common spatial processing utilities for reprojecting data to unified grids.
@@ -103,7 +115,14 @@ class SpatialProcessor:
         """
         try:
             logger.info("Creating empty target zarr file")
-            
+
+            # Defensive filter, not just belt-and-suspenders: a caller's
+            # variable list can carry a leaked CRS grid-mapping name (see
+            # module-level `_NON_DATA_VAR_NAMES` comment) regardless of how
+            # it built that list, and treating it as a real data variable
+            # here would corrupt the real `spatial_ref` write below.
+            variables = [v for v in variables if v not in _NON_DATA_VAR_NAMES]
+
             # Create time coordinates
             time_coords = pd.to_datetime([f"{year}-12-31" for year in sorted(years)])
             
@@ -157,19 +176,37 @@ class SpatialProcessor:
                     attrs=var_attrs
                 )
             
-            # Create empty dataset and copy global attributes
+            # Create empty dataset and copy global attributes.
             empty_ds = xr.Dataset(data_vars, attrs=sample_attrs or {})
-            
-            # Set CRS
+
+            # Set CRS. Also stash a plain string CRS attr as a redundant
+            # fallback (matching gadm's/osm's own defensive pattern) --
+            # must come AFTER write_crs(), which strips any pre-existing
+            # "crs" attr key itself. See the `grid_mapping` comment below
+            # for why relying on write_crs() alone isn't safe here.
             empty_ds = empty_ds.rio.write_crs(target_geobox.crs)
-            
+            empty_ds.attrs["crs"] = str(target_geobox.crs)
+
             # Set up compression for Zarr output
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
             encoding = {
                 var: {
                     "chunks": (1, 1, 512, 512),
                     "compressors": (compressor,),
-                    "dtype": dtype
+                    "dtype": dtype,
+                    # `.rio.write_crs()` above records the CRS link as each
+                    # variable's own `encoding["grid_mapping"] = "spatial_ref"`
+                    # -- NOT as an attr. Since this dict becomes each
+                    # variable's *entire* zarr encoding (not merged with
+                    # what write_crs() just set), leaving this out silently
+                    # drops the link: the written store has a perfectly
+                    # valid CRS on "spatial_ref" but no data variable points
+                    # to it, so `.rio.crs` (and any grid_mapping-based CRS
+                    # reader) returns None on every subsequent read. Found
+                    # via src.data.sources.verify catching real "no CRS
+                    # found" failures on HPC-produced acag/esacci/ntl_harm/
+                    # eog GRID outputs.
+                    "grid_mapping": "spatial_ref",
                 }
                 for var in variables
             }

@@ -49,6 +49,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -421,8 +422,9 @@ class SnlMiningSource(DataSource):
                 inputs=(self.prepared_db_path,), completion=Completion.PATH_EXISTS,
                 meta={
                     "years": years,
-                    "expected_vars": tuple(self.output_variables),
-                    "value_range": (0, 200),
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=tuple(self.output_variables), value_range=(0, 200)
+                    ),
                 },
             )
         ]
@@ -477,10 +479,22 @@ class SnlMiningSource(DataSource):
                     "radius_semantics": "count of active mine buffers covering pixel center",
                 },
             ).rio.write_crs(geobox.crs)
+            # .rio.write_crs() records the CRS as each data variable's own
+            # encoding["grid_mapping"] = "spatial_ref", not an attr -- the
+            # "grid_mapping" entry in the encoding dict below is required or
+            # the explicit encoding= passed to to_zarr() silently drops that
+            # link. Also stash a plain string fallback attr.
+            ds.attrs["crs"] = str(geobox.crs)
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
             encoding = {
-                var: {"chunks": (1, 1, self.tile_size, self.tile_size), "compressors": (compressor,), "dtype": "uint16", "fill_value": 0}
+                var: {
+                    "chunks": (1, 1, self.tile_size, self.tile_size),
+                    "compressors": (compressor,),
+                    "dtype": "uint16",
+                    "fill_value": 0,
+                    "grid_mapping": "spatial_ref",
+                }
                 for var in self.output_variables
             }
             ds.to_zarr(output_path, mode="w", compute=False, encoding=encoding, zarr_format=3, consolidated=False)

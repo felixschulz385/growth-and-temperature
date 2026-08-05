@@ -16,6 +16,8 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
+from src.data.sources.verify import VerificationResult
+
 logger_name = __name__
 
 
@@ -80,3 +82,34 @@ class ConfiguredFilesFetchMixin:
                 await _do_download(sess)
         else:
             await _do_download(session)
+
+    def verify_fetch(self) -> VerificationResult:
+        """Checks every `self.CONFIGURED_FILES` entry is present at its exact
+        expected local path under `output_root(FETCH)`.
+
+        Exists because a source's FETCH directory can contain files (so the
+        generic disk-walk-based "N file(s) fetched" summary looks fine) that
+        don't match any `ConfiguredFile.name` -- e.g. a differently-named
+        export, or a stale file left from before a config rename. PREPARE's
+        own path check (`os.path.exists`, matching this exact filename) then
+        silently plans zero targets with no indication why. This surfaces
+        that mismatch directly instead of leaving it to be diagnosed by hand.
+        """
+        from src.data.sources.steps import PipelineStep
+
+        root = self.output_root(PipelineStep.FETCH)
+        missing = [f.name for f in self.CONFIGURED_FILES if not os.path.exists(os.path.join(root, f.name))]
+        if not missing:
+            return VerificationResult(True, f"ok: {len(self.CONFIGURED_FILES)} expected file(s) present")
+
+        present: List[str] = []
+        if os.path.isdir(root):
+            for _, _, files in os.walk(root):
+                present.extend(files)
+
+        detail = f"missing {len(missing)}/{len(self.CONFIGURED_FILES)} expected file(s): {missing}"
+        if present:
+            detail += f" -- found instead: {sorted(present)[:10]}"
+        else:
+            detail += " -- FETCH directory is empty or doesn't exist"
+        return VerificationResult(False, detail)

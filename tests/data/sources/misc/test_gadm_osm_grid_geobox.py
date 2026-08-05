@@ -40,6 +40,28 @@ def test_gadm_create_empty_zarr_uses_y_x_dims_for_ease_geobox(tmp_path):
     assert set(ds["GID_1"].dims) == {"y", "x"}
 
 
+def test_gadm_create_empty_zarr_crs_is_readable_after_round_trip(tmp_path):
+    """Regression test: `.rio.write_crs()` records the CRS as each data
+    variable's own `encoding["grid_mapping"]`, not an attr -- the explicit
+    `encoding=` dict `_create_empty_gadm_zarr` passes to `to_zarr()` used to
+    silently drop that link (no "grid_mapping" key), leaving the store with
+    a valid but undiscoverable CRS. Found via src.data.sources.verify
+    catching a real "no CRS found" failure on HPC-produced gadm output."""
+    import rioxarray  # noqa: F401 -- registers the .rio accessor
+    import xarray as xr
+
+    from src.data.sources.misc.gadm import GadmSource
+
+    geobox = _coarse_ease_geobox()
+    output_path = str(tmp_path / "countries_grid.zarr")
+    assert GadmSource._create_empty_gadm_zarr(output_path, geobox, ["GID_0"])
+
+    ds = xr.open_zarr(output_path, consolidated=False, decode_coords="all")
+    assert ds["GID_0"].encoding.get("grid_mapping") == "spatial_ref"
+    assert ds.rio.crs is not None
+    assert ds.attrs.get("crs")  # redundant plain-string fallback
+
+
 def test_gadm_create_empty_zarr_uses_lat_lon_dims_for_legacy_geobox(tmp_path, monkeypatch):
     from src.data.sources.misc.gadm import GadmSource
 

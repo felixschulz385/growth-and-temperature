@@ -29,6 +29,51 @@ class VerificationResult:
     detail: str
 
 
+def verification_meta(
+    raw: dict,
+    *,
+    expected_vars: Sequence[str] | None = None,
+    value_range: tuple[float, float] | None = None,
+    range_vars: Sequence[str] | None = None,
+) -> dict:
+    """Build the `expected_vars`/`value_range`/`range_vars` `StepTarget.meta`
+    entries for one source's GRID target, letting that source's own
+    `verification:` config block (in e.g. orchestration/configs/data.yaml)
+    override the Python-side defaults passed in by the caller -- so a
+    deployment can loosen/tighten a range or variable list per source
+    without a code change, while every source still works out of the box
+    with no `verification:` block at all.
+
+    *raw* is a source's `SourceConfig.raw` (the source's own config dict).
+    Config shape:
+
+        sources:
+          acag:
+            verification:
+              expected_vars: [pm25]
+              value_range: [0, 500]
+
+    An explicit `value_range: null` in config disables the range check
+    entirely even if the caller passed one in.
+    """
+    cfg = raw.get("verification") or {}
+
+    result: dict = {}
+    ev = cfg["expected_vars"] if "expected_vars" in cfg else expected_vars
+    if ev is not None:
+        result["expected_vars"] = tuple(ev)
+
+    vr = cfg["value_range"] if "value_range" in cfg else value_range
+    if vr is not None:
+        result["value_range"] = tuple(vr)
+
+    rv = cfg["range_vars"] if "range_vars" in cfg else range_vars
+    if rv is not None:
+        result["range_vars"] = tuple(rv)
+
+    return result
+
+
 def manifest_path(path: str) -> str:
     """Where the cached verification result for *path* lives: a
     `_verification/<name>.json` file sibling to *path* itself, never inside

@@ -60,6 +60,7 @@ from src.data.sources import registry
 from src.data.sources.base import DataSource
 from src.data.sources.modis import tiles as modis_util
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection, TransferUnit
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -482,8 +483,9 @@ class ModisSource(DataSource):
                         # data_vars dict regardless of product; already Kelvin
                         # (scale/offset applied at FETCH time), so no packed
                         # decode is needed here.
-                        "expected_vars": ("lst_night",),
-                        "value_range": (150, 350),
+                        **verify.verification_meta(
+                            self.cfg.raw, expected_vars=("lst_night",), value_range=(150, 350)
+                        ),
                     },
                 )
             )

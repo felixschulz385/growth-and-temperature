@@ -50,6 +50,7 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.glass.crawler import _CrawlerMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -585,9 +586,12 @@ class GlassSource(_CrawlerMixin, DataSource):
                         "years_available": [f["year"] for f in annual_files],
                         "missing_years": missing,
                         "grid_cells": sorted({f["grid_cell"] for f in annual_files}),
-                        "expected_vars": self._STAT_VARS,
-                        "value_range": self._LST_VALUE_RANGE,
-                        "range_vars": self._RANGE_VARS,
+                        **verify.verification_meta(
+                            self.cfg.raw,
+                            expected_vars=self._STAT_VARS,
+                            value_range=self._LST_VALUE_RANGE,
+                            range_vars=self._RANGE_VARS,
+                        ),
                     },
                 )
             ]
@@ -609,9 +613,12 @@ class GlassSource(_CrawlerMixin, DataSource):
                 meta={
                     "years_available": [f["year"] for f in annual_files],
                     "missing_years": missing,
-                    "expected_vars": self._STAT_VARS,
-                    "value_range": self._LST_VALUE_RANGE,
-                    "range_vars": self._RANGE_VARS,
+                    **verify.verification_meta(
+                        self.cfg.raw,
+                        expected_vars=self._STAT_VARS,
+                        value_range=self._LST_VALUE_RANGE,
+                        range_vars=self._RANGE_VARS,
+                    ),
                 },
             )
         ]
@@ -666,8 +673,15 @@ class GlassSource(_CrawlerMixin, DataSource):
 
     def _create_empty_target_zarr(self, output_path: str, target_geobox, source_files: Tuple[str, ...]) -> bool:
         try:
+            from src.data.common.raster.spatial import _NON_DATA_VAR_NAMES
+
             sample_ds = xr.open_zarr(source_files[0], mask_and_scale=False, chunks="auto", consolidated=False)
-            variables = list(sample_ds.data_vars.keys())
+            # Exclude a leaked CRS grid-mapping variable (opened above
+            # without decode_coords="all", so rioxarray's own "spatial_ref"
+            # coordinate shows up in data_vars too) -- treating it as a real
+            # data variable below would corrupt the actual CRS write_crs()
+            # writes under the same name.
+            variables = [v for v in sample_ds.data_vars.keys() if v not in _NON_DATA_VAR_NAMES]
             sample_attrs = sample_ds.attrs.copy()
 
             years = sorted(self._years_from_source_files(source_files))
@@ -694,10 +708,20 @@ class GlassSource(_CrawlerMixin, DataSource):
             sample_ds.close()
 
             empty_ds = xr.Dataset(data_vars, attrs=sample_attrs)
+            # .rio.write_crs() records the CRS as each data variable's own
+            # encoding["grid_mapping"] = "spatial_ref", not an attr -- the
+            # "grid_mapping" entry below is required or the explicit
+            # encoding= passed to to_zarr() silently drops that link. Also
+            # stash a plain string fallback attr (must come after
+            # write_crs(), which strips any pre-existing "crs" attr key).
             empty_ds = empty_ds.rio.write_crs(target_geobox.crs)
+            empty_ds.attrs["crs"] = str(target_geobox.crs)
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {var: {"chunks": (1, 1, 512, 512), "compressors": (compressor,), "dtype": "uint16"} for var in variables}
+            encoding = {
+                var: {"chunks": (1, 1, 512, 512), "compressors": (compressor,), "dtype": "uint16", "grid_mapping": "spatial_ref"}
+                for var in variables
+            }
 
             empty_ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, zarr_format=3, consolidated=False)
             return True

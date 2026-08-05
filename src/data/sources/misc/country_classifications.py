@@ -45,6 +45,7 @@ from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMix
 from src.data.sources.misc.hdi import read_hdi
 from src.data.sources.misc.worldbank import read_worldbank
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -210,7 +211,7 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
                 inputs=(classifications_parquet, gadm_zarr), completion=Completion.PATH_EXISTS,
                 # value_cols vary by which of hdi/worldbank were available at
                 # PREPARE time, so only the always-present join key is checked.
-                meta={"expected_vars": ("GID_0",)},
+                meta=verify.verification_meta(self.cfg.raw, expected_vars=("GID_0",)),
             )
         ]
 

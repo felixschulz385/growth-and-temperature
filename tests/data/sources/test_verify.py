@@ -5,7 +5,8 @@ Covers: format dispatch (zarr/geotiff/parquet/unrecognized), the four checks
 ("has expected variables", "has a CRS", "sample is finite", "sample is
 within value_range"), range_vars excluding a variable from the range check,
 striding robustness against globally-sparse data (a fixed center-crop would
-false-fail these), and the manifest cache (hit/miss/invalidation/force).
+false-fail these), the manifest cache (hit/miss/invalidation/force), and
+verification_meta()'s data.yaml `verification:`-block override behavior.
 """
 
 import json
@@ -19,7 +20,7 @@ import rioxarray  # noqa: F401 -- registers the .rio accessor
 import xarray as xr
 
 from src.data.sources.steps import mark_complete
-from src.data.sources.verify import VerificationResult, manifest_path, verify_grid_output
+from src.data.sources.verify import VerificationResult, manifest_path, verification_meta, verify_grid_output
 
 
 def _write_zarr(path, data_vars, *, write_crs=True, crs_attr=False):
@@ -355,3 +356,61 @@ def test_verification_result_is_frozen_and_comparable():
     assert a == b
     with pytest.raises(Exception):
         a.ok = False
+
+
+# --- verification_meta() -- data.yaml `verification:` block overrides ----
+
+
+def test_verification_meta_uses_defaults_when_no_config_block():
+    meta = verification_meta({}, expected_vars=("pm25",), value_range=(0, 500))
+    assert meta == {"expected_vars": ("pm25",), "value_range": (0, 500)}
+
+
+def test_verification_meta_config_overrides_defaults():
+    raw = {"verification": {"expected_vars": ["custom_var"], "value_range": [10, 20]}}
+    meta = verification_meta(raw, expected_vars=("pm25",), value_range=(0, 500))
+    assert meta == {"expected_vars": ("custom_var",), "value_range": (10, 20)}
+
+
+def test_verification_meta_config_partial_override_keeps_other_default():
+    # Only expected_vars overridden in config -- value_range still falls
+    # back to the caller-provided Python default.
+    raw = {"verification": {"expected_vars": ["custom_var"]}}
+    meta = verification_meta(raw, expected_vars=("pm25",), value_range=(0, 500))
+    assert meta == {"expected_vars": ("custom_var",), "value_range": (0, 500)}
+
+
+def test_verification_meta_explicit_null_disables_range_check():
+    raw = {"verification": {"value_range": None}}
+    meta = verification_meta(raw, expected_vars=("pm25",), value_range=(0, 500))
+    assert meta == {"expected_vars": ("pm25",)}
+    assert "value_range" not in meta
+
+
+def test_verification_meta_config_adds_range_vars():
+    raw = {"verification": {"range_vars": ["mean"]}}
+    meta = verification_meta(
+        raw, expected_vars=("mean", "std"), value_range=(150, 350), range_vars=None
+    )
+    assert meta["range_vars"] == ("mean",)
+
+
+def test_verification_meta_no_defaults_and_no_config_yields_empty_meta():
+    assert verification_meta({}) == {}
+
+
+def test_verification_meta_from_real_data_yaml_overrides_source_defaults():
+    # End-to-end: a real source config block (as loaded from
+    # orchestration/configs/data.yaml) must win over whatever Python default
+    # a source passes in -- this is the whole point of moving these settings
+    # into config.
+    import yaml
+
+    from src.data.pipeline.config import get_source_config
+
+    with open("orchestration/configs/data.yaml") as fh:
+        config = yaml.safe_load(fh)
+
+    cfg = get_source_config(config, "acag")
+    meta = verification_meta(cfg.raw, expected_vars=("should_be_overridden",), value_range=(0, 1))
+    assert meta == {"expected_vars": ("pm25",), "value_range": (0, 500)}

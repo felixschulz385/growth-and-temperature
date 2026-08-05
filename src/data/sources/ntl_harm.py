@@ -39,6 +39,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
@@ -401,8 +402,9 @@ class NtlHarmSource(DataSource):
                 completion=Completion.MARKER,
                 meta={
                     "years_available": [f["year"] for f in annual_files],
-                    "expected_vars": (self.VARIABLE_NAME,),
-                    "value_range": (0, 2000),
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=(self.VARIABLE_NAME,), value_range=(0, 2000)
+                    ),
                 },
             )
         ]
