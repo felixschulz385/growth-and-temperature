@@ -129,6 +129,31 @@ class SourceLedger:
         for statement in schema.ALL_DDL:
             self._con.execute(statement)
 
+    def _execute_readonly_safe(self, query: str, params: list[Any]):
+        """Every query a read-only-opened ledger runs goes through here.
+
+        `open()`'s schema creation only runs `if not read_only` -- so a
+        `.duckdb` file that exists on disk (passing every call site's own
+        `os.path.exists()` guard) but was never opened read-write yet (or
+        whose schema-creating open crashed before finishing) has no tables
+        at all, and DuckDB can't run `CREATE TABLE` on a read-only
+        connection to self-heal. Without this, that surfaces as a raw
+        `duckdb.CatalogException` deep in unrelated source code (confirmed:
+        crashed `plad`'s GRID step, and `esacci`'s PREPARE planning inside
+        `pipeline summary`) instead of behaving like "no ledger yet," which
+        every caller already handles gracefully via `os.path.exists()`.
+        Returns `None` on a missing-schema catalog error so callers can
+        return the same empty/absent result they'd give for a missing file;
+        re-raises any other exception unchanged.
+        """
+        try:
+            return self._con.execute(query, params)
+        except duckdb.CatalogException:
+            logger.warning(
+                "Ledger %s has no schema yet (never opened read-write) -- treating as empty", self.local_path
+            )
+            return None
+
     def close(self) -> None:
         self._con.close()
 
@@ -350,8 +375,10 @@ class SourceLedger:
             query += " AND rf.year = ?"
             params.append(year)
         query += " ORDER BY rf.discovered_at"
-        rows = self._con.execute(query, params).fetchall()
-        return [r[0] for r in rows]
+        result = self._execute_readonly_safe(query, params)
+        if result is None:
+            return []
+        return [r[0] for r in result.fetchall()]
 
     # ------------------------------------------------------------------
     # universal artifact tracking (FETCH file-units and PREPARE/GRID
@@ -395,9 +422,12 @@ class SourceLedger:
         return row[0] if row else None
 
     def remote_state(self, step: str, unit_id: str) -> Optional[str]:
-        row = self._con.execute(
+        result = self._execute_readonly_safe(
             "SELECT remote_state FROM artifacts WHERE step = ? AND unit_id = ?", [step, unit_id]
-        ).fetchone()
+        )
+        if result is None:
+            return None
+        row = result.fetchone()
         return row[0] if row else None
 
     # ------------------------------------------------------------------
@@ -441,10 +471,13 @@ class SourceLedger:
         done? Deliberately coarse (any row locally complete or remote-
         verified) -- precise enough for a prerequisite gate, which only
         needs "has this step produced anything," not per-target detail."""
-        row = self._con.execute(
+        result = self._execute_readonly_safe(
             "SELECT count(*) FROM artifacts WHERE step = ? AND (local_state = ? OR remote_state = ?)",
             [step, schema.LocalState.COMPLETE, schema.RemoteState.VERIFIED],
-        ).fetchone()
+        )
+        if result is None:
+            return False
+        row = result.fetchone()
         return bool(row[0])
 
     # ------------------------------------------------------------------

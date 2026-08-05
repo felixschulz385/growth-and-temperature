@@ -223,6 +223,75 @@ def test_export_admin_count_tables_fails_clearly_when_mapping_missing(tmp_path):
     assert source._export_admin_count_tables(str(output_dir)) is False
 
 
+# --- _determine_year_bounds: plausible-range guard --------------------
+
+
+def _attach_properties_db(source, tmp_path, rows, *, columns="property_id INTEGER, actual_start_up_year INTEGER, actual_closure_year INTEGER, latitude DOUBLE, longitude DOUBLE"):
+    """A `raw_db`-attached connection with a `properties` table, matching the
+    shape `_determine_year_bounds` expects to be called against (it queries
+    `raw_db.main.{properties_table}`, so a caller must ATTACH first --
+    mirrors `_execute_prepare`'s own setup)."""
+    import duckdb
+
+    raw_path = str(tmp_path / "raw_stage0.duckdb")
+    raw_con = duckdb.connect(raw_path)
+    raw_con.execute(f"CREATE TABLE properties ({columns})")
+    raw_con.executemany(f"INSERT INTO properties VALUES ({','.join('?' * len(rows[0]))})", rows)
+    raw_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    return con
+
+
+def test_determine_year_bounds_excludes_implausible_year_from_min(tmp_path):
+    # The exact bug found on real data: a garbled opening year (150, likely
+    # a "1950" typo) must not drag the auto-detected start_year down to an
+    # implausible value that later corrupts a zarr time coordinate.
+    source, _ = _make_source(tmp_path)
+    con = _attach_properties_db(
+        source, tmp_path,
+        rows=[
+            (1, 150, None, 10.0, 20.0),  # implausible -- excluded from MIN/MAX
+            (2, 1990, 2010, 11.0, 21.0),
+            (3, 2000, None, 12.0, 22.0),
+        ],
+    )
+    start_year, end_year = source._determine_year_bounds(con, llm_years_available=False)
+    assert start_year == 1990
+    assert end_year == 2010
+
+
+def test_determine_year_bounds_all_plausible_unaffected(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_properties_db(
+        source, tmp_path,
+        rows=[(1, 1980, 1995, 10.0, 20.0), (2, 1990, 2010, 11.0, 21.0)],
+    )
+    start_year, end_year = source._determine_year_bounds(con, llm_years_available=False)
+    assert (start_year, end_year) == (1980, 2010)
+
+
+def test_determine_year_bounds_logs_warning_when_excluding(tmp_path, caplog):
+    import logging
+
+    source, _ = _make_source(tmp_path)
+    con = _attach_properties_db(
+        source, tmp_path,
+        rows=[(1, 150, None, 10.0, 20.0), (2, 1990, 2010, 11.0, 21.0)],
+    )
+    with caplog.at_level(logging.WARNING):
+        source._determine_year_bounds(con, llm_years_available=False)
+    assert any("plausible range" in r.getMessage() for r in caplog.records)
+
+
+def test_determine_year_bounds_config_year_range_bypasses_detection(tmp_path):
+    # An explicit config year_range skips the DB query entirely -- no
+    # plausibility filtering applies to a user-specified value.
+    source, _ = _make_source(tmp_path, year_range=[100, 200])
+    assert source._determine_year_bounds(con=None, llm_years_available=False) == (100, 200)
+
+
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path, grid_id="ease6933")
 

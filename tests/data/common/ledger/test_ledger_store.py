@@ -190,3 +190,48 @@ def test_merge_from_remote_noop_when_no_remote_copy(ledger, tmp_path):
     client.remote_exists = False
     assert ledger.merge_from_remote(client, str(tmp_path / "tmp")) is True
     assert client.rsync_calls == []
+
+
+# --- read-only open against a schema-less ledger file ----------------------
+
+
+def _schemaless_duckdb_file(path: str) -> None:
+    """A `.duckdb` file that exists on disk but was never opened read-write
+    (so `_ensure_schema()` never ran) -- e.g. an interrupted first open, or
+    a bare file created by something else. Confirmed real: this is exactly
+    what crashed `plad`'s GRID step and `esacci`'s PREPARE planning inside
+    `pipeline summary` with a raw `duckdb.CatalogException`."""
+    import duckdb
+
+    duckdb.connect(path).close()
+
+
+def test_completed_fetch_files_degrades_gracefully_on_schemaless_ledger(tmp_path):
+    path = str(tmp_path / "plad.duckdb")
+    _schemaless_duckdb_file(path)
+    with SourceLedger.open(path, data_path="plad", read_only=True) as ledger:
+        assert ledger.completed_fetch_files() == []
+
+
+def test_remote_state_degrades_gracefully_on_schemaless_ledger(tmp_path):
+    path = str(tmp_path / "plad.duckdb")
+    _schemaless_duckdb_file(path)
+    with SourceLedger.open(path, data_path="plad", read_only=True) as ledger:
+        assert ledger.remote_state("fetch", "some-unit") is None
+
+
+def test_step_complete_degrades_gracefully_on_schemaless_ledger(tmp_path):
+    path = str(tmp_path / "plad.duckdb")
+    _schemaless_duckdb_file(path)
+    with SourceLedger.open(path, data_path="plad", read_only=True) as ledger:
+        assert ledger.step_complete("fetch") is False
+
+
+def test_readonly_safe_reraises_non_catalog_errors(tmp_path):
+    # Only a missing-schema CatalogException is swallowed -- a genuine query
+    # bug (e.g. a typo'd column name) must still surface, not be silently
+    # treated as "empty."
+    path = str(tmp_path / "acag.duckdb")
+    with SourceLedger.open(path, data_path="acag/pm25") as ledger:
+        with pytest.raises(Exception):
+            ledger._execute_readonly_safe("SELECT nonexistent_column FROM artifacts", [])

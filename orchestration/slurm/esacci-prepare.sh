@@ -24,6 +24,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source esacci \
     --step prepare \
+    ${PIPELINE_OVERRIDE:+--override} \
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \
     --temp-dir "/scratch/schulz0022/esacci_${SLURM_JOB_ID}" \

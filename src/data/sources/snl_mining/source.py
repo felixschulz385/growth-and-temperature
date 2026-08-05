@@ -267,6 +267,20 @@ class SnlMiningSource(DataSource):
         ).fetchone()
         return row is not None
 
+    #: Sanity bound for auto-detected year bounds -- guards against a single
+    #: garbled opening_year/closing_year value (e.g. "150" typo'd for "1950",
+    #: or a bad LLM-imputed year) dragging MIN()/MAX() to an implausible
+    #: value that later becomes an actual zarr time coordinate. pandas can't
+    #: represent a year that far from the present as a nanosecond Timestamp,
+    #: so a store built on top of it fails not at PREPARE time (where the
+    #: bad value actually lives) but much later and far more cryptically,
+    #: deep inside `to_zarr(region="auto")`'s CF-time auto-region-detection
+    #: (an `OutOfBoundsDatetime` chained into an unrelated missing-`cftime`
+    #: ImportError). Confirmed on real data: a year of 150 reached
+    #: `_rasterize_tiles_to_zarr` this way and crashed GRID, not PREPARE.
+    MIN_PLAUSIBLE_YEAR = 1800
+    MAX_PLAUSIBLE_YEAR = 2100
+
     def _determine_year_bounds(self, con, llm_years_available: bool) -> Tuple[int, int]:
         if self.cfg.year_range:
             return int(self.cfg.year_range[0]), int(self.cfg.year_range[1])
@@ -274,19 +288,33 @@ class SnlMiningSource(DataSource):
         llm_open_expr = f"y.{self.llm_opening_year_column}" if llm_years_available else "NULL"
         llm_close_expr = f"y.{self.llm_closing_year_column}" if llm_years_available else "NULL"
         llm_join = f"LEFT JOIN raw_db.main.{self.llm_years_table} AS y USING (property_id)" if llm_years_available else ""
+        open_year = f"COALESCE(p.{self.opening_year_column}, {llm_open_expr})"
+        close_year = f"COALESCE(p.{self.closing_year_column}, {llm_close_expr}, {open_year})"
+        plausible = f"BETWEEN {self.MIN_PLAUSIBLE_YEAR} AND {self.MAX_PLAUSIBLE_YEAR}"
+        # CASE-to-NULL (which MIN/MAX ignore), not a WHERE filter -- a WHERE
+        # filter would drop the whole row before `count(*) FILTER` below
+        # ever saw it, undercounting exclusions.
         query = f"""
             SELECT
-                CAST(MIN(COALESCE(p.{self.opening_year_column}, {llm_open_expr})) AS INTEGER) AS start_year,
-                CAST(MAX(COALESCE(p.{self.closing_year_column}, {llm_close_expr},
-                    COALESCE(p.{self.opening_year_column}, {llm_open_expr}))) AS INTEGER) AS end_year
+                CAST(MIN(CASE WHEN {open_year} {plausible} THEN {open_year} END) AS INTEGER) AS start_year,
+                CAST(MAX(CASE WHEN {close_year} {plausible} THEN {close_year} END) AS INTEGER) AS end_year,
+                count(*) FILTER (WHERE NOT ({open_year} {plausible})) AS excluded_count
             FROM raw_db.main.{self.properties_table} AS p
             {llm_join}
-            WHERE COALESCE(p.{self.opening_year_column}, {llm_open_expr}) IS NOT NULL
+            WHERE {open_year} IS NOT NULL
               AND p.{self.latitude_column} IS NOT NULL AND p.{self.longitude_column} IS NOT NULL
         """
-        start_year, end_year = con.execute(query).fetchone()
+        start_year, end_year, excluded_count = con.execute(query).fetchone()
         if start_year is None or end_year is None:
             raise ValueError("Unable to infer mining year range from stage 0 tables")
+        if excluded_count:
+            logger.warning(
+                "Excluded %d propert(ies) with an opening_year outside the plausible range "
+                "[%d, %d] from SNL mining year-bounds detection -- likely a data-entry error "
+                "(e.g. '150' instead of '1950'). Their own year is still clamped into "
+                "[%d, %d] when building active_mines, not dropped entirely.",
+                excluded_count, self.MIN_PLAUSIBLE_YEAR, self.MAX_PLAUSIBLE_YEAR, start_year, end_year,
+            )
         return int(start_year), max(int(end_year), int(start_year))
 
     def _create_active_mines_table(self, con, start_year: int, end_year: int, raster_crs: str, llm_years_available: bool) -> None:

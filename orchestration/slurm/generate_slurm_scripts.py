@@ -75,6 +75,15 @@ def _pipeline_run_cmd(job: dict) -> list[str]:
         f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
         f"--source {job['source']}",
         f"--step {job['step']}",
+        # Runtime-toggleable, not a jobs.yaml field: `${VAR:+word}` expands to
+        # "--override" only if PIPELINE_OVERRIDE is set and non-empty, so the
+        # one generated script serves both cases --
+        #   sbatch eog-viirs-grid.sh                              (normal)
+        #   sbatch --export=ALL,PIPELINE_OVERRIDE=1 eog-viirs-grid.sh  (force re-run)
+        # -- without a separate script variant or a jobs.yaml/regenerate
+        # round-trip for what's normally a one-off need (e.g. regenerating
+        # GRID outputs after a code fix that changed their content).
+        '${PIPELINE_OVERRIDE:+--override}',
     ]
     cmd_parts.extend(job.get("extra_args", []))
     if not simple:
@@ -239,6 +248,11 @@ def _pipeline_run_argv(job: dict) -> list[str]:
             part.replace("$SLURM_CPUS_PER_TASK", "4")
             .replace('"${MEMORY_LIMIT_GB}GiB"', "4GiB")
             .replace('"/scratch/schulz0022/', '"/tmp/dummy_')
+            # Validation simulates PIPELINE_OVERRIDE unset (bash's own
+            # `${VAR:+word}` expands to nothing in that case) -- the "set"
+            # case is just the already-registered `--override` flag with a
+            # literal instead of shell-expanded value, nothing new to check.
+            .replace("${PIPELINE_OVERRIDE:+--override}", "")
         )
         argv.extend(shlex.split(part))
     return argv

@@ -21,4 +21,5 @@ conda activate src
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source eog_viirs \
     --step prepare \
+    ${PIPELINE_OVERRIDE:+--override} \
     --debug

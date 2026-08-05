@@ -15,6 +15,7 @@ cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source modis \
     --step fetch \
+    ${PIPELINE_OVERRIDE:+--override} \
     --debug
 
 echo "fetch complete -- pushing results to scicore"
