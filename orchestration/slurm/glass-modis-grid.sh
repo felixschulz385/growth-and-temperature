@@ -18,6 +18,19 @@ cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
 conda activate src
 
+# --override toggle -- either of these works:
+#   sbatch <this script>.sh --override
+#   sbatch --export=ALL,PIPELINE_OVERRIDE=1 <this script>.sh
+OVERRIDE_FLAG=""
+for _arg in "$@"; do
+    if [ "$_arg" = "--override" ]; then
+        OVERRIDE_FLAG="--override"
+    fi
+done
+if [ -n "${PIPELINE_OVERRIDE:-}" ]; then
+    OVERRIDE_FLAG="--override"
+fi
+
 # Calculate memory limit (leave some buffer for system - 60% of allocated)
 MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 
@@ -25,7 +38,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source glass_modis \
     --step grid \
-    ${PIPELINE_OVERRIDE:+--override} \
+    $OVERRIDE_FLAG \
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \
     --temp-dir "/scratch/schulz0022/glass_modis_${SLURM_JOB_ID}" \

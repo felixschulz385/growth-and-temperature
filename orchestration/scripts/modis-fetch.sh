@@ -11,11 +11,24 @@ set -euo pipefail
 mkdir -p "./log/preprocess/modis"
 cd /scicore/home/meiera/schulz0022/projects/growth-and-temperature
 
+# --override toggle -- either of these works:
+#   sbatch <this script>.sh --override
+#   sbatch --export=ALL,PIPELINE_OVERRIDE=1 <this script>.sh
+OVERRIDE_FLAG=""
+for _arg in "$@"; do
+    if [ "$_arg" = "--override" ]; then
+        OVERRIDE_FLAG="--override"
+    fi
+done
+if [ -n "${PIPELINE_OVERRIDE:-}" ]; then
+    OVERRIDE_FLAG="--override"
+fi
+
 /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" pipeline run \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source modis \
     --step fetch \
-    ${PIPELINE_OVERRIDE:+--override} \
+    $OVERRIDE_FLAG \
     --debug
 
 echo "fetch complete -- pushing results to scicore"

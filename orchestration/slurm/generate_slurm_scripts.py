@@ -65,6 +65,29 @@ GENERATED_MARKER = (
     "# Do not hand-edit -- edit jobs.yaml and regenerate."
 )
 
+#: --override toggle, recognized two ways so whichever is more natural to
+#: reach for both work: `sbatch <script>.sh --override` (SLURM forwards
+#: trailing args as the script's own $1/$@) or
+#: `sbatch --export=ALL,PIPELINE_OVERRIDE=1 <script>.sh` (env var). Computed
+#: once into $OVERRIDE_FLAG and referenced (unquoted, so it vanishes from
+#: the command entirely when empty rather than passing a stray "") from
+#: `_pipeline_run_cmd`'s emitted command line.
+OVERRIDE_FLAG_PREAMBLE = [
+    "# --override toggle -- either of these works:",
+    "#   sbatch <this script>.sh --override",
+    "#   sbatch --export=ALL,PIPELINE_OVERRIDE=1 <this script>.sh",
+    'OVERRIDE_FLAG=""',
+    'for _arg in "$@"; do',
+    '    if [ "$_arg" = "--override" ]; then',
+    '        OVERRIDE_FLAG="--override"',
+    "    fi",
+    "done",
+    'if [ -n "${PIPELINE_OVERRIDE:-}" ]; then',
+    '    OVERRIDE_FLAG="--override"',
+    "fi",
+    "",
+]
+
 
 def _pipeline_run_cmd(job: dict) -> list[str]:
     simple = job.get("simple", False)
@@ -75,15 +98,9 @@ def _pipeline_run_cmd(job: dict) -> list[str]:
         f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
         f"--source {job['source']}",
         f"--step {job['step']}",
-        # Runtime-toggleable, not a jobs.yaml field: `${VAR:+word}` expands to
-        # "--override" only if PIPELINE_OVERRIDE is set and non-empty, so the
-        # one generated script serves both cases --
-        #   sbatch eog-viirs-grid.sh                              (normal)
-        #   sbatch --export=ALL,PIPELINE_OVERRIDE=1 eog-viirs-grid.sh  (force re-run)
-        # -- without a separate script variant or a jobs.yaml/regenerate
-        # round-trip for what's normally a one-off need (e.g. regenerating
-        # GRID outputs after a code fix that changed their content).
-        '${PIPELINE_OVERRIDE:+--override}',
+        # See OVERRIDE_FLAG_PREAMBLE -- unquoted so an empty value vanishes
+        # from the command line entirely rather than passing a stray "".
+        "$OVERRIDE_FLAG",
     ]
     cmd_parts.extend(job.get("extra_args", []))
     if not simple:
@@ -126,6 +143,7 @@ def render_slurm_job(job: dict) -> str:
         f'eval "$({CONDA_HOOK} shell.bash hook)"',
         "conda activate src",
         "",
+        *OVERRIDE_FLAG_PREAMBLE,
     ]
 
     if not simple:
@@ -163,6 +181,7 @@ def render_egress_job(job: dict) -> str:
         f'mkdir -p "./log/preprocess/{log_key}"',
         f"cd {PROJECT_ROOT}",
         "",
+        *OVERRIDE_FLAG_PREAMBLE,
     ]
     lines.append(" \\\n    ".join(_pipeline_run_cmd(job)))
     lines.append("")
@@ -248,11 +267,11 @@ def _pipeline_run_argv(job: dict) -> list[str]:
             part.replace("$SLURM_CPUS_PER_TASK", "4")
             .replace('"${MEMORY_LIMIT_GB}GiB"', "4GiB")
             .replace('"/scratch/schulz0022/', '"/tmp/dummy_')
-            # Validation simulates PIPELINE_OVERRIDE unset (bash's own
-            # `${VAR:+word}` expands to nothing in that case) -- the "set"
-            # case is just the already-registered `--override` flag with a
-            # literal instead of shell-expanded value, nothing new to check.
-            .replace("${PIPELINE_OVERRIDE:+--override}", "")
+            # Validation simulates OVERRIDE_FLAG unset/empty (its default) --
+            # the "set" case is just the already-registered `--override`
+            # flag with a literal instead of shell-computed value, nothing
+            # new to check.
+            .replace("$OVERRIDE_FLAG", "")
         )
         argv.extend(shlex.split(part))
     return argv
