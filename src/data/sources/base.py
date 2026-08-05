@@ -17,6 +17,7 @@ from src.data.sources.steps import PipelineStep, StepTarget, TargetSelection, Tr
 if TYPE_CHECKING:
     from src.data.pipeline.config import SourceConfig
     from src.data.pipeline.context import PipelineContext
+    from src.data.sources.verify import VerificationResult
 
 
 @runtime_checkable
@@ -140,6 +141,22 @@ class DataSource(abc.ABC):
     def close(self) -> None:
         """Release sessions/dask clients/etc. Default: nothing to release."""
         return None
+
+    def verify_grid(self, target: StepTarget) -> "VerificationResult":
+        """Cheap sanity check for a completed GRID target's output.
+
+        Default: delegates to `src.data.sources.verify.verify_grid_output`
+        using whatever `expected_vars`/`value_range` the source declared on
+        `target.meta` when it planned this target -- sources don't need to
+        override this, just populate `meta` in their `_plan_grid`."""
+        from src.data.sources.verify import verify_grid_output
+
+        return verify_grid_output(
+            target.output_path,
+            expected_vars=target.meta.get("expected_vars"),
+            value_range=target.meta.get("value_range"),
+            range_vars=target.meta.get("range_vars"),
+        )
 
     @staticmethod
     def _extract_year(filename: str) -> int | None:

@@ -475,7 +475,16 @@ class ModisSource(DataSource):
                     # Quirk preserved, not invented -- see module docstring:
                     # the old spatial stage never checked override/existence.
                     completion=Completion.NEVER,
-                    meta={"year": year, "years_all": years},
+                    meta={
+                        "year": year,
+                        "years_all": years,
+                        # "lst_night" is always written by _execute_fetch's
+                        # data_vars dict regardless of product; already Kelvin
+                        # (scale/offset applied at FETCH time), so no packed
+                        # decode is needed here.
+                        "expected_vars": ("lst_night",),
+                        "value_range": (150, 350),
+                    },
                 )
             )
         return targets

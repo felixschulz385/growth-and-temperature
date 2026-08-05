@@ -220,6 +220,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             key=lambda p: int(_level_from_path(str(p)).split("_")[1]),
         )
         inputs = tuple(str(p) for p in level_files)
+        gid_cols = tuple(_gid_column_for_level(_level_from_path(str(p))) for p in level_files)
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="gadm",
@@ -233,6 +234,11 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                     v2_family="country_id",
                 ),
                 inputs=inputs, completion=Completion.MARKER,
+                # No value_range: 0 = "no unit at this level", else a sequential
+                # id -- there's no fixed upper bound (depends on how many
+                # polygons the level has), so verification only checks these
+                # variables are present and not all-nodata.
+                meta={"expected_vars": gid_cols},
             )
         ]
 

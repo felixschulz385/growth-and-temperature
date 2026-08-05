@@ -74,11 +74,11 @@ def _print_source_summary(rows: dict) -> None:
     if not rows:
         print("No sources found.")
         return
-    headers = ["source", *(step.value for step in STEP_ORDER), "complete"]
+    headers = ["source", *(step.value for step in STEP_ORDER), "verified"]
     widths = [max(len(headers[0]), *(len(name) for name in rows))]
     for i, step in enumerate(STEP_ORDER, start=1):
         widths.append(max(len(headers[i]), *(len(row[step.value]) for row in rows.values())))
-    widths.append(max(len(headers[-1]), *(len(row["complete"]) for row in rows.values())))
+    widths.append(max(len(headers[-1]), *(len(row["verified"]) for row in rows.values())))
 
     def fmt(cells: list) -> str:
         return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths))
@@ -87,7 +87,7 @@ def _print_source_summary(rows: dict) -> None:
     print(fmt(["-" * w for w in widths]))
     for name in sorted(rows):
         row = rows[name]
-        print(fmt([name, *(row[step.value] for step in STEP_ORDER), row["complete"]]))
+        print(fmt([name, *(row[step.value] for step in STEP_ORDER), row["verified"]]))
 
 
 def handle_summary(args: argparse.Namespace) -> None:
@@ -115,30 +115,39 @@ def handle_summary(args: argparse.Namespace) -> None:
             cfg = get_source_config(config, name)
             source = registry.create(name, ctx, cfg)
         except Exception as exc:
-            rows[name] = {**{step.value: f"error: {exc}" for step in STEP_ORDER}, "complete": "error"}
+            rows[name] = {**{step.value: f"error: {exc}" for step in STEP_ORDER}, "verified": "error"}
             continue
 
         had_error = False
-        step_complete: list = []  # bools for steps where completeness is meaningful (excludes FETCH)
+        grid_targets: list = []
         for step in STEP_ORDER:
             if step not in spec.steps:
                 continue
             try:
-                summary, complete = _summarize_targets(source.plan(step, TargetSelection()))
+                targets = source.plan(step, TargetSelection())
+                summary, _complete = _summarize_targets(targets)
                 row[step.value] = summary
-                if complete is not None:
-                    step_complete.append(complete)
+                if step is PipelineStep.GRID:
+                    grid_targets = targets
             except Exception as exc:
                 row[step.value] = f"error: {exc}"
                 had_error = True
-        source.close()
 
         if had_error:
-            row["complete"] = "error"
-        elif not step_complete:
-            row["complete"] = "-"
+            row["verified"] = "error"
+        elif PipelineStep.GRID not in spec.steps:
+            row["verified"] = "-"
+        elif not grid_targets:
+            row["verified"] = "-"
         else:
-            row["complete"] = "yes" if all(step_complete) else "no"
+            complete_targets = [t for t in grid_targets if is_complete(t)]
+            if not complete_targets:
+                row["verified"] = "pending"
+            else:
+                results = [source.verify_grid(t) for t in complete_targets]
+                n_ok = sum(1 for r in results if r.ok)
+                row["verified"] = "yes" if n_ok == len(results) else f"FAILED ({n_ok}/{len(results)})"
+        source.close()
         rows[name] = row
 
     _print_source_summary(rows)

@@ -162,7 +162,11 @@ class BermanMiningSource(DataSource):
                         v2_family="berman_mining",
                     ),
                     completion=Completion.PATH_EXISTS,
-                    meta={"year_range": self.cfg.year_range},
+                    meta={
+                        "year_range": self.cfg.year_range,
+                        "expected_vars": ("nb_mines_a", "nb_diamond"),
+                        "value_range": (0, 50),
+                    },
                 )
             ]
         raise AssertionError(f"unreachable: {step}")

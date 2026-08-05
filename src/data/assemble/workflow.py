@@ -257,7 +257,7 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     if errors:
         for error in errors:
             logger.error(f"Configuration error: {error}")
-        return
+        raise ValueError(f"Assembly configuration invalid: {len(errors)} error(s) -- see log above.")
     
     output_path = assembly_config['output_path']
     processing_config = assembly_config.get('processing', {})

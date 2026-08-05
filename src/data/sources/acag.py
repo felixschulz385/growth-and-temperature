@@ -386,7 +386,11 @@ class AcagSource(DataSource):
                 ),
                 inputs=tuple(f["zarr_path"] for f in annual_files),
                 completion=Completion.MARKER,
-                meta={"years_available": [f["year"] for f in annual_files]},
+                meta={
+                    "years_available": [f["year"] for f in annual_files],
+                    "expected_vars": ("pm25",),
+                    "value_range": (0, 500),
+                },
             )
         ]
 

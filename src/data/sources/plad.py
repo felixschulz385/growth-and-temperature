@@ -187,7 +187,11 @@ class PlaDSource(DataSource):
                 ),
                 inputs=(mapping_file,),
                 completion=Completion.PATH_EXISTS,
-                meta={"admin_level": self.admin_level, "year_range": self.cfg.year_range},
+                meta={
+                    "admin_level": self.admin_level,
+                    "year_range": self.cfg.year_range,
+                    "expected_vars": (self._gid_column, "year", "reg_fav"),
+                },
             )
         ]
 

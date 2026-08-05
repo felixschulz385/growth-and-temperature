@@ -1,6 +1,8 @@
-"""``pipeline summary``'s "complete" column -- whether every implemented
-non-FETCH step is fully done (FETCH's sync-missing pseudo-target has no
-complete/incomplete concept, so it's excluded from the overall verdict)."""
+"""``pipeline summary``'s "verified" column -- GRID-output verification
+status (src.data.sources.verify), replacing the old completion-only
+"complete" column. "-" when the source has no GRID step or GRID has no
+targets; "pending" when GRID has targets but none are complete yet; "yes"/
+"FAILED (n/m)" once at least one GRID target is complete and gets verified."""
 
 import argparse
 import os
@@ -66,17 +68,17 @@ def test_summarize_targets_fetch_pseudo_target_has_no_complete_concept(tmp_path)
 # --- _print_source_summary --------------------------------------------
 
 
-def test_print_source_summary_includes_complete_column(capsys):
+def test_print_source_summary_includes_verified_column(capsys):
     rows = {
-        "acag": {"fetch": "3 file(s) fetched", "prepare": "1/1 (100%)", "grid": "1/1 (100%)", "complete": "yes"},
-        "modis": {"fetch": "no local data", "prepare": "-", "grid": "0/2 (0%)", "complete": "no"},
+        "acag": {"fetch": "3 file(s) fetched", "prepare": "1/1 (100%)", "grid": "1/1 (100%)", "verified": "yes"},
+        "modis": {"fetch": "no local data", "prepare": "-", "grid": "0/2 (0%)", "verified": "pending"},
     }
     handlers._print_source_summary(rows)
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines[0].split() == ["source", "fetch", "prepare", "grid", "complete"]
+    assert lines[0].split() == ["source", "fetch", "prepare", "grid", "verified"]
     assert "yes" in lines[1] or "yes" in lines[2]
-    assert "no" in out
+    assert "pending" in out
 
 
 def test_print_source_summary_empty(capsys):
@@ -94,21 +96,23 @@ def _fake_config(tmp_path):
     }
 
 
-def test_handle_summary_reports_complete_yes_when_nothing_is_pending(tmp_path, monkeypatch, capsys):
+def test_handle_summary_reports_verified_dash_when_grid_has_no_targets(tmp_path, monkeypatch, capsys):
     # No raw fetch file -> PREPARE plans no targets; no prepared levels ->
-    # GRID plans no targets either. Nothing pending is vacuously "complete".
+    # GRID plans no targets either. "verified" is only meaningful once GRID
+    # has at least one target.
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
     handlers.handle_summary(args)
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if line.startswith("gadm"))
-    assert row.split()[-1] == "yes"
+    assert row.split()[-1] == "-"
 
 
-def test_handle_summary_reports_complete_no_when_prepare_is_pending(tmp_path, monkeypatch, capsys):
-    # A raw fetch file exists -> PREPARE plans a real target, but its
-    # output directory doesn't exist yet -> that step isn't complete.
+def test_handle_summary_reports_verified_dash_when_prepare_is_pending(tmp_path, monkeypatch, capsys):
+    # A raw fetch file exists -> PREPARE plans a real target, but its output
+    # doesn't exist yet -> GRID (which needs PREPARE's ADM_0 file) still
+    # plans no targets either, so "verified" stays "-".
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
@@ -119,7 +123,63 @@ def test_handle_summary_reports_complete_no_when_prepare_is_pending(tmp_path, mo
     handlers.handle_summary(args)
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if line.startswith("gadm"))
-    assert row.split()[-1] == "no"
+    assert row.split()[-1] == "-"
+
+
+def _complete_gadm_grid_target(tmp_path, monkeypatch):
+    """Plans a real GRID target for gadm (needs PREPARE's ADM_0 vector file
+    to exist) and marks its output complete, without writing an actual zarr
+    store -- `source.verify_grid()` is monkeypatched separately per-test, so
+    nothing ever tries to open the (nonexistent) store's contents."""
+    from src.data.sources.steps import mark_complete
+
+    monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
+    raw_dir = tmp_path / "data_root" / "misc" / "raw" / "gadm"
+    os.makedirs(raw_dir, exist_ok=True)
+    open(raw_dir / "gadm_410-levels.zip", "w").close()
+
+    from src.data.pipeline.config import SourceConfig
+    from src.data.pipeline.context import PipelineContext
+    from src.data.sources.misc.gadm import GadmSource
+    from src.data.sources.steps import PipelineStep, TargetSelection
+
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    gadm = GadmSource(ctx, SourceConfig.from_dict("gadm", {}))
+    vector_dir = gadm.output_root(PipelineStep.PREPARE)
+    os.makedirs(vector_dir, exist_ok=True)
+    open(os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg"), "w").close()
+
+    target = gadm.plan(PipelineStep.GRID, TargetSelection())[0]
+    os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
+    mark_complete(target.output_path)
+
+
+def test_handle_summary_reports_verified_yes_when_grid_verification_passes(tmp_path, monkeypatch, capsys):
+    from src.data.sources.base import DataSource
+    from src.data.sources.verify import VerificationResult
+
+    _complete_gadm_grid_target(tmp_path, monkeypatch)
+    monkeypatch.setattr(DataSource, "verify_grid", lambda self, target: VerificationResult(True, "ok"))
+
+    args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
+    handlers.handle_summary(args)
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if line.startswith("gadm"))
+    assert row.split()[-1] == "yes"
+
+
+def test_handle_summary_reports_verified_failed_when_grid_verification_fails(tmp_path, monkeypatch, capsys):
+    from src.data.sources.base import DataSource
+    from src.data.sources.verify import VerificationResult
+
+    _complete_gadm_grid_target(tmp_path, monkeypatch)
+    monkeypatch.setattr(DataSource, "verify_grid", lambda self, target: VerificationResult(False, "boom"))
+
+    args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
+    handlers.handle_summary(args)
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if line.startswith("gadm"))
+    assert "FAILED (0/1)" in row
 
 
 def test_handle_summary_unknown_source_raises(tmp_path, monkeypatch):

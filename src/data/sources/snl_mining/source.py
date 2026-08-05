@@ -419,7 +419,11 @@ class SnlMiningSource(DataSource):
                     v2_family="snl_mining",
                 ),
                 inputs=(self.prepared_db_path,), completion=Completion.PATH_EXISTS,
-                meta={"years": years},
+                meta={
+                    "years": years,
+                    "expected_vars": tuple(self.output_variables),
+                    "value_range": (0, 200),
+                },
             )
         ]
 

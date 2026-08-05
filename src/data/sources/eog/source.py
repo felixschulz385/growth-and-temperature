@@ -482,7 +482,13 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 ),
                 inputs=tuple(f["zarr_path"] for f in annual_files),
                 completion=Completion.MARKER,
-                meta={"years_available": [f["year"] for f in annual_files]},
+                meta={
+                    "years_available": [f["year"] for f in annual_files],
+                    "expected_vars": (self.source_type,),
+                    # DMSP is a classic 6-bit DN (0-63); VIIRS/DVNL radiance is
+                    # continuous and can spike much higher over cities/flares.
+                    "value_range": (0, 63) if self.source_type == "dmsp" else (0, 1000),
+                },
             )
         ]
 

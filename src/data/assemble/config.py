@@ -19,6 +19,7 @@ from src.data.assemble.constants import (
     DEFAULT_WORKER_FRACTION,
 )
 from src.data.assemble.grid_shake import normalize_grid_shake_offsets
+from src.data.sources.verify import verify_grid_output
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +203,11 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
             if 'path' not in config:
                 errors.append(f"Dataset '{name}' missing required 'path' field")
             elif not os.path.exists(config['path']):
-                logger.warning(f"Dataset path does not exist: {config['path']}")
+                errors.append(f"Dataset '{name}' path does not exist: {config['path']}")
+            else:
+                result = verify_grid_output(config['path'], expected_vars=config.get('columns'))
+                if not result.ok:
+                    errors.append(f"Dataset '{name}' failed output verification: {result.detail}")
 
             # join_on datasets are small GID-keyed tables merged directly onto
             # assembled rows (not reprojected pixel-grid data) -- see

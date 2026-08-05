@@ -76,6 +76,16 @@ class GlassSource(_CrawlerMixin, DataSource):
     AVHRR_PATH_PREFIX = "glass/LST/AVHRR/0.05D/"
     VARIABLE_NAME = "LST"
 
+    # GRID-output verification: the LST summary stats (not the "gt30C"/"lt0C"/
+    # "valid_count" day-count vars _calculate_statistics also writes), scaled
+    # (scale_factor=0.01) Kelvin, raw values masked to [20000, 35000] before
+    # storage per _calculate_statistics -- i.e. ~200-350K physically. "std" is
+    # excluded from the range check (via range_vars below): it's a spread,
+    # not an absolute temperature, so it isn't on the same Kelvin scale.
+    _STAT_VARS = ("mean", "median", "std", "max", "min", "rollmax3", "rollmin3")
+    _RANGE_VARS = ("mean", "median", "max", "min", "rollmax3", "rollmin3")
+    _LST_VALUE_RANGE = (150, 350)
+
     DATA_SOURCE_NAME = "glass"
     has_entrypoints = True
 
@@ -575,6 +585,9 @@ class GlassSource(_CrawlerMixin, DataSource):
                         "years_available": [f["year"] for f in annual_files],
                         "missing_years": missing,
                         "grid_cells": sorted({f["grid_cell"] for f in annual_files}),
+                        "expected_vars": self._STAT_VARS,
+                        "value_range": self._LST_VALUE_RANGE,
+                        "range_vars": self._RANGE_VARS,
                     },
                 )
             ]
@@ -593,7 +606,13 @@ class GlassSource(_CrawlerMixin, DataSource):
                 ),
                 inputs=tuple(f["zarr_path"] for f in annual_files),
                 completion=Completion.MARKER,
-                meta={"years_available": [f["year"] for f in annual_files], "missing_years": missing},
+                meta={
+                    "years_available": [f["year"] for f in annual_files],
+                    "missing_years": missing,
+                    "expected_vars": self._STAT_VARS,
+                    "value_range": self._LST_VALUE_RANGE,
+                    "range_vars": self._RANGE_VARS,
+                },
             )
         ]
 

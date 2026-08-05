@@ -208,6 +208,9 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
                     layout=self.ctx.layout,
                 ),
                 inputs=(classifications_parquet, gadm_zarr), completion=Completion.PATH_EXISTS,
+                # value_cols vary by which of hdi/worldbank were available at
+                # PREPARE time, so only the always-present join key is checked.
+                meta={"expected_vars": ("GID_0",)},
             )
         ]
 

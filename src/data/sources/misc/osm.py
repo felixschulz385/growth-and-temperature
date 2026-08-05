@@ -163,6 +163,7 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
                     v2_family="land_mask",
                 ),
                 inputs=(vector_path,), completion=Completion.MARKER,
+                meta={"expected_vars": ("land_mask",), "value_range": (0, 1)},
             )
         ]
 

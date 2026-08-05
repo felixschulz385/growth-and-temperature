@@ -219,7 +219,10 @@ sources:
   snl_mining:
     type: "snl_mining"
     data_path: "snl_mining"  # fixed: was "snf_mining", inconsistent with the debug config (docs/design/09-integrated-pipeline.md §5)
-    duckdb_path: "snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb"
+    # duckdb_path left unset: like every other source, snl_mining computes it
+    # from output_root(FETCH), which follows ctx.layout (pipeline.layout
+    # above, currently "v2") -- <data_root>/raw/snl_mining/manual_xls/
+    # snl_mining_manual_export.duckdb.
     properties_table: "properties"
     llm_years_table: "property_llm_years"
     work_history_table: "property_work_history_events"
