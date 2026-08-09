@@ -144,6 +144,8 @@ _SOURCE_MODULES: tuple[str, ...] = (
     "src.data.sources.misc.osm",
     "src.data.sources.misc.gadm",
     "src.data.sources.misc.country_classifications",
+    "src.data.sources.ecoregions.source",
+    "src.data.sources.commodity_prices.source",
     "src.data.sources.plad",
     "src.data.sources.berman_mining",
     "src.data.sources.snl_mining.source",

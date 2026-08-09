@@ -65,6 +65,14 @@ from src.data.sources import verify
 logger = logging.getLogger(__name__)
 
 BAND_SPECS = {
+    # view_angle/view_time fill+offset confirmed against Table 11 ("The SDSs
+    # in the MxD21A2 8-day product") in the MxD21 LST&E User Guide (Hulley et
+    # al., JPL, March 2019) -- corrects the same class of bug the MOD11A1
+    # block below independently caught: View_Angle_Night's offset was 0.0
+    # (guide says -65.0) and fill was None/unmasked (guide says 255);
+    # View_Time_Night's fill was likewise None (guide says 255). LST and
+    # emissivity scale/offset/fill were already correct (matches Table 11
+    # exactly).
     "21A2": {
         "collection": "modis-21A2-061",
         "assets": {
@@ -73,19 +81,31 @@ BAND_SPECS = {
             "emis_29": {"name": "Emis_29", "scale": 0.002, "offset": 0.49, "fill": 0},
             "emis_31": {"name": "Emis_31", "scale": 0.002, "offset": 0.49, "fill": 0},
             "emis_32": {"name": "Emis_32", "scale": 0.002, "offset": 0.49, "fill": 0},
-            "view_angle": {"name": "View_Angle_Night", "scale": 1.0, "offset": 0.0, "fill": None},
-            "view_time": {"name": "View_Time_Night", "scale": 0.1, "offset": 0.0, "fill": None},
+            "view_angle": {"name": "View_Angle_Night", "scale": 1.0, "offset": -65.0, "fill": 255},
+            "view_time": {"name": "View_Time_Night", "scale": 0.1, "offset": 0.0, "fill": 255},
         },
     },
+    # Values below confirmed against Table 9 ("The SDSs in the MOD11A1
+    # product") in the Collection-6 MODIS LST Products Users' Guide (Wan,
+    # ERI/UCSB, June 2019) -- corrects three values a prior UNVERIFIED
+    # assumption got wrong: Emis_31/Emis_32's offset (was 0.0, guide says
+    # 0.49, matching MOD21A2's already-confirmed value below), and
+    # Night_view_angl/Night_view_time's fill (was 0, guide says 255) --
+    # Night_view_angl's offset (was 0.0, guide says -65.0, per that table's
+    # note that a negative view angle means MODIS viewed the grid from the
+    # east). With the old fill=0, a genuine 0 raw value (a valid -65 degree
+    # view angle under the correct offset) was wrongly masked as nodata, and
+    # a genuine fill=255 pixel was wrongly kept and scaled into a bogus
+    # 255-degree "view angle".
     "11A1": {
         "collection": "modis-11A1-061",
         "assets": {
             "lst": {"name": "LST_Night_1km", "scale": 0.02, "offset": 0.0, "fill": 0},
             "qc": {"name": "QC_Night", "scale": None, "offset": None, "fill": None},
-            "emis_31": {"name": "Emis_31", "scale": 0.002, "offset": 0.0, "fill": 0},
-            "emis_32": {"name": "Emis_32", "scale": 0.002, "offset": 0.0, "fill": 0},
-            "view_angle": {"name": "Night_view_angl", "scale": 1.0, "offset": 0.0, "fill": 0},
-            "view_time": {"name": "Night_view_time", "scale": 0.1, "offset": 0.0, "fill": 0},
+            "emis_31": {"name": "Emis_31", "scale": 0.002, "offset": 0.49, "fill": 0},
+            "emis_32": {"name": "Emis_32", "scale": 0.002, "offset": 0.49, "fill": 0},
+            "view_angle": {"name": "Night_view_angl", "scale": 1.0, "offset": -65.0, "fill": 255},
+            "view_time": {"name": "Night_view_time", "scale": 0.1, "offset": 0.0, "fill": 255},
         },
     },
 }
@@ -117,6 +137,12 @@ class ModisSource(DataSource):
         self.tiles = cfg.raw.get("tiles") or modis_util.get_modis_sinusoidal_tiles(
             self.lat_clip_deg, land_tiles=land_tiles_set
         )
+        # Explicit discrete-year override, e.g. modis_robustness_11a1's "3-5
+        # years spanning early/mid/late mission" (docs/design/07-modis-ingest.md
+        # §1) -- `year_range` alone can only express one contiguous span, not
+        # a handful of non-adjacent years, so this is a separate config key
+        # rather than overloading year_range's meaning.
+        self.years = cfg.raw.get("years")
 
         self.qc_max_lst_error_k = float(cfg.raw.get("qc_max_lst_error_k", 2.0))
         self.stac_url = cfg.raw.get("stac_url", DEFAULT_STAC_URL)
@@ -248,7 +274,9 @@ class ModisSource(DataSource):
         stage1_root = self.output_root(PipelineStep.FETCH)
         targets = []
         for tile in self.tiles:
-            years = self.cfg.year_range and range(self.cfg.year_range[0], self.cfg.year_range[1] + 1) or []
+            years = self.years or (
+                self.cfg.year_range and range(self.cfg.year_range[0], self.cfg.year_range[1] + 1)
+            ) or []
             for year in years:
                 if not selection.matches_year(year):
                     continue
@@ -294,6 +322,13 @@ class ModisSource(DataSource):
         search = client.search(collections=[self.collection_id], bbox=bbox, datetime=f"{year}-01-01/{year}-12-31")
         items = list(search.items())
 
+        # `properties.platform` vs the MOD/MYD id prefix -- checked directly
+        # against 600 real STAC items (3 collections x 5 regions x 4 years,
+        # 2026-08-09): zero disagreements (docs/design/06-open-questions.md
+        # #8, now resolved). The two signals appear to always agree in
+        # practice, so which one is "authoritative" is moot; this warning is
+        # kept as a live tripwire in case that ever changes for some item,
+        # not because a disagreement is expected.
         id_prefix = "MYD" if self.platform == "aqua" else "MOD"
         filtered = []
         for item in items:
@@ -310,6 +345,14 @@ class ModisSource(DataSource):
     def _load_tile_year(self, items: list) -> Optional[xr.Dataset]:
         import odc.stac
 
+        # odc.stac.load() (default kwargs, no `dtype=`/`groupby=` scale
+        # processing requested) does NOT auto-apply STAC-declared
+        # `raster:bands` scale/offset -- confirmed empirically against a
+        # real modis-21A2-061 item (2026-08-09, odc-stac 0.5.3): the loaded
+        # array stays `uint16` and its values match a raw rasterio read of
+        # the same asset exactly (docs/design/06-open-questions.md #11, now
+        # resolved). So the manual `raw * scale + offset` below is required,
+        # not a double-application bug.
         assets = self.band_spec["assets"]
         bands = [spec["name"] for spec in assets.values()]
         ds = odc.stac.load(items, bands=bands, chunks={"time": 1, "x": 2400, "y": 2400}, resampling="nearest")
@@ -357,7 +400,7 @@ class ModisSource(DataSource):
                 ledger.set_local_state(PipelineStep.FETCH.value, target.key, "failed")
             return False
 
-        valid_mask = modis_util.decode_qc_valid_mask(ds["qc"], self.qc_max_lst_error_k)
+        valid_mask = modis_util.decode_qc_valid_mask(ds["qc"], self.qc_max_lst_error_k, product=self.product)
         annual_lst, monthly_lst, monthly_count, annual_count = composite_to_annual(ds["lst"], valid_mask)
 
         data_vars = {
@@ -453,7 +496,9 @@ class ModisSource(DataSource):
             layout=self.ctx.layout,
             v2_family=f"modis_lst_{self.product.lower()}",
         )
-        years = self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1)) or []
+        years = self.years or (
+            self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1))
+        ) or []
 
         targets = []
         for year in years:

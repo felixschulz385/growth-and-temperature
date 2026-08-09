@@ -40,8 +40,10 @@ and it dominates the choice.
 **Why 21A2 over 11A1 — the operational argument.** 21A2 is an 8-day composite: roughly 46
 composite-periods/year versus 365 daily scenes, an ≈8× reduction in COG reads. Illustrative arithmetic
 (assumptions stated so it's checkable, tile count `~317` **UNVERIFIED** per
-[`07a-modis-band-reference.md`](07a-modis-band-reference.md), Aqua-era span **illustrative** ~23 years
-2002–2025 pending exact Aqua night-overpass start date, 7 assets/unit: `LST_Night_1KM`, `QC_Night`,
+[`07a-modis-band-reference.md`](07a-modis-band-reference.md), Aqua-era span ~23 years 2002–2025 —
+**RESOLVED 2026-08-09**: the real first-available `MYD21A2` granule is 2002-07-04
+(`06-open-questions.md` #13), so this is now a confirmed lower bound, not an illustrative one —
+7 assets/unit: `LST_Night_1KM`, `QC_Night`,
 `Emis_29/31/32`, `View_Angle_Night`, `View_Time_Night`):
 
 | Product | Units (tile × period) | Assets/unit | Total reads (illustrative) |
@@ -198,25 +200,27 @@ Per-band scale/offset/fill/QC handling is in
 - **Platform filter.** Confirmed via STAC: all three collections mix `aqua` and `terra` in
   `summaries.platform` — there is no separate MYD-only collection (matches the original brief's
   warning). Filter on `properties.platform == "aqua"` **and** cross-check against the `MYD` id prefix
-  on a sample before trusting either signal alone (**UNVERIFIED** which is authoritative — flagged in
-  [`07a-modis-band-reference.md`](07a-modis-band-reference.md)). This is the highest-consequence bug
-  available in this component per the original brief; get the cross-check into a unit test against
-  real STAC items before any large run.
-- **QC threshold.** `QC_Night`'s bit layout is **not verified from a primary source this session**
-  for the L3 gridded product (§ full detail and caveat in
-  [`07a-modis-band-reference.md`](07a-modis-band-reference.md)) — implement the threshold as a
-  **configurable** parameter (e.g. `qc_max_lst_error_k: 2` in the source's `data.yaml` block) so a
-  wrong assumed bit layout is a one-line config fix, not a silent wrong mask baked into a completed
-  ingest run. Do not hardcode a threshold until the bit layout is confirmed.
+  (`_search_items`, `src/data/sources/modis/source.py`). **RESOLVED 2026-08-09**: queried 600 real
+  items across all three collections, zero disagreements between the two signals — see
+  [`07a-modis-band-reference.md`](07a-modis-band-reference.md) / `06-open-questions.md` #8 for the
+  sample breakdown.
+- **QC threshold.** `QC_Night`'s bit layout is **confirmed for both MOD11A1** (Table 13 of the
+  Collection-6 MODIS LST Products Users' Guide, Wan 2019) **and MOD21A2** (Table 12 of the MxD21
+  LST&E User Guide, Hulley et al. 2019 — **RESOLVED 2026-08-09**, and non-trivially so: MOD21's bits
+  7&6 sit at the same position as MOD11's but mean the opposite thing, an inversion that would have
+  silently kept the worst-quality pixels and discarded the best had it gone unfixed — full detail in
+  [`07a-modis-band-reference.md`](07a-modis-band-reference.md)). The threshold stays a **configurable**
+  parameter (`qc_max_lst_error_k: 2` in the source's `data.yaml` block) regardless, since the threshold
+  itself is a policy choice, not a layout fact.
 - **Fill values.** LST fill is 0 (confirmed, not Kelvin-zero — must be masked before any arithmetic).
   Emissivity fill is 0 (confirmed for both families). See
-  [`07a-modis-band-reference.md`](07a-modis-band-reference.md) for the full per-band table, including
-  the flagged-unverified MOD11 emissivity offset.
-- **`odc.stac.load` scale/offset application.** **UNVERIFIED this session** whether `odc.stac.load`
-  applies STAC `raster:bands` scale/offset automatically or whether the pipeline must apply
-  `raw × scale + offset` manually — confirm against the installed `odc-stac` version's behaviour with a
-  real read before writing the ingest loop; get this wrong and every band is silently off by its scale
-  factor. Logged in [`06-open-questions.md`](06-open-questions.md).
+  [`07a-modis-band-reference.md`](07a-modis-band-reference.md) for the full per-band table — the MOD11
+  emissivity offset is now confirmed (`0.49`, matching MOD21A2) rather than flagged-unverified.
+- **`odc.stac.load` scale/offset application.** **RESOLVED 2026-08-09**: loaded a real MODIS item with
+  `odc-stac` 0.5.3 and compared against a raw `rasterio` read of the same asset — values matched
+  exactly, unscaled. `odc.stac.load()` does **not** auto-apply STAC `raster:bands` scale/offset; the
+  pipeline's manual `raw × scale + offset` (`_load_tile_year`,
+  `src/data/sources/modis/source.py`) is required. Logged in [`06-open-questions.md`](06-open-questions.md).
 - **Resampling, per variable, on stage "spatial"'s reprojection onto EPSG:6933:**
 
   | Variable | Resampling | Why |

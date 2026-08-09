@@ -64,13 +64,10 @@ def get_modis_sinusoidal_tiles(
     discarding high-latitude tiles.
 
     `land_tiles`, if given, additionally restricts to a caller-supplied
-    allowlist of land-covering tile ids. This module does not itself
-    determine land/ocean membership -- LP DAAC's officially published
-    land-tile list (or a coastline mask) is the correct source for that and
-    is not wired up in this repo; the ~317-land-tile figure in
-    docs/design/07a-modis-band-reference.md is explicitly flagged
-    UNVERIFIED for exactly this reason. Without `land_tiles`, this returns
-    every tile (ocean-only included) within the latitude clip.
+    allowlist of land-covering tile ids -- see `compute_land_tiles()` below
+    for how to derive that allowlist from a land-polygon layer (e.g. the
+    `osm` source's `land_polygons_simplified.gpkg`). Without `land_tiles`,
+    this returns every tile (ocean-only included) within the latitude clip.
     """
     tiles = []
     for v in range(N_V):
@@ -85,43 +82,102 @@ def get_modis_sinusoidal_tiles(
     return tiles
 
 
-# Literature-cited (not primary-source-verified) 8-bit QC layout for the
-# MOD11/MYD11-family L3 gridded QC_Day/QC_Night field -- see
-# docs/design/07a-modis-band-reference.md, "QC bit layout -- the single most
-# important unresolved item in this document". `qc_max_lst_error_k` is
-# deliberately a caller-supplied threshold (docs/design/07-modis-ingest.md
-# §6: "implement the threshold as a configurable parameter ... do not
-# hardcode a threshold until the bit layout is confirmed") so a wrong
-# assumed layout is a one-line config fix, not a silently wrong mask baked
-# into a completed ingest run.
-_LST_ERROR_K_BY_BITS = {0: 1.0, 1: 2.0, 2: 3.0, 3: float("inf")}
+def compute_land_tiles(land_polygons_path: str, lat_clip_deg: float = 60.0) -> Set[str]:
+    """Sinusoidal tile ids (within |lat| <= lat_clip_deg) overlapping land.
+
+    Derives the `land_tiles` allowlist `get_modis_sinusoidal_tiles()` accepts
+    from a real land-polygon layer -- e.g. the `osm` source's PREPARE output,
+    `misc/prepared/osm/land_polygons_simplified.gpkg` -- rather than trusting
+    the ~317-land-tile figure docs/design/07a-modis-band-reference.md flags
+    UNVERIFIED. Answers exactly the question that figure was never checked
+    against: which of the 36x18 sinusoidal tiles actually intersect land.
+
+    Mirrors gadm.py's per-tile overlap pre-filter (reproject the vector layer
+    to the tile grid's CRS once, up front, then a plain shapely
+    `intersects()` per tile) -- see gadm.py's GADM GRID step for the
+    CRS-mismatch pitfall (comparing un-reprojected WGS84 degrees against
+    projected-meter tile boxes silently finds ~no overlap) that reprojecting
+    first, rather than per tile, avoids. Unlike that GRID step, this isn't a
+    zarr rasterization: it is a one-time, 36x18-tile bounding-box overlap
+    check against a vector layer, producing a plain tile-id list for a STAC
+    query filter, so there's no zarr chunk size to align processing tiles to.
+    """
+    import geopandas as gpd
+    import shapely.geometry
+
+    gdf = gpd.read_file(land_polygons_path, engine="pyogrio")
+    gdf = gdf.to_crs(SINUSOIDAL_PROJ4)
+
+    land_tiles: Set[str] = set()
+    for v in range(N_V):
+        lat0, lat1 = tile_lat_range_deg(v)
+        if lat1 < -lat_clip_deg or lat0 > lat_clip_deg:
+            continue
+        for h in range(N_H):
+            tile_box = shapely.geometry.box(*tile_bounds_m(h, v))
+            if gdf.geometry.intersects(tile_box).any():
+                land_tiles.add(f"h{h:02d}v{v:02d}")
+    return land_tiles
+
+
+# 8-bit QC layout for the MOD11/MYD11-family and MOD21/MYD21-family L3
+# gridded QC_Day/QC_Night fields. Bits 1&0 (mandatory QA, 00=good) and the
+# overall 8-bit shape are the same across both families -- confirmed from
+# two separate primary sources:
+#   - MOD11A1: "Collection-6 MODIS Land Surface Temperature Products Users'
+#     Guide" (Wan, ERI/UCSB, June 2019), Table 13.
+#   - MOD21A2: "MODIS Land Surface Temperature and Emissivity Product (MxD21)
+#     User Guide, Collection-6" (Hulley et al., JPL, March 2019), Table 12
+#     ("Bit flags defined in the QC_Day and QC_Night SDS in the MxD21A2
+#     8-day product").
+#
+# Bits 7&6 sit at the same position in both ("LST error"/"LST accuracy") but
+# **mean the opposite thing** -- not assumed to match, and they don't:
+#   MOD11A1  (increasing bit value = worse):  00 <=1K, 01 <=2K, 10 <=3K, 11 >3K
+#   MOD21A2  (increasing bit value = better): 00 >2K,  01 1.5-2K, 10 1-1.5K, 11 <1K
+# Applying MOD11's mapping to MOD21A2 data (as this module did before this
+# was checked against Table 12) would silently invert the quality filter --
+# keeping the worst-quality pixels and discarding the best. Each product's
+# category is mapped here to that category's upper-bound error in K (the
+# same "assign the category's worst-case value" convention MOD11's mapping
+# already used), so `max_lst_error_k` keeps the same meaning for both.
+_LST_ERROR_K_BY_BITS = {
+    "11A1": {0: 1.0, 1: 2.0, 2: 3.0, 3: float("inf")},
+    "21A2": {0: float("inf"), 1: 2.0, 2: 1.5, 3: 1.0},
+}
+_DEFAULT_LST_ERROR_K_BY_BITS = _LST_ERROR_K_BY_BITS["11A1"]
 
 _QC_LAYOUT_WARNED = False
 
+_QC_LAYOUT_CONFIRMED_PRODUCTS = frozenset(_LST_ERROR_K_BY_BITS)
 
-def decode_qc_valid_mask(qc: xr.DataArray, max_lst_error_k: float = 2.0) -> xr.DataArray:
+
+def decode_qc_valid_mask(qc: xr.DataArray, max_lst_error_k: float = 2.0, product: Optional[str] = None) -> xr.DataArray:
     """Boolean valid-observation mask from a QC_Day/QC_Night band.
 
-    UNVERIFIED bit layout -- confirm against the MOD11 V6.1 user guide's PDF
-    QC table (not machine-extractable this session) or a peer-reviewed
-    methods paper before a production run. Requires mandatory QA bits == 00
-    ("good") and the LST error category <= `max_lst_error_k`.
+    Bit layout confirmed for `product="11A1"` and `product="21A2"` -- see the
+    module comment above for the two primary sources and the bit-value
+    inversion between them. Requires mandatory QA bits == 00 ("good") and the
+    LST error category <= `max_lst_error_k`.
     """
     global _QC_LAYOUT_WARNED
-    if not _QC_LAYOUT_WARNED:
+    if product not in _QC_LAYOUT_CONFIRMED_PRODUCTS and not _QC_LAYOUT_WARNED:
         logger.warning(
             "decode_qc_valid_mask: QC bit layout is UNVERIFIED from a primary source "
-            "for the L3 gridded product -- see docs/design/07a-modis-band-reference.md. "
-            "Confirm before a production run."
+            "for product=%s -- confirmed only for %s (see docs/design/07a-modis-"
+            "band-reference.md). Confirm before a production run.",
+            product, sorted(_QC_LAYOUT_CONFIRMED_PRODUCTS),
         )
         _QC_LAYOUT_WARNED = True
+
+    error_k_by_bits = _LST_ERROR_K_BY_BITS.get(product, _DEFAULT_LST_ERROR_K_BY_BITS)
 
     qc_uint = qc.astype("uint8")
     mandatory_qa = qc_uint & 0b00000011
     error_bits = (qc_uint >> 6) & 0b11
 
     error_k = xr.zeros_like(qc_uint, dtype="float32")
-    for bits, k in _LST_ERROR_K_BY_BITS.items():
+    for bits, k in error_k_by_bits.items():
         error_k = xr.where(error_bits == bits, k, error_k)
 
     return (mandatory_qa == 0) & (error_k <= max_lst_error_k)

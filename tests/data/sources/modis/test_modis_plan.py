@@ -49,6 +49,15 @@ def test_fetch_targets_one_per_tile_year(tmp_path):
     assert sample.output_path == os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h18v04.tif")
 
 
+def test_fetch_targets_use_explicit_years_override_not_year_range(tmp_path):
+    # modis_robustness_11a1's "3-5 years spanning early/mid/late mission"
+    # (data.yaml) needs discrete, non-contiguous years -- year_range alone
+    # can only express one contiguous span.
+    source, _ = _make_source(tmp_path, tiles=("h18v04",), years=[2004, 2014, 2023])
+    targets = source.plan(PipelineStep.FETCH, TargetSelection())
+    assert {t.key for t in targets} == {"2004/h18v04", "2014/h18v04", "2023/h18v04"}
+
+
 def test_grid_targets_one_per_year_with_stage1_output(tmp_path):
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
     stage1 = source.output_root(PipelineStep.FETCH)
@@ -93,6 +102,18 @@ def test_grid_targets_always_never_complete_the_quirk(tmp_path):
     assert targets[0].completion is Completion.NEVER
     os.makedirs(targets[0].output_path, exist_ok=True)  # pretend the shared zarr already exists
     assert is_complete(targets[0]) is False
+
+
+def test_grid_targets_use_explicit_years_override_not_year_range(tmp_path):
+    source, _ = _make_source(tmp_path, tiles=("h18v04",), years=[2004, 2014])
+    stage1 = source.output_root(PipelineStep.FETCH)
+    for year in (2004, 2014):
+        year_dir = os.path.join(stage1, str(year))
+        os.makedirs(year_dir, exist_ok=True)
+        open(os.path.join(year_dir, "h18v04.tif"), "w").close()
+
+    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    assert {t.key for t in targets} == {"2004", "2014"}
 
 
 def test_transfer_units_one_per_tile_year_file_for_fetch(tmp_path):

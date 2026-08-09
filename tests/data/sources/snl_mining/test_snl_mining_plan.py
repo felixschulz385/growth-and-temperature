@@ -30,10 +30,14 @@ def test_requires_gadm_prepare_and_grid():
     # PREPARE for GADM's polygon geometries (admin-count spatial join), GRID
     # for GID_N_code_mapping.json (translating admin-count tables into
     # gadm's integer ids for the join_on merge -- see module docstring).
+    # PREPARE for commodity_prices' normalized (commodity, year) price table,
+    # joined against the user-owned commodity_shares table to build
+    # mine_priceshock_*.
     from src.data.sources import registry
 
     assert registry.resolve("snl_mining").requires == (
         ("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID),
+        ("commodity_prices", PipelineStep.PREPARE),
     )
 
 
@@ -43,7 +47,10 @@ def test_default_output_variables_is_radius_only(tmp_path):
     # _export_admin_count_tables), so they must not appear in the zarr's
     # output_variables.
     source, _ = _make_source(tmp_path)
-    assert source.output_variables == ["mine_count_10km", "mine_count_20km", "mine_count_50km"]
+    assert source.output_variables == [
+        "mine_count_10km", "mine_count_20km", "mine_count_50km",
+        "mine_priceshock_10km", "mine_priceshock_20km", "mine_priceshock_50km",
+    ]
 
 
 def test_default_duckdb_and_prepared_db_paths(tmp_path):
@@ -83,13 +90,35 @@ def test_prepared_db_path_config_override_still_wins(tmp_path):
 def test_default_radius_and_admin_variables(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.buffer_tables == {
-        "mine_count_10km": ("mine_buffers_10km", 10000),
-        "mine_count_20km": ("mine_buffers_20km", 20000),
-        "mine_count_50km": ("mine_buffers_50km", 50000),
+        "mine_count_10km": ("mine_buffers_10km", 10000, "value", "uint16"),
+        "mine_count_20km": ("mine_buffers_20km", 20000, "value", "uint16"),
+        "mine_count_50km": ("mine_buffers_50km", 50000, "value", "uint16"),
+        "mine_priceshock_10km": ("mine_buffers_10km", 10000, "value_priceshock", "float32"),
+        "mine_priceshock_20km": ("mine_buffers_20km", 20000, "value_priceshock", "float32"),
+        "mine_priceshock_50km": ("mine_buffers_50km", 50000, "value_priceshock", "float32"),
     }
     assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
         ctx.data_root, "misc", "processed", "stage_1", "gadm", "gadm_levelADM_1_simplified.gpkg"
     )
+
+
+def test_commodity_prices_path_resolution_legacy(tmp_path):
+    source, ctx = _make_source(tmp_path)
+    assert source.commodity_prices_path == os.path.join(
+        ctx.data_root, "commodity_prices", "processed", "stage_1", "commodity_prices.parquet"
+    )
+
+
+def test_commodity_prices_path_resolution_v2(tmp_path):
+    source, ctx = _make_source(tmp_path, layout="v2")
+    assert source.commodity_prices_path == os.path.join(
+        ctx.data_root, "prepared", "commodity_prices", "commodity_prices.parquet"
+    )
+
+
+def test_commodity_prices_path_config_override_wins(tmp_path):
+    source, ctx = _make_source(tmp_path, commodity_prices_path="custom/prices.parquet")
+    assert source.commodity_prices_path == os.path.join(ctx.data_root, "custom", "prices.parquet")
 
 
 def test_default_admin_variables_geometry_path_honors_layout_v2(tmp_path):
@@ -110,15 +139,27 @@ def test_prepare_plan_empty_when_stage0_duckdb_missing(tmp_path):
     assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
 
 
+def test_prepare_plan_empty_when_commodity_prices_missing(tmp_path):
+    # duckdb_path present but commodity_prices' PREPARE output isn't --
+    # REQUIRES on commodity_prices' PREPARE (see module docstring), plan()
+    # stays defensively self-consistent with that gate.
+    source, _ = _make_source(tmp_path)
+    os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
+    open(source.duckdb_path, "w").close()
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
+
+
 def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
     source, _ = _make_source(tmp_path)
     os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
     open(source.duckdb_path, "w").close()
+    os.makedirs(os.path.dirname(source.commodity_prices_path), exist_ok=True)
+    open(source.commodity_prices_path, "w").close()
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == source.prepared_db_path
-    assert targets[0].inputs == (source.duckdb_path,)
+    assert targets[0].inputs == (source.duckdb_path, source.commodity_prices_path)
 
 
 def test_grid_plan_empty_when_prepared_db_missing(tmp_path):
@@ -307,3 +348,129 @@ def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkey
 
     assert source._get_or_create_geobox() == "fake-canonical-geobox"
     assert calls == [ctx]
+
+
+# --- price-shock: _create_mine_priceshock_table / _create_buffer_table ------
+
+
+def _write_prices_parquet(tmp_path, rows):
+    """rows: list of (commodity, year, ln_price_real) tuples."""
+    import pandas as pd
+
+    path = str(tmp_path / "commodity_prices.parquet")
+    pd.DataFrame(rows, columns=["commodity", "year", "ln_price_real"]).to_parquet(path, index=False)
+    return path
+
+
+def _attach_raw_db_with_shares(tmp_path, share_rows, *, filename="raw_stage0_shares.duckdb"):
+    """A `raw_db`-attached in-memory connection with a `commodity_shares`
+    table, matching the shape `_create_mine_priceshock_table` expects (it
+    queries `raw_db.main.{commodity_shares_table}`) -- mirrors
+    `_attach_properties_db`'s pattern for `properties`."""
+    import duckdb
+
+    raw_path = str(tmp_path / filename)
+    raw_con = duckdb.connect(raw_path)
+    raw_con.execute("CREATE TABLE commodity_shares (property_id VARCHAR, commodity VARCHAR, share DOUBLE)")
+    if share_rows:
+        raw_con.executemany("INSERT INTO commodity_shares VALUES (?, ?, ?)", share_rows)
+    raw_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    return con
+
+
+def test_create_mine_priceshock_table_fully_priced_mine(tmp_path):
+    source, _ = _make_source(tmp_path)
+    source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
+    con = _attach_raw_db_with_shares(tmp_path, [("m1", "gold", 1.0)])
+    con.execute("CREATE TABLE active_mines AS SELECT 'm1' AS property_id, 2020 AS year")
+
+    source._create_mine_priceshock_table(con)
+
+    row = con.execute("SELECT property_id, year, value FROM mine_priceshock").fetchone()
+    assert row == ("m1", 2020, 7.5)
+
+
+def test_create_mine_priceshock_table_partially_unpriced_ignores_unmatched_share(tmp_path):
+    # m2 is 50% gold (priced) + 50% uranium (no WB series) -- the unmatched
+    # half must be ignored by SUM(), not silently treated as a zero-price
+    # contribution.
+    source, _ = _make_source(tmp_path)
+    source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
+    con = _attach_raw_db_with_shares(tmp_path, [("m2", "gold", 0.5), ("m2", "uranium", 0.5)])
+    con.execute("CREATE TABLE active_mines AS SELECT 'm2' AS property_id, 2020 AS year")
+
+    source._create_mine_priceshock_table(con)
+
+    row = con.execute("SELECT property_id, year, value FROM mine_priceshock").fetchone()
+    assert row == ("m2", 2020, 0.5 * 7.5)
+
+
+def test_create_mine_priceshock_table_fully_unpriced_mine_is_null_not_zero(tmp_path):
+    # m3 produces only uranium (no WB series) -- value must be SQL NULL, not
+    # 0, since 0 is itself a legitimate price-shock value (see module
+    # docstring / _rasterize_tiles_to_zarr's NaN-fill handling).
+    source, _ = _make_source(tmp_path)
+    source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
+    con = _attach_raw_db_with_shares(tmp_path, [("m3", "uranium", 1.0)])
+    con.execute("CREATE TABLE active_mines AS SELECT 'm3' AS property_id, 2020 AS year")
+
+    source._create_mine_priceshock_table(con)
+
+    row = con.execute("SELECT property_id, year, value FROM mine_priceshock").fetchone()
+    assert row[0:2] == ("m3", 2020)
+    assert row[2] is None
+
+
+def test_create_mine_priceshock_table_missing_shares_table_yields_empty_table(tmp_path, caplog):
+    import logging
+
+    import duckdb
+
+    source, _ = _make_source(tmp_path)
+    source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
+    # raw_db with no commodity_shares table at all -- simulates the user's
+    # ingestion not having run yet.
+    raw_path = str(tmp_path / "raw_stage0_no_shares.duckdb")
+    duckdb.connect(raw_path).close()
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    con.execute("CREATE TABLE active_mines AS SELECT 'm1' AS property_id, 2020 AS year")
+
+    with caplog.at_level(logging.WARNING):
+        source._create_mine_priceshock_table(con)
+
+    assert con.execute("SELECT count(*) FROM mine_priceshock").fetchone() == (0,)
+    assert any("Commodity shares table" in r.getMessage() for r in caplog.records)
+
+
+def test_create_buffer_table_carries_value_and_value_priceshock(tmp_path):
+    source, _ = _make_source(tmp_path)
+    source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
+    con = _attach_raw_db_with_shares(
+        tmp_path, [("m1", "gold", 1.0), ("m2", "uranium", 1.0)],
+    )
+    con.execute("LOAD spatial;")
+    # Two mines, one priced (m1 -> gold) and one fully unpriced (m2 -> uranium).
+    con.execute(
+        """
+        CREATE TABLE active_mines AS
+        SELECT * FROM (VALUES
+            ('m1', 2020, ST_Point(0, 0)),
+            ('m2', 2020, ST_Point(1, 1))
+        ) AS t(property_id, year, point_metric)
+        """
+    )
+    source._create_mine_priceshock_table(con)
+
+    source._create_buffer_table(con, "mine_buffers_test", 10000, "EPSG:3857")
+
+    rows = {
+        r[0]: (r[1], r[2])
+        for r in con.execute("SELECT property_id, value, value_priceshock FROM mine_buffers_test").fetchall()
+    }
+    assert rows["m1"] == (1, 7.5)
+    assert rows["m2"][0] == 1
+    assert rows["m2"][1] is None

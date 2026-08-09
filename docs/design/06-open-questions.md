@@ -103,56 +103,67 @@ the confirmed 5–20 TB budget. These are not measurements.
 data (one tile, one year) before committing to the full ladder/variable set, and before the expensive
 convolution stage runs at scale.
 
-## 8. MODIS platform filter: `properties.platform` vs. `MOD`/`MYD` id prefix — which is authoritative
+## 8. MODIS platform filter: `properties.platform` vs. `MOD`/`MYD` id prefix — RESOLVED (2026-08-09)
 
-[`07-modis-ingest.md`](07-modis-ingest.md) §6 flags this as the highest-consequence bug available in
-the ingest component (mixing Terra/Aqua silently averages two different overpass times), but this
-session only confirmed via STAC that both collections mix `aqua`/`terra` in `summaries.platform` — it
-did not confirm which of `properties.platform` or the item id's `MOD`/`MYD` prefix is authoritative, or
-whether they ever disagree.
+[`07-modis-ingest.md`](07-modis-ingest.md) §6 flagged this as the highest-consequence bug available in
+the ingest component (mixing Terra/Aqua silently averages two different overpass times), since this
+session only confirmed via STAC that both collections mix `aqua`/`terra` in `summaries.platform`
+without confirming whether the two signals (`properties.platform` and the id's `MOD`/`MYD` prefix) ever
+disagree.
 
-**Resolution:** pull a sample of real STAC items for `modis-21A2-061` and confirm both signals agree
-on a batch before trusting either alone; write this as a unit test against real (or cached) STAC items
-before any large ingest run.
+**Resolved:** queried 600 real STAC items directly against the live Planetary Computer API (3
+collections — `modis-21A2-061`, `modis-11A1-061`, `modis-11A2-061` — x 5 geographically spread regions
+x 4 years spanning the mission, both platforms represented: 512 aqua / 88 terra items sampled). **Zero
+disagreements** between `properties.platform` and the id prefix. Which signal is "authoritative" is
+moot since they appear to always agree in practice; `_search_items`'s existing disagreement warning
+(`src/data/sources/modis/source.py`) is kept as a live tripwire, not because a mismatch is expected.
 
-## 9. QC_Night bit layout for the L3 gridded products (MOD11A1/A2, MOD21A2) — not verified from a primary source
+## 9. QC_Night bit layout for the L3 gridded products (MOD11A1/A2, MOD21A2) — RESOLVED (2026-08-09)
 
-The only primary source successfully fetched this session for QC bit semantics, the MOD11 User Guide
-(`icess.ucsb.edu/modis/LstUsrGuide/usrguide_mod11.html`), covers **only MOD11_L2** swath data, whose
-16-bit QC layout is structurally inconsistent with the `uint8` (8-bit) `QC_Day`/`QC_Night` STAC-declared
-dtype for the L3 gridded 11A1/11A2/21A2 products actually being ingested. The commonly-cited 8-bit
-MOD11A1/A2 layout (mandatory QA / data quality / emissivity error / LST error bit-pairs) was **not**
-independently confirmed this session, and no QC bit description was found for MOD21A2 at all. Direct
-retrieval of the MOD11 V6.1 PDF (the correct primary source) failed to yield extractable bit-table text
-via the tooling available this session. Full detail in
+**Resolved for MOD11A1** first: the user supplied the MOD11 V6.1 PDF (Collection-6 MODIS LST
+Products Users' Guide, Wan, ERI/UCSB, June 2019) directly. Its Table 13 gives the 8-bit
+`QC_Day`/`QC_Night` layout for MOD11A1 — mandatory QA (bits 1&0), data quality (bits 3&2), emissivity
+error (bits 5&4), LST error category (bits 7&6: 00 ≤1K / 01 ≤2K / 10 ≤3K / 11 >3K) — which exactly
+matches what `src/data/sources/modis/tiles.py::decode_qc_valid_mask` already implemented as an
+unverified best guess.
+
+**Resolved for MOD21A2** next: the user supplied the correct primary source, the *MxD21 LST&E User
+Guide* (Hulley et al., JPL, March 2019, not the MOD11 guide — a different document, different
+algorithm). Its Table 12 ("Bit flags defined in the QC_Day and QC_Night SDS in the MxD21A2 8-day
+product") gives the same bit *positions* (1&0 mandatory QA, 7&6 LST accuracy) but **the opposite
+meaning at bits 7&6**: MOD11 has increasing bit value = *worse* accuracy (00 ≤1K ... 11 >3K); MOD21
+has increasing bit value = *better* accuracy (00 >2K poor ... 11 <1K excellent). Applying MOD11's
+mapping to MOD21A2 data — which is what this module did before Table 12 was checked — would have
+silently inverted the quality filter on the primary `21A2` product: keeping the worst-quality pixels
+and discarding the best. `decode_qc_valid_mask` now takes a `product` argument selecting the correct
+per-product bit-value-to-error-K mapping (`_LST_ERROR_K_BY_BITS` in
+`src/data/sources/modis/tiles.py`), confirmed for both `"11A1"` and `"21A2"`. Pinned by
+`tests/data/sources/modis/test_modis_qc.py`. Full detail in
 [`07a-modis-band-reference.md`](07a-modis-band-reference.md).
 
-**Resolution:** extract the QC bit table directly from the MOD11 V6.1 PDF (a proper PDF parser, not a
-web-fetch-and-summarize tool) or a peer-reviewed methods paper that reproduces it, and confirm a
-parallel source for MOD21A2's QC field, before hardcoding any error-threshold logic. Until resolved,
-[`07-modis-ingest.md`](07-modis-ingest.md) §6 requires the QC threshold to be a configurable parameter,
-not a hardcoded constant, specifically to keep a wrong assumption cheap to fix.
+## 10. MOD11A1/11A2 `Emis_31`/`Emis_32` offset — RESOLVED (2026-08-09)
 
-## 10. MOD11A1/11A2 `Emis_31`/`Emis_32` offset — unconfirmed
+The same user-supplied MOD11 V6.1 PDF's Table 9 ("The SDSs in the MOD11A1 product") confirms
+`offset: 0.49` for `Emis_31`/`Emis_32`, matching MOD21A2's already-confirmed value. This caught a real
+bug: `BAND_SPECS["11A1"]` in `src/data/sources/modis/source.py` had hardcoded `offset: 0.0` (an
+unverified guess), silently shifting every MOD11A1 emissivity value by 0.49. Corrected, along with two
+adjacent values the same table exposed as wrong: `Night_view_angl`'s fill (was `0`, guide says `255`)
+and offset (was `0.0`, guide says `-65.0`), and `Night_view_time`'s fill (was `0`, guide says `255`).
+Pinned by `tests/data/sources/modis/test_modis_qc.py`.
 
-STAC reports `scale: 0.002` for MOD11A1/11A2's `Emis_31`/`Emis_32` but no offset field. MOD21A2's
-`Emis_29/31/32` was confirmed (via the NASA Earthdata catalog page) to need `offset: 0.49` in addition
-to its own `scale: 0.002`. Whether MOD11's emissivity bands share that same offset, a different one, or
-none, was not confirmed this session.
+## 11. Whether `odc.stac.load` applies STAC `raster:bands` scale/offset automatically — RESOLVED (2026-08-09)
 
-**Resolution:** decode a real `Emis_31` pixel from a sample MOD11A1 granule and check whether
-`raw × 0.002` alone yields physically plausible emissivity (~0.9–1.0 over vegetated/urban land) or
-whether an offset is required, before either family's emissivity band is used anywhere in the pipeline.
+Stated as unverified in the original ingest brief. Getting this wrong would silently shift every scaled
+band (LST, emissivity, view time) by its scale factor with no visible error.
 
-## 11. Whether `odc.stac.load` applies STAC `raster:bands` scale/offset automatically
-
-Stated as unverified in the original ingest brief and not resolved this session. Getting this wrong
-silently shifts every scaled band (LST, emissivity, view time) by its scale factor with no visible
-error.
-
-**Resolution:** load one real MODIS item with the pinned `odc-stac` version and compare the loaded
-array's values against the STAC-declared `scale`/`offset` applied manually, before writing the ingest
-loop against an assumption either way.
+**Resolved:** loaded a real `modis-21A2-061` item (`MYD21A2.A2015193.h18v05...`) via `odc.stac.load()`
+with `odc-stac` 0.5.3, the same default kwargs `_load_tile_year` uses (no `dtype=` override), and
+compared its `LST_Night_1KM` values against a raw `rasterio.open()` read of the same signed asset URL.
+Both stayed `uint16` and matched exactly (e.g. `14875`, `14864`, `14879`, ...; declared
+`raster:bands` scale on the asset is `0.02`, which would put real values in the ~150–350K range if
+auto-applied — they didn't). **`odc.stac.load()` does NOT auto-apply STAC scale/offset** by default;
+`_load_tile_year`'s manual `raw * scale + offset` (`src/data/sources/modis/source.py`) is required, not
+a double-application bug.
 
 ## 12. Exact MODIS land-tile count and its reduction under the |φ|≤60° clip
 
@@ -165,25 +176,45 @@ intersecting |φ|≤60°, which reduces that count by an unquantified amount.
 implementation time (this is also the natural moment to tighten item 5's country/land-area impact
 estimate, since both need the same GIS pass).
 
-## 13. Exact Aqua-only temporal start date for MYD-prefixed collections
+## 13. Exact Aqua-only temporal start date for MYD-prefixed collections — RESOLVED (2026-08-09)
 
 All three STAC collections report a combined Terra+Aqua temporal extent starting 2000-02-16/18/24;
-none report an Aqua-specific start. [`07-modis-ingest.md`](07-modis-ingest.md) §1 uses an illustrative
-~23-year Aqua era (2002–2025, since Aqua launched 2002-05-04) for its read-volume arithmetic, but this
-was not confirmed against the actual first available MYD11A1/MYD21A2 granule date.
+none report an Aqua-specific start. [`07-modis-ingest.md`](07-modis-ingest.md) §1 used an illustrative
+~23-year Aqua era (2002–2025, since Aqua launched 2002-05-04) for its read-volume arithmetic, not
+confirmed against the actual first available MYD11A1/MYD21A2 granule date.
 
-**Resolution:** query the STAC API for the earliest `MYD`-prefixed item in each collection directly,
-and use that as the real Aqua-era start for tile-year count arithmetic and time budgeting.
+**Resolved:** queried Planetary Computer directly for every `MYD`-prefixed item in the 2002-05-04
+(launch) to 2002-08-01 window (1037/632/1049 items found for 21A2/11A1/11A2 respectively) and took
+the true minimum by the acquisition date encoded in each item id (`A<year><day-of-year>`), not
+relying on server-side sort order. Real earliest Aqua granule per collection:
+- `modis-21A2-061` (the primary `modis` source's product): **2002-07-04**
+- `modis-11A2-061`: **2002-07-04**
+- `modis-11A1-061` (the `modis_robustness_11a1` arm's product): **2002-07-28**
 
-## 14. `glass-modis-preprocess-{annual,spatial}.sh` may already not match the current CLI
+All ~2 months after Aqua's 2002-05-04 launch (commissioning), consistent with the illustrative
+estimate's order of magnitude. `data.yaml`'s `year_range: [2002, 2025]` already safely covers this —
+2002 is simply a partial year, which `_execute_fetch` already handles gracefully (a tile-year with no
+STAC items logs a warning and is skipped, `src/data/sources/modis/source.py`) — so no config change
+was needed, only replacing the illustrative estimate with a confirmed one.
 
-`orchestration/slurm/glass-modis-preprocess-{annual,spatial}.sh` invoke
+## 14. `glass-modis-preprocess-{annual,spatial}.sh` may already not match the current CLI — RESOLVED (2026-08-09)
+
+`orchestration/slurm/glass-modis-preprocess-{annual,spatial}.sh` invoked
 `run.py preprocess --config ... --source glass_modis --stage annual`, without the `run` subcommand that
 `src/cli/preprocess/commands.py`'s `preprocess_cmd` subparser currently requires (only `run` is
-registered, and `sub.required = True`). This looks like the scripts predate the CLI's modularization
-into domain/subcommand pairs and may not currently execute as committed — noticed while reading these
+registered, and `sub.required = True`). This looked like the scripts predated the CLI's modularization
+into domain/subcommand pairs and might not currently execute as committed — noticed while reading these
 scripts as the template for [`07-modis-ingest.md`](07-modis-ingest.md) §7's new scripts, not otherwise
-investigated.
+investigated at the time.
+
+**Resolved:** those two scripts no longer exist in the repo. They were superseded by
+`orchestration/slurm/glass-modis-prepare.sh` and `glass-modis-grid.sh`, generated by
+`orchestration/slurm/generate_slurm_scripts.py` from `jobs.yaml`'s `glass-modis-prepare`/
+`glass-modis-grid` job entries, which correctly invoke the current `pipeline run --source glass_modis
+--step prepare`/`--step grid` (verified this subcommand registers and resolves against the source
+registry). The only remaining `--stage`-flag text in the repo is inside
+`validate-hard-gate-modis.sh`'s comparison-log echo strings (documenting the *old* invocation for a
+before/after diff), not a live script that runs it.
 
 **Resolution:** run `glass-modis-preprocess-annual.sh` (or just the equivalent `run.py` invocation) and
 confirm whether it actually works today; if not, this is a pre-existing bug independent of the MODIS/

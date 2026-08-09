@@ -201,6 +201,32 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: gadm
 
+  # ecoregions REQUIRES gadm's PREPARE+GRID (src/data/sources/ecoregions/source.py)
+  # -- must be scheduled after both gadm-prepare and gadm-grid.
+  - name: ecoregions-prepare
+    log_key: ecoregions
+    source: ecoregions
+    step: prepare
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 4
+    mem: 32G
+    mem_fraction: 0.9
+    temp_dir_prefix: ecoregions
+
+  - name: ecoregions-grid
+    log_key: ecoregions
+    source: ecoregions
+    step: grid
+    partition: scicore
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 64G
+    mem_fraction: 0.9
+    temp_dir_prefix: ecoregions
+
   - name: osm-prepare
     log_key: osm
     source: osm
@@ -248,6 +274,21 @@ jobs:
     mem: 32G
     mem_fraction: 0.9
     temp_dir_prefix: country_classifications
+
+  # commodity_prices declares FETCH + PREPARE only (no GRID -- a tiny
+  # (commodity, year) lookup table). No -fetch job: per this file's own
+  # convention (see header), FETCH is always run manually.
+  - name: commodity_prices-prepare
+    log_key: commodity_prices
+    source: commodity_prices
+    step: prepare
+    partition: scicore
+    time: "00:30:00"
+    qos: 30min
+    cpus: 2
+    mem: 8G
+    mem_fraction: 0.9
+    temp_dir_prefix: commodity_prices
 
   # ntl_harm declares PREPARE (STEPS = FETCH, PREPARE, GRID) but only ever
   # had a GRID job. Resources below are NOT transcribed from a prior

@@ -33,6 +33,26 @@ them directly onto rows via
 radius-buffer counts (`mine_count_10km`/`20km`/`50km`) are genuinely
 per-pixel (a pixel's count of mines within a fixed-radius circle varies
 continuously with location) and stay in the rasterized zarr unchanged.
+
+**`mine_priceshock_{10,20,50}km`**: a second, float family of the same
+radius-buffer variables, added to test whether mineral price shocks fuel
+local conflict (Berman et al. 2017, "This Mine Is Mine!"). `REQUIRES` on
+`commodity_prices`'s PREPARE output (a small (commodity, year) -> real-price
+lookup table, resolved via `layout.output_root(...)` directly -- not a
+framework-injected path, mirroring how `_default_admin_variables()` resolves
+gadm's own PREPARE output below) plus a user-owned `commodity_shares` table
+inside the stage-0 `raw_db` DuckDB (contract: `(property_id VARCHAR,
+commodity VARCHAR, share DOUBLE)`, one row per `(property_id, commodity)`,
+static across a mine's active years, `commodity` already normalized via
+`src.data.sources.commodities.normalize_commodity(..., source="snl")`).
+`_create_mine_priceshock_table()` builds a per-`(property_id, year)` value =
+`SUM(share * ln_price_real)`, joined into the *same* `mine_buffers_{R}km`
+tables as a second `value_priceshock` column (not a parallel table -- one
+`ST_Buffer`/rtree build serves both variables per radius). Unlike the count
+variables (fill=0, uint16), an unmatched-commodity mine-year is SQL `NULL`,
+not `0` -- carried through to the raster as `NaN` (`float32`), since 0 is
+itself a legitimate price-shock value and must not be confused with "no
+priced mine nearby".
 """
 
 from __future__ import annotations
@@ -54,10 +74,25 @@ from src.data.sources import verify
 logger = logging.getLogger(__name__)
 
 DEFAULT_RADIUS_VARIABLES = {
-    "mine_count_10km": {"radius_km": 10, "table_name": "mine_buffers_10km"},
-    "mine_count_20km": {"radius_km": 20, "table_name": "mine_buffers_20km"},
-    "mine_count_50km": {"radius_km": 50, "table_name": "mine_buffers_50km"},
+    "mine_count_10km": {"radius_km": 10, "table_name": "mine_buffers_10km", "value_column": "value", "dtype": "uint16"},
+    "mine_count_20km": {"radius_km": 20, "table_name": "mine_buffers_20km", "value_column": "value", "dtype": "uint16"},
+    "mine_count_50km": {"radius_km": 50, "table_name": "mine_buffers_50km", "value_column": "value", "dtype": "uint16"},
+    "mine_priceshock_10km": {
+        "radius_km": 10, "table_name": "mine_buffers_10km", "value_column": "value_priceshock", "dtype": "float32",
+    },
+    "mine_priceshock_20km": {
+        "radius_km": 20, "table_name": "mine_buffers_20km", "value_column": "value_priceshock", "dtype": "float32",
+    },
+    "mine_priceshock_50km": {
+        "radius_km": 50, "table_name": "mine_buffers_50km", "value_column": "value_priceshock", "dtype": "float32",
+    },
 }
+
+#: nodata/fill sentinel per rasterized dtype -- `0` is a legitimate value for
+#: `mine_priceshock_*` (a mine-year with genuinely zero-priced-exposure
+#: coverage), so it can't share `mine_count_*`'s `0` fill/nodata convention;
+#: `NaN` is used instead (see module docstring).
+DTYPE_FILL_VALUES: Dict[str, float] = {"uint16": 0, "float32": float("nan")}
 
 
 class SnlMiningSource(DataSource):
@@ -67,7 +102,10 @@ class SnlMiningSource(DataSource):
 
     ID = "snl_mining"
     STEPS = (PipelineStep.PREPARE, PipelineStep.GRID)
-    REQUIRES = (("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID))
+    REQUIRES = (
+        ("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID),
+        ("commodity_prices", PipelineStep.PREPARE),
+    )
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -98,6 +136,25 @@ class SnlMiningSource(DataSource):
         self.properties_table = cfg.raw.get("properties_table", "properties")
         self.llm_years_table = cfg.raw.get("llm_years_table", "property_llm_years")
         self.work_history_table = cfg.raw.get("work_history_table", "property_work_history_events")
+        # User-owned table inside raw_db (module docstring): per-mine
+        # commodity production shares, joined against commodity_prices'
+        # attached price table to build mine_priceshock.
+        self.commodity_shares_table = cfg.raw.get("commodity_shares_table", "commodity_shares")
+
+        # commodity_prices' PREPARE output -- resolved directly via
+        # layout.output_root(), exactly like _default_admin_variables() below
+        # resolves gadm's PREPARE output; REQUIRES is ordering/scheduling
+        # metadata only (docs/design/09-integrated-pipeline.md §2), it never
+        # injects a path.
+        commodity_prices_path_override = cfg.raw.get("commodity_prices_path")
+        self.commodity_prices_path = (
+            self._resolve_path(commodity_prices_path_override)
+            if commodity_prices_path_override
+            else os.path.join(
+                layout.output_root(self.ctx.data_root, "commodity_prices", PipelineStep.PREPARE, layout=self.ctx.layout),
+                "commodity_prices.parquet",
+            )
+        )
 
         self.latitude_column = cfg.raw.get("latitude_column", "latitude")
         self.longitude_column = cfg.raw.get("longitude_column", "longitude")
@@ -116,7 +173,12 @@ class SnlMiningSource(DataSource):
         admin_variables = aggregation.get("admin_variables") or self._default_admin_variables()
 
         self.buffer_tables = {
-            variable: (spec.get("table_name", f"{variable}_buffer"), int(spec["radius_km"]) * 1000)
+            variable: (
+                spec.get("table_name", f"{variable}_buffer"),
+                int(spec["radius_km"]) * 1000,
+                spec.get("value_column", "value"),
+                spec.get("dtype", "uint16"),
+            )
             for variable, spec in radius_variables.items()
         }
         self.admin_tables = {
@@ -195,10 +257,18 @@ class SnlMiningSource(DataSource):
                 self.duckdb_path,
             )
             return []
+        if not os.path.exists(self.commodity_prices_path):
+            logger.warning(
+                "commodity_prices PREPARE output not found at %s -- run "
+                "`pipeline run --source commodity_prices --step prepare` first "
+                "(REQUIRES, see module docstring).",
+                self.commodity_prices_path,
+            )
+            return []
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.PREPARE, key="all",
-                output_path=self.prepared_db_path, inputs=(self.duckdb_path,),
+                output_path=self.prepared_db_path, inputs=(self.duckdb_path, self.commodity_prices_path),
                 completion=Completion.PATH_EXISTS,
             )
         ]
@@ -246,11 +316,20 @@ class SnlMiningSource(DataSource):
             start_year, end_year = self._determine_year_bounds(con, llm_years_available)
 
             self._create_active_mines_table(con, start_year, end_year, raster_crs, llm_years_available)
-            for table_name, radius_m in self.buffer_tables.values():
+            self._create_mine_priceshock_table(con)
+            # Two output variables (mine_count_*, mine_priceshock_*) can share
+            # one physical buffer table (different value_column, same
+            # table_name/radius) -- build each distinct table_name once, not
+            # once per variable, to avoid redundantly rebuilding identical
+            # ST_Buffer/ST_Transform geometry work.
+            radius_tables: Dict[str, int] = {}
+            for table_name, radius_m, _value_column, _dtype in self.buffer_tables.values():
+                radius_tables[table_name] = radius_m
+            for table_name, radius_m in radius_tables.items():
                 self._create_buffer_table(con, table_name, radius_m, raster_crs)
             for table_spec in self.admin_tables.values():
                 self._create_admin_count_table(con, table_spec["table_name"], table_spec["geometry_path"], table_spec["code_column"], raster_crs)
-            self._create_rtree_indexes(con)
+            self._create_rtree_indexes(con, radius_tables)
             self._verify_rtree_queries(con)
             con.execute("DETACH raw_db")
             return True
@@ -355,14 +434,54 @@ class SnlMiningSource(DataSource):
         """
         con.execute(query)
 
+    def _create_mine_priceshock_table(self, con) -> None:
+        """Builds `mine_priceshock`: one row per `(property_id, year)`, `value
+        = SUM(share * ln_price_real)` over the mine's commodity shares
+        (`self.commodity_shares_table`, a user-owned table inside `raw_db` --
+        see module docstring for the required schema) joined against
+        `commodity_prices`'s prepared price table (read directly via
+        `read_parquet()`, not `ATTACH` -- a parquet file isn't an attachable
+        DuckDB database).
+
+        `LEFT JOIN ... GROUP BY SUM(...)` is load-bearing: a commodity with no
+        price match contributes SQL `NULL` (ignored by `SUM`), and if *every*
+        commodity for a mine is unmatched, `value` is `NULL` for that
+        `(property_id, year)` -- deliberately distinct from `0`, which is a
+        legitimate price-shock value in its own right (see
+        `_rasterize_tiles_to_zarr`'s NaN-fill handling).
+        """
+        if not self._raw_table_exists(con, self.commodity_shares_table):
+            logger.warning(
+                "Commodity shares table raw_db.main.%s not found -- mine_priceshock will be empty "
+                "(mine_priceshock_* variables will rasterize as all-NaN). See module docstring for "
+                "the expected (property_id, commodity, share) schema.",
+                self.commodity_shares_table,
+            )
+            con.execute("CREATE OR REPLACE TABLE mine_priceshock (property_id VARCHAR, year INTEGER, value DOUBLE)")
+            return
+
+        escaped_prices_path = self.commodity_prices_path.replace("'", "''")
+        query = f"""
+            CREATE OR REPLACE TABLE mine_priceshock AS
+            SELECT m.property_id, m.year, SUM(s.share * p.ln_price_real) AS value
+            FROM (SELECT DISTINCT property_id, year FROM active_mines) AS m
+            JOIN raw_db.main.{self.commodity_shares_table} AS s USING (property_id)
+            LEFT JOIN read_parquet('{escaped_prices_path}') AS p
+                ON p.commodity = s.commodity AND p.year = m.year
+            GROUP BY m.property_id, m.year
+        """
+        con.execute(query)
+
     def _create_buffer_table(self, con, table_name: str, radius_m: int, raster_crs: str) -> None:
         query = f"""
             CREATE OR REPLACE TABLE {table_name} AS
             WITH buffered AS (
-                SELECT property_id, year, 1::INTEGER AS value, ST_MakeValid(ST_Buffer(point_metric, {radius_m})) AS geometry_metric
-                FROM active_mines
+                SELECT m.property_id, m.year, 1::INTEGER AS value, ps.value AS value_priceshock,
+                    ST_MakeValid(ST_Buffer(m.point_metric, {radius_m})) AS geometry_metric
+                FROM active_mines AS m
+                LEFT JOIN mine_priceshock AS ps USING (property_id, year)
             )
-            SELECT property_id, year, value, geometry_metric,
+            SELECT property_id, year, value, value_priceshock, geometry_metric,
                 ST_Transform(geometry_metric, '{self.metric_crs}', '{raster_crs}', true) AS geometry_raster
             FROM buffered WHERE geometry_metric IS NOT NULL
         """
@@ -398,8 +517,8 @@ class SnlMiningSource(DataSource):
         """
         con.execute(query)
 
-    def _create_rtree_indexes(self, con) -> None:
-        index_specs = [(f"idx_{t}_rtree", t) for t, _ in self.buffer_tables.values()]
+    def _create_rtree_indexes(self, con, radius_tables: Dict[str, int]) -> None:
+        index_specs = [(f"idx_{t}_rtree", t) for t in radius_tables]
         index_specs += [(f"idx_{s['table_name']}_rtree", s["table_name"]) for s in self.admin_tables.values()]
         for index_name, table_name in index_specs:
             con.execute(f"DROP INDEX IF EXISTS {index_name}")
@@ -451,7 +570,17 @@ class SnlMiningSource(DataSource):
                 meta={
                     "years": years,
                     **verify.verification_meta(
-                        self.cfg.raw, expected_vars=tuple(self.output_variables), value_range=(0, 200)
+                        self.cfg.raw,
+                        expected_vars=tuple(self.output_variables),
+                        value_range=(0, 200),
+                        # value_range=(0, 200) only makes sense for the uint16
+                        # count family -- the float32 price-shock family is on a
+                        # different physical scale (a sum of ln-prices, not a
+                        # count). verify.py supports one value_range per target,
+                        # so scope it by dtype here; the excluded (float32)
+                        # variables still get the unconditional "sample isn't
+                        # entirely NaN" check.
+                        range_vars=tuple(v for v in self.output_variables if self.buffer_tables[v][3] == "uint16"),
                     ),
                 },
             )
@@ -489,22 +618,32 @@ class SnlMiningSource(DataSource):
             y_coords = geobox.coords[dim_y].values.round(5)
             x_coords = geobox.coords[dim_x].values.round(5)
 
-            data_vars = {
-                var: xr.DataArray(
-                    da.zeros((len(time_coords), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, self.tile_size, self.tile_size)),
+            data_vars = {}
+            for var in self.output_variables:
+                dtype_name = self.buffer_tables[var][3]
+                np_dtype = np.dtype(dtype_name)
+                fill = DTYPE_FILL_VALUES[dtype_name]
+                data_vars[var] = xr.DataArray(
+                    da.full(
+                        (len(time_coords), 1, ny, nx), fill, dtype=np_dtype,
+                        chunks=(1, 1, self.tile_size, self.tile_size),
+                    ),
                     dims=["time", "band", dim_y, dim_x],
                     coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
-                    attrs={"_FillValue": 0, "nodata": 0},
+                    attrs={"_FillValue": fill, "nodata": fill},
                 )
-                for var in self.output_variables
-            }
             ds = xr.Dataset(
                 data_vars,
                 attrs={
                     "source_duckdb_path": self.duckdb_path,
                     "prepared_duckdb_path": self.prepared_db_path,
                     "metric_crs": self.metric_crs,
-                    "radius_semantics": "count of active mine buffers covering pixel center",
+                    "radius_semantics": (
+                        "mine_count_*: count of active mine buffers covering pixel center. "
+                        "mine_priceshock_*: sum of share * ln(real price) over active, "
+                        "price-matched mine buffers covering pixel center; NaN where no "
+                        "price-matched mine buffer covers the pixel (see module docstring)."
+                    ),
                 },
             ).rio.write_crs(geobox.crs)
             # .rio.write_crs() records the CRS as each data variable's own
@@ -515,26 +654,32 @@ class SnlMiningSource(DataSource):
             ds.attrs["crs"] = str(geobox.crs)
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
-                var: {
+            encoding = {}
+            for var in self.output_variables:
+                dtype_name = self.buffer_tables[var][3]
+                encoding[var] = {
                     "chunks": (1, 1, self.tile_size, self.tile_size),
                     "compressors": (compressor,),
-                    "dtype": "uint16",
-                    "fill_value": 0,
+                    "dtype": dtype_name,
+                    "fill_value": DTYPE_FILL_VALUES[dtype_name],
                     "grid_mapping": "spatial_ref",
                 }
-                for var in self.output_variables
-            }
             ds.to_zarr(output_path, mode="w", compute=False, encoding=encoding, zarr_format=3, consolidated=False)
             return True
         except Exception:
             logger.exception("Error creating SNL mining zarr skeleton")
             return False
 
-    def _fetch_features(self, con, table_name: str, year: int, tile_wkt: str):
+    def _fetch_features(self, con, table_name: str, value_column: str, year: int, tile_wkt: str):
+        # `{value_column} IS NOT NULL` is what makes an all-unmatched-commodity
+        # mine-year (mine_priceshock.value = SQL NULL, see
+        # _create_mine_priceshock_table) simply not contribute a geometry row
+        # when fetching mine_priceshock_* -- while mine_count_*'s `value`
+        # column is never NULL, so this clause is a no-op for it.
         sql = f"""
-            SELECT value, ST_AsWKB(geometry_raster) AS geom_wkb FROM {table_name}
-            WHERE year = ? AND ST_Intersects(geometry_raster, ST_GeomFromText(?))
+            SELECT {value_column}, ST_AsWKB(geometry_raster) AS geom_wkb FROM {table_name}
+            WHERE year = ? AND {value_column} IS NOT NULL
+              AND ST_Intersects(geometry_raster, ST_GeomFromText(?))
         """
         return con.execute(sql, [int(year), tile_wkt]).fetchall()
 
@@ -559,16 +704,39 @@ class SnlMiningSource(DataSource):
                             f"POLYGON(({bounds.left} {bounds.bottom}, {bounds.right} {bounds.bottom}, "
                             f"{bounds.right} {bounds.top}, {bounds.left} {bounds.top}, {bounds.left} {bounds.bottom}))"
                         )
-                        tile_arrays = {var: np.zeros(tile_geobox.shape, dtype=np.uint16) for var in self.output_variables}
+                        tile_arrays = {}
+                        tile_touched = {}
+                        for var in self.output_variables:
+                            dtype_name = self.buffer_tables[var][3]
+                            tile_arrays[var] = np.zeros(tile_geobox.shape, dtype=np.dtype(dtype_name))
+                            if dtype_name == "float32":
+                                tile_touched[var] = np.zeros(tile_geobox.shape, dtype=bool)
                         any_data = False
 
-                        for var_name, (table_name, _) in self.buffer_tables.items():
-                            rows = self._fetch_features(con, table_name, year, tile_wkt)
+                        for var_name, (table_name, _radius_m, value_column, dtype_name) in self.buffer_tables.items():
+                            rows = self._fetch_features(con, table_name, value_column, year, tile_wkt)
                             any_data = any_data or bool(rows)
                             for value, geom_wkb in rows:
                                 geom = Geometry(shapely.wkb.loads(bytes(geom_wkb)), crs=str(tile_geobox.crs))
-                                mask = rasterize(geom, tile_geobox).values
-                                tile_arrays[var_name] = tile_arrays[var_name] + (mask.astype(np.uint16) * int(value))
+                                mask = rasterize(geom, tile_geobox).values.astype(bool)
+                                if dtype_name == "float32":
+                                    tile_arrays[var_name][mask] += np.float32(value)
+                                    tile_touched[var_name] |= mask
+                                else:
+                                    tile_arrays[var_name] = tile_arrays[var_name] + (mask.astype(np.uint16) * int(value))
+
+                        # An untouched pixel of a float32 (price-shock) variable
+                        # must resolve to NaN, not the accumulator's additive
+                        # identity 0 -- 0 is itself a legitimate price-shock
+                        # value (see module docstring). uint16 count variables
+                        # are unaffected: 0 has always been their correct
+                        # "no mine nearby" value.
+                        for var_name in self.output_variables:
+                            dtype_name = self.buffer_tables[var_name][3]
+                            if dtype_name == "float32":
+                                tile_arrays[var_name] = np.where(
+                                    tile_touched[var_name], tile_arrays[var_name], np.nan
+                                ).astype(np.float32)
 
                         if any_data:
                             dim_y, dim_x = tile_geobox.dimensions

@@ -18,8 +18,9 @@ All three collections confirmed live on Planetary Computer via direct STAC fetch
 All three carry both `aqua` and `terra` in `summaries.platform` — **confirms the platform-filter
 requirement**: there is no separate MYD-only collection, matching the correctness-details warning in
 the original ingest brief. Platform must be filtered per item (`properties.platform` and/or the
-`MOD`/`MYD` id prefix — **UNVERIFIED which is authoritative; check both agree on a sample before
-trusting either alone**).
+`MOD`/`MYD` id prefix — **RESOLVED 2026-08-09**: queried 600 real items across all three collections,
+zero disagreements between the two signals; see `06-open-questions.md` #8 for the full sample
+breakdown).
 
 Confirmed **404** for `modis-21A1D-061` (queried directly): **no daily TES-algorithm (MOD21A1D/N)
 collection is hosted on Planetary Computer** — only the 8-day `modis-21A2-061` composite. This is
@@ -42,9 +43,9 @@ direct STAC `item_assets` fetch for both collections, 2026-07-29.
 |---|---|---|---|---|---|---|
 | `LST_Day_1km` / `LST_Night_1km` | `uint16` | 0.02 | 0 (**UNVERIFIED** — see below) | 0 | Kelvin | STAC (scale); fill confirmed via NASA Earthdata catalog page + MOD11_L2 guide, both stating fill=0 for the LST SDS |
 | `QC_Day` / `QC_Night` | `uint8` | — | — | — (bit field, no single fill) | bit field | STAC dtype; **bit layout UNVERIFIED for the L3 gridded product** — see caveat below |
-| `Emis_31` / `Emis_32` | `uint8` | 0.002 | **UNVERIFIED** (see below) | 0 | dimensionless (0–1 physical) | STAC (scale, dtype); MOD11_L2 guide states valid range 1–255, fill 0, but offset not stated there and STAC did not report an offset field for 11A1/11A2 specifically |
-| `Day_view_angl` / `Night_view_angl` | `uint8` | 1 (none reported) | 0 | 0 | Degree, range 0–180 | STAC (unit); MOD11_L2 guide corroborates valid range 0–180, fill 0 (L2-guide figures, treated as corroborating not authoritative for L3 — see caveat) |
-| `Day_view_time` / `Night_view_time` | `uint8` | 0.1 | 0 | 0 | Hours (local solar), raw range 0–240 → 0–24 h | STAC (scale); MOD11_L2 guide corroborates raw valid range 0–240, fill 0 |
+| `Emis_31` / `Emis_32` | `uint8` | 0.002 | **0.49** (confirmed, see below) | 0 | dimensionless (0–1 physical) | STAC (scale, dtype); offset confirmed via Table 9 of the Collection-6 MODIS LST Products Users' Guide (Wan, 2019) |
+| `Day_view_angl` / `Night_view_angl` | `uint8` | 1 (none reported) | **-65.0** | **255** | Degree, raw range 0–130 → -65–65°, negative = viewed from east | STAC (unit); scale/offset/fill/range confirmed via Table 9 of the Users' Guide (Wan, 2019) — corrects an earlier draft that had wrongly corroborated these against the MOD11_L2 (different product tier) guide instead |
+| `Day_view_time` / `Night_view_time` | `uint8` | 0.1 | 0 | **255** | Hours (local solar), raw range 0–240 → 0–24 h | STAC (scale); fill confirmed via Table 9 of the Users' Guide (Wan, 2019) |
 | `Clear_day_cov` (11A1) / — | `uint16` | 0.0005 | — | **UNVERIFIED** | dimensionless coverage fraction | STAC |
 | `Clear_night_cov` (11A1) / — | `uint16` | 0.0005 | — | **UNVERIFIED** | dimensionless coverage fraction | STAC |
 | `Clear_sky_days` (11A2 only) | `uint8` | — | — | **UNVERIFIED** | count of clear days contributing to the 8-day composite, max 8 | STAC description: "the days in clear-sky conditions and with validate LSTs" |
@@ -52,48 +53,60 @@ direct STAC `item_assets` fetch for both collections, 2026-07-29.
 | `hdf` | `application/x-hdf` | — | — | — | full source granule | STAC |
 | `metadata` | `application/xml` | — | — | — | FGDC metadata | STAC |
 
-**Emissivity offset — flagged, not assumed.** MOD21A2's Emis_29/31/32 (below) has a confirmed
+**Emissivity offset — RESOLVED (2026-08-09).** MOD21A2's Emis_29/31/32 (below) has a confirmed
 `offset: 0.49` in addition to `scale: 0.002` (`raw × 0.002 + 0.49` maps the uint8 range to
-physically-plausible emissivity ≈0.49–1.0). MOD11A1/11A2's Emis_31/32 STAC entries report `scale:
-0.002` but **no offset field was present in the fetched STAC response**, and the MOD11_L2 guide (which
-covers a different product tier — see next caveat) doesn't state one either. Do not assume the two
-products share the same offset. **Resolve before implementation**: decode a real Emis_31 pixel from a
-sample MOD11A1 granule and confirm whether raw×0.002 alone produces physically valid emissivity
-(~0.9–1.0 over vegetated/urban land) or whether an offset is needed. Logged in
-[`06-open-questions.md`](06-open-questions.md).
+physically-plausible emissivity ≈0.49–1.0). MOD11A1's Table 9 ("The SDSs in the MOD11A1 product") in
+the Collection-6 MODIS LST Products Users' Guide (Wan, ERI/UCSB, June 2019) confirms Emis_31/Emis_32
+share that same `offset: 0.49` — the two products' emissivity bands use the same decode.
+`src/data/sources/modis/source.py`'s `BAND_SPECS["11A1"]` previously hardcoded `offset: 0.0` for both
+(an unverified guess that turned out wrong); corrected to `0.49`, pinned by
+`tests/data/sources/modis/test_modis_qc.py`.
 
-**QC bit layout — the single most important unresolved item in this document.** The only primary
-source successfully fetched this session, the MOD11 (L2) User Guide
-(`icess.ucsb.edu/modis/LstUsrGuide/usrguide_mod11.html`), **explicitly and only covers MOD11_L2
-swath data**, confirmed via its own title and table of contents. Its QC field is a **16-bit** layout
-(bits 0–1 mandatory QA; 2–3 data quality; 4–5 cloud flag; 6–7 LST model number; 8–9 LST quality flag;
-10–11 emissivity flag; 12–13 emissivity quality flag; 14–15 emissivity error category) — structurally
-inconsistent with `QC_Day`/`QC_Night` being declared `uint8` (8-bit) for the gridded 11A1/11A2
-products in the STAC response, confirming this L2 layout **does not apply** to the product actually
-being ingested. The literature commonly cites an 8-bit MOD11A1/A2 QC layout (bits 0–1 mandatory QA:
-00 good / 01 not produced-cloud / 10 not produced-other / 11 low quality; bits 2–3 data quality flag;
-bits 4–5 emissivity error flag; bits 6–7 LST error flag: 00 ≤1K / 01 ≤2K / 10 ≤3K / 11 >3K) — **this
-plan does not assert that layout as verified**. The direct MOD11 V6.1 PDF fetch (the correct primary
-source for the L3 gridded product) failed to yield extractable bit-table text via the available
-tooling (binary/table-layout PDF, saved locally for manual review at the WebFetch tool's cache path).
-**Resolve before implementation**: pull the QC bit table from the MOD11 V6.1 PDF directly (a PDF
-reader/parser, not the WebFetch tool used this session) or from a peer-reviewed methods paper that
-reproduces it, before hardcoding a threshold. Logged in [`06-open-questions.md`](06-open-questions.md).
+**QC bit layout — RESOLVED for MOD11A1, still open for MOD21A2 (2026-08-09).** The Collection-6 MODIS
+LST Products Users' Guide (Wan, ERI/UCSB, June 2019) — the correct primary source, not the MOD11_L2
+guide previously the only one reachable — gives Table 13 ("Bit flags defined for SDSs QC_day and
+QC_Night in MOD11A1"): an 8-bit layout with bits 1&0 mandatory QA (00 good / 01 other-quality / 10
+cloud / 11 other), bits 3&2 data quality, bits 5&4 emissivity error, bits 7&6 LST error category (00
+≤1K / 01 ≤2K / 10 ≤3K / 11 >3K). This **exactly matches** the layout
+`src/data/sources/modis/tiles.py::decode_qc_valid_mask` already implemented as its best guess — no
+bit-shift/mask logic needed to change, only the UNVERIFIED status, now confirmed for `product="11A1"`
+(pinned by `tests/data/sources/modis/test_modis_qc.py`).
+
+**Still unverified for MOD21A2** (the primary `21A2` product): this guide's table of contents covers
+only the MOD11 family (MOD11_L2/A1/A2/B1/B2/B3/C1/C2/C3). MOD21 is generated by the physics-based TES
+algorithm (Wan and Li, 1997), a different algorithm from MOD11's split-window method, and its QC
+semantics are not addressed anywhere in this guide. `decode_qc_valid_mask` still logs its UNVERIFIED
+warning for any `product` other than `"11A1"`. **Resolve before a production 21A2 run**: find a
+MOD21-specific primary source (e.g. the MOD21 ATBD) for its QC bit table. Logged in
+[`06-open-questions.md`](06-open-questions.md).
 
 ## MOD/MYD21A2 (8-day, TES) — band definitions
 
 Source: direct STAC `item_assets` fetch, 2026-07-29, corroborated by the NASA Earthdata MOD21A2
-catalog page for compositing/derivation wording.
+catalog page for compositing/derivation wording, and by the *MxD21 LST&E User Guide* (Hulley et al.,
+JPL, March 2019) Table 11 ("The SDSs in the MxD21A2 8-day product") — the correct primary source for
+this exact product, confirmed 2026-08-09.
 
 | Asset | Dtype | Scale | Offset | Fill | Valid range / Unit | Source |
 |---|---|---|---|---|---|---|
-| `LST_Day_1KM` / `LST_Night_1KM` | `uint16` | 0.02 | 0 | 0 | 7500–65535 (raw) → 150–1310.7 K (envelope, not physical bound) | STAC + NASA Earthdata catalog page |
-| `Emis_29` / `Emis_31` / `Emis_32` | `uint8` | 0.002 | **0.49** | 0 | 1–255 (raw) → ≈0.492–1.0 | STAC (scale); offset confirmed via NASA Earthdata catalog page |
-| `QC_Day` / `QC_Night` | `uint8` | — | — | — (bit field) | bit field | STAC dtype; **bit layout UNVERIFIED — not stated on the fetched catalog page**, same caveat class as 11A1/11A2 |
-| `View_Angle_Day` / `View_Angle_Night` | `uint8` | 1 (none reported) | 0 | — | Degree | STAC |
-| `View_Time_Day` / `View_Time_Night` | `uint8` | 0.1 | 0 | — | Hours | STAC |
+| `LST_Day_1KM` / `LST_Night_1KM` | `uint16` | 0.02 | 0 | 0 | 7500–65535 (raw) → 150–1310.7 K (envelope, not physical bound) | STAC + NASA Earthdata catalog page; confirmed exactly by Table 11 |
+| `Emis_29` / `Emis_31` / `Emis_32` | `uint8` | 0.002 | **0.49** | 0 | 1–255 (raw) → ≈0.492–1.0 | STAC (scale); offset confirmed via NASA Earthdata catalog page and Table 11 |
+| `QC_Day` / `QC_Night` | `uint8` | — | — | — (bit field) | bit field | **RESOLVED**: Table 12 of the MxD21 guide (see below) |
+| `View_Angle_Day` / `View_Angle_Night` | `uint8` | 1 | **-65** | **255** | raw 0–130 → -65–65°, negative = viewed from east | Table 11 — corrects `BAND_SPECS["21A2"]` (`src/data/sources/modis/source.py`), which had `offset: 0.0`/`fill: None` (unmasked) before this table was checked |
+| `View_Time_Day` / `View_Time_Night` | `uint8` | 0.1 | 0 | **255** | Hours | Table 11 — corrects the same spec's `fill: None` |
 | `hdf` | `application/x-hdf` | — | — | — | full source granule | STAC |
 | `metadata` | `application/xml` | — | — | — | FGDC metadata | STAC |
+
+**QC bit layout — RESOLVED 2026-08-09.** Table 12 of the MxD21 guide gives bits 1&0 (mandatory QA,
+00=good — same convention as MOD11) and bits 7&6 ("LST accuracy": 00 = >2K poor, 01 = 1.5–2K, 10 =
+1–1.5K, 11 = <1K excellent). **Bits 7&6 sit at the same position as MOD11's "LST error" bits but mean
+the opposite thing** — MOD11's convention has increasing bit value = *worse* accuracy; MOD21's has
+increasing bit value = *better*. `decode_qc_valid_mask` (`src/data/sources/modis/tiles.py`) previously
+applied MOD11's bit-value-to-error-K mapping uniformly to every product, which would have silently
+inverted the quality filter for every MOD21A2 pixel — keeping the >2K-error pixels and discarding the
+<1K ones. Fixed by giving `_LST_ERROR_K_BY_BITS` a per-product mapping (`"11A1"` and `"21A2"` both now
+confirmed), selected via a `product` argument threaded from `ModisSource.product`. Pinned by
+`tests/data/sources/modis/test_modis_qc.py`.
 
 **No `Clear_sky_days`/`Clear_sky_nights`-equivalent asset exists for `modis-21A2-061`** — confirmed
 absent from the STAC `item_assets` list (compare against 11A2's explicit inclusion of both, above).

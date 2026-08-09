@@ -35,8 +35,14 @@ def test_plad_chain_includes_gadm_prepare_prerequisite_first():
 
 
 def test_snl_mining_chain_includes_gadm_prepare_prerequisite():
+    # REQUIRES also includes commodity_prices:prepare (mine_priceshock_*,
+    # src/data/sources/snl_mining/source.py) -- its own prerequisite chain
+    # has no jobs of its own (commodity_prices has no REQUIRES), so only
+    # commodity_prices-prepare itself is inserted.
     chain = sc.build_chain("snl_mining", _jobs())
-    assert [j["name"] for j in chain] == ["gadm-prepare", "gadm-grid", "snl_mining-prepare", "snl_mining-grid"]
+    assert [j["name"] for j in chain] == [
+        "gadm-prepare", "gadm-grid", "commodity_prices-prepare", "snl_mining-prepare", "snl_mining-grid",
+    ]
 
 
 def test_country_classifications_chain_includes_gadm_grid_prerequisite():
@@ -72,21 +78,26 @@ def test_job_dependencies_only_on_source_own_first_job():
         deps = sc._job_dependencies(job, chain, job_ids)
         job_ids[job["name"]] = f"id-{job['name']}"
 
-    # snl_mining-prepare (its first own job in the chain) carries the
-    # cross-source REQUIRES dependency on both gadm-prepare (polygon
-    # geometries for the admin-count spatial join) and gadm-grid
+    # snl_mining-prepare (its first own job in the chain, index 3: gadm-prepare,
+    # gadm-grid, commodity_prices-prepare, snl_mining-prepare, snl_mining-grid)
+    # carries the cross-source REQUIRES dependency on gadm-prepare (polygon
+    # geometries for the admin-count spatial join), gadm-grid
     # (GID_N_code_mapping.json, for src/data/sources/snl_mining/source.py's
-    # _export_admin_count_tables) -- REQUIRES is source-level, not per-step,
-    # so both apply even though only snl_mining's own GRID step actually
-    # reads gadm-grid's output.
-    prepare_deps = sc._job_dependencies(chain[2], chain, {"gadm-prepare": "id-gadm-prepare", "gadm-grid": "id-gadm-grid"})
-    assert prepare_deps == ["id-gadm-prepare", "id-gadm-grid"]
+    # _export_admin_count_tables), and commodity_prices-prepare
+    # (mine_priceshock_* price table) -- REQUIRES is source-level, not
+    # per-step, so all three apply even though only snl_mining's own GRID
+    # step actually reads gadm-grid's output.
+    known_ids = {
+        "gadm-prepare": "id-gadm-prepare", "gadm-grid": "id-gadm-grid",
+        "commodity_prices-prepare": "id-commodity_prices-prepare",
+    }
+    prepare_deps = sc._job_dependencies(chain[3], chain, known_ids)
+    assert prepare_deps == ["id-gadm-prepare", "id-gadm-grid", "id-commodity_prices-prepare"]
 
     # ...but snl_mining-grid (a later step of the same source) depends only
-    # on snl_mining-prepare, not redundantly on gadm-prepare again.
+    # on snl_mining-prepare, not redundantly on its prerequisites again.
     grid_deps = sc._job_dependencies(
-        chain[3], chain,
-        {"gadm-prepare": "id-gadm-prepare", "gadm-grid": "id-gadm-grid", "snl_mining-prepare": "id-snl_mining-prepare"},
+        chain[4], chain, {**known_ids, "snl_mining-prepare": "id-snl_mining-prepare"},
     )
     assert grid_deps == ["id-snl_mining-prepare"]
 

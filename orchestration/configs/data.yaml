@@ -63,6 +63,12 @@ sources:
     qc_max_lst_error_k: 2.0    # configurable pending QC bit-layout verification, docs/design/07 §6
     stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
     # tiles: []                # optional explicit override, e.g. the robustness arm's bounded subset
+    # land_tiles: []           # optional allowlist restricting to land-covering tiles (default:
+    #                          # every tile in the lat_clip_deg band, ocean included). Populate via
+    #                          # `python scripts/compute_modis_land_tiles.py --land-polygons
+    #                          # <osm PREPARE output>/land_polygons_simplified.gpkg` once `osm`'s
+    #                          # PREPARE step has run (docs/design/07a-modis-band-reference.md's
+    #                          # "confirm against the actual sinusoidal tile grid + a land mask").
     transfer:
       steps: ["fetch"]
 
@@ -76,12 +82,23 @@ sources:
     type: "modis"
     product: "11A1"
     platform: "aqua"
-    # Bounded robustness-arm subset (docs/design/07-modis-ingest.md §1) --
-    # a handful of tiles spanning biomes/climates x 3-5 years spanning
-    # early/mid/late mission, not a full parallel backfill. Placeholder
-    # values below; exact tile/year selection is an implementation-time call.
-    tiles: ["h18v04", "h20v08", "h09v05"]
-    year_range: [2003, 2024]
+    # Bounded robustness-arm subset (docs/design/07-modis-ingest.md §1) -- a
+    # handful of tiles spanning biomes/climates x 3-5 years spanning
+    # early/mid/late mission, not a full parallel backfill. Tiles chosen by
+    # forward-projecting one representative lon/lat per biome through the
+    # sinusoidal grid's own formulas (src/data/sources/modis/tiles.py), not
+    # guessed from memory, so each id is reproducible/checkable:
+    #   h12v09 -- Amazon rainforest      (lat -3,  lon -60,  tropical)
+    #   h18v06 -- Sahara desert          (lat 23,  lon  10,  hot arid)
+    #   h18v04 -- Central Europe         (lat 48,  lon   8,  temperate)
+    #   h22v03 -- Siberian boreal/taiga  (lat 58,  lon  90,  near the 60-deg clip edge)
+    #   h30v11 -- Australian outback     (lat -25, lon 135,  arid, southern hemisphere)
+    # `years` (not `year_range`, which can only express one contiguous span)
+    # picks one early/mid/late-mission year each: 2004 (soon after Aqua's
+    # 2002-05-04 launch, past initial commissioning), 2014 (mission
+    # midpoint), 2023 (latest complete year as of writing).
+    tiles: ["h12v09", "h18v06", "h18v04", "h22v03", "h30v11"]
+    years: [2004, 2014, 2023]
     lat_clip_deg: 60.0
     qc_max_lst_error_k: 2.0
     stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
@@ -228,6 +245,37 @@ sources:
     # verification:
     #   expected_vars: ["GID_0", "GID_1", "GID_2"]
 
+  # RESOLVE Ecoregions & Biomes (Dinerstein et al. 2017). REQUIRES gadm's
+  # PREPARE+GRID (see src/data/sources/ecoregions/source.py). `url` is
+  # RESOLVE's own ArcGIS REST Feature Service query -- not the Esri Hub
+  # "Export Data" link, which 302-redirects to an Azure SAS URL that expires
+  # about an hour after being minted (unusable as a standing config value).
+  # FETCH paginates this query itself (`page_size`, `resultOffset`) rather
+  # than downloading one file -- see the module docstring for why (an
+  # unpaginated response silently truncates past an apparent ~16MiB upstream
+  # cap, and the service rate-limits "large geometry" queries).
+  ecoregions:
+    type: "ecoregions"
+    data_path: "misc"
+    namespace: "ecoregions"
+    url: "https://services.arcgis.com/P3ePLMYs2RVChkJx/arcgis/rest/services/Resolve_Ecoregions/FeatureServer/0/query?where=1=1&outFields=REALM,BIOME_NUM,BIOME_NAME,ECO_ID,ECO_NAME&geometryPrecision=5&f=geojson"
+    name: "resolve_ecoregions_2017.gpkg"
+    description: "RESOLVE Ecoregions & Biomes (Dinerstein et al. 2017)"
+    # page_size: 25  # uncomment to override; download() halves it on any page failure regardless
+
+    download:
+      batch_size: 2
+      max_concurrent_downloads: 1
+      tar_max_files: 2
+      tar_max_size_mb: 100
+      timeout: 600
+
+    # No verification block by default: realm_id/biome_id/eco_id have no
+    # fixed upper bound (0 = "no polygon at this pixel", else a sequential
+    # id). Uncomment to pin/narrow it explicitly:
+    # verification:
+    #   expected_vars: ["realm_id", "biome_id", "eco_id"]
+
   # UNDP HDI + World Bank income-group classifications, joined on iso3 --
   # third of the three misc-split sources; kept together deliberately, not a
   # 4-way split (docs/design/09-integrated-pipeline.md §7).
@@ -286,6 +334,29 @@ sources:
   #     tar_max_size_mb: 500
   #     timeout: 60
 
+  # World Bank Pink Sheet commodity prices -- FETCH + PREPARE only (no GRID,
+  # a tiny (commodity, year) lookup table). Consumed by snl_mining's PREPARE
+  # step (REQUIRES) to build the mine_priceshock_* variables.
+  commodity_prices:
+    type: "commodity_prices"
+    data_path: "commodity_prices"
+    prices_url: "https://thedocs.worldbank.org/en/doc/74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/related/CMO-Historical-Data-Annual.xlsx"
+    prices_name: "CMO-Historical-Data-Annual.xlsx"
+    # This WB Pink Sheet URL embeds a content hash + release date and rotates
+    # roughly monthly -- if FETCH starts 404ing, get the current link from
+    # https://www.worldbank.org/en/research/commodity-markets and update
+    # prices_url above; this is expected maintenance, not a bug.
+    prices_path: "raw/commodity_prices/auxiliary/CMO-Historical-Data-Annual.xlsx"
+    # ^ points PREPARE at the already-staged manual copy instead of requiring
+    #   a fresh FETCH; remove this key to require FETCH's own output instead.
+    #   Path is relative to data_root and must include the "raw/" prefix
+    #   that pipeline.layout: v2 (above) puts every source's raw files under.
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 120
+
   # SNL/S&P Global Mining Property Tables -> GRID
   snl_mining:
     type: "snl_mining"
@@ -303,6 +374,13 @@ sources:
     closing_year_column: "actual_closure_year"
     llm_opening_year_column: "llm_opening_year"
     llm_closing_year_column: "llm_closing_year"
+    # User-owned table inside the stage-0 DuckDB: per-mine commodity
+    # production shares (property_id, commodity, share), static across a
+    # mine's active years, commodity already normalized via
+    # src.data.sources.commodities.normalize_commodity(..., source="snl").
+    # Joined against commodity_prices' PREPARE output (REQUIRES) to build
+    # mine_priceshock_*.
+    commodity_shares_table: "commodity_shares"
     aggregation:
       # prepared_db_path / admin_variables[*].geometry_path: no longer pinned
       # here -- both used to hardcode the legacy processed/stage_1 shape,
@@ -314,29 +392,58 @@ sources:
       tile_size: 512
       semantics:
         radius: "count of active mine buffers covering pixel center"
+        priceshock: "sum of share * ln(real price) over active, price-matched mine buffers covering pixel center; NaN where none"
       radius_variables:
         mine_count_10km:
           radius_km: 10
           table_name: "mine_buffers_10km"
+          value_column: "value"
+          dtype: "uint16"
         mine_count_20km:
           radius_km: 20
           table_name: "mine_buffers_20km"
+          value_column: "value"
+          dtype: "uint16"
         mine_count_50km:
           radius_km: 50
           table_name: "mine_buffers_50km"
-      # Rasterized (zarr) variables: radius-buffer counts only -- genuinely
-      # per-pixel. mine_count_adm1/mine_count_adm2 (constant within a GID_1/
-      # GID_2 admin polygon) are exported as GID-keyed parquet sidecars
-      # instead and merged during assembly, not listed here.
+          value_column: "value"
+          dtype: "uint16"
+        mine_priceshock_10km:
+          radius_km: 10
+          table_name: "mine_buffers_10km"
+          value_column: "value_priceshock"
+          dtype: "float32"
+        mine_priceshock_20km:
+          radius_km: 20
+          table_name: "mine_buffers_20km"
+          value_column: "value_priceshock"
+          dtype: "float32"
+        mine_priceshock_50km:
+          radius_km: 50
+          table_name: "mine_buffers_50km"
+          value_column: "value_priceshock"
+          dtype: "float32"
+      # Rasterized (zarr) variables: radius-buffer counts + price-shock sums,
+      # both genuinely per-pixel. mine_count_adm1/mine_count_adm2 (constant
+      # within a GID_1/GID_2 admin polygon) are exported as GID-keyed parquet
+      # sidecars instead and merged during assembly, not listed here.
       output_variables:
         - "mine_count_10km"
         - "mine_count_20km"
         - "mine_count_50km"
+        - "mine_priceshock_10km"
+        - "mine_priceshock_20km"
+        - "mine_priceshock_50km"
 
-    # expected_vars must track aggregation.output_variables above.
+    # expected_vars must track aggregation.output_variables above. value_range
+    # applies only to the uint16 mine_count_* family (range_vars) -- the
+    # float32 mine_priceshock_* family is on a different physical scale and
+    # only gets the unconditional "sample isn't entirely NaN" check.
     verification:
-      expected_vars: ["mine_count_10km", "mine_count_20km", "mine_count_50km"]
+      expected_vars: ["mine_count_10km", "mine_count_20km", "mine_count_50km", "mine_priceshock_10km", "mine_priceshock_20km", "mine_priceshock_50km"]
       value_range: [0, 200]
+      range_vars: ["mine_count_10km", "mine_count_20km", "mine_count_50km"]
 
 # Data assembly configurations
 assemble:
