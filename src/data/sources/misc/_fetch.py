@@ -11,7 +11,6 @@ by its own config block rather than an arbitrary externally-supplied list.
 
 from __future__ import annotations
 
-import hashlib
 import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -39,8 +38,7 @@ class ConfiguredFilesFetchMixin:
     def list_remote_files(self, entrypoint: Optional[dict] = None) -> List[Tuple[str, str]]:
         return [(f.name, f.url) for f in self.CONFIGURED_FILES]
 
-    def get_file_hash(self, file_url: str) -> str:
-        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+    # get_file_hash: inherited from DataSource (src/data/sources/base.py).
 
     def get_all_entrypoints(self) -> List[Dict[str, Any]]:
         return []

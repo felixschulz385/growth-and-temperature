@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 
 from zarr.codecs import BloscCodec
 
+from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -84,10 +85,7 @@ class BermanMiningSource(DataSource):
     def list_remote_files(self, entrypoint: Optional[dict] = None) -> List[tuple]:
         return [(f"{self.MANUAL_FILE['subfolder']}/{self.MANUAL_FILE['name']}", self.MANUAL_FILE["url"])]
 
-    def get_file_hash(self, file_url: str) -> str:
-        import hashlib
-
-        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+    # get_file_hash: inherited from DataSource (src/data/sources/base.py).
 
     def local_path(self, relative_path: str) -> str:
         return os.path.join("data", self.cfg.data_path, relative_path)
@@ -240,28 +238,21 @@ class BermanMiningSource(DataSource):
             )
             # xr_reproject's own "spatial_ref" is dropped (its coords don't
             # match the rounded/renamed ones assigned above) and rewritten
-            # fresh below -- .rio.write_crs() records the CRS as each data
-            # variable's own encoding["grid_mapping"], not an attr, so the
-            # "grid_mapping" entry in the encoding dict is required or the
-            # explicit encoding= passed to to_zarr() silently drops that
-            # link. Also stash a plain string fallback attr (must come after
-            # write_crs(), which strips any pre-existing "crs" attr key).
+            # fresh via write_crs_and_grid_mapping_encoding() below.
             reprojected_ds = reprojected_ds.drop_vars(["spatial_ref"], errors="ignore")
-            reprojected_ds = reprojected_ds.rio.write_crs(geobox.crs)
-            reprojected_ds.attrs["crs"] = str(geobox.crs)
             reprojected_ds = reprojected_ds.chunk({"time": 1, "band": 1, dim_y: 512, dim_x: 512})
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
+            base_encoding = {
                 var: {
                     "chunks": (1, 512, 512, 1),
                     "compressors": (compressor,),
                     "dtype": "uint8",
                     "fill_value": 255,
-                    "grid_mapping": "spatial_ref",
                 }
                 for var in reprojected_ds.data_vars
             }
+            reprojected_ds, encoding = write_crs_and_grid_mapping_encoding(reprojected_ds, geobox, base_encoding)
             reprojected_ds.to_zarr(target.output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
             return True
         except Exception:

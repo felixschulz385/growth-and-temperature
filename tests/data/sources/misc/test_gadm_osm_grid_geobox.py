@@ -245,3 +245,45 @@ def test_osm_execute_grid_uses_y_x_dims_for_ease_geobox(tmp_path, monkeypatch):
 
     ds = xr.open_zarr(target.output_path, consolidated=False)
     assert set(ds["land_mask"].dims) == {"y", "x"}
+
+
+def test_osm_execute_grid_crs_is_readable_after_round_trip(tmp_path, monkeypatch):
+    """Regression test: unlike every other GRID step, OSM's writer relied
+    solely on rasterize()'s own georeferencing instead of an explicit
+    .rio.write_crs() + "grid_mapping" encoding entry -- see
+    write_crs_and_grid_mapping_encoding()'s docstring for why that silently
+    leaves `.rio.crs` unreadable on a later open even with valid CRS
+    metadata in the store."""
+    import rioxarray  # noqa: F401 -- registers the .rio accessor
+    import xarray as xr
+
+    osm, ctx = _make(tmp_path, "osm", grid_id="ease6933")
+
+    import src.data.common.geobox as geobox_module
+
+    fake_geobox = _coarse_ease_geobox()
+    monkeypatch.setattr(geobox_module, "get_target_geobox", lambda passed_ctx: fake_geobox)
+
+    import geopandas as gpd
+    from shapely.geometry import Polygon
+
+    gdf = gpd.GeoDataFrame(geometry=[Polygon([(0, 0), (1, 0), (1, 1), (0, 1)])], crs="EPSG:4326")
+    input_path = str(tmp_path / "land_polygons.gpkg")
+    gdf.to_file(input_path, driver="GPKG")
+
+    from src.data.sources.steps import Completion, PipelineStep, StepTarget
+
+    target = StepTarget(
+        source_id=osm.ID,
+        step=PipelineStep.GRID,
+        key="osm",
+        output_path=str(tmp_path / "out" / "land_mask.zarr"),
+        inputs=(input_path,),
+        completion=Completion.MARKER,
+    )
+    assert osm._execute_grid(target) is True
+
+    ds = xr.open_zarr(target.output_path, consolidated=False, decode_coords="all")
+    assert ds["land_mask"].encoding.get("grid_mapping") == "spatial_ref"
+    assert ds.rio.crs is not None
+    assert ds.attrs.get("crs")  # redundant plain-string fallback

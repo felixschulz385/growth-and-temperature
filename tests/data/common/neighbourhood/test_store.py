@@ -78,6 +78,42 @@ def test_write_disc_tile_lands_in_correct_region_others_untouched(tmp_path):
     assert np.isnan(ds["S_d"].sel(time=time1, radius_km=1).values).all()
 
 
+def test_write_disc_tile_dtype_param_skips_stored_dtype_lookup(tmp_path, monkeypatch):
+    """A caller writing many tiles to the same store in a loop should be
+    able to resolve the dtype once and pass it in, instead of paying for a
+    redundant `xr.open_zarr()` metadata parse (`_stored_dtype()`) on every
+    single tile write."""
+    import src.data.common.neighbourhood.store as store_module
+
+    gbox = _make_geobox()
+    tile_size = 10
+    ladder = [1, 2, 3]
+    path = tmp_path / "s_d.zarr"
+    create_empty_disc_sum_store(path, gbox, years=[2020], ladder_km=ladder, tile_size=tile_size)
+
+    tiles = GeoboxTiles(gbox, (tile_size, tile_size))
+    tile00 = tiles[0, 0]
+    field = xr_zeros(tile00, dtype="float32") + 7.0
+    stacked = xr.concat([field] * len(ladder), dim="radius_km").assign_coords(radius_km=ladder)
+
+    calls = []
+    original = store_module._stored_dtype
+
+    def _counting_stored_dtype(*a, **k):
+        calls.append(1)
+        return original(*a, **k)
+
+    monkeypatch.setattr(store_module, "_stored_dtype", _counting_stored_dtype)
+
+    assert write_disc_tile(path, stacked, year=2020, variable="S_d", dtype=np.dtype("float32"))
+    assert calls == []  # _stored_dtype() never called -- dtype was passed in
+
+    ds = xr.open_zarr(str(path), consolidated=False, mask_and_scale=False)
+    time0 = pd.Timestamp("2020-12-31")
+    written = ds["S_d"].sel(time=time0, radius_km=1).values
+    assert (written[:, :tile_size] == 7.0).all()
+
+
 def test_write_disc_tile_two_tiles_both_land_correctly(tmp_path):
     gbox = _make_geobox()
     tile_size = 10

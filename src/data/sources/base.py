@@ -178,6 +178,22 @@ class DataSource(abc.ABC):
                     return year
         return None
 
+    @staticmethod
+    def get_file_hash(file_url: str) -> str:
+        """`RemoteFileCatalog`'s stable per-file identifier -- an md5 of the
+        remote URL, used as `artifacts.unit_id`/`remote_files.file_hash` in
+        the ledger.
+
+        Was duplicated byte-for-byte across acag/plad/berman_mining/
+        ntl_harm/esacci/misc/_fetch.py/glass/eog before being factored out
+        here -- unlike `_extract_year`, every one of those copies had zero
+        behavioral variation (same hash algorithm, same encoding), so there
+        was no real difference to preserve by keeping them separate.
+        """
+        import hashlib
+
+        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+
     def _dask_client(self):
         """Shared Dask client factory for raster/tile-processing sources.
 

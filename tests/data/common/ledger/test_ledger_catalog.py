@@ -116,3 +116,25 @@ def test_refresh_entrypoint_source_survives_one_crawl_failure(ledger):
     # The failed entrypoint is not marked crawled, so it's retried next time.
     missing = ledger.missing_entrypoints()
     assert missing == [{"year": 2020}]
+
+
+def test_refresh_entrypoint_source_retries_a_zero_file_result(ledger):
+    """Some sources (e.g. ntl_harm's `_get_figshare_files`) swallow a
+    transient network/API failure internally and return `[]` instead of
+    raising. That must be retried next refresh too -- treated the same as
+    the explicit-exception case above -- not silently treated as "this
+    entrypoint genuinely has no files" and marked crawled forever."""
+    source = _EntrypointSource(
+        entrypoints=[{"year": 2020}, {"year": 2021}],
+        files_by_year={2021: [("2021/b.hdf", "https://x/2021/b.hdf")]},  # 2020 -> [] (default)
+    )
+    added = catalog.refresh(ledger, source)
+    assert added == 1
+    missing = ledger.missing_entrypoints()
+    assert missing == [{"year": 2020}]
+
+    # A later refresh, once the transient failure clears up, still finds it.
+    source._files_by_year[2020] = [("2020/a.hdf", "https://x/2020/a.hdf")]
+    added_again = catalog.refresh(ledger, source)
+    assert added_again == 1
+    assert ledger.missing_entrypoints() == []

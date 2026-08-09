@@ -28,6 +28,7 @@ from typing import Any, Callable, Iterable, Optional
 
 import duckdb
 
+from src.data.common.hpc.push import PushResult
 from src.data.common.ledger import schema
 from src.data.common.ledger.paths import remote_ledger_path
 
@@ -82,19 +83,6 @@ class DownloadResult:
     file_hash: str
     ok: bool
     local_path: Optional[str] = None
-    bytes: Optional[int] = None
-    error: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class PushResult:
-    """One unit's HPC-push outcome, fed to `record_push_batch()`. Used for
-    both FETCH file-units and PREPARE/GRID step-units (`common/hpc/push.py`
-    is the shared producer)."""
-
-    step: str
-    unit_id: str
-    ok: bool
     bytes: Optional[int] = None
     error: Optional[str] = None
 
@@ -298,7 +286,15 @@ class SourceLedger:
 
     def record_download_batch(self, results: Iterable[DownloadResult]) -> None:
         """One DuckDB transaction for the whole batch -- the direct fix for
-        the old system's whole-file-parquet-rewrite-per-batch cost."""
+        the old system's whole-file-parquet-rewrite-per-batch cost.
+
+        `attempts` only increments on failure (`CASE WHEN NOT ?`) -- it's the
+        retry budget `pending_fetch(max_attempts=...)` bounds against, and a
+        successful download isn't a "spent attempt" for the file, just a step
+        towards a still-pending push. Incrementing it unconditionally here
+        as well as in `record_push_batch` would double-count every download-
+        then-push cycle, burning through the shared budget roughly twice as
+        fast for a file that downloads fine but keeps failing to push."""
         results = list(results)
         if not results:
             return
@@ -306,7 +302,8 @@ class SourceLedger:
             """
             UPDATE artifacts
             SET local_path = ?, bytes = COALESCE(?, bytes), local_state = ?,
-                last_error = ?, attempts = attempts + 1, updated_at = now()
+                last_error = ?, attempts = CASE WHEN NOT ? THEN attempts + 1 ELSE attempts END,
+                updated_at = now()
             WHERE step = 'fetch' AND unit_id = ?
             """,
             [
@@ -315,15 +312,27 @@ class SourceLedger:
                     r.bytes,
                     schema.LocalState.COMPLETE if r.ok else schema.LocalState.FAILED,
                     r.error,
+                    r.ok,
                     r.file_hash,
                 )
                 for r in results
             ],
         )
 
-    def record_push_batch(self, results: Iterable[PushResult]) -> None:
+    def record_push_batch(self, step: str, results: Iterable[PushResult]) -> None:
         """One DuckDB transaction for the whole batch. Shared by the FETCH
-        driver and `pipeline transfer` (both push through `HPCPusher`)."""
+        driver and `pipeline transfer` (both push through `HPCPusher`).
+
+        Takes `common.hpc.push.PushResult` directly -- that module's own
+        result type, with no `step` field of its own (a push is always
+        against one (step, unit_id) batch at a time, so *step* is one value
+        for the whole call, not per-result) -- rather than a second,
+        near-identical ledger-only `PushResult` dataclass callers used to
+        have to reconstruct field-by-field from the one `HPCPusher` actually
+        returns.
+
+        `attempts` only increments on failure -- see `record_download_batch`'s
+        docstring for why the two must not both count a successful step."""
         results = list(results)
         if not results:
             return
@@ -331,7 +340,7 @@ class SourceLedger:
             """
             UPDATE artifacts
             SET remote_state = ?, bytes = COALESCE(?, bytes), last_error = ?,
-                attempts = attempts + 1, updated_at = now()
+                attempts = CASE WHEN NOT ? THEN attempts + 1 ELSE attempts END, updated_at = now()
             WHERE step = ? AND unit_id = ?
             """,
             [
@@ -339,7 +348,8 @@ class SourceLedger:
                     schema.RemoteState.VERIFIED if r.ok else schema.RemoteState.FAILED,
                     r.bytes,
                     r.error,
-                    r.step,
+                    r.ok,
+                    step,
                     r.unit_id,
                 )
                 for r in results
@@ -415,10 +425,31 @@ class SourceLedger:
             [state, step, unit_id],
         )
 
+    def mark_local_and_remote_batch(self, step: str, unit_ids: Iterable[str], local_state: str, remote_state: str) -> None:
+        """Set both `local_state`/`remote_state` for every id in *unit_ids*
+        to the same pair of values, in one `executemany` transaction --
+        `reconcile_fetch` (common/ledger/bootstrap.py) used to call
+        `set_local_state`/`set_remote_state` once each per matched file in a
+        Python loop, issuing 2N sequential single-row DuckDB statements for
+        a source with N already-verified files (thousands for GLASS/EOG),
+        the same N+1 pattern `record_download_batch`/`record_push_batch`
+        already avoid for the FETCH driver's own hot path."""
+        unit_ids = list(unit_ids)
+        if not unit_ids:
+            return
+        self._con.executemany(
+            "UPDATE artifacts SET local_state = ?, remote_state = ?, updated_at = now() "
+            "WHERE step = ? AND unit_id = ?",
+            [(local_state, remote_state, step, unit_id) for unit_id in unit_ids],
+        )
+
     def local_state(self, step: str, unit_id: str) -> Optional[str]:
-        row = self._con.execute(
+        result = self._execute_readonly_safe(
             "SELECT local_state FROM artifacts WHERE step = ? AND unit_id = ?", [step, unit_id]
-        ).fetchone()
+        )
+        if result is None:
+            return None
+        row = result.fetchone()
         return row[0] if row else None
 
     def remote_state(self, step: str, unit_id: str) -> Optional[str]:
@@ -429,6 +460,26 @@ class SourceLedger:
             return None
         row = result.fetchone()
         return row[0] if row else None
+
+    def remote_states(self, step: str, unit_ids: list[str]) -> dict[str, str]:
+        """Batched counterpart to `remote_state()` -- one `IN (...)` query
+        instead of one per unit_id, same shape as `_existing_keys()`.
+        `handle_transfer` (src/cli/pipeline/handlers.py) used to call
+        `remote_state()` once per transfer unit to compute its pending list,
+        an N+1 pattern costing that many sequential DuckDB round trips
+        before any push starts for a source with hundreds-to-thousands of
+        units. A unit_id with no tracked row is simply absent from the
+        returned dict (matches `remote_state()`'s `None`-if-missing)."""
+        if not unit_ids:
+            return {}
+        placeholders = ",".join("?" * len(unit_ids))
+        result = self._execute_readonly_safe(
+            f"SELECT unit_id, remote_state FROM artifacts WHERE step = ? AND unit_id IN ({placeholders})",
+            [step, *unit_ids],
+        )
+        if result is None:
+            return {}
+        return dict(result.fetchall())
 
     # ------------------------------------------------------------------
     # summary / requires

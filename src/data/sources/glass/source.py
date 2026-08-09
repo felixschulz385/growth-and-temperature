@@ -44,6 +44,7 @@ from odc.geo.geom import clip_lon180
 from odc.geo.xr import xr_reproject
 from zarr.codecs import BloscCodec
 
+from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -150,35 +151,19 @@ class GlassSource(_CrawlerMixin, DataSource):
     async def download_async(self, file_url: str, output_path: str, session: Any = None) -> None:
         import asyncio
 
-        import aiofiles
         import aiohttp
 
-        await asyncio.sleep(0.5)
+        from src.data.common.fetch.http import download_with_retries
 
-        async def _download_with_session(sess: aiohttp.ClientSession):
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    async with sess.get(file_url) as response:
-                        response.raise_for_status()
-                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                        async with aiofiles.open(output_path, "wb") as f:
-                            async for chunk in response.content.iter_chunked(8192):
-                                await f.write(chunk)
-                        return
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep((attempt + 1) * 2)
-                    else:
-                        raise
+        await asyncio.sleep(0.5)
 
         if session is None:
             connector = aiohttp.TCPConnector(limit=5, limit_per_host=2)
             timeout = aiohttp.ClientTimeout(total=300, connect=30)
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as sess:
-                await _download_with_session(sess)
+                await download_with_retries(sess, file_url, output_path)
         else:
-            await _download_with_session(session)
+            await download_with_retries(session, file_url, output_path)
 
     def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
         filename = os.path.basename(relative_path)
@@ -189,10 +174,8 @@ class GlassSource(_CrawlerMixin, DataSource):
         except (IndexError, ValueError, StopIteration):
             return None
 
-    def get_file_hash(self, file_url: str) -> str:
-        import hashlib
-
-        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+    # get_file_hash: inherited from DataSource (src/data/sources/base.py) --
+    # this redefinition used to shadow _CrawlerMixin's identical one.
 
     # ------------------------------------------------------------------
     # plan()/execute() dispatch
@@ -708,20 +691,11 @@ class GlassSource(_CrawlerMixin, DataSource):
             sample_ds.close()
 
             empty_ds = xr.Dataset(data_vars, attrs=sample_attrs)
-            # .rio.write_crs() records the CRS as each data variable's own
-            # encoding["grid_mapping"] = "spatial_ref", not an attr -- the
-            # "grid_mapping" entry below is required or the explicit
-            # encoding= passed to to_zarr() silently drops that link. Also
-            # stash a plain string fallback attr (must come after
-            # write_crs(), which strips any pre-existing "crs" attr key).
-            empty_ds = empty_ds.rio.write_crs(target_geobox.crs)
-            empty_ds.attrs["crs"] = str(target_geobox.crs)
-
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
-                var: {"chunks": (1, 1, 512, 512), "compressors": (compressor,), "dtype": "uint16", "grid_mapping": "spatial_ref"}
-                for var in variables
+            base_encoding = {
+                var: {"chunks": (1, 1, 512, 512), "compressors": (compressor,), "dtype": "uint16"} for var in variables
             }
+            empty_ds, encoding = write_crs_and_grid_mapping_encoding(empty_ds, target_geobox, base_encoding)
 
             empty_ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, zarr_format=3, consolidated=False)
             return True

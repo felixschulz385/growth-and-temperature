@@ -26,6 +26,51 @@ logger = logging.getLogger(__name__)
 _NON_DATA_VAR_NAMES = {"spatial_ref", "crs", "grid_mapping"}
 
 
+def write_crs_and_grid_mapping_encoding(ds: xr.Dataset, geobox, base_encoding: Dict[str, Dict[str, Any]]):
+    """Write *geobox*'s CRS onto *ds* and return `(ds, encoding)`, where every
+    entry in *base_encoding* has `"grid_mapping": "spatial_ref"` merged in.
+
+    `.rio.write_crs()` records the CRS link as each *data variable's own*
+    `encoding["grid_mapping"] = "spatial_ref"` -- not as an attr. A caller-
+    supplied zarr `encoding=` dict passed to `to_zarr()` becomes each
+    variable's *entire* encoding (not merged with what `write_crs()` just
+    set), so an encoding dict built without this key silently drops the CRS
+    link: the written store has a perfectly valid CRS on `"spatial_ref"` but
+    no data variable points to it, so `.rio.crs` (and any grid_mapping-based
+    CRS reader) returns `None` on every subsequent read.
+
+    `create_empty_target_zarr` above applies this automatically for sources
+    that go through `SpatialProcessor`; gadm/snl_mining/glass/berman_mining/
+    ecoregions hand-roll their own zarr write path outside it (different
+    variable shapes -- no `time`/`band` dims, multiple dtypes, etc. -- than
+    that method assumes) and each independently needed this exact fix
+    hand-copied in (found via `src.data.sources.verify` catching real "no
+    CRS found" failures on HPC-produced GRID outputs). Centralized here so
+    the next hand-rolled GRID zarr writer gets it by construction.
+    """
+    ds = ds.rio.write_crs(geobox.crs)
+    ds.attrs["crs"] = str(geobox.crs)
+    encoding = {var: {**enc, "grid_mapping": "spatial_ref"} for var, enc in base_encoding.items()}
+    return ds, encoding
+
+
+def reproject_for_tile_overlap(gdf, target_crs):
+    """Reproject *gdf* to *target_crs* before testing per-tile overlap via a
+    plain shapely `.intersects()`/`gdf.sindex.query()` against tile bounds
+    built in that CRS.
+
+    Comparing un-reprojected geometries (e.g. GADM/RESOLVE's native WGS84
+    lon/lat degrees) against tile bounds built in a projected-meters CRS
+    (e.g. EASE6933) is numerically incompatible (~1e7-magnitude meters vs
+    +/-180/+/-90 degrees) and silently finds ~no overlap for ~every tile --
+    no exception, just ~100%-null output (confirmed via
+    `src.data.sources.verify` catching real ~100%-null GADM GRID output
+    despite valid input geometries and a clean, no-exception run). Call this
+    once, up front, on the whole layer -- not per tile.
+    """
+    return gdf.to_crs(target_crs)
+
+
 class SpatialProcessor:
     """
     Common spatial processing utilities for reprojecting data to unified grids.

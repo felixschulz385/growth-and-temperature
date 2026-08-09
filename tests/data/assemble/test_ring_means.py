@@ -101,6 +101,18 @@ def test_ring_means_from_discs_mismatched_ladder_raises():
         ring_means_from_discs(S_d, N_d)
 
 
+def test_ring_means_from_discs_unsorted_ladder_raises():
+    """`ring_S[1:] = S[1:] - S[:-1]` assumes an ascending ladder -- an
+    out-of-order radius_km (e.g. a misconfigured ladder_km list) must be
+    rejected explicitly rather than silently producing negative/nonsensical
+    annulus values."""
+    ladder = [1, 3, 2]  # out of order
+    S_d = xr.DataArray(np.zeros((3, 2, 2)), dims=("radius_km", "y", "x"), coords={"radius_km": ladder})
+    N_d = xr.DataArray(np.zeros((3, 2, 2)), dims=("radius_km", "y", "x"), coords={"radius_km": ladder})
+    with pytest.raises(ValueError):
+        ring_means_from_discs(S_d, N_d)
+
+
 def test_tabularize_tile_row_count_matches_mask_and_pixel_ids_decode():
     gbox = _make_geobox(width_m=3000, height_m=3000)  # 3x3 tile
     ladder = [1, 2]

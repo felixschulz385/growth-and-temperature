@@ -68,10 +68,17 @@ def ring_means_from_discs(S_d: xr.DataArray, N_d: xr.DataArray) -> xr.DataArray:
     docs/design/03-neighbourhood-engine.md §2), so 0/0 is the correct,
     unambiguous "undefined" signal.
     """
-    if list(S_d.coords["radius_km"].values) != list(N_d.coords["radius_km"].values):
+    radius_km = list(S_d.coords["radius_km"].values)
+    if radius_km != list(N_d.coords["radius_km"].values):
         raise ValueError("S_d/N_d radius_km ladders do not match")
     if S_d.shape != N_d.shape:
         raise ValueError(f"S_d/N_d shape mismatch: {S_d.shape} vs {N_d.shape}")
+    # `ring_S[1:] = S[1:] - S[:-1]` below assumes the ladder is ascending --
+    # nothing upstream (convolve_discs/write_disc_tile) sorts or validates
+    # it, so an out-of-order radius_km list would silently produce
+    # nonsensical/negative annulus sums with no error.
+    if radius_km != sorted(radius_km):
+        raise ValueError(f"radius_km must be sorted ascending, got {radius_km}")
 
     S = np.asarray(S_d.values)
     N = np.asarray(N_d.values)

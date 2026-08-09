@@ -18,7 +18,6 @@ from src.data.common.hpc.push import HPCPusher, PushUnit
 from src.data.common.ledger import catalog
 from src.data.common.ledger.paths import ledger_path
 from src.data.common.ledger.store import DownloadResult
-from src.data.common.ledger.store import PushResult as LedgerPushResult
 from src.data.common.ledger.store import SourceLedger
 
 logger = logging.getLogger(__name__)
@@ -177,10 +176,7 @@ def run_fetch_with_client(
                 push_results = pusher.push_batched(
                     push_units, raw_root, max_files=tar_max_files, max_bytes=tar_max_size_mb * 1024 * 1024,
                 )
-                ledger.record_push_batch(
-                    LedgerPushResult(step="fetch", unit_id=r.unit_id, ok=r.ok, bytes=r.bytes, error=r.error)
-                    for r in push_results
-                )
+                ledger.record_push_batch("fetch", push_results)
 
             batches_since_push += 1
             if batches_since_push >= ledger_push_every:

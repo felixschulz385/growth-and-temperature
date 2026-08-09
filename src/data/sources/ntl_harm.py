@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import hashlib
 import json
 import logging
 import os
@@ -27,7 +26,6 @@ import tempfile
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-import aiofiles
 import aiohttp
 import pandas as pd
 import requests
@@ -93,8 +91,7 @@ class NtlHarmSource(DataSource):
                     return year
         return None
 
-    def get_file_hash(self, file_url: str) -> str:
-        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+    # get_file_hash: inherited from DataSource (src/data/sources/base.py).
 
     def _get_figshare_files(self) -> List[Dict[str, Any]]:
         now = time.time()
@@ -141,32 +138,17 @@ class NtlHarmSource(DataSource):
         return [{"year": int(y), "day": 1} for y in sorted(years)]
 
     async def download_async(self, source_url: str, output_path: str, session: Optional[aiohttp.ClientSession] = None) -> None:
-        await asyncio.sleep(0.3)
+        from src.data.common.fetch.http import download_with_retries
 
-        async def _do_download(sess: aiohttp.ClientSession):
-            max_retries = 3
-            for attempt in range(max_retries):
-                try:
-                    async with sess.get(source_url) as resp:
-                        resp.raise_for_status()
-                        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                        async with aiofiles.open(output_path, "wb") as fh:
-                            async for chunk in resp.content.iter_chunked(8192):
-                                await fh.write(chunk)
-                        return
-                except (aiohttp.ClientError, asyncio.TimeoutError):
-                    if attempt < max_retries - 1:
-                        await asyncio.sleep((attempt + 1) * 2)
-                    else:
-                        raise
+        await asyncio.sleep(0.3)
 
         if session is None:
             connector = aiohttp.TCPConnector(limit=10, limit_per_host=5)
             timeout = aiohttp.ClientTimeout(total=600, connect=60)
             async with aiohttp.ClientSession(connector=connector, timeout=timeout) as sess:
-                await _do_download(sess)
+                await download_with_retries(sess, source_url, output_path)
         else:
-            await _do_download(session)
+            await download_with_retries(session, source_url, output_path)
 
     # ------------------------------------------------------------------
     # plan()/execute() dispatch

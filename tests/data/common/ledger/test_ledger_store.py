@@ -59,15 +59,35 @@ def test_pending_fetch_excludes_remote_verified(ledger):
     ledger.add_remote_files([("a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
     assert len(ledger.pending_fetch(10)) == 1
 
-    ledger.record_push_batch([PushResult(step="fetch", unit_id="a", ok=True, bytes=100)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="a", ok=True, bytes=100)])
     assert ledger.pending_fetch(10) == []
 
 
 def test_pending_fetch_retries_failed(ledger):
     ledger.add_remote_files([("a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
-    ledger.record_push_batch([PushResult(step="fetch", unit_id="a", ok=False, error="rsync failed")])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="a", ok=False, error="rsync failed")])
     units = ledger.pending_fetch(10)
     assert [u.file_hash for u in units] == ["a"]
+
+
+def test_attempts_only_increments_on_failure_not_on_every_download_or_push(ledger):
+    """A successful download/push is not a "spent attempt" -- only a failed
+    one is. Otherwise a file that downloads fine every cycle but keeps
+    failing to push burns the shared `attempts` budget twice as fast as one
+    that only fails to download (each cycle: 1 successful download + 1
+    failed push used to cost 2 attempts, not 1)."""
+    ledger.add_remote_files([("a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
+
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=True, local_path="/tmp/a", bytes=10)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="a", ok=False, error="rsync failed")])
+    # One real failure (the push) -- attempts must read 1, not 2.
+    units = ledger.pending_fetch(10, max_attempts=2)
+    assert [u.file_hash for u in units] == ["a"]
+
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=True, local_path="/tmp/a", bytes=10)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="a", ok=False, error="rsync failed")])
+    # Two real (push) failures now -- excluded once attempts reaches max_attempts=2.
+    assert ledger.pending_fetch(10, max_attempts=2) == []
 
 
 def test_completed_fetch_files_requires_remote_verified(ledger):
@@ -79,7 +99,7 @@ def test_completed_fetch_files_requires_remote_verified(ledger):
     # old system's "completed" meaning HPC-verified, never local-only.
     assert ledger.completed_fetch_files() == []
 
-    ledger.record_push_batch([PushResult(step="fetch", unit_id="a", ok=True, bytes=10)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="a", ok=True, bytes=10)])
     assert ledger.completed_fetch_files() == ["2020/a.nc"]
 
 
@@ -91,9 +111,9 @@ def test_completed_fetch_files_filters_by_year(ledger):
         [("2020/2020.nc", "https://x/a.nc"), ("2021/2021.nc", "https://x/b.nc")],
         get_file_hash=lambda url: url.split("/")[-1].replace(".nc", ""),
     )
-    ledger.record_push_batch([
-        PushResult(step="fetch", unit_id="a", ok=True),
-        PushResult(step="fetch", unit_id="b", ok=True),
+    ledger.record_push_batch("fetch", [
+        PushResult(unit_id="a", ok=True),
+        PushResult(unit_id="b", ok=True),
     ])
     assert ledger.completed_fetch_files(year=2020) == ["2020/2020.nc"]
     assert ledger.completed_fetch_files(year=2021) == ["2021/2021.nc"]
@@ -110,6 +130,40 @@ def test_ensure_artifact_and_local_remote_state(ledger):
     ledger.set_remote_state("prepare", "2020", RemoteState.VERIFIED)
     assert ledger.remote_state("prepare", "2020") == RemoteState.VERIFIED
     assert ledger.step_complete("prepare") is True
+
+
+def test_remote_states_batched_lookup_matches_per_unit_remote_state(ledger):
+    ledger.ensure_artifact("prepare", "a")
+    ledger.ensure_artifact("prepare", "b")
+    ledger.set_remote_state("prepare", "a", RemoteState.VERIFIED)
+    # "c" has no tracked row at all.
+
+    states = ledger.remote_states("prepare", ["a", "b", "c"])
+    assert states == {"a": RemoteState.VERIFIED, "b": RemoteState.MISSING}
+    assert "c" not in states
+
+
+def test_remote_states_empty_list_returns_empty_dict(ledger):
+    assert ledger.remote_states("prepare", []) == {}
+
+
+def test_mark_local_and_remote_batch_sets_both_states_for_every_unit(ledger):
+    ledger.ensure_artifact("fetch", "a")
+    ledger.ensure_artifact("fetch", "b")
+    ledger.ensure_artifact("fetch", "c")
+
+    ledger.mark_local_and_remote_batch("fetch", ["a", "b"], LocalState.COMPLETE, RemoteState.VERIFIED)
+
+    assert ledger.local_state("fetch", "a") == LocalState.COMPLETE
+    assert ledger.remote_state("fetch", "a") == RemoteState.VERIFIED
+    assert ledger.local_state("fetch", "b") == LocalState.COMPLETE
+    assert ledger.remote_state("fetch", "b") == RemoteState.VERIFIED
+    # Untouched -- not passed in unit_ids.
+    assert ledger.local_state("fetch", "c") == LocalState.MISSING
+
+
+def test_mark_local_and_remote_batch_noop_on_empty_list(ledger):
+    ledger.mark_local_and_remote_batch("fetch", [], LocalState.COMPLETE, RemoteState.VERIFIED)  # must not raise
 
 
 def test_ensure_artifact_preserves_existing_paths_when_not_given(ledger):
@@ -145,9 +199,9 @@ def test_stats_aggregates_local_and_remote(ledger):
         get_file_hash=lambda url: url.split("/")[-1].replace(".nc", ""),
     )
     ledger.record_download_batch([DownloadResult(file_hash="a", ok=True, bytes=10)])
-    ledger.record_push_batch([
-        PushResult(step="fetch", unit_id="a", ok=True, bytes=10),
-        PushResult(step="fetch", unit_id="b", ok=False, error="boom"),
+    ledger.record_push_batch("fetch", [
+        PushResult(unit_id="a", ok=True, bytes=10),
+        PushResult(unit_id="b", ok=False, error="boom"),
     ])
     stats = ledger.stats("fetch")
     assert stats["total"] == 2
@@ -218,6 +272,16 @@ def test_remote_state_degrades_gracefully_on_schemaless_ledger(tmp_path):
     _schemaless_duckdb_file(path)
     with SourceLedger.open(path, data_path="plad", read_only=True) as ledger:
         assert ledger.remote_state("fetch", "some-unit") is None
+
+
+def test_local_state_degrades_gracefully_on_schemaless_ledger(tmp_path):
+    """local_state() must route through _execute_readonly_safe() exactly
+    like remote_state() just above -- it didn't, until this was fixed, and
+    raised a raw duckdb.CatalogException instead of returning None."""
+    path = str(tmp_path / "plad.duckdb")
+    _schemaless_duckdb_file(path)
+    with SourceLedger.open(path, data_path="plad", read_only=True) as ledger:
+        assert ledger.local_state("fetch", "some-unit") is None
 
 
 def test_step_complete_degrades_gracefully_on_schemaless_ledger(tmp_path):

@@ -64,6 +64,8 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 from src.data.common.geobox import get_target_geobox
+from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
+from src.data.common.years import MAX_PLAUSIBLE_YEAR as _MAX_PLAUSIBLE_YEAR, MIN_PLAUSIBLE_YEAR as _MIN_PLAUSIBLE_YEAR
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -357,16 +359,29 @@ class SnlMiningSource(DataSource):
     #: (an `OutOfBoundsDatetime` chained into an unrelated missing-`cftime`
     #: ImportError). Confirmed on real data: a year of 150 reached
     #: `_rasterize_tiles_to_zarr` this way and crashed GRID, not PREPARE.
-    MIN_PLAUSIBLE_YEAR = 1800
-    MAX_PLAUSIBLE_YEAR = 2100
+    #: Sourced from src.data.common.years -- shared across any source that
+    #: infers time bounds from untrusted/enriched content, not just this one.
+    MIN_PLAUSIBLE_YEAR = _MIN_PLAUSIBLE_YEAR
+    MAX_PLAUSIBLE_YEAR = _MAX_PLAUSIBLE_YEAR
+
+    def _llm_year_exprs(self, llm_years_available: bool) -> Tuple[str, str, str]:
+        """`(llm_open_expr, llm_close_expr, llm_join)` SQL fragments for
+        falling back to LLM-imputed opening/closing years -- shared by
+        `_determine_year_bounds` and `_create_active_mines_table` so the two
+        can't independently drift on how that fallback is expressed."""
+        if not llm_years_available:
+            return "NULL", "NULL", ""
+        return (
+            f"y.{self.llm_opening_year_column}",
+            f"y.{self.llm_closing_year_column}",
+            f"LEFT JOIN raw_db.main.{self.llm_years_table} AS y USING (property_id)",
+        )
 
     def _determine_year_bounds(self, con, llm_years_available: bool) -> Tuple[int, int]:
         if self.cfg.year_range:
             return int(self.cfg.year_range[0]), int(self.cfg.year_range[1])
 
-        llm_open_expr = f"y.{self.llm_opening_year_column}" if llm_years_available else "NULL"
-        llm_close_expr = f"y.{self.llm_closing_year_column}" if llm_years_available else "NULL"
-        llm_join = f"LEFT JOIN raw_db.main.{self.llm_years_table} AS y USING (property_id)" if llm_years_available else ""
+        llm_open_expr, llm_close_expr, llm_join = self._llm_year_exprs(llm_years_available)
         open_year = f"COALESCE(p.{self.opening_year_column}, {llm_open_expr})"
         close_year = f"COALESCE(p.{self.closing_year_column}, {llm_close_expr}, {open_year})"
         plausible = f"BETWEEN {self.MIN_PLAUSIBLE_YEAR} AND {self.MAX_PLAUSIBLE_YEAR}"
@@ -397,9 +412,7 @@ class SnlMiningSource(DataSource):
         return int(start_year), max(int(end_year), int(start_year))
 
     def _create_active_mines_table(self, con, start_year: int, end_year: int, raster_crs: str, llm_years_available: bool) -> None:
-        llm_open_expr = f"y.{self.llm_opening_year_column}" if llm_years_available else "NULL"
-        llm_close_expr = f"y.{self.llm_closing_year_column}" if llm_years_available else "NULL"
-        llm_join = f"LEFT JOIN raw_db.main.{self.llm_years_table} AS y USING (property_id)" if llm_years_available else ""
+        llm_open_expr, llm_close_expr, llm_join = self._llm_year_exprs(llm_years_available)
         query = f"""
             CREATE OR REPLACE TABLE active_mines AS
             WITH canonical_mines AS (
@@ -645,25 +658,19 @@ class SnlMiningSource(DataSource):
                         "price-matched mine buffer covers the pixel (see module docstring)."
                     ),
                 },
-            ).rio.write_crs(geobox.crs)
-            # .rio.write_crs() records the CRS as each data variable's own
-            # encoding["grid_mapping"] = "spatial_ref", not an attr -- the
-            # "grid_mapping" entry in the encoding dict below is required or
-            # the explicit encoding= passed to to_zarr() silently drops that
-            # link. Also stash a plain string fallback attr.
-            ds.attrs["crs"] = str(geobox.crs)
+            )
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {}
+            base_encoding = {}
             for var in self.output_variables:
                 dtype_name = self.buffer_tables[var][3]
-                encoding[var] = {
+                base_encoding[var] = {
                     "chunks": (1, 1, self.tile_size, self.tile_size),
                     "compressors": (compressor,),
                     "dtype": dtype_name,
                     "fill_value": DTYPE_FILL_VALUES[dtype_name],
-                    "grid_mapping": "spatial_ref",
                 }
+            ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
             ds.to_zarr(output_path, mode="w", compute=False, encoding=encoding, zarr_format=3, consolidated=False)
             return True
         except Exception:

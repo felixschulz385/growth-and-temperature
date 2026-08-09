@@ -94,19 +94,23 @@ def compute_land_tiles(land_polygons_path: str, lat_clip_deg: float = 60.0) -> S
 
     Mirrors gadm.py's per-tile overlap pre-filter (reproject the vector layer
     to the tile grid's CRS once, up front, then a plain shapely
-    `intersects()` per tile) -- see gadm.py's GADM GRID step for the
-    CRS-mismatch pitfall (comparing un-reprojected WGS84 degrees against
-    projected-meter tile boxes silently finds ~no overlap) that reprojecting
-    first, rather than per tile, avoids. Unlike that GRID step, this isn't a
-    zarr rasterization: it is a one-time, 36x18-tile bounding-box overlap
-    check against a vector layer, producing a plain tile-id list for a STAC
-    query filter, so there's no zarr chunk size to align processing tiles to.
+    `intersects()` per tile) via the same shared
+    `reproject_for_tile_overlap()` helper gadm/ecoregions use -- see its
+    docstring for the CRS-mismatch pitfall (comparing un-reprojected WGS84
+    degrees against projected-meter tile boxes silently finds ~no overlap)
+    that reprojecting first, rather than per tile, avoids. Unlike a GRID
+    step, this isn't a zarr rasterization: it is a one-time, 36x18-tile
+    bounding-box overlap check against a vector layer, producing a plain
+    tile-id list for a STAC query filter, so there's no zarr chunk size to
+    align processing tiles to.
     """
     import geopandas as gpd
     import shapely.geometry
 
+    from src.data.common.raster.spatial import reproject_for_tile_overlap
+
     gdf = gpd.read_file(land_polygons_path, engine="pyogrio")
-    gdf = gdf.to_crs(SINUSOIDAL_PROJ4)
+    gdf = reproject_for_tile_overlap(gdf, SINUSOIDAL_PROJ4)
 
     land_tiles: Set[str] = set()
     for v in range(N_V):

@@ -29,7 +29,7 @@ def _write_index(local_index_dir, data_path, rows):
         ledger.add_remote_files(files, get_file_hash=lambda url: url)
         completed = [row["relative_path"] for row in rows if row["status_category"] == "completed"]
         if completed:
-            ledger.record_push_batch(PushResult(step="fetch", unit_id=p, ok=True) for p in completed)
+            ledger.record_push_batch("fetch", (PushResult(unit_id=p, ok=True) for p in completed))
 
 
 def _make_source(tmp_path, year_range=(2019, 2021), rows=None, layout="legacy"):

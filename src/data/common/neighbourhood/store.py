@@ -137,7 +137,7 @@ def _stored_dtype(output_path, variable: str):
     return ds[variable].dtype
 
 
-def write_disc_tile(output_path, tile_data: xr.DataArray, year: int, variable: str) -> bool:
+def write_disc_tile(output_path, tile_data: xr.DataArray, year: int, variable: str, dtype=None) -> bool:
     """Write one tile's convolved output into its store region.
 
     `tile_data` has dims (radius_km, y, x) -- the trimmed, core-region
@@ -156,9 +156,16 @@ def write_disc_tile(output_path, tile_data: xr.DataArray, year: int, variable: s
     `uint16` for a count store, docs/design/02-storage.md §6) before writing.
     Without this, xarray silently writes float bit patterns into an integer
     zarr array, corrupting values on read-back rather than raising.
+
+    *dtype*, if given, skips the `_stored_dtype()` lookup (an `xr.open_zarr()`
+    call that parses the whole store's metadata) entirely -- it never
+    changes across tiles of the same store, so a caller writing many tiles
+    in a loop should resolve it once (e.g. from `_stored_dtype()` or the
+    dtype it originally created the store with) and pass it to every call,
+    rather than paying for a redundant metadata parse per tile.
     """
     try:
-        target_dtype = _stored_dtype(output_path, variable)
+        target_dtype = dtype if dtype is not None else _stored_dtype(output_path, variable)
         data = tile_data
         if np.dtype(target_dtype) != data.dtype:
             if np.issubdtype(np.dtype(target_dtype), np.integer):

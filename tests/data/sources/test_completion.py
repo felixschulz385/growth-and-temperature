@@ -53,7 +53,7 @@ def test_require_remote_false_locally_even_with_ledger_verified(tmp_path, ledger
     # Local file missing -- remote verification can't make it "complete".
     target = _path_exists_target(tmp_path, require_remote=True, exists=False)
     ledger.ensure_artifact("fetch", "2020/h09v05")
-    ledger.record_push_batch([PushResult(step="fetch", unit_id="2020/h09v05", ok=True)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="2020/h09v05", ok=True)])
     assert is_complete(target, ledger=ledger) is False
 
 
@@ -66,7 +66,7 @@ def test_require_remote_false_when_not_yet_verified(tmp_path, ledger):
 def test_require_remote_true_when_local_and_remote_verified(tmp_path, ledger):
     target = _path_exists_target(tmp_path, require_remote=True, exists=True)
     ledger.ensure_artifact("fetch", "2020/h09v05")
-    ledger.record_push_batch([PushResult(step="fetch", unit_id="2020/h09v05", ok=True)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="2020/h09v05", ok=True)])
     assert is_complete(target, ledger=ledger) is True
 
 
@@ -81,7 +81,7 @@ def test_marker_completion_with_require_remote(tmp_path, ledger):
     assert is_complete(target, ledger=ledger) is False  # not yet pushed
 
     ledger.ensure_artifact("grid", "all")
-    ledger.record_push_batch([PushResult(step="grid", unit_id="all", ok=True)])
+    ledger.record_push_batch("grid", [PushResult(unit_id="all", ok=True)])
     assert is_complete(target, ledger=ledger) is True
 
 

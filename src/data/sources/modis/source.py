@@ -151,6 +151,7 @@ class ModisSource(DataSource):
         os.makedirs(self.temp_dir, exist_ok=True)
 
         self._ledger = None
+        self._stac_client = None
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         """Overrides the base default in two places:
@@ -302,10 +303,18 @@ class ModisSource(DataSource):
         return targets
 
     def _get_stac_client(self):
-        import planetary_computer
-        import pystac_client
+        """Lazily opened, reused across `_search_items()` calls within one
+        run -- same caching shape as `_get_ledger()` above. `Client.open()`
+        is an HTTP round trip to the STAC root/conformance document;
+        `_execute_fetch()` runs once per (year, tile) `StepTarget`, so an
+        uncached client would reopen the catalog thousands of times over a
+        full run (e.g. ~20 years x ~300 land tiles) instead of once."""
+        if self._stac_client is None:
+            import planetary_computer
+            import pystac_client
 
-        return pystac_client.Client.open(self.stac_url, modifier=planetary_computer.sign_inplace)
+            self._stac_client = pystac_client.Client.open(self.stac_url, modifier=planetary_computer.sign_inplace)
+        return self._stac_client
 
     def _tile_bbox_4326(self, tile: str) -> List[float]:
         from pyproj import Transformer
@@ -401,17 +410,25 @@ class ModisSource(DataSource):
             return False
 
         valid_mask = modis_util.decode_qc_valid_mask(ds["qc"], self.qc_max_lst_error_k, product=self.product)
-        annual_lst, monthly_lst, monthly_count, annual_count = composite_to_annual(ds["lst"], valid_mask)
+        annual_lst, monthly_lst, monthly_count, annual_count, annual_month_count = composite_to_annual(
+            ds["lst"], valid_mask
+        )
 
         data_vars = {
             "lst_night": annual_lst.squeeze("time", drop=True).astype("float32"),
             "lst_night_monthly": monthly_lst.astype("float32"),
             "valid_period_count_monthly": monthly_count.astype("float32"),
             "valid_period_count_annual": annual_count.squeeze("time", drop=True).astype("float32"),
+            # Count of months that actually contributed to lst_night's own
+            # averaging -- unlike valid_period_count_annual (a raw
+            # observation-density count), this is the correctly-denominated
+            # reliability diagnostic for a month-first-then-annual composite;
+            # see composite_to_annual()'s docstring for why the two differ.
+            "valid_month_count_annual": annual_month_count.squeeze("time", drop=True).astype("float32"),
         }
         for key in ("emis_29", "emis_31", "emis_32", "view_angle", "view_time"):
             if key in ds.data_vars:
-                annual_var, _, _, _ = composite_to_annual(ds[key], valid_mask)
+                annual_var, _, _, _, _ = composite_to_annual(ds[key], valid_mask)
                 data_vars[key] = annual_var.squeeze("time", drop=True).astype("float32")
 
         out_ds = xr.Dataset(data_vars)
@@ -432,7 +449,10 @@ class ModisSource(DataSource):
         band_arrays: List[np.ndarray] = []
         band_names: List[str] = []
 
-        for var in ("lst_night", "valid_period_count_annual", "emis_29", "emis_31", "emis_32", "view_angle", "view_time"):
+        for var in (
+            "lst_night", "valid_period_count_annual", "valid_month_count_annual",
+            "emis_29", "emis_31", "emis_32", "view_angle", "view_time",
+        ):
             if var not in ds.data_vars:
                 continue
             arr = ds[var]

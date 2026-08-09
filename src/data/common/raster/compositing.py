@@ -31,7 +31,7 @@ def composite_to_annual(
     time_dim: str = "time",
     monthly_freq: str = "1ME",
     annual_freq: str = "1YE",
-) -> Tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
+) -> Tuple[xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray, xr.DataArray]:
     """Composite a daily-or-periodic DataArray to annual, month-first.
 
     Args:
@@ -47,7 +47,8 @@ def composite_to_annual(
         annual_freq: Resample frequency for the annual step.
 
     Returns:
-        (annual_mean, monthly_mean, monthly_valid_count, annual_valid_count)
+        (annual_mean, monthly_mean, monthly_valid_count, annual_valid_count,
+        annual_valid_month_count)
 
         - `monthly_mean`: mean of valid values within each month; NaN for a
           month with zero valid observations (excluded, not zero-filled).
@@ -56,9 +57,23 @@ def composite_to_annual(
           observations are excluded from the denominator automatically,
           implementing "mean over available months, not over 12"
           (docs/design/07-modis-ingest.md §4) without extra code.
-        - `monthly_valid_count` / `annual_valid_count`: count of valid
-          observations/periods contributing, the required diagnostic output
-          per docs/design/04-ingest.md §4.
+        - `monthly_valid_count`: count of valid observations/periods
+          contributing to each month, the required diagnostic output per
+          docs/design/04-ingest.md §4.
+        - `annual_valid_count`: count of valid observations/periods across
+          the whole year -- an observation-*density* diagnostic, not a
+          reliability measure for `annual_mean`: it does not reflect how
+          those observations were distributed across months, since
+          `annual_mean` is a mean of monthly means, not of raw observations.
+        - `annual_valid_month_count`: count of months that actually
+          contributed to `annual_mean`'s own averaging (i.e. months where
+          `monthly_mean` isn't NaN) -- the correctly-denominated
+          reliability diagnostic. A year with e.g. 300 valid daily
+          observations concentrated in only 2 months (10 months entirely
+          cloud-covered) has a large `annual_valid_count` (~300) but a
+          `annual_valid_month_count` of 2, correctly flagging `annual_mean`
+          as a thin, 2-month composite that `annual_valid_count` alone
+          would misrepresent as well-supported.
     """
     masked = data.where(valid_mask)
 
@@ -67,5 +82,6 @@ def composite_to_annual(
 
     annual_mean = monthly_mean.resample({time_dim: annual_freq}).mean()
     annual_valid_count = valid_mask.resample({time_dim: annual_freq}).sum()
+    annual_valid_month_count = monthly_mean.notnull().resample({time_dim: annual_freq}).sum()
 
-    return annual_mean, monthly_mean, monthly_valid_count, annual_valid_count
+    return annual_mean, monthly_mean, monthly_valid_count, annual_valid_count, annual_valid_month_count

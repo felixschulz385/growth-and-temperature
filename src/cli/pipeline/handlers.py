@@ -190,9 +190,22 @@ def _check_requires(spec: registry.SourceSpec, ctx, config) -> None:
         # (e.g. adopted from pre-ledger local output) -- same proxy as
         # always: "the directory has something in it," since the runner
         # itself checks the source's own StepTarget.completion when it plans.
-        requires_ledger_path = ledger_path(ctx.local_index_dir, requires_cfg.data_path)
+        #
+        # `requires_cfg` is a bare `SourceConfig`, never instantiated as a
+        # `DataSource` here, so the misc-split sources' overridden
+        # `data_path` property (gadm/osm/country_classifications/ecoregions,
+        # all sharing `cfg.data_path="misc"` and disambiguating via
+        # `cfg.namespace` -- see `DataSource.data_path`'s docstring,
+        # src/data/sources/base.py) never applies to the raw config field.
+        # Reconstruct the same combined string by hand -- mirrors `expected`
+        # above, which already passes `namespace=requires_cfg.namespace` to
+        # `layout.output_root()` for exactly this disambiguation.
+        requires_data_path = (
+            f"{requires_cfg.data_path}/{requires_cfg.namespace}" if requires_cfg.namespace else requires_cfg.data_path
+        )
+        requires_ledger_path = ledger_path(ctx.local_index_dir, requires_data_path)
         if requires_ledger_path and os.path.exists(requires_ledger_path):
-            with SourceLedger.open(requires_ledger_path, data_path=requires_cfg.data_path, read_only=True) as ledger:
+            with SourceLedger.open(requires_ledger_path, data_path=requires_data_path, read_only=True) as ledger:
                 if ledger.step_complete(requires_step.value):
                     continue
 
@@ -522,7 +535,6 @@ def handle_transfer(args: argparse.Namespace) -> None:
     from src.data.common.hpc.push import HPCPusher
     from src.data.common.ledger.paths import ledger_path
     from src.data.common.ledger.schema import RemoteState
-    from src.data.common.ledger.store import PushResult as LedgerPushResult
     from src.data.common.ledger.store import SourceLedger
 
     local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
@@ -536,7 +548,8 @@ def handle_transfer(args: argparse.Namespace) -> None:
             ledger.ensure_artifact(step.value, u.unit_id, local_path=u.local_path, remote_path=u.remote_path)
 
         if not args.override:
-            pending = [u for u in units if ledger.remote_state(step.value, u.unit_id) != RemoteState.VERIFIED]
+            states = ledger.remote_states(step.value, [u.unit_id for u in units])
+            pending = [u for u in units if states.get(u.unit_id) != RemoteState.VERIFIED]
             skipped = len(units) - len(pending)
             if skipped:
                 logger.info("Skipping %d already-transferred unit(s)", skipped)
@@ -554,10 +567,7 @@ def handle_transfer(args: argparse.Namespace) -> None:
             tar_max_files=source.cfg.raw.get("download", {}).get("tar_max_files", 100),
             tar_max_size_mb=source.cfg.raw.get("download", {}).get("tar_max_size_mb", 500),
         )
-        ledger.record_push_batch(
-            LedgerPushResult(step=step.value, unit_id=r.unit_id, ok=r.ok, bytes=r.bytes, error=r.error)
-            for r in results
-        )
+        ledger.record_push_batch(step.value, results)
         ledger.push_to_remote(client)
 
     source.close()

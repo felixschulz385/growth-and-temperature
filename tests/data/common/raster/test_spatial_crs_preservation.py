@@ -21,7 +21,12 @@ import xarray as xr
 import rioxarray  # noqa: F401 -- registers the .rio accessor
 from odc.geo.geobox import GeoBox
 
-from src.data.common.raster.spatial import SpatialProcessor, _NON_DATA_VAR_NAMES
+from src.data.common.raster.spatial import (
+    SpatialProcessor,
+    _NON_DATA_VAR_NAMES,
+    reproject_for_tile_overlap,
+    write_crs_and_grid_mapping_encoding,
+)
 
 
 def _write_sample_source_zarr(path, year: int, size: int = 8):
@@ -162,3 +167,44 @@ def test_create_empty_target_zarr_preserves_grid_mapping_through_explicit_encodi
 
 def test_non_data_var_names_includes_spatial_ref():
     assert "spatial_ref" in _NON_DATA_VAR_NAMES
+
+
+def test_write_crs_and_grid_mapping_encoding_adds_grid_mapping_to_every_entry(tmp_path):
+    """The shared helper hand-rolled zarr writers (gadm/snl_mining/glass/
+    berman_mining/ecoregions) should use instead of copy-pasting the same
+    write_crs()+grid_mapping fix each time."""
+    target_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.25)
+    ny, nx = target_geobox.shape
+    dim_y, dim_x = target_geobox.dimensions
+    ds = xr.Dataset(
+        {
+            "a": ((dim_y, dim_x), np.zeros((ny, nx), dtype="float32")),
+            "b": ((dim_y, dim_x), np.zeros((ny, nx), dtype="uint16")),
+        },
+        coords={dim_y: target_geobox.coords[dim_y].values, dim_x: target_geobox.coords[dim_x].values},
+    )
+    base_encoding = {"a": {"dtype": "float32"}, "b": {"dtype": "uint16"}}
+
+    ds, encoding = write_crs_and_grid_mapping_encoding(ds, target_geobox, base_encoding)
+
+    assert encoding["a"] == {"dtype": "float32", "grid_mapping": "spatial_ref"}
+    assert encoding["b"] == {"dtype": "uint16", "grid_mapping": "spatial_ref"}
+    assert ds.attrs.get("crs") == "EPSG:4326"
+
+    output_path = tmp_path / "output.zarr"
+    ds.to_zarr(str(output_path), mode="w", encoding=encoding, zarr_format=3, consolidated=False)
+    result = xr.open_zarr(str(output_path), consolidated=False, decode_coords="all")
+    assert result.rio.crs is not None
+    assert result.rio.crs.to_epsg() == 4326
+    assert result["a"].encoding.get("grid_mapping") == "spatial_ref"
+
+
+def test_reproject_for_tile_overlap_reprojects_to_target_crs():
+    import geopandas as gpd
+    import shapely.geometry
+
+    gdf = gpd.GeoDataFrame({"id": [1]}, geometry=[shapely.geometry.box(-1, -1, 1, 1)], crs="EPSG:4326")
+    reprojected = reproject_for_tile_overlap(gdf, "EPSG:6933")
+    assert reprojected.crs.to_epsg() == 6933
+    # Sanity: reprojecting WGS84 degrees to EASE6933 meters changes magnitude.
+    assert reprojected.geometry.iloc[0].bounds != gdf.geometry.iloc[0].bounds

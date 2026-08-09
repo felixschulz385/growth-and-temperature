@@ -71,6 +71,7 @@ from typing import Any, Dict, List, Optional
 
 from zarr.codecs import BloscCodec
 
+from src.data.common.raster.spatial import reproject_for_tile_overlap, write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -434,11 +435,11 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             tiles = GeoboxTiles(geobox, (tile_size, tile_size))
 
             # Reproject once, up front -- same CRS-mismatch pitfall gadm hit
-            # (commit f653033, gadm.py:298-309): the per-tile overlap prefilter
-            # compares raw shapely geometries against a tile polygon already in
-            # the target geobox's CRS via plain `.intersects()`, with no
-            # reprojection of its own.
-            gdf = gdf.to_crs(geobox.crs)
+            # (commit f653033): the per-tile overlap prefilter compares raw
+            # geometries against a tile polygon already in the target
+            # geobox's CRS, with no reprojection of its own. See
+            # reproject_for_tile_overlap()'s docstring for details.
+            gdf = reproject_for_tile_overlap(gdf, geobox.crs)
 
             if not self._create_empty_ecoregions_zarr(target.output_path, geobox):
                 return False
@@ -484,17 +485,11 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
                     "date_created": datetime.now().isoformat(),
                 },
             )
-            # Order matters -- see gadm.py:356-362's identical note: write_crs()
-            # must come before the explicit "crs" attr re-set and before the
-            # encoding dict below references "grid_mapping".
-            ds = ds.rio.write_crs(geobox.crs)
-            ds.attrs["crs"] = str(geobox.crs)
-
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
-                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32", "grid_mapping": "spatial_ref"}
-                for v in data_vars
+            base_encoding = {
+                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32"} for v in data_vars
             }
+            ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
             ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, consolidated=False)
             return True
         except Exception:
@@ -525,7 +520,17 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
                         tile_bounds = tile_geobox.boundingbox
                         tile_polygon = shapely.geometry.box(tile_bounds.left, tile_bounds.bottom, tile_bounds.right, tile_bounds.top)
 
-                        overlap = gdf[gdf.geometry.intersects(tile_polygon)]
+                        # `gdf.sindex.query()` bbox-prunes candidates first
+                        # (the index is built lazily on first access and
+                        # cached by geopandas across calls, so this doesn't
+                        # rebuild it per tile) -- a plain `.intersects()`
+                        # scan here would test every one of the ~14,000
+                        # RESOLVE polygons against every one of the ~100+
+                        # output tiles, unlike snl_mining's analogous
+                        # per-tile spatial join, which gets this for free via
+                        # DuckDB's rtree index.
+                        candidate_idx = gdf.sindex.query(tile_polygon, predicate="intersects")
+                        overlap = gdf.iloc[candidate_idx]
                         if len(overlap) == 0:
                             processed_tiles += 1
                             continue

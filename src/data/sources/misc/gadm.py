@@ -35,6 +35,7 @@ from typing import Dict, List
 
 from zarr.codecs import BloscCodec
 
+from src.data.common.raster.spatial import reproject_for_tile_overlap, write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -297,16 +298,12 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
 
             # Reproject once, up front -- _process_gadm_tiles's per-tile
             # overlap pre-filter compares each level's geometries directly
-            # against a tile_polygon built in the *target* geobox's CRS
-            # (e.g. EASE6933 projected meters) via plain shapely
-            # `.intersects()`, which never reprojects. Left in GADM's native
-            # WGS84 lon/lat degrees, that comparison is numerically
-            # incompatible (~1e7-magnitude meters vs +/-180/+/-90 degrees) and
-            # silently finds ~no overlap for ~every tile -- confirmed via
-            # src.data.sources.verify catching real ~100%-null GRID output
-            # for every GID_N level despite valid input geometries and a
-            # clean (no-exception) run.
-            level_gdfs = {gid_col: gdf.to_crs(geobox.crs) for gid_col, gdf in level_gdfs.items()}
+            # against a tile_polygon built in the *target* geobox's CRS via
+            # plain shapely `.intersects()`, which never reprojects itself.
+            # See reproject_for_tile_overlap()'s docstring for why skipping
+            # this silently produces ~100%-null GRID output with no
+            # exception (the bug this line fixes, commit f653033).
+            level_gdfs = {gid_col: reproject_for_tile_overlap(gdf, geobox.crs) for gid_col, gdf in level_gdfs.items()}
 
             if not self._create_empty_gadm_zarr(target.output_path, geobox, list(level_gdfs.keys())):
                 return False
@@ -353,21 +350,11 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                     "levels_included": ", ".join(sorted(gid_columns)),
                 },
             )
-            # .rio.write_crs() records the CRS as each data variable's own
-            # encoding["grid_mapping"] = "spatial_ref" (not an attr) and
-            # strips any pre-existing "crs" attr key -- so both the
-            # `"grid_mapping"` entry below (without it, the explicit
-            # encoding= dict passed to to_zarr() silently drops the link)
-            # and re-setting the "crs" attr *after* write_crs() (a redundant
-            # fallback) must come after this call, not before.
-            ds = ds.rio.write_crs(geobox.crs)
-            ds.attrs["crs"] = str(geobox.crs)
-
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
-                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32", "grid_mapping": "spatial_ref"}
-                for v in data_vars
+            base_encoding = {
+                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32"} for v in data_vars
             }
+            ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
             ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, consolidated=False)
             return True
         except Exception:

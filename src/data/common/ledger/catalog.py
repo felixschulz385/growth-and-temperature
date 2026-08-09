@@ -35,7 +35,8 @@ def refresh(ledger: SourceLedger, source: RemoteFileCatalogLike) -> int:
     Simple (non-entrypoint) sources: one `list_remote_files()` call, same as
     today.
 
-    Entrypoint-based sources (EOG/GLASS/...): `get_all_entrypoints()` is
+    Entrypoint-based sources (`has_entrypoints=True`: esacci/acag/ntl_harm/
+    glass -- not EOG, which crawls one flat tree): `get_all_entrypoints()` is
     called on every refresh (a top-level directory listing, e.g. one crawl
     call per available year) -- deliberately *not* cached forever the way
     the old JSON side-file cache did, since caching it forever means a
@@ -43,10 +44,12 @@ def refresh(ledger: SourceLedger, source: RemoteFileCatalogLike) -> int:
     would never be discovered without an operator manually deleting the
     cache file. `entrypoints.crawled` tracks the actually-expensive part:
     only entrypoints not yet crawled get `list_remote_files(entrypoint)`
-    called (a full recursive listing), and each is marked crawled
-    immediately after -- a re-run only pays for genuinely new entrypoints,
-    unlike the old code's per-call full-column `filename_to_entrypoint()`
-    re-scan to figure out what's missing.
+    called (a full recursive listing), and each is marked crawled once that
+    call actually yields files -- a re-run only pays for genuinely new or
+    still-empty entrypoints, unlike the old code's per-call full-column
+    `filename_to_entrypoint()` re-scan to figure out what's missing. A
+    zero-file result is deliberately left unmarked rather than assumed
+    complete -- see the inline comment below.
     """
     if not getattr(source, "has_entrypoints", False):
         remote_files = list(source.list_remote_files())
@@ -79,9 +82,23 @@ def refresh(ledger: SourceLedger, source: RemoteFileCatalogLike) -> int:
             total_added += ledger.add_remote_files(
                 remote_files, get_file_hash=source.get_file_hash, entrypoint_key=_entrypoint_key(entrypoint)
             )
+            ledger.mark_entrypoint_crawled(entrypoint)
         else:
-            logger.warning("No files found for entrypoint: %s", entrypoint)
-        ledger.mark_entrypoint_crawled(entrypoint)
+            # Deliberately NOT marked crawled -- a zero-file result is
+            # indistinguishable here from a transient failure a source
+            # swallowed internally instead of raising (e.g. ntl_harm's
+            # `_get_figshare_files()` catches `requests.RequestException`
+            # and returns `[]`). Marking crawled anyway would permanently
+            # drop that entrypoint from every future refresh with no
+            # visible error -- the same self-healing behavior the old
+            # `UnifiedDataIndex._find_missing_entrypoints` had (it derived
+            # "missing" from actually-indexed files, so a zero-result crawl
+            # was retried automatically). Leaving it unmarked means a
+            # genuinely-empty entrypoint (no data published yet) is
+            # re-crawled every refresh too, but that's a bounded, cheap
+            # re-listing cost -- silently and permanently losing a whole
+            # entrypoint's files is not an acceptable trade against it.
+            logger.warning("No files found for entrypoint: %s -- will retry next refresh", entrypoint)
 
     logger.info("Added %d new remote file(s)", total_added)
     return total_added

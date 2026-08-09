@@ -40,8 +40,6 @@ class HPCClient:
         self.host = self.ssh_target
         
         # Initialize cached attributes
-        self._sqlite_available = None
-        self._sqlite_path = None
         self._rsync_available = shutil.which("rsync") is not None
         
         # Normalize key file path for Windows compatibility
@@ -272,104 +270,6 @@ class HPCClient:
                 return False, e.stdout, e.stderr
             return False, "", str(e)
     
-    def check_sqlite_availability(self) -> bool:
-        """
-        Check if SQLite is available on the remote system.
-        
-        Returns:
-            bool: Whether SQLite is available
-        """
-        if self._sqlite_available is not None:
-            return self._sqlite_available
-            
-        try:
-            # Try to run a simple SQLite command using consistent SSH options
-            success, stdout, stderr = self.execute_command("command -v sqlite3")
-            
-            # If the command returns a path, SQLite is available
-            if success and stdout.strip():
-                self._sqlite_available = True
-                self._sqlite_path = stdout.strip()
-                logger.debug(f"Found SQLite at: {self._sqlite_path}")
-                return True
-            
-            # Try with module load if available (common on HPC systems)
-            success, stdout, stderr = self.execute_command("module avail sqlite 2>&1 | grep -i sqlite")
-            
-            if success and "sqlite" in stdout.lower():
-                # Module exists, try loading it and checking sqlite3
-                success, stdout, stderr = self.execute_command("module load sqlite 2>/dev/null && command -v sqlite3")
-                
-                if success and stdout.strip():
-                    self._sqlite_available = True
-                    self._sqlite_path = "module load sqlite && " + stdout.strip()
-                    logger.debug(f"SQLite available via module system")
-                    return True
-            
-            # SQLite not available
-            self._sqlite_available = False
-            logger.warning("SQLite (sqlite3 command) not available on the remote system. Some functionality will be limited.")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error checking for SQLite availability: {e}")
-            self._sqlite_available = False
-            return False
-    
-    def execute_sqlite_query(self, db_path: str, query: str) -> Tuple[bool, List[Any]]:
-        """
-        Execute an SQLite query on the remote system.
-        
-        Args:
-            db_path: Path to the SQLite database on HPC (can be relative or absolute)
-            query: SQL query to execute
-            
-        Returns:
-            Tuple containing (success, results)
-        """
-        logger.debug(f"Executing SQLite query on HPC: {query}")
-        
-        # Check if SQLite is available
-        if not self.check_sqlite_availability():
-            logger.error("Cannot execute SQLite query: sqlite3 command not found on remote system")
-            return False, []
-        
-        # Build full path by combining base_path with db_path
-        if not db_path.startswith("/") and self.base_path:
-            full_db_path = f"{self.base_path}/{db_path}"
-        else:
-            full_db_path = db_path
-        
-        try:
-            # Escape single quotes in the query for shell compatibility
-            escaped_query = query.replace("'", "'\\''")
-            
-            # Build the SQLite command using the detected path/method
-            if self._sqlite_path and "module load" in self._sqlite_path:
-                # Use module load approach
-                sqlite_command = f"{self._sqlite_path} -csv"
-            else:
-                # Direct command
-                sqlite_command = "sqlite3 -csv"
-            
-            # Execute using consistent SSH options
-            success, stdout, stderr = self.execute_command(f"{sqlite_command} '{full_db_path}' '{escaped_query}'")
-            
-            if success:
-                # Parse CSV output
-                rows = []
-                for line in stdout.strip().split('\n'):
-                    if line:
-                        rows.append(line.split(','))
-                return True, rows
-            else:
-                logger.error(f"SQLite query failed: {stderr}")
-                return False, []
-                
-        except Exception as e:
-            logger.error(f"SQLite query failed on HPC: {e}")
-            return False, []
-
     def rsync_transfer(
         self, 
         source_path: str, 

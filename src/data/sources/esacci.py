@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import hashlib
 import logging
 import os
 import shutil
@@ -112,8 +111,7 @@ class EsacciSource(DataSource):
     def local_path(self, relative_path: str) -> str:
         return os.path.join("data", self.DATA_SOURCE_NAME, relative_path)
 
-    def get_file_hash(self, file_url: str) -> str:
-        return hashlib.md5(file_url.encode("utf-8")).hexdigest()
+    # get_file_hash: inherited from DataSource (src/data/sources/base.py).
 
     def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
         year = self._extract_year(os.path.basename(relative_path))

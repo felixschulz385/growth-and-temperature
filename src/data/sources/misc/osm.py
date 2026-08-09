@@ -24,6 +24,7 @@ from typing import List
 
 from zarr.codecs import BloscCodec
 
+from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -203,11 +204,20 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
                 "description": "Land/water mask (1=land, 0=water)",
                 "source": "OpenStreetMap land polygons",
                 "date_created": datetime.now().isoformat(),
-                "crs": str(geobox.crs),
             },
         )
+        # Unlike every other GRID step's zarr writer, this one relied solely
+        # on `rasterize()`'s own georeferencing rather than an explicit
+        # `.rio.write_crs()` + "grid_mapping" encoding entry -- the same fix
+        # gadm/ecoregions/snl_mining/glass/berman_mining each needed (see
+        # write_crs_and_grid_mapping_encoding()'s docstring): without it, a
+        # data variable's zarr encoding has no link to the CRS coordinate,
+        # so `.rio.crs` (and any grid_mapping-based reader) returns None on
+        # a later read even though the CRS metadata is otherwise present.
         compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-        ds.to_zarr(target.output_path, encoding={"land_mask": {"compressors": (compressor,)}}, mode="w")
+        base_encoding = {"land_mask": {"compressors": (compressor,)}}
+        ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
+        ds.to_zarr(target.output_path, encoding=encoding, mode="w")
         mark_complete(target.output_path)
         return True
 

@@ -79,9 +79,7 @@ def reconcile_fetch(
     matched = [
         file_hash for file_hash, relative_path in ledger.iter_remote_files() if relative_path in remote_relative_paths
     ]
-    for file_hash in matched:
-        ledger.set_local_state("fetch", file_hash, LocalState.COMPLETE)
-        ledger.set_remote_state("fetch", file_hash, RemoteState.VERIFIED)
+    ledger.mark_local_and_remote_batch("fetch", matched, LocalState.COMPLETE, RemoteState.VERIFIED)
     result["verified_present"] = len(matched)
     logger.info("Verified %d/%d catalog file(s) present on HPC", len(matched), len(remote_relative_paths))
     return result

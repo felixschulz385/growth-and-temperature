@@ -1,4 +1,3 @@
-import hashlib
 import logging
 import time
 import asyncio
@@ -12,19 +11,8 @@ from urllib.parse import urljoin
 class _CrawlerMixin:
     """Remote listing/discovery for GLASS directory trees."""
 
-    def get_file_hash(self, file_url: str) -> str:
-        """
-        Generate a unique hash for a file based on its URL.
-
-        Args:
-            file_url: URL of the file
-
-        Returns:
-            str: A unique hash identifier for the file
-        """
-        # Use the URL as the basis for the hash
-        # For GLASS data, the URL should be unique for each file
-        return hashlib.md5(file_url.encode('utf-8')).hexdigest()
+    # get_file_hash: inherited from DataSource (src/data/sources/base.py) --
+    # GlassSource always mixes this class in alongside DataSource.
 
     def list_remote_files(self, entrypoint: dict = None) -> list:
         def crawl(url: str, relative_path: str = ""):

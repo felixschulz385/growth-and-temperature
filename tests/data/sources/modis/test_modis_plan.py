@@ -141,3 +141,38 @@ def test_modis_robustness_11a1_alias_resolves():
     from src.data.sources import registry
 
     assert registry.resolve("modis_robustness_11a1").id == "modis"
+
+
+def test_get_stac_client_is_cached_across_calls(tmp_path, monkeypatch):
+    # _execute_fetch runs once per (year, tile) StepTarget -- an uncached
+    # client would reopen the STAC catalog (an HTTP round trip) on every
+    # single one instead of once per ModisSource instance. Fakes both
+    # `pystac_client`/`planetary_computer` in sys.modules (imported lazily
+    # inside `_get_stac_client()`) so this doesn't need either installed.
+    import sys
+    import types
+
+    source, _ = _make_source(tmp_path)
+    open_calls = []
+
+    class _FakeClient:
+        pass
+
+    class _FakeClientCls:
+        @staticmethod
+        def open(url, modifier=None):
+            open_calls.append(url)
+            return _FakeClient()
+
+    fake_pystac_client = types.ModuleType("pystac_client")
+    fake_pystac_client.Client = _FakeClientCls
+    fake_planetary_computer = types.ModuleType("planetary_computer")
+    fake_planetary_computer.sign_inplace = lambda item: item
+
+    monkeypatch.setitem(sys.modules, "pystac_client", fake_pystac_client)
+    monkeypatch.setitem(sys.modules, "planetary_computer", fake_planetary_computer)
+
+    client_a = source._get_stac_client()
+    client_b = source._get_stac_client()
+    assert client_a is client_b
+    assert len(open_calls) == 1
