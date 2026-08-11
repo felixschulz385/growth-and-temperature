@@ -7,6 +7,13 @@ enrichment loop, genuinely not automatable). `FETCH` is declared absent
 rather than faked; the notebooks that produce the stage-0 DuckDB this source
 depends on move to `src/data/sources/snl_mining/notebooks/` so the whole
 lifecycle -- including its manual part -- lives in one directory.
+`src/data/sources/snl_mining/scraper/` is a related but separate,
+interactively-run tool (Selenium-driven Capital IQ screener/profile scraper,
+credentials + browser required): it automates the export click-through, not
+the acquisition step itself, and is deliberately not wired into `STEPS` for
+the same reason -- login/browser-session fragility means it still needs a
+human at the keyboard, not the unattended per-file resumability `FETCH`
+promises.
 
 **The one place this migration genuinely improves a source's resumability,
 not just relocates its code**: the old `SnlMiningPreprocessor.process_target`

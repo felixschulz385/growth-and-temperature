@@ -22,7 +22,7 @@ Tables written:
 - `raw_property_records`
 
 Status:
-- transitional / likely to be deprecated later once the richer scraper is the main ingestion path
+- transitional / likely to be deprecated later once the richer scraper (`src/data/sources/snl_mining/scraper/`, run via `scripts/debug_snl_mining_scraper.py`) is the main ingestion path
 
 ### `snl_mining_openai_enrichment.ipynb`
 
