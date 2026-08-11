@@ -11,17 +11,25 @@ Usage examples:
   python scripts/debug_snl_mining_scraper.py ids
   python scripts/debug_snl_mining_scraper.py detail-exports
   python scripts/debug_snl_mining_scraper.py detail-parse
+  python scripts/debug_snl_mining_scraper.py detail-regularize --csv-out data/snf_mining/raw/regularized_csv
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from pathlib import Path
 
-from src.cli.common import setup_logging
-from src.data.sources.snl_mining.scraper.config import DEFAULT_DB_PATH, DEFAULT_WAIT_SECONDS
-from src.data.sources.snl_mining.scraper.workflow import Stage, run_full_workflow
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.cli.common import setup_logging  # noqa: E402
+from src.data.sources.snl_mining.scraper.config import DEFAULT_DB_PATH, DEFAULT_WAIT_SECONDS  # noqa: E402
+from src.data.sources.snl_mining.scraper.storage.database import get_connection  # noqa: E402
+from src.data.sources.snl_mining.scraper.storage.regularized import export_regularized_tables_to_csv  # noqa: E402
+from src.data.sources.snl_mining.scraper.workflow import Stage, run_full_workflow  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +40,8 @@ _STEP_TO_STAGES = {
     "scrape-exports": [Stage.DETAIL_EXPORTS],
     "detail-parse": [Stage.DETAIL_PARSE],
     "parse-exports": [Stage.DETAIL_PARSE],
+    "detail-regularize": [Stage.DETAIL_REGULARIZE],
+    "regularize-exports": [Stage.DETAIL_REGULARIZE],
     "full": None,
 }
 
@@ -81,8 +91,14 @@ def main() -> int:
         "--force-stages",
         nargs="*",
         default=None,
-        choices=["detail-exports", "detail-parse"],
+        choices=["detail-exports", "detail-parse", "detail-regularize"],
         help="Stage(s) to clear and rerun completely",
+    )
+    parser.add_argument(
+        "--csv-out",
+        type=Path,
+        default=None,
+        help="After a detail-regularize (or full) run, dump every regularized detail_* table to CSV in this directory",
     )
     parser.add_argument(
         "--redo-current-stage",
@@ -119,6 +135,15 @@ def main() -> int:
         step_sleep_seconds=args.step_sleep_seconds,
     )
     logger.info("SNL mining scraper finished: %s", results)
+
+    if args.csv_out is not None:
+        conn = get_connection(args.db)
+        try:
+            exported = export_regularized_tables_to_csv(conn, args.csv_out)
+        finally:
+            conn.close()
+        logger.info("Exported %d regularized table(s) to CSV under %s", len(exported), args.csv_out)
+
     return 0
 
 

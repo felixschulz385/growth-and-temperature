@@ -70,6 +70,11 @@ dependencies:
   - selenium=4.43.0
   - webdriver-manager=4.1.1
   - openpyxl=3.1.5
+  # cv2, used by src/data/sources/snl_mining/scraper/scrapers/geometry.py.
+  # Missing from this file entirely until now (ModuleNotFoundError surfaced
+  # by scripts/debug_snl_mining_scraper.py) -- version unverified, same
+  # caveat as the unpinned pip packages below.
+  - opencv
   - psutil=7.2.2
   - pyyaml=6.0.3
 

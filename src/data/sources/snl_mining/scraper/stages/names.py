@@ -15,6 +15,7 @@ class Stage(str, Enum):
     IDS = "ids"
     DETAIL_EXPORTS = "detail_exports"
     DETAIL_PARSE = "detail_parse"
+    DETAIL_REGULARIZE = "detail_regularize"
 
 
 ALL_STAGES: frozenset[Stage] = frozenset(Stage)

@@ -47,3 +47,8 @@ output/webpage/Gemfile.lock
 .bundle/
 vendor/
 **/secrets
+
+# Contains real S&P Capital IQ data in saved output cells (property
+# geometry, internal mine IDs) -- untracked going forward, see git history
+# for the leak this replaces.
+/src/experiments/snf_mines.ipynb

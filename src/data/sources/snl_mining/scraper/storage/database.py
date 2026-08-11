@@ -31,12 +31,14 @@ def _bootstrap(conn: duckdb.DuckDBPyConnection) -> None:
             id_scraped_at      TIMESTAMPTZ NOT NULL,
             detail_scraped_at  TIMESTAMPTZ,
             detail_exports_completed_at TIMESTAMPTZ,
-            detail_parse_completed_at   TIMESTAMPTZ
+            detail_parse_completed_at   TIMESTAMPTZ,
+            detail_regularize_completed_at TIMESTAMPTZ
         )
     """)
     conn.execute("ALTER TABLE mines ADD COLUMN IF NOT EXISTS detail_scraped_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE mines ADD COLUMN IF NOT EXISTS detail_exports_completed_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE mines ADD COLUMN IF NOT EXISTS detail_parse_completed_at TIMESTAMPTZ")
+    conn.execute("ALTER TABLE mines ADD COLUMN IF NOT EXISTS detail_regularize_completed_at TIMESTAMPTZ")
     conn.execute("""
         CREATE TABLE IF NOT EXISTS screener_state (
             screener_key   TEXT PRIMARY KEY,
@@ -119,6 +121,16 @@ def get_stage_pending_mine_ids(conn: duckdb.DuckDBPyConnection, stage_name: str)
             ORDER BY m.id_scraped_at, m.mine_id
         """).fetchall()
         return [row[0] for row in rows]
+    if stage_name == "detail_regularize":
+        rows = conn.execute("""
+            SELECT DISTINCT m.mine_id
+            FROM mines AS m
+            JOIN mine_subsection_exports AS e
+              ON e.mine_id = m.mine_id
+            WHERE m.detail_regularize_completed_at IS NULL
+            ORDER BY m.id_scraped_at, m.mine_id
+        """).fetchall()
+        return [row[0] for row in rows]
     raise ValueError(f"Unsupported stage name: {stage_name}")
 
 
@@ -137,6 +149,15 @@ def count_stage_mines(conn: duckdb.DuckDBPyConnection, stage_name: str) -> tuple
             """
             SELECT COUNT(*) AS total,
                    COUNT(detail_parse_completed_at) AS processed
+            FROM mines
+            """
+        ).fetchone()
+        return row[0], row[1]
+    if stage_name == "detail_regularize":
+        row = conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   COUNT(detail_regularize_completed_at) AS processed
             FROM mines
             """
         ).fetchone()
@@ -178,6 +199,16 @@ def mark_stage_complete(conn: duckdb.DuckDBPyConnection, mine_id: str, stage_nam
             [now, mine_id],
         )
         return
+    if stage_name == "detail_regularize":
+        conn.execute(
+            """
+            UPDATE mines
+            SET detail_regularize_completed_at = ?
+            WHERE mine_id = ?
+            """,
+            [now, mine_id],
+        )
+        return
     raise ValueError(f"Unsupported stage name: {stage_name}")
 
 
@@ -203,6 +234,16 @@ def reset_stage_completion(conn: duckdb.DuckDBPyConnection, mine_ids: Iterable[s
             f"""
             UPDATE mines
             SET detail_parse_completed_at = NULL
+            WHERE mine_id IN ({placeholders})
+            """,
+            mine_ids_list,
+        )
+        return
+    if stage_name == "detail_regularize":
+        conn.execute(
+            f"""
+            UPDATE mines
+            SET detail_regularize_completed_at = NULL
             WHERE mine_id IN ({placeholders})
             """,
             mine_ids_list,

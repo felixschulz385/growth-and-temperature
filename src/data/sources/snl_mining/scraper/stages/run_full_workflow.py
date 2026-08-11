@@ -20,6 +20,7 @@ from ..session.browser import ManagedBrowser
 from ..storage.database import get_connection
 from .names import Stage, resolve_stages
 from .parse_detail_exports import parse_detail_exports
+from .regularize_detail_exports import regularize_detail_exports
 from .scrape_detail_exports import scrape_detail_exports
 
 logger = logging.getLogger(__name__)
@@ -110,6 +111,15 @@ def run_full_workflow(
                 subsections=subsections,
                 continue_on_error=continue_on_error,
                 force=Stage.DETAIL_PARSE in forced_stages,
+            )
+
+        if Stage.DETAIL_REGULARIZE in active_stages:
+            results["detail_regularize"] = regularize_detail_exports(
+                conn,
+                mine_ids=mine_ids,
+                subsections=subsections,
+                continue_on_error=continue_on_error,
+                force=Stage.DETAIL_REGULARIZE in forced_stages,
             )
     finally:
         conn.close()
