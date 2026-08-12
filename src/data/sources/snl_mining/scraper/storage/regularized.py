@@ -99,13 +99,17 @@ def export_regularized_tables_to_csv(
     output_dir: str | Path,
     table_names: Iterable[str] | None = None,
 ) -> list[str]:
-    """Dump each regularized table to `<output_dir>/<table_name>.csv` via
-    DuckDB's native `COPY ... TO`, no pandas round-trip needed. Returns the
-    list of table names actually exported."""
+    """Dump each regularized table to `<output_dir>/<name>.csv` via DuckDB's
+    native `COPY ... TO`, no pandas round-trip needed. The `detail_` prefix is
+    dropped from the CSV filename (though not from the table name itself) --
+    it's redundant once every file in the directory is already a detail
+    table, and the plain name reads better for downstream, non-DB consumers.
+    Returns the list of table names actually exported."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     names = list(table_names) if table_names is not None else list_regularized_table_names(conn)
     for table_name in names:
-        csv_path = str(output_dir / f"{table_name}.csv").replace("'", "''")
+        csv_name = table_name.removeprefix("detail_")
+        csv_path = str(output_dir / f"{csv_name}.csv").replace("'", "''")
         conn.execute(f"COPY (SELECT * FROM \"{table_name}\") TO '{csv_path}' (HEADER, DELIMITER ',')")
     return names

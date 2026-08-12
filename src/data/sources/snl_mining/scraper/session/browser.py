@@ -17,11 +17,13 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 
-from ..config import DATA_DIR, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH
+from ..config import DATA_DIR, DEFAULT_WINDOW_HEIGHT, DEFAULT_WINDOW_WIDTH, SCRATCH_DIR
 
 logger = logging.getLogger(__name__)
 _GRACEFUL_QUIT_TIMEOUT_SECONDS = 10
-_PROFILE_ROOT = DATA_DIR / "browser_profiles"
+# Ephemeral Selenium user-data dirs -- scratch, not durable data (SCRATCH_DIR).
+_PROFILE_ROOT = SCRATCH_DIR / "browser_profiles"
+# Chromedriver logs are durable diagnostics, kept centrally under DATA_DIR.
 _LOG_ROOT = DATA_DIR / "logs"
 _CHROMEDRIVER_VERSION_ROOT = Path.home() / ".wdm" / "drivers" / "chromedriver"
 _WINDOWS_CHROME_CANDIDATES = (

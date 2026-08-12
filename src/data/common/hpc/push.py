@@ -30,6 +30,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
@@ -73,6 +74,28 @@ def _full_remote_path(client: Any, remote_path: str) -> str:
     if remote_path.startswith("/") or not base_path:
         return remote_path
     return f"{base_path}/{remote_path}"
+
+
+def _add_directory_to_tar(tar: tarfile.TarFile, local_dir: str, arcname: str) -> None:
+    """Add *local_dir*'s tree to *tar* under *arcname*, with POSIX ('/')
+    member-name separators regardless of local OS.
+
+    `TarFile.add(recursive=True)` builds nested member names via
+    `os.path.join(arcname, entry)` -- backslash-separated on Windows. A POSIX
+    `tar -xzf` on the remote host does not treat a backslash as a directory
+    separator, so e.g. a Zarr store's `0.0` chunk ends up extracted as one
+    file literally named `b.zarr\\0.0` sitting next to (not inside) `b.zarr`,
+    not the nested `b.zarr/0.0` extraction expects. Walking manually and
+    joining arcnames with `/` unconditionally avoids that.
+    """
+    tar.add(local_dir, arcname=arcname, recursive=False)
+    for entry in sorted(os.listdir(local_dir)):
+        local_entry = os.path.join(local_dir, entry)
+        entry_arcname = f"{arcname}/{entry}"
+        if os.path.isdir(local_entry) and not os.path.islink(local_entry):
+            _add_directory_to_tar(tar, local_entry, entry_arcname)
+        else:
+            tar.add(local_entry, arcname=entry_arcname, recursive=False)
 
 
 def _cleanup_local(path: str) -> None:
@@ -137,9 +160,19 @@ class HPCPusher:
     def _push_one_batch(
         self, batch: list[PushUnit], remote_base_dir: str, *, cleanup_local: bool
     ) -> list[PushResult]:
+        # `timestamp` alone (even at microsecond resolution) is not a
+        # reliable uniqueness key: `push_batched()` calls this once per
+        # batch in a tight loop, and two batches of equal size created in
+        # the same microsecond produce the *same* filename (confirmed: a
+        # real, reproducible flake in `test_push_batched_keeps_oversized_
+        # single_unit_in_its_own_batch`, ~1-in-a-few run rate on this
+        # machine). Two batches racing to the same remote tar path is worse
+        # than a test flake on a real push -- one batch's extraction could
+        # clobber or read the other's tar mid-transfer. The uuid suffix
+        # guarantees uniqueness regardless of timing.
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S%f")
         tar_dir = tempfile.mkdtemp(prefix="hpc_push_")
-        tar_path = os.path.join(tar_dir, f"batch_{timestamp}_{len(batch)}.tar.gz")
+        tar_path = os.path.join(tar_dir, f"batch_{timestamp}_{uuid.uuid4().hex[:8]}_{len(batch)}.tar.gz")
 
         try:
             sizes: dict[str, int] = {}
@@ -251,7 +284,7 @@ class HPCPusher:
 
         try:
             with tarfile.open(tar_path, "w:gz") as tar:
-                tar.add(unit.local_path, arcname=os.path.basename(os.path.normpath(unit.local_path)))
+                _add_directory_to_tar(tar, unit.local_path, os.path.basename(os.path.normpath(unit.local_path)))
             try:
                 size = os.path.getsize(tar_path)
             except OSError:

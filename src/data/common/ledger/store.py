@@ -113,6 +113,34 @@ class SourceLedger:
             ledger._ensure_schema()
         return ledger
 
+    @classmethod
+    def open_with_retry(
+        cls, path: str, *, data_path: str, read_only: bool = False, max_attempts: int = 6, base_delay: float = 0.5,
+    ) -> "SourceLedger":
+        """`open()`, retrying on `duckdb.IOException` -- DuckDB allows only
+        one read-write connection to a file at a time (this class's own
+        docstring), so two processes each briefly opening/closing their own
+        connection to the same ledger (rather than holding one open for
+        their whole run -- the point of doing that at all, see
+        `ModisSource._ledger_ensure_artifact()`'s docstring) will still
+        occasionally collide. A single missed open is not fatal to either
+        side; short exponential backoff (0.5s, 1s, 2s, 4s, 8s, 16s by
+        default -- ~31s total) comfortably covers the other side's typical
+        hold time (a metadata write, milliseconds) and most of its worst
+        case (that side's own ledger-to-HPC push, tens of seconds)."""
+        import time
+
+        last_exc: Optional[duckdb.IOException] = None
+        for attempt in range(max_attempts):
+            try:
+                return cls.open(path, data_path=data_path, read_only=read_only)
+            except duckdb.IOException as exc:
+                last_exc = exc
+                if attempt < max_attempts - 1:
+                    time.sleep(base_delay * (2**attempt))
+        assert last_exc is not None
+        raise last_exc
+
     def _ensure_schema(self) -> None:
         for statement in schema.ALL_DDL:
             self._con.execute(statement)

@@ -367,7 +367,21 @@ def handle_run(args: argparse.Namespace) -> None:
             logger.info("Skipping %s -- already complete: %s", target.key, target.output_path)
             continue
         logger.info("Running %s/%s -> %s", args.source, target.key, target.output_path)
-        ok = source.execute(target)
+        try:
+            ok = source.execute(target)
+        except Exception:
+            # A `False` return from execute() is already handled gracefully
+            # here (logged, added to `failures`, loop continues) -- an
+            # *exception* wasn't, so any transient per-target failure (a
+            # flaky network read, a Planetary Computer signed URL that
+            # expired between being issued and a deferred Dask read actually
+            # running -- confirmed happening in practice on a real multi-
+            # hour MODIS FETCH run) crashed the entire run instead of just
+            # that one target. Individual real-world unreliability during a
+            # ~6,700-tile-year run is expected, not exceptional; treat it the
+            # same as a False return so the run keeps going.
+            logger.exception("Target raised an exception: %s/%s", args.source, target.key)
+            ok = False
         if not ok:
             logger.error("Target failed: %s/%s", args.source, target.key)
             failures.append(target.key)
@@ -452,8 +466,12 @@ def handle_reconcile(args: argparse.Namespace) -> None:
                     args.source, step.value, result["total"], result["local_complete"], result["remote_verified"],
                 )
 
-        if client is not None:
-            ledger.push_to_remote(client)
+    # `push_to_remote()` after the `with` block, not inside it -- scp'ing
+    # the ledger's own `.duckdb` file while this process still holds it open
+    # for read-write fails on Windows (`scp: open local ...: Broken pipe`,
+    # same bug as `_run_transfer_pass()`'s docstring describes).
+    if client is not None:
+        ledger.push_to_remote(client)
 
     source.close()
 
@@ -477,6 +495,7 @@ def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_siz
     Anything else (mixed files/directories) -- concurrent per-unit pushes.
     """
     import os
+    import posixpath
 
     from src.data.common.hpc.push import PushUnit
 
@@ -485,11 +504,18 @@ def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_siz
         return [pusher.push_unit(PushUnit(unit_id=u.unit_id, local_path=u.local_path, remote_path=u.remote_path))]
 
     if len(units) > 1 and all(os.path.isfile(u.local_path) for u in units):
-        remote_base_dir = os.path.commonpath([u.remote_path for u in units])
+        # `remote_path` is always POSIX (the HPC target is a remote Linux
+        # host regardless of the local OS) -- use `posixpath`, not `os.path`,
+        # for every manipulation of it. On Windows `os.path` is `ntpath`:
+        # `ntpath.commonpath`/`relpath` happily accept forward-slash input
+        # but *emit* backslash-separated output, which then gets used
+        # verbatim as a remote path/tar arcname (`mkdir -p foo\bar` on Linux
+        # creates one literally-named `foo\bar` entry, not nested dirs).
+        remote_base_dir = posixpath.commonpath([u.remote_path for u in units])
         push_units = [
             PushUnit(
                 unit_id=u.unit_id, local_path=u.local_path,
-                remote_path=os.path.relpath(u.remote_path, remote_base_dir),
+                remote_path=posixpath.relpath(u.remote_path, remote_base_dir),
             )
             for u in units
         ]
@@ -501,49 +527,41 @@ def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_siz
     return pusher.push_units_concurrent(push_units)
 
 
-def handle_transfer(args: argparse.Namespace) -> None:
-    """``pipeline transfer`` -- push a step's local output to the HPC target.
+def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", local_ledger_path: str, client) -> list:
+    """One scan-and-push cycle: re-lists `source.transfer_units(step)` (a
+    fresh filesystem scan for MODIS-style sources -- see its docstring),
+    skips units the ledger already marked `VERIFIED` (unless `--override`),
+    and pushes the rest. Returns the `PushResult` list for whatever was
+    actually pushed (empty if nothing was pending).
 
-    docs/design/10-fetch-ledger.md §2 -- generic across sources via
-    `DataSource.transfer_units(step)`, now driven by the same unified
-    `HPCPusher` FETCH uses (`common/hpc/push.py`) instead of the old
-    dedicated, duplicated `common/hpc/transfer.py`. Push status is tracked in
-    the source's own DuckDB ledger, not a separate Parquet manifest.
+    Split out of `handle_transfer` so `--watch` mode (below) can call this
+    repeatedly without duplicating the skip/push/record logic.
+
+    Three separate, short-lived ledger connections (via `open_with_retry()`),
+    not one held for the whole pass:
+    1. Read/write the small "what's pending" metadata, close.
+    2. Do the actual push -- the slow part (real network I/O, tens of
+       seconds+ for a batch) -- with NO ledger connection open at all, so a
+       concurrent `pipeline run --step fetch` (which now also only takes its
+       own connection briefly per unit, see
+       `ModisSource._ledger_ensure_artifact()`'s docstring) isn't locked out
+       for the push's whole duration.
+    3. Record the results, close -- *then* `push_to_remote()` the ledger
+       file itself. Doing that last step while its own connection was still
+       open (this function's previous shape) reliably failed on Windows
+       (`scp: open local ...: Broken pipe`, confirmed against a real scicore
+       push): the local `.duckdb` file was still held open by this same
+       process's own DuckDB connection when `scp` tried to read it.
     """
-    setup_logging(args.log_level, debug=args.debug)
-    if args.direction == "pull":
-        raise NotImplementedError(
-            "--direction pull is not implemented; included in the CLI for interface "
-            "symmetry with the push direction, not because any current source needs "
-            "it (docs/design/10-fetch-ledger.md)."
-        )
-
-    source, _ = _build(args)
-    step = PipelineStep(args.step)
-    units = source.transfer_units(step)
-    if not units:
-        logger.warning("No transfer units for source='%s' step='%s'.", args.source, step.value)
-        source.close()
-        return
-
-    if not source.ctx.ssh_target:
-        raise ValueError("remote.ssh_target is not configured")
-
-    import os
-
-    from src.data.common.hpc.client import HPCClient
     from src.data.common.hpc.push import HPCPusher
-    from src.data.common.ledger.paths import ledger_path
     from src.data.common.ledger.schema import RemoteState
     from src.data.common.ledger.store import SourceLedger
 
-    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
-    if local_ledger_path is None:
-        raise ValueError("paths.local_index_dir is not configured -- cannot track transfer state")
+    units = source.transfer_units(step)
+    if not units:
+        return []
 
-    client = HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file)
-
-    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
+    with SourceLedger.open_with_retry(local_ledger_path, data_path=source.data_path) as ledger:
         for u in units:
             ledger.ensure_artifact(step.value, u.unit_id, local_path=u.local_path, remote_path=u.remote_path)
 
@@ -555,25 +573,116 @@ def handle_transfer(args: argparse.Namespace) -> None:
                 logger.info("Skipping %d already-transferred unit(s)", skipped)
             units = pending
 
-        if not units:
-            logger.info("Nothing to transfer for source='%s' step='%s'.", args.source, step.value)
-            source.close()
-            return
+    if not units:
+        return []
 
-        logger.info("Transferring %d unit(s) for source '%s' step '%s'", len(units), args.source, step.value)
-        pusher = HPCPusher(client)
-        results = _push_transfer_units(
-            pusher, units,
-            tar_max_files=source.cfg.raw.get("download", {}).get("tar_max_files", 100),
-            tar_max_size_mb=source.cfg.raw.get("download", {}).get("tar_max_size_mb", 500),
-        )
+    logger.info("Transferring %d unit(s) for source '%s' step '%s'", len(units), args.source, step.value)
+    pusher = HPCPusher(client)
+    results = _push_transfer_units(
+        pusher, units,
+        tar_max_files=source.cfg.raw.get("download", {}).get("tar_max_files", 100),
+        tar_max_size_mb=source.cfg.raw.get("download", {}).get("tar_max_size_mb", 500),
+    )
+
+    with SourceLedger.open_with_retry(local_ledger_path, data_path=source.data_path) as ledger:
         ledger.record_push_batch(step.value, results)
-        ledger.push_to_remote(client)
+    ledger.push_to_remote(client)  # after the `with` block -- connection is closed by now
+    return results
 
-    source.close()
-    failures = [r for r in results if not r.ok]
-    if failures:
-        raise RuntimeError(
-            f"Transfer failed for source='{args.source}' step='{step.value}': "
-            f"{[(r.unit_id, r.error) for r in failures]}"
+
+def handle_transfer(args: argparse.Namespace) -> None:
+    """``pipeline transfer`` -- push a step's local output to the HPC target.
+
+    docs/design/10-fetch-ledger.md §2 -- generic across sources via
+    `DataSource.transfer_units(step)`, now driven by the same unified
+    `HPCPusher` FETCH uses (`common/hpc/push.py`) instead of the old
+    dedicated, duplicated `common/hpc/transfer.py`. Push status is tracked in
+    the source's own DuckDB ledger, not a separate Parquet manifest.
+
+    `--watch`: instead of one scan-and-push pass, loop that pass on a
+    `--poll-interval` timer until interrupted (Ctrl-C) -- for running
+    alongside a concurrent `pipeline run --step fetch` so newly-completed
+    local output (e.g. MODIS's per-tile-year GeoTIFFs, written atomically via
+    `os.replace` so `transfer_units()` never sees a partial file) gets pushed
+    incrementally rather than requiring a separate manual `transfer` call
+    after FETCH finishes.
+    """
+    setup_logging(args.log_level, debug=args.debug)
+    if args.direction == "pull":
+        raise NotImplementedError(
+            "--direction pull is not implemented; included in the CLI for interface "
+            "symmetry with the push direction, not because any current source needs "
+            "it (docs/design/10-fetch-ledger.md)."
         )
+
+    source, _ = _build(args)
+    step = PipelineStep(args.step)
+
+    if not source.ctx.ssh_target:
+        source.close()
+        raise ValueError("remote.ssh_target is not configured")
+
+    from src.data.common.hpc.client import HPCClient
+    from src.data.common.ledger.paths import ledger_path
+
+    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
+    if local_ledger_path is None:
+        source.close()
+        raise ValueError("paths.local_index_dir is not configured -- cannot track transfer state")
+
+    client = HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file)
+
+    if not getattr(args, "watch", False):
+        results = _run_transfer_pass(args, source, step, local_ledger_path, client)
+        source.close()
+        if not results:
+            logger.info("Nothing to transfer for source='%s' step='%s'.", args.source, step.value)
+            return
+        failures = [r for r in results if not r.ok]
+        if failures:
+            raise RuntimeError(
+                f"Transfer failed for source='{args.source}' step='{step.value}': "
+                f"{[(r.unit_id, r.error) for r in failures]}"
+            )
+        return
+
+    import time
+
+    import duckdb
+
+    poll_interval = getattr(args, "poll_interval", 30.0)
+    logger.info(
+        "Watching for source='%s' step='%s' output (poll every %.0fs) -- Ctrl-C to stop",
+        args.source, step.value, poll_interval,
+    )
+    total_ok, total_failed = 0, 0
+    try:
+        while True:
+            # `_run_transfer_pass` already opens its own short-lived,
+            # retrying (`open_with_retry()`) connections internally -- this
+            # `except duckdb.IOException` is a last-resort net for the rare
+            # case every retry inside it is exhausted (a concurrently
+            # running `pipeline run --step fetch` holding the lock
+            # unusually long), so this watch loop logs and tries again next
+            # poll interval instead of crashing the whole watch command.
+            try:
+                results = _run_transfer_pass(args, source, step, local_ledger_path, client)
+            except duckdb.IOException:
+                logger.info("Ledger busy (FETCH holds it) -- will retry after the next poll interval")
+                results = []
+            except Exception:
+                logger.exception("Transfer pass failed; will retry after the next poll interval")
+                results = []
+            ok = [r for r in results if r.ok]
+            failed = [r for r in results if not r.ok]
+            total_ok += len(ok)
+            total_failed += len(failed)
+            if failed:
+                logger.warning("Pass pushed %d unit(s), %d failed: %s", len(ok), len(failed), [(r.unit_id, r.error) for r in failed])
+            elif ok:
+                logger.info("Pass pushed %d unit(s)", len(ok))
+            time.sleep(poll_interval)
+    except KeyboardInterrupt:
+        logger.info("Stopped watching (pushed %d unit(s) total, %d failed)", total_ok, total_failed)
+    finally:
+        source.close()

@@ -36,6 +36,12 @@ STATUS_COMPLETED = "completed"
 STATUS_CONTENT_MISMATCH = "content_mismatch"
 STATUS_UNVERIFIED = "unverified"
 STATUS_UNKNOWN_TYPE = "unknown_type"
+#: The requested `subsection_label` didn't validate (or wasn't registered at
+#: all), but the workbook's own title unambiguously matched a *different*
+#: registered type -- regularized under that type instead of being dropped.
+#: Kept distinct from STATUS_COMPLETED so the recovery rate stays visible in
+#: the stage summary rather than being silently folded in.
+STATUS_RECLASSIFIED = "reclassified"
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +108,34 @@ SUBSECTION_REGULARIZERS: dict[str, SubsectionRegularizer] = {
 assert len(SUBSECTION_REGULARIZERS) == len(_ENTRIES), "duplicate subsection_label in registry"
 
 
+def _entry_matches_title(entry: SubsectionRegularizer, title: str) -> bool:
+    return any(fragment.casefold() in title for fragment in entry.expected_title_fragments)
+
+
+def _match_by_title(title: str) -> SubsectionRegularizer | None:
+    """Find the single registered type whose `expected_title_fragments`
+    match *title* (already casefolded), independent of whatever label was
+    originally requested.
+
+    Several entries share fragments deliberately or incidentally (e.g.
+    `Ownership`/`Ownership Structure`, `Capacity & Costs`/`Production`) but
+    those pairs call the *same* `regularize` function, so which one is
+    "selected" doesn't matter. A handful of other overlaps span genuinely
+    different functions (the Geology/Location Map & Claims/Discoveries &
+    Milestones/Drill Results cluster; Modeled Ore Costs/Modeled Product
+    Costs; Modeled ROM Costs/Modeled Production; Capacity & Costs/Production
+    vs. Reserves & Resources) -- title text alone can't disambiguate those,
+    so returns `None` (ambiguous) rather than guessing wrong.
+    """
+    matched = [entry for entry in _ENTRIES if _entry_matches_title(entry, title)]
+    if not matched:
+        return None
+    distinct_functions = {entry.regularize for entry in matched}
+    if len(distinct_functions) > 1:
+        return None
+    return matched[0]
+
+
 def classify_and_regularize(
     workbook: ParsedWorkbook,
     mine_id: str,
@@ -109,28 +143,39 @@ def classify_and_regularize(
 ) -> tuple[str, dict[str, list[dict]]]:
     """Look up *subsection_label*'s regularizer, run the content-validation
     gate (see module docstring on the mismatch problem this guards against),
-    and regularize if the gate passes.
+    and regularize if the gate passes. If it doesn't -- either because the
+    requested label isn't one of the 27 registered types, or its own
+    fragments don't match the workbook's title -- fall back to classifying
+    purely from the title (`_match_by_title`) before giving up, since the
+    scraper's navigation-race bug means the requested label is frequently
+    just wrong (see module docstring).
 
     Returns `(status, tables)` where `status` is one of
-    `STATUS_COMPLETED`/`STATUS_CONTENT_MISMATCH`/`STATUS_UNVERIFIED`/
-    `STATUS_UNKNOWN_TYPE`, and `tables` is `{}` unless status is
-    `STATUS_COMPLETED` or `STATUS_UNVERIFIED`.
+    `STATUS_COMPLETED`/`STATUS_RECLASSIFIED`/`STATUS_CONTENT_MISMATCH`/
+    `STATUS_UNVERIFIED`/`STATUS_UNKNOWN_TYPE`, and `tables` is `{}` unless
+    status is `STATUS_COMPLETED`, `STATUS_RECLASSIFIED`, or
+    `STATUS_UNVERIFIED`.
     """
     entry = SUBSECTION_REGULARIZERS.get(normalize_subsection_label(subsection_label))
+    title = (workbook.workbook_title or "").casefold()
+
+    if not title:
+        # No title at all to check against -- attempt regularization under
+        # the requested label anyway (real data shows ~30-60% of exports
+        # have no inferrable title, see plan doc §1) but flag it distinctly
+        # from a verified pass. There's no title text for _match_by_title to
+        # work with either, so this case is unchanged by reclassification.
+        if entry is None:
+            return STATUS_UNKNOWN_TYPE, {}
+        return STATUS_UNVERIFIED, entry.regularize(workbook, mine_id)
+
+    if entry is not None and _entry_matches_title(entry, title):
+        return STATUS_COMPLETED, entry.regularize(workbook, mine_id)
+
+    reclassified = _match_by_title(title)
+    if reclassified is not None and reclassified is not entry:
+        return STATUS_RECLASSIFIED, reclassified.regularize(workbook, mine_id)
+
     if entry is None:
         return STATUS_UNKNOWN_TYPE, {}
-
-    title = (workbook.workbook_title or "").casefold()
-    if title:
-        matched = any(fragment.casefold() in title for fragment in entry.expected_title_fragments)
-        if not matched:
-            return STATUS_CONTENT_MISMATCH, {}
-        status = STATUS_COMPLETED
-    else:
-        # No title at all to check against -- attempt regularization anyway
-        # (real data shows ~30-60% of exports have no inferrable title, see
-        # plan doc §1) but flag it distinctly from a verified pass.
-        status = STATUS_UNVERIFIED
-
-    tables = entry.regularize(workbook, mine_id)
-    return status, tables
+    return STATUS_CONTENT_MISMATCH, {}

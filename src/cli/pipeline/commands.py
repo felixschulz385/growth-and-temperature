@@ -170,4 +170,14 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     _add_step_arg(transfer_p, required=True)
     transfer_p.add_argument("--direction", choices=["push", "pull"], default="push", help="Transfer direction (default: push)")
     transfer_p.add_argument("--override", action="store_true", help="Re-transfer units already marked completed")
+    transfer_p.add_argument(
+        "--watch", action="store_true",
+        help="Stay running, re-scanning for newly-completed local output and pushing it as it "
+             "appears (e.g. alongside a concurrently-running `pipeline run --step fetch`). "
+             "Runs until interrupted (Ctrl-C).",
+    )
+    transfer_p.add_argument(
+        "--poll-interval", type=float, default=30.0,
+        help="Seconds to wait between re-scans in --watch mode (default: 30)",
+    )
     transfer_p.set_defaults(func=handle_transfer)

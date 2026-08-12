@@ -75,7 +75,7 @@ from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.common.years import MAX_PLAUSIBLE_YEAR as _MAX_PLAUSIBLE_YEAR, MIN_PLAUSIBLE_YEAR as _MIN_PLAUSIBLE_YEAR
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources import layout, registry
+from src.data.sources import commodities, layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
@@ -95,6 +95,10 @@ DEFAULT_RADIUS_VARIABLES = {
     "mine_priceshock_50km": {
         "radius_km": 50, "table_name": "mine_buffers_50km", "value_column": "value_priceshock", "dtype": "float32",
     },
+    # No "radius_km" -- the discriminator that routes this variable through
+    # _create_polygon_table (real mine footprints) instead of
+    # _create_buffer_table (synthetic ST_Buffer circles) in _execute_prepare.
+    "mine_polygon_count": {"table_name": "mine_polygons", "value_column": "value", "dtype": "uint16"},
 }
 
 #: nodata/fill sentinel per rasterized dtype -- `0` is a legitimate value for
@@ -102,6 +106,19 @@ DEFAULT_RADIUS_VARIABLES = {
 #: coverage), so it can't share `mine_count_*`'s `0` fill/nodata convention;
 #: `NaN` is used instead (see module docstring).
 DTYPE_FILL_VALUES: Dict[str, float] = {"uint16": 0, "float32": float("nan")}
+
+#: Scraper tables fused into PREPARE's mine identity/location/closing-year
+#: (docs/data/snl_mining/README.md's fusion section): `mines` is the identity
+#: backbone (adds mine-only-in-scraper records the manual `.xls` export never
+#: had); `detail_location_map_claims__location.decimal_degrees` fills
+#: location gaps; `detail_discoveries_milestones__milestones`'s
+#: `event_type='Actual Closure'` rows fill closing-year gaps. No scraped
+#: equivalent exists for *opening* year -- confirmed against live data, no
+#: 'Actual Startup' milestone type exists among 49 real event types -- so
+#: opening_year fusion stops at COALESCE(manual, llm-imputed), unchanged.
+SCRAPED_MINES_TABLE = "mines"
+SCRAPED_LOCATION_TABLE = "detail_location_map_claims__location"
+SCRAPED_CLOSURE_MILESTONES_TABLE = "detail_discoveries_milestones__milestones"
 
 
 class SnlMiningSource(DataSource):
@@ -128,9 +145,14 @@ class SnlMiningSource(DataSource):
         # this source's raw input, so it lives under output_root(FETCH) (->
         # layout.raw_root()) like every other source's downloaded bytes,
         # respecting ctx.layout instead of hardcoding the legacy shape.
+        # "database.duckdb" is shared with the scraper (scraper/config.py's
+        # DEFAULT_DB_PATH): the manual-import notebook's properties/
+        # property_texts/property_llm_years/etc. tables and the scraper's own
+        # mines/detail_* tables live in one file -- both are "parsed xlsx",
+        # just via different intake paths.
         self.duckdb_path = self._resolve_path(
             cfg.raw.get("duckdb_path")
-            or os.path.join(self.output_root(PipelineStep.FETCH), "manual_xls", "snl_mining_manual_export.duckdb")
+            or os.path.join(self.output_root(PipelineStep.FETCH), "database.duckdb")
         )
         prepared_db_override = cfg.raw.get("prepared_db_path", aggregation.get("prepared_db_path"))
         self.prepared_db_path = (
@@ -184,7 +206,11 @@ class SnlMiningSource(DataSource):
         self.buffer_tables = {
             variable: (
                 spec.get("table_name", f"{variable}_buffer"),
-                int(spec["radius_km"]) * 1000,
+                # None (radius_km omitted) marks a polygon-sourced variable
+                # (e.g. mine_polygon_count) -- built via _create_polygon_table
+                # from real geometry instead of _create_buffer_table's
+                # ST_Buffer circles (see _execute_prepare's dispatch split).
+                int(spec["radius_km"]) * 1000 if spec.get("radius_km") is not None else None,
                 spec.get("value_column", "value"),
                 spec.get("dtype", "uint16"),
             )
@@ -325,22 +351,33 @@ class SnlMiningSource(DataSource):
             start_year, end_year = self._determine_year_bounds(con, llm_years_available)
 
             self._create_active_mines_table(con, start_year, end_year, raster_crs, llm_years_available)
+            self._create_commodity_shares_table(con)
             self._create_mine_priceshock_table(con)
             # Two output variables (mine_count_*, mine_priceshock_*) can share
             # one physical buffer table (different value_column, same
             # table_name/radius) -- build each distinct table_name once, not
             # once per variable, to avoid redundantly rebuilding identical
-            # ST_Buffer/ST_Transform geometry work.
+            # ST_Buffer/ST_Transform geometry work. Polygon-sourced variables
+            # (radius_m is None, e.g. mine_polygon_count) go through
+            # _create_polygon_table instead of _create_buffer_table -- both
+            # sets of table names still feed the shared rtree-index pass.
             radius_tables: Dict[str, int] = {}
+            polygon_table_names: set[str] = set()
             for table_name, radius_m, _value_column, _dtype in self.buffer_tables.values():
-                radius_tables[table_name] = radius_m
+                if radius_m is None:
+                    polygon_table_names.add(table_name)
+                else:
+                    radius_tables[table_name] = radius_m
             for table_name, radius_m in radius_tables.items():
                 self._create_buffer_table(con, table_name, radius_m, raster_crs)
+            for table_name in polygon_table_names:
+                self._create_polygon_table(con, table_name, raster_crs)
             for table_spec in self.admin_tables.values():
                 self._create_admin_count_table(con, table_spec["table_name"], table_spec["geometry_path"], table_spec["code_column"], raster_crs)
-            self._create_rtree_indexes(con, radius_tables)
+            self._create_rtree_indexes(con, {**radius_tables, **dict.fromkeys(polygon_table_names)})
             self._verify_rtree_queries(con)
             con.execute("DETACH raw_db")
+            self._write_back_shared_tables()
             return True
         except Exception:
             logger.exception("Error preparing SNL mining DuckDB features")
@@ -384,26 +421,85 @@ class SnlMiningSource(DataSource):
             f"LEFT JOIN raw_db.main.{self.llm_years_table} AS y USING (property_id)",
         )
 
+    def _fusion_ctes(self) -> str:
+        """`scraped_location`/`scraped_closure` CTE definitions (no leading
+        `WITH`), shared by `_determine_year_bounds` and
+        `_create_active_mines_table` so the two can't independently drift on
+        what "latitude"/"longitude"/"closing_year" mean (module-level
+        constants docstring). `decimal_degrees` is a free-text "lat, lon"
+        string (e.g. `"12.345, -67.890"`); `TRY_CAST` -> `NULL` on
+        anything that doesn't parse, same silent-fallback philosophy as
+        `_llm_year_exprs`. A mine can have multiple 'Actual Closure' rows
+        (reopened-then-reclosed); `MAX` takes the most recent one."""
+        # `sl`/`sc` keep the column named `mine_id` (not `property_id`) so
+        # `_llm_year_exprs`' `USING (property_id)` join stays unambiguous --
+        # it would otherwise have three same-named `property_id` columns in
+        # scope (p/sl/sc) to choose from instead of just `p`'s.
+        return rf"""
+            scraped_location AS (
+                SELECT mine_id,
+                    TRY_CAST(TRIM(split_part(decimal_degrees, ',', 1)) AS DOUBLE) AS s_latitude,
+                    TRY_CAST(TRIM(split_part(decimal_degrees, ',', 2)) AS DOUBLE) AS s_longitude
+                FROM raw_db.main.{SCRAPED_LOCATION_TABLE}
+                WHERE decimal_degrees IS NOT NULL AND decimal_degrees != ''
+            ),
+            scraped_closure AS (
+                SELECT mine_id,
+                    MAX(TRY_CAST(regexp_extract(period, '(\d{{4}})', 1) AS INTEGER)) AS s_closure_year
+                FROM raw_db.main.{SCRAPED_CLOSURE_MILESTONES_TABLE}
+                WHERE event_type = 'Actual Closure'
+                GROUP BY mine_id
+            )
+        """
+
+    def _fused_mines_from_clause(self) -> str:
+        """`mines` (scraped identity backbone) LEFT JOINed against the manual
+        properties table and both fusion CTEs, keyed on `property_id` ==
+        `mine_id` (same id space -- verified: every manual `properties` row
+        has a matching `mines` row)."""
+        return f"""
+            FROM raw_db.main.{SCRAPED_MINES_TABLE} AS m
+            LEFT JOIN raw_db.main.{self.properties_table} AS p ON p.property_id = m.mine_id
+            LEFT JOIN scraped_location AS sl ON sl.mine_id = m.mine_id
+            LEFT JOIN scraped_closure AS sc ON sc.mine_id = m.mine_id
+        """
+
+    def _fused_latitude_expr(self) -> str:
+        return f"COALESCE(CAST(p.{self.latitude_column} AS DOUBLE), sl.s_latitude)"
+
+    def _fused_longitude_expr(self) -> str:
+        return f"COALESCE(CAST(p.{self.longitude_column} AS DOUBLE), sl.s_longitude)"
+
+    def _fused_closing_year_expr(self, llm_close_expr: str) -> str:
+        return f"COALESCE(p.{self.closing_year_column}, sc.s_closure_year, {llm_close_expr})"
+
     def _determine_year_bounds(self, con, llm_years_available: bool) -> Tuple[int, int]:
         if self.cfg.year_range:
             return int(self.cfg.year_range[0]), int(self.cfg.year_range[1])
 
         llm_open_expr, llm_close_expr, llm_join = self._llm_year_exprs(llm_years_available)
+        latitude_expr = self._fused_latitude_expr()
+        longitude_expr = self._fused_longitude_expr()
         open_year = f"COALESCE(p.{self.opening_year_column}, {llm_open_expr})"
-        close_year = f"COALESCE(p.{self.closing_year_column}, {llm_close_expr}, {open_year})"
+        # Bounds detection keeps the original extra fallback tier to open_year
+        # (never NULL here, unlike _create_active_mines_table's closing_year,
+        # which stays NULL on purpose so a still-active mine can be detected
+        # downstream via "CASE WHEN closing_year IS NULL").
+        close_year = f"COALESCE({self._fused_closing_year_expr(llm_close_expr)}, {open_year})"
         plausible = f"BETWEEN {self.MIN_PLAUSIBLE_YEAR} AND {self.MAX_PLAUSIBLE_YEAR}"
         # CASE-to-NULL (which MIN/MAX ignore), not a WHERE filter -- a WHERE
         # filter would drop the whole row before `count(*) FILTER` below
         # ever saw it, undercounting exclusions.
         query = f"""
+            WITH {self._fusion_ctes()}
             SELECT
                 CAST(MIN(CASE WHEN {open_year} {plausible} THEN {open_year} END) AS INTEGER) AS start_year,
                 CAST(MAX(CASE WHEN {close_year} {plausible} THEN {close_year} END) AS INTEGER) AS end_year,
                 count(*) FILTER (WHERE NOT ({open_year} {plausible})) AS excluded_count
-            FROM raw_db.main.{self.properties_table} AS p
+            {self._fused_mines_from_clause()}
             {llm_join}
             WHERE {open_year} IS NOT NULL
-              AND p.{self.latitude_column} IS NOT NULL AND p.{self.longitude_column} IS NOT NULL
+              AND {latitude_expr} IS NOT NULL AND {longitude_expr} IS NOT NULL
         """
         start_year, end_year, excluded_count = con.execute(query).fetchone()
         if start_year is None or end_year is None:
@@ -420,20 +516,24 @@ class SnlMiningSource(DataSource):
 
     def _create_active_mines_table(self, con, start_year: int, end_year: int, raster_crs: str, llm_years_available: bool) -> None:
         llm_open_expr, llm_close_expr, llm_join = self._llm_year_exprs(llm_years_available)
+        latitude_expr = self._fused_latitude_expr()
+        longitude_expr = self._fused_longitude_expr()
+        close_year_expr = self._fused_closing_year_expr(llm_close_expr)
         query = f"""
             CREATE OR REPLACE TABLE active_mines AS
-            WITH canonical_mines AS (
+            WITH {self._fusion_ctes()},
+            canonical_mines AS (
                 SELECT
-                    CAST(p.property_id AS VARCHAR) AS property_id,
-                    CAST(p.{self.longitude_column} AS DOUBLE) AS longitude,
-                    CAST(p.{self.latitude_column} AS DOUBLE) AS latitude,
+                    CAST(m.mine_id AS VARCHAR) AS property_id,
+                    {longitude_expr} AS longitude,
+                    {latitude_expr} AS latitude,
                     CAST(COALESCE(p.{self.opening_year_column}, {llm_open_expr}) AS INTEGER) AS opening_year,
-                    CAST(COALESCE(p.{self.closing_year_column}, {llm_close_expr}) AS INTEGER) AS closing_year,
-                    ST_Point(CAST(p.{self.longitude_column} AS DOUBLE), CAST(p.{self.latitude_column} AS DOUBLE)) AS point_wgs84
-                FROM raw_db.main.{self.properties_table} AS p
+                    CAST({close_year_expr} AS INTEGER) AS closing_year,
+                    ST_Point({longitude_expr}, {latitude_expr}) AS point_wgs84
+                {self._fused_mines_from_clause()}
                 {llm_join}
                 WHERE COALESCE(p.{self.opening_year_column}, {llm_open_expr}) IS NOT NULL
-                  AND p.{self.latitude_column} IS NOT NULL AND p.{self.longitude_column} IS NOT NULL
+                  AND {latitude_expr} IS NOT NULL AND {longitude_expr} IS NOT NULL
             ),
             bounded_mines AS (
                 SELECT property_id, longitude, latitude, opening_year, closing_year,
@@ -454,38 +554,131 @@ class SnlMiningSource(DataSource):
         """
         con.execute(query)
 
+    #: `Contained(...)` unit variants seen in `detail_reserves_resources`
+    #: (whitespace already stripped from the raw `metric` string) -> a
+    #: tonnes-per-unit multiplier. Verified against live data: each of the
+    #: ~63 real commodity labels uses exactly one of these four units
+    #: consistently (oz troy for precious metals, ct metric carat for
+    #: diamonds, lbs avoirdupois for uranium, tonnes for everything else) --
+    #: no per-commodity mixed units, so this conversion needs no density
+    #: lookup, just the standard mass-unit factors.
+    _CONTAINED_TONNES_PER_UNIT = {
+        "Contained(tonnes)": 1.0,
+        "Contained(oz)": 31.1034768 / 1e6,  # troy oz -> tonnes
+        "Contained(lbs)": 0.45359237 / 1e3,  # avoirdupois lb -> tonnes
+        "Contained(ct)": 0.0002 / 1e3,  # metric carat -> tonnes
+    }
+
+    def _create_commodity_shares_table(self, con) -> None:
+        """Builds `commodity_shares`: one row per `(property_id, commodity)`,
+        `share` in `[0, 1]` summing to `1` per mine, consumed by
+        `_create_mine_priceshock_table`.
+
+        If the user has placed a real table at
+        `raw_db.main.{self.commodity_shares_table}` (the original
+        "user-owned" contract -- module docstring), it's copied as-is and
+        nothing is auto-derived; the copy lands in this (writable) prepared-db
+        connection even though `raw_db` itself is `ATTACH`ed `READ_ONLY`, so
+        the override escape hatch still works. Otherwise `commodity_shares`
+        is auto-derived from `detail_reserves_resources`'s
+        `category='Total Reserves & Resources'` `Contained(...)` rows,
+        converted to one common tonnes basis (`_CONTAINED_TONNES_PER_UNIT`)
+        and normalized via `commodities.normalize_commodity(..., source="snl")`
+        -- several raw labels (e.g. individual REEs) collapse onto the same
+        canonical key, so normalization happens *before* the share ratio is
+        computed, not after, or those mines' shares wouldn't sum to 1.
+        """
+        if self._raw_table_exists(con, self.commodity_shares_table):
+            con.execute(f"CREATE OR REPLACE TABLE commodity_shares AS SELECT * FROM raw_db.main.{self.commodity_shares_table}")
+            return
+
+        import pandas as pd
+
+        raw_labels = [
+            row[0]
+            for row in con.execute(
+                "SELECT DISTINCT commodity FROM raw_db.main.detail_reserves_resources "
+                "WHERE category = 'Total Reserves & Resources' "
+                "AND regexp_replace(metric, '\\s', '', 'g') LIKE 'Contained(%' "
+                "AND commodity IS NOT NULL"
+            ).fetchall()
+        ]
+        mapping_rows: List[Tuple[str, str]] = []
+        unmapped: List[str] = []
+        for label in raw_labels:
+            canonical = commodities.normalize_commodity(label, source="snl")
+            (mapping_rows if canonical else unmapped).append((label, canonical) if canonical else label)
+
+        if unmapped:
+            logger.warning(
+                "commodity_shares: %d raw commodity label(s) have no canonical mapping "
+                "(commodities.normalize_commodity(source='snl') returned None) and are "
+                "excluded from every mine's shares: %s -- add a mapping in commodities.py "
+                "if these should count.",
+                len(unmapped), sorted(unmapped),
+            )
+
+        mapping_df = pd.DataFrame(mapping_rows, columns=["raw_commodity", "canonical_commodity"])
+        con.register("_commodity_alias_map", mapping_df)
+        try:
+            unit_case = " ".join(
+                f"WHEN regexp_replace(r.metric, '\\s', '', 'g') = '{unit}' THEN {factor}"
+                for unit, factor in self._CONTAINED_TONNES_PER_UNIT.items()
+            )
+            query = f"""
+                CREATE OR REPLACE TABLE commodity_shares AS
+                WITH normalized AS (
+                    SELECT
+                        r.mine_id AS property_id,
+                        a.canonical_commodity AS commodity,
+                        r.value AS amount,
+                        CASE {unit_case} END AS tonnes_per_unit
+                    FROM raw_db.main.detail_reserves_resources AS r
+                    JOIN _commodity_alias_map AS a ON a.raw_commodity = r.commodity
+                    WHERE r.category = 'Total Reserves & Resources'
+                      AND regexp_replace(r.metric, '\\s', '', 'g') LIKE 'Contained(%'
+                      AND r.value IS NOT NULL
+                ),
+                tonnage AS (
+                    SELECT property_id, commodity, SUM(amount * tonnes_per_unit) AS tonnes
+                    FROM normalized
+                    WHERE tonnes_per_unit IS NOT NULL
+                    GROUP BY property_id, commodity
+                )
+                SELECT property_id, commodity,
+                    tonnes / SUM(tonnes) OVER (PARTITION BY property_id) AS share
+                FROM tonnage
+                WHERE tonnes > 0
+            """
+            con.execute(query)
+        finally:
+            con.unregister("_commodity_alias_map")
+
     def _create_mine_priceshock_table(self, con) -> None:
         """Builds `mine_priceshock`: one row per `(property_id, year)`, `value
         = SUM(share * ln_price_real)` over the mine's commodity shares
-        (`self.commodity_shares_table`, a user-owned table inside `raw_db` --
-        see module docstring for the required schema) joined against
-        `commodity_prices`'s prepared price table (read directly via
-        `read_parquet()`, not `ATTACH` -- a parquet file isn't an attachable
-        DuckDB database).
+        (`commodity_shares`, built by `_create_commodity_shares_table` just
+        before this method runs) joined against `commodity_prices`'s
+        prepared price table (read directly via `read_parquet()`, not
+        `ATTACH` -- a parquet file isn't an attachable DuckDB database).
 
         `LEFT JOIN ... GROUP BY SUM(...)` is load-bearing: a commodity with no
         price match contributes SQL `NULL` (ignored by `SUM`), and if *every*
         commodity for a mine is unmatched, `value` is `NULL` for that
         `(property_id, year)` -- deliberately distinct from `0`, which is a
         legitimate price-shock value in its own right (see
-        `_rasterize_tiles_to_zarr`'s NaN-fill handling).
+        `_rasterize_tiles_to_zarr`'s NaN-fill handling). An empty
+        `commodity_shares` table (no user override, no derivable
+        reserves/resources data) degrades gracefully to an empty
+        `mine_priceshock` via the same `JOIN`, no separate empty-table branch
+        needed.
         """
-        if not self._raw_table_exists(con, self.commodity_shares_table):
-            logger.warning(
-                "Commodity shares table raw_db.main.%s not found -- mine_priceshock will be empty "
-                "(mine_priceshock_* variables will rasterize as all-NaN). See module docstring for "
-                "the expected (property_id, commodity, share) schema.",
-                self.commodity_shares_table,
-            )
-            con.execute("CREATE OR REPLACE TABLE mine_priceshock (property_id VARCHAR, year INTEGER, value DOUBLE)")
-            return
-
         escaped_prices_path = self.commodity_prices_path.replace("'", "''")
         query = f"""
             CREATE OR REPLACE TABLE mine_priceshock AS
             SELECT m.property_id, m.year, SUM(s.share * p.ln_price_real) AS value
             FROM (SELECT DISTINCT property_id, year FROM active_mines) AS m
-            JOIN raw_db.main.{self.commodity_shares_table} AS s USING (property_id)
+            JOIN commodity_shares AS s USING (property_id)
             LEFT JOIN read_parquet('{escaped_prices_path}') AS p
                 ON p.commodity = s.commodity AND p.year = m.year
             GROUP BY m.property_id, m.year
@@ -506,6 +699,73 @@ class SnlMiningSource(DataSource):
             FROM buffered WHERE geometry_metric IS NOT NULL
         """
         con.execute(query)
+
+    def _create_polygon_table(self, con, table_name: str, raster_crs: str) -> None:
+        """Builds a polygon-sourced variable's table (e.g. `mine_polygons`,
+        backing `mine_polygon_count`) from real scraped mine footprints
+        instead of a synthetic `ST_Buffer` circle -- structurally parallel to
+        `_create_buffer_table`, but geometry comes from
+        `mine_property_geometries` (`geometry_kind='property'`: the tightest,
+        most accurate single-mine footprint, verified median ~300m across;
+        `linked`-kind claims polygons are out of scope for now).
+
+        A plain `JOIN` (not `LEFT JOIN`) excludes the ~43% of active-mine-
+        years without a `property`-kind polygon -- same "just don't
+        contribute a row" pattern `_create_buffer_table` uses for
+        `geometry_metric IS NOT NULL`. One static polygon is reused for every
+        active year of a given mine, exactly like buffer-circle geometry
+        already is (mine location doesn't change year to year).
+        """
+        query = f"""
+            CREATE OR REPLACE TABLE {table_name} AS
+            WITH mine_polygons_wgs84 AS (
+                SELECT mine_id AS property_id,
+                    ST_MakeValid(ST_GeomFromText(geometry_wkt)) AS geometry_wgs84
+                FROM raw_db.main.mine_property_geometries
+                WHERE geometry_kind = 'property'
+            )
+            SELECT m.property_id, m.year, 1::INTEGER AS value,
+                ST_Transform(g.geometry_wgs84, 'EPSG:4326', '{raster_crs}', true) AS geometry_raster
+            FROM active_mines AS m
+            JOIN mine_polygons_wgs84 AS g USING (property_id)
+        """
+        con.execute(query)
+
+    def _write_back_shared_tables(self) -> None:
+        """Copies `commodity_shares` from `prepared_db_path` back into the
+        shared `database.duckdb` (the user asked for "a table", a first-class
+        visible artefact -- not just a PREPARE-internal intermediate) and
+        exports it to CSV alongside the scraper's own `csv/` exports.
+
+        `database.duckdb` may be locked by a concurrently-running scraper
+        process (DuckDB doesn't support concurrent writers) -- this is
+        best-effort: log a warning and move on rather than failing PREPARE,
+        since `_create_mine_priceshock_table`'s actual dependency is the
+        `prepared_db_path` copy, already written before this runs.
+        """
+        import duckdb
+
+        try:
+            shared_con = duckdb.connect(self.duckdb_path)
+        except Exception:
+            logger.warning(
+                "Could not open %s to write back commodity_shares (likely locked by a "
+                "concurrent scraper run) -- skipping, PREPARE's own copy is unaffected.",
+                self.duckdb_path,
+            )
+            return
+        try:
+            shared_con.execute(f"ATTACH '{self.prepared_db_path}' AS prepared_db (READ_ONLY)")
+            shared_con.execute("CREATE OR REPLACE TABLE commodity_shares AS SELECT * FROM prepared_db.main.commodity_shares")
+            shared_con.execute("DETACH prepared_db")
+            csv_dir = os.path.join(os.path.dirname(self.duckdb_path), "csv")
+            os.makedirs(csv_dir, exist_ok=True)
+            csv_path = os.path.join(csv_dir, "commodity_shares.csv").replace("'", "''")
+            shared_con.execute(f"COPY commodity_shares TO '{csv_path}' (HEADER, DELIMITER ',')")
+        except Exception:
+            logger.exception("Error writing commodity_shares back to %s -- PREPARE's own copy is unaffected.", self.duckdb_path)
+        finally:
+            shared_con.close()
 
     def _detect_gpkg_geometry_column(self, con, gpkg_path: str, code_column: str) -> str:
         escaped_path = gpkg_path.replace("'", "''")

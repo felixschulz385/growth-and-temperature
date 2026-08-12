@@ -11,7 +11,7 @@ Usage examples:
   python scripts/debug_snl_mining_scraper.py ids
   python scripts/debug_snl_mining_scraper.py detail-exports
   python scripts/debug_snl_mining_scraper.py detail-parse
-  python scripts/debug_snl_mining_scraper.py detail-regularize --csv-out data/snf_mining/raw/regularized_csv
+  python scripts/debug_snl_mining_scraper.py detail-regularize --csv-out data/raw/snl_mining/csv
 """
 
 from __future__ import annotations
@@ -101,6 +101,12 @@ def main() -> int:
         help="After a detail-regularize (or full) run, dump every regularized detail_* table to CSV in this directory",
     )
     parser.add_argument(
+        "--workers",
+        type=int,
+        default=8,
+        help="Thread-pool size for the detail-regularize stage's parse+classify step (default: 8)",
+    )
+    parser.add_argument(
         "--redo-current-stage",
         action="store_true",
         help="Force a clean rerun of the selected debug step",
@@ -133,6 +139,7 @@ def main() -> int:
         continue_on_error=not args.fail_fast,
         force_stages=_resolve_force_stages(args),
         step_sleep_seconds=args.step_sleep_seconds,
+        regularize_max_workers=args.workers,
     )
     logger.info("SNL mining scraper finished: %s", results)
 

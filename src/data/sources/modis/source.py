@@ -150,7 +150,6 @@ class ModisSource(DataSource):
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="modis_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
 
-        self._ledger = None
         self._stac_client = None
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
@@ -206,7 +205,16 @@ class ModisSource(DataSource):
             return super().transfer_units(step)
 
         stage1_root = self.output_root(PipelineStep.FETCH)
-        remote_base = self.ctx.remote_data_root or self.ctx.data_root
+        # Relative to the LOCAL data root, not `remote_data_root` -- see
+        # `DataSource.transfer_units()`'s docstring/comment (base.py) for why
+        # relpath-ing a local path against a *remote* absolute path (often a
+        # different machine/filesystem entirely, e.g. Windows local vs.
+        # scicore POSIX) produces a meaningless, `../../..`-laden path
+        # instead of "this unit's place under the remote tree". The
+        # `.replace(os.sep, "/")` below is the same fix as base.py's: on
+        # Windows, `os.path.relpath` emits backslash-separated output no
+        # matter its input, but `remote_path` must be POSIX (the HPC target
+        # is a remote Linux host).
         units = []
         if not os.path.isdir(stage1_root):
             return units
@@ -222,7 +230,7 @@ class ModisSource(DataSource):
                     TransferUnit(
                         unit_id=f"{year_name}/{tile_name}",
                         local_path=local_path,
-                        remote_path=os.path.relpath(local_path, remote_base),
+                        remote_path=os.path.relpath(local_path, self.ctx.data_root).replace(os.sep, "/"),
                     )
                 )
         return units
@@ -245,29 +253,66 @@ class ModisSource(DataSource):
             return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
-    def _get_ledger(self):
-        """Lazily opened, reused across `_execute_fetch()` calls within one
-        run (docs/design/10-fetch-ledger.md): tracks each (year, tile) unit's
-        local/remote state in the generic `artifacts` table so retries and
-        `pipeline summary` have per-unit visibility, the same way every other
-        FETCH-capable source's crawl-catalog-backed units do -- MODIS has no
-        crawl catalog to seed `artifacts` from, so it ensures its own rows
-        directly. Returns None if `local_index_dir` isn't configured (matches
-        every other ledger-aware call site's same fallback)."""
-        if self._ledger is None:
-            from src.data.common.ledger.paths import ledger_path
-            from src.data.common.ledger.store import SourceLedger
+    def _ledger_path(self) -> Optional[str]:
+        from src.data.common.ledger.paths import ledger_path
 
-            local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-            if local_ledger_path is None:
-                return None
-            self._ledger = SourceLedger.open(local_ledger_path, data_path=self.data_path)
-        return self._ledger
+        return ledger_path(self.ctx.local_index_dir, self.data_path)
 
-    def close(self) -> None:
-        if self._ledger is not None:
-            self._ledger.close()
-            self._ledger = None
+    def _ledger_ensure_artifact(self, target: StepTarget) -> None:
+        """Open a fresh, short-lived ledger connection, record `target` as a
+        known artifact, close immediately.
+
+        Deliberately NOT one connection cached across `_execute_fetch()`
+        calls for the run's whole lifetime (this method used to route
+        through such a cache, `_get_ledger()`) -- DuckDB allows only one
+        read-write connection to a given `.duckdb` file at a time, across
+        processes (`SourceLedger`'s module docstring), and a multi-hour FETCH
+        run holding that connection open continuously starves any concurrent
+        writer against the same file -- concretely, `pipeline transfer
+        --watch` running alongside a live FETCH, which is exactly the
+        "second concurrent writer... needs its own connection strategy" case
+        that docstring flags as unhandled. Each connection here touches the
+        ledger for a few ms; the STAC search + odc.stac.load + compositing
+        between calls (seconds to tens of seconds per tile-year) is real
+        idle time a concurrent transfer pass can use the lock during instead.
+
+        Opens via `open_with_retry()` (short exponential backoff on
+        `duckdb.IOException`) rather than a bare `open()`: two processes each
+        briefly holding the lock still occasionally collide mid-hold, and a
+        multi-hour FETCH run should not abort entirely over one missed
+        ledger write. If every retry is exhausted, this logs and moves on --
+        losing one artifact-tracking row is not worse than losing the whole
+        run; a later `pipeline reconcile` (or simply re-running FETCH, which
+        checks `is_complete()`/the file's own presence) recovers it.
+        """
+        path = self._ledger_path()
+        if path is None:
+            return
+        import duckdb
+
+        from src.data.common.ledger.store import SourceLedger
+
+        try:
+            with SourceLedger.open_with_retry(path, data_path=self.data_path) as ledger:
+                ledger.ensure_artifact(PipelineStep.FETCH.value, target.key, local_path=target.output_path)
+        except duckdb.IOException:
+            logger.warning("Ledger busy after retries -- skipping artifact-tracking write for %s", target.key)
+
+    def _ledger_set_state(self, key: str, state: str, *, size_bytes: Optional[int] = None) -> None:
+        """Same short-lived-connection, retry-then-skip shape as
+        `_ledger_ensure_artifact()`."""
+        path = self._ledger_path()
+        if path is None:
+            return
+        import duckdb
+
+        from src.data.common.ledger.store import SourceLedger
+
+        try:
+            with SourceLedger.open_with_retry(path, data_path=self.data_path) as ledger:
+                ledger.set_local_state(PipelineStep.FETCH.value, key, state, size_bytes=size_bytes)
+        except duckdb.IOException:
+            logger.warning("Ledger busy after retries -- skipping state update (%s) for %s", state, key)
 
     # -- FETCH ("annual": STAC streaming ingest + compositing) -------------
 
@@ -304,8 +349,12 @@ class ModisSource(DataSource):
 
     def _get_stac_client(self):
         """Lazily opened, reused across `_search_items()` calls within one
-        run -- same caching shape as `_get_ledger()` above. `Client.open()`
-        is an HTTP round trip to the STAC root/conformance document;
+        run -- unlike the ledger connections (`_ledger_ensure_artifact()`/
+        `_ledger_set_state()` above, deliberately *not* cached this way, see
+        their docstrings), caching this is safe: it's a plain HTTP client
+        with no cross-process exclusive-lock semantics to starve a concurrent
+        writer with. `Client.open()` is an HTTP round trip to the STAC
+        root/conformance document;
         `_execute_fetch()` runs once per (year, tile) `StepTarget`, so an
         uncached client would reopen the catalog thousands of times over a
         full run (e.g. ~20 years x ~300 land tiles) instead of once."""
@@ -386,9 +435,7 @@ class ModisSource(DataSource):
         from src.data.common.raster.compositing import composite_to_annual
         from src.data.sources.steps import is_complete
 
-        ledger = self._get_ledger()
-        if ledger is not None:
-            ledger.ensure_artifact(PipelineStep.FETCH.value, target.key, local_path=target.output_path)
+        self._ledger_ensure_artifact(target)
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping %s/%s -- output exists: %s", target.meta["year"], target.meta["tile"], target.output_path)
@@ -398,15 +445,13 @@ class ModisSource(DataSource):
         items = self._search_items(tile, year)
         if not items:
             logger.warning("No STAC items found for tile=%s year=%d", tile, year)
-            if ledger is not None:
-                ledger.set_local_state(PipelineStep.FETCH.value, target.key, "failed")
+            self._ledger_set_state(target.key, "failed")
             return False
 
         ds = self._load_tile_year(items)
         if ds is None or "lst" not in ds.data_vars or "qc" not in ds.data_vars:
             logger.error("Failed to load required bands for tile=%s year=%d", tile, year)
-            if ledger is not None:
-                ledger.set_local_state(PipelineStep.FETCH.value, target.key, "failed")
+            self._ledger_set_state(target.key, "failed")
             return False
 
         valid_mask = modis_util.decode_qc_valid_mask(ds["qc"], self.qc_max_lst_error_k, product=self.product)
@@ -437,9 +482,8 @@ class ModisSource(DataSource):
             {"source_type": "modis", "product": self.product, "tile": tile, "collection": self.collection_id, "platform": self.platform}
         )
         ok = self._write_annual_geotiff(out_ds, target.output_path)
-        if ledger is not None:
-            size_bytes = os.path.getsize(target.output_path) if ok and os.path.exists(target.output_path) else None
-            ledger.set_local_state(PipelineStep.FETCH.value, target.key, "complete" if ok else "failed", size_bytes=size_bytes)
+        size_bytes = os.path.getsize(target.output_path) if ok and os.path.exists(target.output_path) else None
+        self._ledger_set_state(target.key, "complete" if ok else "failed", size_bytes=size_bytes)
         return ok
 
     @staticmethod

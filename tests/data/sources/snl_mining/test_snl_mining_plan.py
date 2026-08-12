@@ -5,6 +5,8 @@ Oracle: tests/data/preprocess/sources/test_characterization_snl_mining.py.
 
 import os
 
+import pytest
+
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.snl_mining.source import SnlMiningSource
@@ -50,13 +52,14 @@ def test_default_output_variables_is_radius_only(tmp_path):
     assert source.output_variables == [
         "mine_count_10km", "mine_count_20km", "mine_count_50km",
         "mine_priceshock_10km", "mine_priceshock_20km", "mine_priceshock_50km",
+        "mine_polygon_count",
     ]
 
 
 def test_default_duckdb_and_prepared_db_paths(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.duckdb_path == os.path.join(
-        ctx.data_root, "snl_mining", "raw", "manual_xls", "snl_mining_manual_export.duckdb"
+        ctx.data_root, "snl_mining", "raw", "database.duckdb"
     )
     assert source.prepared_db_path == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb")
 
@@ -65,10 +68,11 @@ def test_duckdb_path_honors_layout_v2(tmp_path):
     # Stage-0's manual export is this source's raw input -- routed through
     # output_root(FETCH) (-> layout.raw_root()) so it moves under
     # layout="v2" too, instead of hardcoding the legacy processed/stage_0
-    # shape.
+    # shape. "database.duckdb" is shared with the scraper (scraper/config.py's
+    # DEFAULT_DB_PATH) -- one merged file for both intake paths.
     v2_source, v2_ctx = _make_source(tmp_path, layout="v2")
     assert v2_source.duckdb_path == os.path.join(
-        v2_ctx.data_root, "raw", "snl_mining", "manual_xls", "snl_mining_manual_export.duckdb"
+        v2_ctx.data_root, "raw", "snl_mining", "database.duckdb"
     )
 
 
@@ -96,6 +100,7 @@ def test_default_radius_and_admin_variables(tmp_path):
         "mine_priceshock_10km": ("mine_buffers_10km", 10000, "value_priceshock", "float32"),
         "mine_priceshock_20km": ("mine_buffers_20km", 20000, "value_priceshock", "float32"),
         "mine_priceshock_50km": ("mine_buffers_50km", 50000, "value_priceshock", "float32"),
+        "mine_polygon_count": ("mine_polygons", None, "value", "uint16"),
     }
     assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
         ctx.data_root, "misc", "processed", "stage_1", "gadm", "gadm_levelADM_1_simplified.gpkg"
@@ -271,13 +276,23 @@ def _attach_properties_db(source, tmp_path, rows, *, columns="property_id INTEGE
     """A `raw_db`-attached connection with a `properties` table, matching the
     shape `_determine_year_bounds` expects to be called against (it queries
     `raw_db.main.{properties_table}`, so a caller must ATTACH first --
-    mirrors `_execute_prepare`'s own setup)."""
+    mirrors `_execute_prepare`'s own setup). Also creates `mines` (one row per
+    `rows` entry, mirroring the manual property_id -- the identity/location/
+    closing-year fusion's backbone table) and empty
+    `detail_location_map_claims__location`/`detail_discoveries_milestones__
+    milestones` tables so the fusion CTEs resolve; empty scraped tables mean
+    the fusion degrades to manual-only, matching this suite's pre-fusion
+    expectations exactly."""
     import duckdb
 
     raw_path = str(tmp_path / "raw_stage0.duckdb")
     raw_con = duckdb.connect(raw_path)
     raw_con.execute(f"CREATE TABLE properties ({columns})")
     raw_con.executemany(f"INSERT INTO properties VALUES ({','.join('?' * len(rows[0]))})", rows)
+    raw_con.execute("CREATE TABLE mines (mine_id INTEGER)")
+    raw_con.executemany("INSERT INTO mines VALUES (?)", [(row[0],) for row in rows])
+    raw_con.execute("CREATE TABLE detail_location_map_claims__location (mine_id INTEGER, decimal_degrees VARCHAR)")
+    raw_con.execute("CREATE TABLE detail_discoveries_milestones__milestones (mine_id INTEGER, event_type VARCHAR, period VARCHAR)")
     raw_con.close()
 
     con = duckdb.connect(":memory:")
@@ -424,26 +439,22 @@ def test_create_mine_priceshock_table_fully_unpriced_mine_is_null_not_zero(tmp_p
     assert row[2] is None
 
 
-def test_create_mine_priceshock_table_missing_shares_table_yields_empty_table(tmp_path, caplog):
-    import logging
-
-    import duckdb
-
+def test_create_mine_priceshock_table_empty_when_no_reserves_data(tmp_path):
+    # No user-owned commodity_shares override and no Contained(...) rows in
+    # detail_reserves_resources (e.g. ingestion hasn't produced any usable
+    # reserves data yet) -- _create_commodity_shares_table yields an empty
+    # commodity_shares table, and _create_mine_priceshock_table's JOIN
+    # degrades gracefully to an empty mine_priceshock, no crash.
     source, _ = _make_source(tmp_path)
     source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
-    # raw_db with no commodity_shares table at all -- simulates the user's
-    # ingestion not having run yet.
-    raw_path = str(tmp_path / "raw_stage0_no_shares.duckdb")
-    duckdb.connect(raw_path).close()
-    con = duckdb.connect(":memory:")
-    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    con = _attach_reserves_db(tmp_path, reserves_rows=[])
     con.execute("CREATE TABLE active_mines AS SELECT 'm1' AS property_id, 2020 AS year")
 
-    with caplog.at_level(logging.WARNING):
-        source._create_mine_priceshock_table(con)
+    source._create_commodity_shares_table(con)
+    assert con.execute("SELECT count(*) FROM commodity_shares").fetchone() == (0,)
 
+    source._create_mine_priceshock_table(con)
     assert con.execute("SELECT count(*) FROM mine_priceshock").fetchone() == (0,)
-    assert any("Commodity shares table" in r.getMessage() for r in caplog.records)
 
 
 def test_create_buffer_table_carries_value_and_value_priceshock(tmp_path):
@@ -474,3 +485,266 @@ def test_create_buffer_table_carries_value_and_value_priceshock(tmp_path):
     assert rows["m1"] == (1, 7.5)
     assert rows["m2"][0] == 1
     assert rows["m2"][1] is None
+
+
+# --- identity/location/closing-year fusion: _create_active_mines_table ------
+
+
+def _attach_fusion_db(tmp_path, *, properties_rows, mines_rows, location_rows=(), closure_rows=(), filename="raw_fusion.duckdb"):
+    """A `raw_db`-attached, spatial-loaded connection with `properties`,
+    `mines`, `detail_location_map_claims__location`, and
+    `detail_discoveries_milestones__milestones` tables, matching the shape
+    `_create_active_mines_table`'s fusion CTEs expect (`_fusion_ctes`/
+    `_fused_mines_from_clause`). `properties_rows`: `(property_id,
+    actual_start_up_year, actual_closure_year, latitude, longitude)`.
+    `mines_rows`: `(mine_id,)`. `location_rows`: `(mine_id,
+    decimal_degrees)`. `closure_rows`: `(mine_id, event_type, period)`."""
+    import duckdb
+
+    raw_path = str(tmp_path / filename)
+    raw_con = duckdb.connect(raw_path)
+    raw_con.execute(
+        "CREATE TABLE properties (property_id VARCHAR, actual_start_up_year INTEGER, "
+        "actual_closure_year INTEGER, latitude DOUBLE, longitude DOUBLE)"
+    )
+    if properties_rows:
+        raw_con.executemany("INSERT INTO properties VALUES (?, ?, ?, ?, ?)", properties_rows)
+    raw_con.execute("CREATE TABLE mines (mine_id VARCHAR)")
+    raw_con.executemany("INSERT INTO mines VALUES (?)", [(m,) for m in mines_rows])
+    raw_con.execute("CREATE TABLE detail_location_map_claims__location (mine_id VARCHAR, decimal_degrees VARCHAR)")
+    if location_rows:
+        raw_con.executemany("INSERT INTO detail_location_map_claims__location VALUES (?, ?)", location_rows)
+    raw_con.execute("CREATE TABLE detail_discoveries_milestones__milestones (mine_id VARCHAR, event_type VARCHAR, period VARCHAR)")
+    if closure_rows:
+        raw_con.executemany("INSERT INTO detail_discoveries_milestones__milestones VALUES (?, ?, ?)", closure_rows)
+    raw_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    con.execute("LOAD spatial;")
+    return con
+
+
+def test_create_active_mines_table_fuses_scraped_location_when_manual_missing(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_fusion_db(
+        tmp_path,
+        properties_rows=[("m1", 1990, 2010, None, None)],
+        mines_rows=["m1"],
+        location_rows=[("m1", "12.5, -34.5")],
+    )
+    source._create_active_mines_table(con, 1990, 2010, "EPSG:3857", llm_years_available=False)
+    row = con.execute("SELECT latitude, longitude FROM active_mines WHERE property_id = 'm1' LIMIT 1").fetchone()
+    assert row == (12.5, -34.5)
+
+
+def test_create_active_mines_table_prefers_manual_location_over_scraped(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_fusion_db(
+        tmp_path,
+        properties_rows=[("m1", 1990, 2010, 1.0, 2.0)],
+        mines_rows=["m1"],
+        location_rows=[("m1", "99.0, -99.0")],
+    )
+    source._create_active_mines_table(con, 1990, 2010, "EPSG:3857", llm_years_available=False)
+    row = con.execute("SELECT latitude, longitude FROM active_mines WHERE property_id = 'm1' LIMIT 1").fetchone()
+    assert row == (1.0, 2.0)
+
+
+def test_create_active_mines_table_fuses_scraped_closure_when_manual_missing(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_fusion_db(
+        tmp_path,
+        properties_rows=[("m1", 1990, None, 1.0, 2.0)],
+        mines_rows=["m1"],
+        closure_rows=[("m1", "Actual Closure", "2005 Q3")],
+    )
+    source._create_active_mines_table(con, 1990, 2010, "EPSG:3857", llm_years_available=False)
+    row = con.execute("SELECT DISTINCT closing_year FROM active_mines WHERE property_id = 'm1'").fetchone()
+    assert row == (2005,)
+
+
+def test_create_active_mines_table_uses_most_recent_actual_closure(tmp_path):
+    # A reopened-then-reclosed mine has multiple 'Actual Closure' rows -- the
+    # most recent one wins (MAX, _fusion_ctes' scraped_closure CTE).
+    source, _ = _make_source(tmp_path)
+    con = _attach_fusion_db(
+        tmp_path,
+        properties_rows=[("m1", 1990, None, 1.0, 2.0)],
+        mines_rows=["m1"],
+        closure_rows=[("m1", "Actual Closure", "1998 Q1"), ("m1", "Actual Closure", "2009 Q1")],
+    )
+    source._create_active_mines_table(con, 1990, 2020, "EPSG:3857", llm_years_available=False)
+    row = con.execute("SELECT DISTINCT closing_year FROM active_mines WHERE property_id = 'm1'").fetchone()
+    assert row == (2009,)
+
+
+def test_create_active_mines_table_prefers_manual_closure_over_scraped(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_fusion_db(
+        tmp_path,
+        properties_rows=[("m1", 1990, 2010, 1.0, 2.0)],
+        mines_rows=["m1"],
+        closure_rows=[("m1", "Actual Closure", "2005 Q3")],
+    )
+    source._create_active_mines_table(con, 1990, 2010, "EPSG:3857", llm_years_available=False)
+    row = con.execute("SELECT DISTINCT closing_year FROM active_mines WHERE property_id = 'm1'").fetchone()
+    assert row == (2010,)
+
+
+def test_create_active_mines_table_excludes_scraper_only_mine_without_opening_year(tmp_path):
+    # mines-as-identity-backbone adds mine-only-in-scraper records, but they
+    # still need an opening-year signal (observed or LLM-imputed) to clear
+    # the WHERE gate -- fusion adds coverage where scraped data fills a real
+    # gap, it doesn't fabricate a required field (verified against live data:
+    # 0 of the 127 real mine-only-in-scraper records made it into
+    # active_mines, for exactly this reason).
+    source, _ = _make_source(tmp_path)
+    con = _attach_fusion_db(
+        tmp_path,
+        properties_rows=[],
+        mines_rows=["m1"],
+        location_rows=[("m1", "1.0, 2.0")],
+    )
+    source._create_active_mines_table(con, 1990, 2010, "EPSG:3857", llm_years_available=False)
+    assert con.execute("SELECT COUNT(*) FROM active_mines").fetchone() == (0,)
+
+
+# --- commodity shares: _create_commodity_shares_table ------------------------
+
+
+def _attach_reserves_db(tmp_path, reserves_rows, *, commodity_shares_rows=None, filename="raw_reserves.duckdb"):
+    """`reserves_rows`: list of `(mine_id, category, metric, commodity,
+    value)`. `commodity_shares_rows`: optional list of `(property_id,
+    commodity, share)` -- if given, creates a real `commodity_shares` table
+    in `raw_db` (the user-owned override contract)."""
+    import duckdb
+
+    raw_path = str(tmp_path / filename)
+    raw_con = duckdb.connect(raw_path)
+    raw_con.execute(
+        "CREATE TABLE detail_reserves_resources (mine_id VARCHAR, category VARCHAR, metric VARCHAR, commodity VARCHAR, value DOUBLE)"
+    )
+    if reserves_rows:
+        raw_con.executemany("INSERT INTO detail_reserves_resources VALUES (?, ?, ?, ?, ?)", reserves_rows)
+    if commodity_shares_rows is not None:
+        raw_con.execute("CREATE TABLE commodity_shares (property_id VARCHAR, commodity VARCHAR, share DOUBLE)")
+        raw_con.executemany("INSERT INTO commodity_shares VALUES (?, ?, ?)", commodity_shares_rows)
+    raw_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    return con
+
+
+def test_create_commodity_shares_table_respects_user_override(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_reserves_db(
+        tmp_path,
+        reserves_rows=[("m1", "Total Reserves & Resources", "Contained (tonnes)", "Copper", 100.0)],
+        commodity_shares_rows=[("m1", "copper", 1.0)],
+    )
+    source._create_commodity_shares_table(con)
+    rows = con.execute("SELECT property_id, commodity, share FROM commodity_shares").fetchall()
+    # Exactly the user-owned rows, not re-derived from detail_reserves_resources.
+    assert rows == [("m1", "copper", 1.0)]
+
+
+def test_create_commodity_shares_table_auto_derives_and_converts_units(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_reserves_db(
+        tmp_path,
+        reserves_rows=[
+            ("m1", "Total Reserves & Resources", "Contained (tonnes)", "Zinc", 2000.0),
+            ("m1", "Total Reserves & Resources", "Contained (tonnes)", "Lead", 1000.0),
+            ("m2", "Total Reserves & Resources", "Contained (oz)", "Gold", 1_000_000.0),
+            ("m2", "Irrelevant Category", "Contained (tonnes)", "Copper", 999.0),  # wrong category, ignored
+        ],
+    )
+    source._create_commodity_shares_table(con)
+
+    m1_rows = dict(con.execute("SELECT commodity, share FROM commodity_shares WHERE property_id = 'm1'").fetchall())
+    assert set(m1_rows) == {"zinc", "lead"}
+    assert m1_rows["zinc"] == pytest.approx(2000.0 / (2000.0 + 1000.0))
+    assert sum(m1_rows.values()) == pytest.approx(1.0)
+
+    m2_rows = con.execute("SELECT commodity, share FROM commodity_shares WHERE property_id = 'm2'").fetchall()
+    assert m2_rows == [("gold", 1.0)]  # only the Total Reserves & Resources row counts
+
+
+def test_create_commodity_shares_table_excludes_unmapped_commodity_and_warns(tmp_path, caplog):
+    import logging
+
+    source, _ = _make_source(tmp_path)
+    con = _attach_reserves_db(
+        tmp_path,
+        reserves_rows=[
+            ("m1", "Total Reserves & Resources", "Contained (tonnes)", "Copper", 100.0),
+            ("m1", "Total Reserves & Resources", "Contained (tonnes)", "NotARealCommodity", 50.0),
+        ],
+    )
+    with caplog.at_level(logging.WARNING):
+        source._create_commodity_shares_table(con)
+
+    rows = con.execute("SELECT commodity, share FROM commodity_shares WHERE property_id = 'm1'").fetchall()
+    assert rows == [("copper", 1.0)]  # unmapped commodity excluded, remaining share still normalized to 1
+    assert any("no canonical mapping" in r.getMessage() for r in caplog.records)
+
+
+# --- mine footprint polygons: _create_polygon_table --------------------------
+
+
+def _attach_polygon_db(tmp_path, geometry_rows, *, filename="raw_polygons.duckdb"):
+    """`geometry_rows`: list of `(mine_id, geometry_kind, geometry_wkt)`."""
+    import duckdb
+
+    raw_path = str(tmp_path / filename)
+    raw_con = duckdb.connect(raw_path)
+    raw_con.execute("CREATE TABLE mine_property_geometries (mine_id VARCHAR, geometry_kind VARCHAR, geometry_wkt VARCHAR)")
+    if geometry_rows:
+        raw_con.executemany("INSERT INTO mine_property_geometries VALUES (?, ?, ?)", geometry_rows)
+    raw_con.close()
+
+    con = duckdb.connect(":memory:")
+    con.execute(f"ATTACH '{raw_path}' AS raw_db (READ_ONLY)")
+    con.execute("LOAD spatial;")
+    return con
+
+
+def test_create_polygon_table_uses_property_kind_only(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_polygon_db(
+        tmp_path,
+        geometry_rows=[
+            ("m1", "property", "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))"),
+            # linked-kind claims polygons are out of scope (plan decision) --
+            # this row must be ignored even though it's the same mine_id.
+            ("m1", "linked", "POLYGON ((0 0, 0 10, 10 10, 10 0, 0 0))"),
+        ],
+    )
+    con.execute("CREATE TABLE active_mines AS SELECT * FROM (VALUES ('m1', 2020)) AS t(property_id, year)")
+    source._create_polygon_table(con, "mine_polygons", "EPSG:3857")
+    rows = con.execute("SELECT property_id, year, value FROM mine_polygons").fetchall()
+    assert rows == [("m1", 2020, 1)]
+
+
+def test_create_polygon_table_excludes_mines_without_property_polygon(tmp_path):
+    source, _ = _make_source(tmp_path)
+    con = _attach_polygon_db(tmp_path, geometry_rows=[])
+    con.execute("CREATE TABLE active_mines AS SELECT * FROM (VALUES ('m1', 2020)) AS t(property_id, year)")
+    source._create_polygon_table(con, "mine_polygons", "EPSG:3857")
+    assert con.execute("SELECT COUNT(*) FROM mine_polygons").fetchone() == (0,)
+
+
+def test_create_polygon_table_reuses_same_polygon_across_active_years(tmp_path):
+    # One static polygon per mine, reused for every active year -- mirrors
+    # how buffer-circle geometry is already the same location every year.
+    source, _ = _make_source(tmp_path)
+    con = _attach_polygon_db(
+        tmp_path,
+        geometry_rows=[("m1", "property", "POLYGON ((0 0, 0 1, 1 1, 1 0, 0 0))")],
+    )
+    con.execute("CREATE TABLE active_mines AS SELECT * FROM (VALUES ('m1', 2019), ('m1', 2020)) AS t(property_id, year)")
+    source._create_polygon_table(con, "mine_polygons", "EPSG:3857")
+    rows = con.execute("SELECT property_id, year FROM mine_polygons ORDER BY year").fetchall()
+    assert rows == [("m1", 2019), ("m1", 2020)]

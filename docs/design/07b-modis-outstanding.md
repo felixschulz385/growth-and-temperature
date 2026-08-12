@@ -44,12 +44,18 @@ output if the current assumption is wrong.
 
 ## Completeness / scope
 
-- [ ] **Land-tile allowlist: tooled, not yet run.** `compute_land_tiles()`
-      ([`tiles.py`](../../src/data/sources/modis/tiles.py)) and
-      `scripts/compute_modis_land_tiles.py` exist (added 2026-08-07), but `data.yaml`'s `modis`
-      block still has no `land_tiles:` populated — needs the `osm` source's FETCH+PREPARE to have
-      produced `land_polygons_simplified.gpkg` first, then the script run against it. Resolves the
-      ~317-land-tile figure `06-open-questions.md` #12 flags as unverified.
+- [x] **Land-tile allowlist — resolved (2026-08-11).** Ran `compute_modis_land_tiles.py` against
+      GADM's raw ADM-hierarchy polygons (`data/misc/gadm/raw/gadm_410-gpkg/gadm_410.gpkg`, already
+      present locally — 356,508 features covering every admin level down to the finest available
+      per country) rather than waiting on the `osm` source's FETCH+PREPARE (which needs a ~920MB
+      download plus a simplify pass neither has run yet); the script's own docstring says any
+      land-distinguishing polygon layer works, not specifically OSM's. Found **282** land-covering
+      tiles (of 648 within the 60-deg lat clip) — populated into `data.yaml`'s `modis` block's
+      `land_tiles:` (the `modis_robustness_11a1` block uses an explicit `tiles:` override, so the
+      allowlist doesn't apply there). Confirms the true figure is materially below the ~317
+      `06-open-questions.md` #12 flagged as unverified. `tests/data/sources/modis/` (35 tests)
+      still pass unaffected, since they exercise `compute_land_tiles()` against synthetic fixtures,
+      not this config value.
 - [x] **`modis_robustness_11a1`'s tiles/years — resolved (2026-08-09).** Replaced the 3 placeholder
       tiles with 5 chosen by forward-projecting one representative lon/lat per biome through the
       sinusoidal grid's own formulas (not guessed): `h12v09` (Amazon rainforest), `h18v06` (Sahara
@@ -70,9 +76,34 @@ output if the current assumption is wrong.
 
 ## Operational
 
-- [ ] **Real HPC transfer throughput/manifest schema unmeasured.** The `modis-fetch` push step's
-      real-world timing for ~6,700 tile-year composites over the scicore transfer node has never
-      been measured against a real batch. (`06-open-questions.md` #15)
+- [x] **Real HPC transfer throughput — measured (2026-08-11); manifest schema — already resolved,
+      not a separate open item.** Two parts to the original item:
+      - **Manifest schema**: [`08-hpc-transfer.md`](08-hpc-transfer.md) §6 left open whether
+        `UnifiedDataIndex` needs a schema addition for transfer-manifest use. Moot — the actual push
+        path (`src/data/common/hpc/push.py`'s `HPCPusher`, per its module docstring "replacing both
+        FETCH's inline tar/rsync/extract/verify ... and the separate `pipeline transfer` path")
+        superseded that whole design; MODIS FETCH tracks each (year, tile) unit's local/remote
+        state directly in the generic ledger `artifacts` table (`ModisSource`'s module docstring,
+        `source.py`), same as every other FETCH source. No new schema, no separate manifest format.
+      - **Throughput**: ran a real push against the actual scicore transfer node
+        (`transfer12.scicore.unibas.ch`, the `remote.ssh_target` this repo's sources already use)
+        via the real `HPCPusher.push_batched()` — not a mock. 20 synthetic files, 40MB each (800MB
+        total), sized to approximate a compressed float32 annual-composite GeoTIFF
+        (`_write_annual_geotiff`, `source.py` — ~32 bands x 2400x2400 px, deflate-compressed;
+        high-entropy synthetic bytes stand in for already-compressed real payload, since no
+        production MODIS output exists locally to sample yet). Result: **800MB in 62.8s ≈ 12.7
+        MB/s**, all 20 units verified present remotely, batch tar/rsync/extract/cleanup succeeded
+        end-to-end, remote scratch dir removed after. At that rate, ~6,700 tile-year units of this
+        size (~268GB) would take **roughly 5.9 hours single-threaded** — `push_units_concurrent`
+        (thread-pooled) would cut this proportionally to worker count, not measured here.
+        **Caveat, don't treat 12.7 MB/s as a hard production number**: this ingest host lacks
+        an `rsync` binary, so `HPCClient.rsync_transfer` silently fell back to its PowerShell/`scp`
+        path — the actual scicore-ingest-host codepath (which has `rsync`) wasn't exercised, and
+        `scp` has no delta/compression benefit `rsync -z` would provide. Real annual-composite file
+        sizes are also still an estimate (no production run has produced one yet to sample) rather
+        than a measured distribution. Re-run this benchmark from wherever stage "annual" actually
+        runs, with real `_write_annual_geotiff` output, before trusting the 5.9h figure for capacity
+        planning. (`06-open-questions.md` #15)
 
 ## Unrelated, noticed in passing
 

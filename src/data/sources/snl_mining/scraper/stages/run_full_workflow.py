@@ -41,6 +41,7 @@ def run_full_workflow(
     force_stages: Collection[Stage | str] | None = None,
     step_sleep_seconds: float = SMALL_SLEEP_SECONDS,
     restart_session_every_mines: int | None = PERIODIC_BROWSER_RESTART_MINE_INTERVAL,
+    regularize_max_workers: int = 8,
 ) -> dict[str, object]:
     """Execute the requested SNL mining workflow stages."""
     logger.info(
@@ -120,6 +121,7 @@ def run_full_workflow(
                 subsections=subsections,
                 continue_on_error=continue_on_error,
                 force=Stage.DETAIL_REGULARIZE in forced_stages,
+                max_workers=regularize_max_workers,
             )
     finally:
         conn.close()

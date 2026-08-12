@@ -132,7 +132,11 @@ def test_mixed_files_and_directories_falls_back_to_concurrent_per_unit(tmp_path)
         unit_id="a", local_path=_write_file(str(tmp_path / "a.tif")), remote_path="grid/a.tif",
     )
     dir_unit = TransferUnit(
-        unit_id="b", local_path=str(_write_file(str(tmp_path / "b.zarr" / "0.0")).rsplit("/", 1)[0]),
+        # `os.path.dirname`, not `.rsplit("/", 1)` -- the latter is a no-op
+        # on Windows (`_write_file` returns a backslash-separated path
+        # there), silently leaving `local_path` pointed at the file "0.0"
+        # instead of its parent directory "b.zarr".
+        unit_id="b", local_path=os.path.dirname(_write_file(str(tmp_path / "b.zarr" / "0.0"))),
         remote_path="grid/b.zarr",
     )
 

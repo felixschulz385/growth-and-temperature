@@ -12,7 +12,7 @@ sources:
     type: "snl_mining"
     data_path: "snl_mining"
     year_range: [1992, 2024]
-    duckdb_path: "snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb"
+    duckdb_path: "snl_mining/raw/database.duckdb"
     properties_table: "properties"
     llm_years_table: "property_llm_years"
     work_history_table: "property_work_history_events"

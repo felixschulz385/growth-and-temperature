@@ -14,16 +14,25 @@ _REPO_ROOT = _THIS_DIR.parents[4]
 # This tool is standalone (not pipeline-wired -- see module docstring in
 # src/data/sources/snl_mining/source.py on why FETCH is declared absent), so
 # its output lives under the gitignored /data convention rather than through
-# ctx.layout. "scraper" (not "raw") keeps it from colliding with the
-# pipeline's own <data_root>/raw/snl_mining/ path if data_root is ever
-# pointed at ./data.
-DATA_DIR: Path = _REPO_ROOT / "data" / "snl_mining" / "scraper"
+# ctx.layout. It shares data/raw/snl_mining with the pipeline source's own
+# manual-export DuckDB on purpose -- both are "parsed xlsx", just from
+# different intake paths, and DEFAULT_DB_PATH below is the single merged
+# database both sides read/write.
+DATA_DIR: Path = _REPO_ROOT / "data" / "raw" / "snl_mining"
 
-# Database stored inside the raw data directory so everything is co-located
-DEFAULT_DB_PATH: Path = DATA_DIR / "snl_mining_scraper.duckdb"
+# Merged database: this scraper's own mines/mine_subsection_*/detail_* tables
+# plus the manual-import notebook's properties/property_texts/property_llm_years/
+# etc. tables, all in one file.
+DEFAULT_DB_PATH: Path = DATA_DIR / "database.duckdb"
 
 # Export download location for screener XLSX files
-EXPORT_DIR: Path = DATA_DIR / "exports"
+EXPORT_DIR: Path = DATA_DIR / "scraping"
+
+# Ephemeral working state (Selenium user-data dirs) -- not durable output, so
+# it lives outside data/ entirely, under the repo's gitignored scratch
+# convention (see /scratch_nobackup in .gitignore) rather than being mistaken
+# for real scraper data.
+SCRATCH_DIR: Path = _REPO_ROOT / "scratch_nobackup" / "snl_mining"
 
 # ---------------------------------------------------------------------------
 # S&P Global / Capital IQ URLs

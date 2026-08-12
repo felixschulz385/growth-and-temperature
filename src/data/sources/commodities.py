@@ -9,25 +9,39 @@ source's *class*. Lives at the `sources/` package root alongside `layout.py`/
 `verify.py`/`steps.py`, which are already commonly cross-imported by source
 packages.
 
-`CANONICAL_COMMODITIES` is seeded from the full distinct `primary_commodity`
-list in `data/raw/snl_mining/manual_xls/snl_mining_manual_export.duckdb::
-properties` (queried directly: 42 raw labels, 41 distinct canonical keys --
-"Lanthanides" and "Rare Earth Elements" both normalize to "rare_earths").
-`WORLD_BANK_COLUMNS` intentionally leaves most of them mapped to `None`: the
-World Bank Pink Sheet ("Annual Prices (Real)" sheet) has no genuine world-market
-series for the majority of these (uranium, diamonds, lithium, rare earths,
-graphite, molybdenum, bauxite, manganese, tungsten, chromite, cobalt, ilmenite,
-vanadium, antimony, tantalum, niobium, heavy mineral sands, palladium, titanium,
-rutile, zircon, scandium, alumina, yttrium, germanium, chromium, ferronickel,
-ferrochrome, caesium) -- mirroring how Berman et al. (2017) themselves restrict
-their analysis to the 14-of-25 minerals with usable world prices rather than
-substituting a proxy series. A commodity mapped to `None` here contributes
-nothing to a mine's price-shock term (see `snl_mining.source.
-_create_mine_priceshock_table`), not zero and not an error.
+`CANONICAL_COMMODITIES` was originally seeded from the full distinct
+`primary_commodity` list in `data/raw/snl_mining/database.duckdb::properties`
+(42 raw labels, 41 distinct canonical keys -- "Lanthanides" and "Rare Earth
+Elements" both normalize to "rare_earths"), then extended with 19 more keys
+(`arsenic`, `barite`, `bismuth`, `borates`, `cadmium`, `gallium`, `garnet`,
+`hafnium`, `indium`, `iridium`, `leucoxene`, `magnesium`, `mercury`,
+`rhenium`, `rhodium`, `rubidium`, `ruthenium`, `strontium`, `thorium`) found
+via `SELECT DISTINCT commodity FROM detail_reserves_resources` (the scraper's
+richer `Contained(...)` reserves/resources table, source="snl" also covers
+this vocabulary -- see `snl_mining.source._create_commodity_shares_table`)
+that weren't present in the manual `properties.primary_commodity` vocabulary
+at all. `WORLD_BANK_COLUMNS` intentionally leaves most of them mapped to
+`None`: the World Bank Pink Sheet ("Annual Prices (Real)" sheet) has no
+genuine world-market series for the majority of these -- mirroring how Berman
+et al. (2017) themselves restrict their analysis to the 14-of-25 minerals
+with usable world prices rather than substituting a proxy series. A commodity
+mapped to `None` here contributes nothing to a mine's price-shock term (see
+`snl_mining.source._create_mine_priceshock_table`), not zero and not an
+error.
 
 Bauxite/Alumina are deliberately left unmapped rather than proxied via the WB
 "Aluminum" (refined-metal) series -- a defensible but real judgment call,
 flagged in the implementation plan rather than decided silently.
+
+Individual lanthanide/rare-earth element labels (`Cerium`, `Dysprosium`,
+`Erbium`, `Europium`, `Gadolinium`, `Holmium`, `Lanthanum`, `Lutetium`,
+`Neodymium`, `Praseodymium`, `Samarium`, `Terbium`, `Thulium`, `Ytterbium` --
+found in `detail_reserves_resources`, reported individually rather than
+aggregated) all alias to the existing `"rare_earths"` key, same as
+`Lanthanides`/`Rare Earth Elements`; `Yttrium`/`Scandium` keep their own
+canonical keys as before, since those already existed independently.
+`Lithium Oxide` (a grade/assay reporting convention for the same commodity)
+aliases to the existing `"lithium"` key rather than getting a separate one.
 """
 
 from __future__ import annotations
@@ -45,6 +59,12 @@ CANONICAL_COMMODITIES: tuple[str, ...] = (
     "antimony", "tantalum", "niobium", "heavy_mineral_sands", "palladium",
     "titanium", "rutile", "zircon", "scandium", "alumina", "yttrium",
     "germanium", "chromium", "ferronickel", "ferrochrome", "caesium",
+    # Added for detail_reserves_resources coverage (module docstring) --
+    # not present in the manual properties.primary_commodity vocabulary.
+    "arsenic", "barite", "bismuth", "borates", "cadmium", "gallium",
+    "garnet", "hafnium", "indium", "iridium", "leucoxene", "magnesium",
+    "mercury", "rhenium", "rhodium", "rubidium", "ruthenium", "strontium",
+    "thorium",
 )
 
 #: canonical key -> exact World Bank "Annual Prices (Real)" sheet column
@@ -94,11 +114,34 @@ WORLD_BANK_COLUMNS: dict[str, str | None] = {
     "ferronickel": None,
     "ferrochrome": None,
     "caesium": None,
+    "arsenic": None,
+    "barite": None,
+    "bismuth": None,
+    "borates": None,
+    "cadmium": None,
+    "gallium": None,
+    "garnet": None,
+    "hafnium": None,
+    "indium": None,
+    "iridium": None,
+    "leucoxene": None,
+    "magnesium": None,
+    "mercury": None,
+    "rhenium": None,
+    "rhodium": None,
+    "rubidium": None,
+    "ruthenium": None,
+    "strontium": None,
+    "thorium": None,
 }
 
-#: SNL `properties.primary_commodity` raw label -> canonical key. Complete
-#: against the 42 distinct values found via
-#: `SELECT DISTINCT primary_commodity FROM properties`.
+#: SNL raw label -> canonical key, covering both `properties.primary_commodity`
+#: (42 distinct values via `SELECT DISTINCT primary_commodity FROM properties`)
+#: and `detail_reserves_resources.commodity` (63 distinct values via
+#: `SELECT DISTINCT commodity FROM detail_reserves_resources` restricted to
+#: `Contained(...)` rows -- the scraper's richer per-commodity vocabulary,
+#: which includes ~28 individual REE/minor-element labels the manual side
+#: never reports separately). Both use `source="snl"`.
 SNL_COMMODITY_ALIASES: dict[str, str] = {
     "Gold": "gold",
     "Coal": "coal",
@@ -142,6 +185,43 @@ SNL_COMMODITY_ALIASES: dict[str, str] = {
     "Ferronickel": "ferronickel",
     "Ferrochrome": "ferrochrome",
     "Caesium": "caesium",
+    # detail_reserves_resources-only labels below (module docstring).
+    "Arsenic": "arsenic",
+    "Barite": "barite",
+    "Bismuth": "bismuth",
+    "Borates": "borates",
+    "Cadmium": "cadmium",
+    "Gallium": "gallium",
+    "Garnet": "garnet",
+    "Hafnium": "hafnium",
+    "Indium": "indium",
+    "Iridium": "iridium",
+    "Leucoxene": "leucoxene",
+    "Magnesium": "magnesium",
+    "Mercury": "mercury",
+    "Rhenium": "rhenium",
+    "Rhodium": "rhodium",
+    "Rubidium": "rubidium",
+    "Ruthenium": "ruthenium",
+    "Strontium": "strontium",
+    "Thorium": "thorium",
+    # Individual lanthanide/REE labels -> the existing rare_earths bucket.
+    "Cerium": "rare_earths",
+    "Dysprosium": "rare_earths",
+    "Erbium": "rare_earths",
+    "Europium": "rare_earths",
+    "Gadolinium": "rare_earths",
+    "Holmium": "rare_earths",
+    "Lanthanum": "rare_earths",
+    "Lutetium": "rare_earths",
+    "Neodymium": "rare_earths",
+    "Praseodymium": "rare_earths",
+    "Samarium": "rare_earths",
+    "Terbium": "rare_earths",
+    "Thulium": "rare_earths",
+    "Ytterbium": "rare_earths",
+    # Grade/assay reporting convention for the same commodity as "Lithium".
+    "Lithium Oxide": "lithium",
 }
 
 #: World Bank "Annual Prices (Real)" column header -> canonical key, built as

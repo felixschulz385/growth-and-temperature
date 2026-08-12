@@ -131,9 +131,24 @@ class DataSource(abc.ABC):
         """
         self._require_step(step)
         local_path = self.output_root(step)
-        remote_base = self.ctx.remote_data_root
-        if remote_base:
-            remote_path = os.path.relpath(local_path, remote_base)
+        if self.ctx.remote_data_root:
+            # Relative to the LOCAL data root, not `remote_data_root` -- the
+            # two are different absolute paths (often on different
+            # machines/filesystems, e.g. a Windows local path vs. a scicore
+            # POSIX path), so `os.path.relpath(local_path, remote_data_root)`
+            # doesn't compute "this unit's place under the remote tree", it
+            # computes the (meaningless, often `../../../..`-laden) path from
+            # one unrelated absolute path to another. The remote tree mirrors
+            # the local one *relative to their respective roots* -- the
+            # relative suffix to preserve comes from `local_path` vs.
+            # `ctx.data_root`, then gets joined under the remote base
+            # separately (`HPCClient.base_path`/`_full_remote_path`).
+            # `remote_path` must be POSIX regardless of the local OS -- the
+            # HPC target is always a remote Linux host. `os.path.relpath` on
+            # Windows (`ntpath`) emits backslash-separated output even given
+            # forward-slash input, which breaks remote `mkdir -p`/tar
+            # arcnames (a literal `foo\bar` entry, not nested dirs).
+            remote_path = os.path.relpath(local_path, self.ctx.data_root).replace(os.sep, "/")
         else:
             remote_path = os.path.basename(os.path.normpath(local_path))
         return [TransferUnit(unit_id=step.value, local_path=local_path, remote_path=remote_path)]

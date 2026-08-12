@@ -77,6 +77,10 @@ dependencies:
   - opencv
   - psutil=7.2.2
   - pyyaml=6.0.3
+  # Progress bar for the snl_mining detail-regularize stage's parallel
+  # parse+classify loop (stages/regularize_detail_exports.py) -- version
+  # unverified, same caveat as opencv above.
+  - tqdm
 
   # Testing
   - pytest=9.0.3
@@ -106,3 +110,8 @@ dependencies:
       - pystac-client
       - odc-stac
       - planetary-computer
+      # snl_mining LLM year-imputation (src/data/sources/snl_mining/
+      # imputation.py, scripts/run_snl_mining_imputation.py) -- was only ever
+      # a notebook-local ad hoc install before this file tracked it. Version
+      # unverified, same caveat as above.
+      - openai

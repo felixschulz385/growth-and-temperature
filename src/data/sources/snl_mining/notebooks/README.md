@@ -12,7 +12,7 @@ Purpose:
 - write the cleaned result to DuckDB
 
 Expected output:
-- `data/snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb`
+- `data/raw/snl_mining/database.duckdb` -- shared with the scraper (`scraper/config.py`'s `DEFAULT_DB_PATH` points at the same file): this notebook's tables and the scraper's own `detail_*`/`mines`/etc. tables live in one merged database.
 
 Tables written:
 - `source_files`
@@ -26,6 +26,8 @@ Status:
 
 ### `snl_mining_openai_enrichment.ipynb`
 
+**Superseded for routine use** by `scripts/run_snl_mining_imputation.py` / `src/data/sources/snl_mining/imputation.py` -- the same `MineYearBatchEngine`, now an importable module with a CLI wrapper instead of notebook cells, reading fused scraped+manual work-history text (`imputation.load_fused_property_texts`) instead of the manual `property_texts` table alone. Keep this notebook for interactive one-off probing/debugging (e.g. testing a prompt change against a single mine before running the script for real).
+
 Purpose:
 - load standardized mining property text from the manual-export DuckDB
 - prepare and manage OpenAI batch requests
@@ -33,10 +35,10 @@ Purpose:
 - write model-imputed opening and closing years into the DuckDB table `property_llm_years`
 
 Expected outputs:
-- `data/snl_mining/raw/llm/mine_year_extract_manifest.parquet`
-- `data/snl_mining/raw/manual_xls/snl_mining_manual_export.duckdb` table `property_llm_years`
-- `data/snl_mining/raw/llm/batch_requests/*.jsonl`
-- `data/snl_mining/raw/llm/batch_outputs/*.jsonl`
+- `data/raw/snl_mining/imputation/mine_year_extract_manifest.parquet`
+- `data/raw/snl_mining/database.duckdb` table `property_llm_years`
+- `data/raw/snl_mining/imputation/batch_requests/*.jsonl`
+- `data/raw/snl_mining/imputation/batch_outputs/*.jsonl`
 
 Stored fields in `property_llm_years`:
 - `property_id`
