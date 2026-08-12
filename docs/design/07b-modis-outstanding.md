@@ -81,7 +81,7 @@ output if the current assumption is wrong.
       - **Manifest schema**: [`08-hpc-transfer.md`](08-hpc-transfer.md) §6 left open whether
         `UnifiedDataIndex` needs a schema addition for transfer-manifest use. Moot — the actual push
         path (`src/data/common/hpc/push.py`'s `HPCPusher`, per its module docstring "replacing both
-        FETCH's inline tar/rsync/extract/verify ... and the separate `pipeline transfer` path")
+        FETCH's inline tar/rsync/extract/verify ... and the separate `data transfer` path")
         superseded that whole design; MODIS FETCH tracks each (year, tile) unit's local/remote
         state directly in the generic ledger `artifacts` table (`ModisSource`'s module docstring,
         `source.py`), same as every other FETCH source. No new schema, no separate manifest format.
@@ -110,7 +110,7 @@ output if the current assumption is wrong.
 - [x] **`glass-modis-preprocess-{annual,spatial}.sh` — resolved (2026-08-09), already fixed by a
       prior migration.** Those two scripts no longer exist; superseded by
       `orchestration/slurm/glass-modis-prepare.sh`/`glass-modis-grid.sh`, generated from `jobs.yaml`
-      via `generate_slurm_scripts.py`, which correctly invoke `pipeline run --source glass_modis
+      via `generate_slurm_scripts.py`, which correctly invoke `data run --source glass_modis
       --step prepare`/`--step grid` (verified the subcommand registers and resolves). The old
       `--stage`-flag text survives only in `validate-hard-gate-modis.sh`'s comparison-log echo
       strings, documenting the prior invocation for a before/after diff, not a live script.

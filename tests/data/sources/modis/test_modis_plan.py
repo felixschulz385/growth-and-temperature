@@ -104,6 +104,37 @@ def test_grid_targets_always_never_complete_the_quirk(tmp_path):
     assert is_complete(targets[0]) is False
 
 
+def test_plan_grid_reads_tile_files_from_reconciled_ledger(tmp_path):
+    from src.data.common.ledger.schema import LocalState
+    from src.data.common.ledger.store import SourceLedger
+    from src.data.sources.reconcile import reconcile_step
+
+    source, ctx = _make_source(tmp_path, tiles=("h18v04", "h20v08"), year_range=(2019, 2019))
+    stage1 = source.output_root(PipelineStep.FETCH)
+    year_dir = os.path.join(stage1, "2019")
+    os.makedirs(year_dir, exist_ok=True)
+    tile_a = os.path.join(year_dir, "h18v04.tif")
+    tile_b = os.path.join(year_dir, "h20v08.tif")
+    open(tile_a, "w").close()
+    open(tile_b, "w").close()
+
+    local_ledger_path = os.path.join(ctx.local_index_dir, "modis_21A2.duckdb")
+    with SourceLedger.open(local_ledger_path, data_path="modis/21A2") as ledger:
+        # FETCH's per-(year, tile) units are tracked directly by
+        # _execute_fetch() in production (this class's own module
+        # docstring) -- reconcile_step handles MODIS's FETCH the same
+        # generic way it handles PREPARE/GRID for other sources.
+        reconcile_step(source, PipelineStep.FETCH, ledger)
+        for key in ("2019/h18v04", "2019/h20v08"):
+            assert ledger.local_state("fetch", key) == LocalState.COMPLETE
+        reconcile_step(source, PipelineStep.GRID, ledger)
+
+    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    assert len(targets) == 1
+    assert targets[0].key == "2019"
+    assert sorted(targets[0].inputs) == sorted([tile_a, tile_b])
+
+
 def test_grid_targets_use_explicit_years_override_not_year_range(tmp_path):
     source, _ = _make_source(tmp_path, tiles=("h18v04",), years=[2004, 2014])
     stage1 = source.output_root(PipelineStep.FETCH)

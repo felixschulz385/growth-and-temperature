@@ -34,7 +34,7 @@
 # OLD's _generate_spatial_targets (which requires
 # misc/processed/stage_2/gadm/countries_grid.zarr to already exist, silently
 # empty-plans otherwise) and NEW's _plan_grid (same path, via
-# layout.output_root). REQUIRES is enforced by src/cli/pipeline/handlers.py
+# layout.output_root). REQUIRES is enforced by src/cli/data/handlers.py
 # ::_check_requires for EVERY step, including `prepare` -- so this script
 # builds a real GADM GRID output first via GadmSource directly, before
 # touching country_classifications at all, not just before its own GRID
@@ -115,7 +115,7 @@ if [ -f "$PROD_GEOBOX" ]; then
     echo "$(date -Is): seeded cropped target geobox cache from production"
 else
     echo "$(date -Is): ERROR -- no cached target geobox at $PROD_GEOBOX"
-    echo "  Run 'pipeline run --source eog_viirs --step grid' once for real first,"
+    echo "  Run 'data run --source eog_viirs --step grid' once for real first,"
     echo "  or copy a viirs_geobox.pkl from wherever GRID has run before."
     exit 2
 fi
@@ -285,8 +285,8 @@ run_old() {
 
 run_new() {
     local step="$1"
-    echo "$(date -Is): NEW  pipeline run --source country_classifications --step $step"
-    "$PYTHON_BIN" run.py pipeline run --config "$TEST_CONFIG" --source country_classifications \
+    echo "$(date -Is): NEW  data run --source country_classifications --step $step"
+    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source country_classifications \
         --step "$step" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

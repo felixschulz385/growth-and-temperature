@@ -24,7 +24,7 @@ if [ -n "${PIPELINE_OVERRIDE:-}" ]; then
     OVERRIDE_FLAG="--override"
 fi
 
-/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" pipeline run \
+/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" data run \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source modis \
     --step fetch \
@@ -32,7 +32,7 @@ fi
     --debug
 
 echo "fetch complete -- pushing results to scicore"
-/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" pipeline transfer \
+/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" data transfer \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source modis \
     --step fetch \

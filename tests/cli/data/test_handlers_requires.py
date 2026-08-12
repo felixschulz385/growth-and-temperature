@@ -7,7 +7,7 @@ computing the wrong ledger filename ("misc.duckdb" instead of
 "misc_gadm.duckdb") and silently falling through to a local-disk-only check.
 """
 
-from src.cli.pipeline.handlers import _check_requires
+from src.cli.data.handlers import _check_requires
 from src.data.common.ledger.paths import ledger_path
 from src.data.common.ledger.store import SourceLedger
 from src.data.pipeline.context import PipelineContext
@@ -40,7 +40,7 @@ def test_check_requires_finds_misc_split_prerequisite_via_its_namespaced_ledger(
 
     # gadm's local output directories were never created -- only its ledger
     # (the cross-machine case: gadm ran elsewhere and was pushed via
-    # `pipeline transfer`). Before the fix, _check_requires computed
+    # `data transfer`). Before the fix, _check_requires computed
     # ledger_path(..., "misc") -> a file that doesn't exist, silently skipped
     # the ledger check, and raised on the local os.path.exists() fallback.
     _check_requires(spec, ctx, config)  # must not raise

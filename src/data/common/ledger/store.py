@@ -9,10 +9,10 @@ with one incrementally-writable file per source.
 Concurrency: DuckDB allows exactly one read-write connection to a given
 `.duckdb` file at a time, across processes. This is safe here because a
 given source+step is already only ever driven by one process at a time (a
-human running `pipeline run`, or one SLURM job) -- but any future caller
+human running `data run`, or one SLURM job) -- but any future caller
 adding a second concurrent writer against the same file (e.g. a background
-`pipeline summary` refresher) would need its own connection strategy. Callers
-that only ever read (`pipeline summary`, `pipeline plan`, `_check_requires`)
+`data summary` refresher) would need its own connection strategy. Callers
+that only ever read (`data summary`, `data plan`, `_check_requires`)
 should open with `read_only=True`.
 """
 
@@ -87,6 +87,21 @@ class DownloadResult:
     error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class ArtifactRow:
+    """One `artifacts` row, as returned by `artifacts_for_step()` -- the
+    read side of a ledger-backed `plan()` (docs/design/10-fetch-ledger.md's
+    successor): enough to reconstruct a `StepTarget` without re-running a
+    source's live discovery/crawl logic."""
+
+    unit_id: str
+    local_path: Optional[str]
+    remote_path: Optional[str]
+    local_state: str
+    remote_state: str
+    meta: dict[str, Any]
+
+
 class SourceLedger:
     """One DuckDB file per source. Open via `SourceLedger.open(...)`; also
     usable as a context manager (`with SourceLedger.open(...) as ledger:`)."""
@@ -112,6 +127,28 @@ class SourceLedger:
         if not read_only:
             ledger._ensure_schema()
         return ledger
+
+    @classmethod
+    def open_for_read(cls, path: str, *, data_path: str) -> "SourceLedger":
+        """`open(path, read_only=True)`, but falls back to a read-write
+        connection if one to the same file is already open elsewhere in this
+        process. DuckDB shares one instance per file path per process, and
+        refuses to open a second connection with a different `read_only`
+        setting than an existing one (confirmed empirically -- raises
+        `duckdb.ConnectionException`, not documented behavior). This matters
+        because `reconcile_step` (src/data/sources/reconcile.py) holds its
+        own read-write connection open for a whole reconcile pass while
+        calling `source.discover()`, and several sources' discovery logic
+        (e.g. `AcagSource._discover_prepare`, `DataSource._plan_from_ledger`)
+        opens its own connection to read the ledger -- without this
+        fallback, that nested open crashes any time discovery runs inside a
+        reconcile. The fallback connection is still only ever read from at
+        these call sites, never written through -- `read_only=False` here is
+        a same-process compatibility workaround, not a grant to mutate."""
+        try:
+            return cls.open(path, data_path=data_path, read_only=True)
+        except duckdb.ConnectionException:
+            return cls.open(path, data_path=data_path, read_only=False)
 
     @classmethod
     def open_with_retry(
@@ -156,7 +193,7 @@ class SourceLedger:
         connection to self-heal. Without this, that surfaces as a raw
         `duckdb.CatalogException` deep in unrelated source code (confirmed:
         crashed `plad`'s GRID step, and `esacci`'s PREPARE planning inside
-        `pipeline summary`) instead of behaving like "no ledger yet," which
+        `data summary`) instead of behaving like "no ledger yet," which
         every caller already handles gracefully via `os.path.exists()`.
         Returns `None` on a missing-schema catalog error so callers can
         return the same empty/absent result they'd give for a missing file;
@@ -210,7 +247,7 @@ class SourceLedger:
         )
 
     def reset_crawl_state(self) -> None:
-        """`pipeline index --rebuild`'s new meaning: force every entrypoint
+        """`data index --rebuild`'s new meaning: force every entrypoint
         to be re-crawled on the next `catalog.refresh()` call. Deliberately
         does *not* clear `remote_files`/`artifacts` -- unlike the old
         `UnifiedDataIndex(rebuild=True)`, which wiped the whole Parquet file
@@ -349,7 +386,7 @@ class SourceLedger:
 
     def record_push_batch(self, step: str, results: Iterable[PushResult]) -> None:
         """One DuckDB transaction for the whole batch. Shared by the FETCH
-        driver and `pipeline transfer` (both push through `HPCPusher`).
+        driver and `data transfer` (both push through `HPCPusher`).
 
         Takes `common.hpc.push.PushResult` directly -- that module's own
         result type, with no `step` field of its own (a push is always
@@ -424,20 +461,33 @@ class SourceLedger:
     # ------------------------------------------------------------------
 
     def ensure_artifact(
-        self, step: str, unit_id: str, *, local_path: Optional[str] = None, remote_path: Optional[str] = None
+        self,
+        step: str,
+        unit_id: str,
+        *,
+        local_path: Optional[str] = None,
+        remote_path: Optional[str] = None,
+        meta: Optional[dict[str, Any]] = None,
     ) -> None:
         """Idempotently ensure a tracking row exists for `(step, unit_id)`.
         FETCH units are seeded via `add_remote_files()`; PREPARE/GRID units
-        (and bootstrap, and `pipeline transfer`) use this directly."""
+        (and bootstrap, and `data transfer`) use this directly.
+
+        *meta* (JSON-encoded, `StepTarget.meta`) is `COALESCE`d the same way
+        as `local_path`/`remote_path` -- a caller that doesn't know it (e.g.
+        `data transfer`, which only ever touches `local_path`/
+        `remote_path`) never clobbers a value `reconcile_step` already wrote.
+        """
         self._con.execute(
             """
-            INSERT INTO artifacts (step, unit_id, local_path, remote_path)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO artifacts (step, unit_id, local_path, remote_path, meta)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT (step, unit_id) DO UPDATE SET
                 local_path = COALESCE(excluded.local_path, artifacts.local_path),
-                remote_path = COALESCE(excluded.remote_path, artifacts.remote_path)
+                remote_path = COALESCE(excluded.remote_path, artifacts.remote_path),
+                meta = COALESCE(excluded.meta, artifacts.meta)
             """,
-            [step, unit_id, local_path, remote_path],
+            [step, unit_id, local_path, remote_path, json.dumps(meta) if meta is not None else None],
         )
 
     def set_local_state(self, step: str, unit_id: str, state: str, *, size_bytes: Optional[int] = None) -> None:
@@ -452,6 +502,97 @@ class SourceLedger:
             "UPDATE artifacts SET remote_state = ?, updated_at = now() WHERE step = ? AND unit_id = ?",
             [state, step, unit_id],
         )
+
+    def set_local_states_batch(self, step: str, updates: Iterable[tuple[str, str]]) -> None:
+        """Batched counterpart to `set_local_state()` for the local-drift
+        self-heal path (`src/data/sources/steps.py::local_drift()`): each
+        `(unit_id, state)` pair may set a *different* state, unlike
+        `mark_local_and_remote_batch()`'s one-state-for-every-id shape --
+        one target can be found unexpectedly `complete` while a sibling is
+        unexpectedly `missing` in the same drift-repair pass."""
+        updates = list(updates)
+        if not updates:
+            return
+        self._con.executemany(
+            "UPDATE artifacts SET local_state = ?, updated_at = now() WHERE step = ? AND unit_id = ?",
+            [(state, step, unit_id) for unit_id, state in updates],
+        )
+
+    def artifacts_for_step(self, step: str) -> list["ArtifactRow"]:
+        """Every tracked `(step, unit_id)` row -- the read side of a
+        ledger-backed `plan()` (`DataSource._plan_from_ledger()`,
+        src/data/sources/base.py). Returns `[]` (not an error) for an
+        unopened/schema-less ledger, same "treat as empty" contract every
+        other read method here follows.
+
+        Also degrades to `[]` -- not routed through the shared
+        `_execute_readonly_safe()` (which only tolerates a missing-schema
+        `CatalogException`, deliberately re-raising everything else so a
+        genuine query bug still surfaces, see its own docstring/
+        `test_readonly_safe_reraises_non_catalog_errors`) -- on a
+        `BinderException` specifically about the `meta` column: an on-disk
+        `.duckdb` file created before `meta` was added to `_CREATE_ARTIFACTS`
+        never gets `_ALTER_ARTIFACTS_ADD_META` applied by a read-only open
+        (`_ensure_schema()` only runs `if not read_only`, in `open()`), so a
+        pure-read caller (`pipeline summary`/`plan` against a real,
+        already-populated, pre-existing ledger -- confirmed happening in
+        practice, not hypothetical) would otherwise hard-fail instead of
+        falling back to live discovery like every other "ledger not ready
+        yet" case here. The next `pipeline reconcile`/`run`/`index` against
+        this ledger opens it read-write, self-healing the column for good.
+        """
+        try:
+            result = self._con.execute(
+                "SELECT unit_id, local_path, remote_path, local_state, remote_state, meta "
+                "FROM artifacts WHERE step = ? ORDER BY unit_id",
+                [step],
+            )
+        except duckdb.CatalogException:
+            logger.warning(
+                "Ledger %s has no schema yet (never opened read-write) -- treating as empty", self.local_path
+            )
+            return []
+        except duckdb.BinderException:
+            logger.warning(
+                "Ledger %s predates the 'meta' column -- treating as empty until the next "
+                "read-write open (pipeline reconcile/run/index) self-heals the schema",
+                self.local_path,
+            )
+            return []
+        return [
+            ArtifactRow(
+                unit_id=r[0],
+                local_path=r[1],
+                remote_path=r[2],
+                local_state=r[3],
+                remote_state=r[4],
+                meta=json.loads(r[5]) if r[5] else {},
+            )
+            for r in result.fetchall()
+        ]
+
+    def local_complete_units(self, step: str, *, key_prefix: Optional[str] = None) -> list[tuple[str, str]]:
+        """`(unit_id, local_path)` pairs where `local_state = 'complete'` for
+        *step* -- the ledger-query replacement for a GRID target's
+        `os.listdir()`/`glob()` crawl of the upstream PREPARE output
+        directory (e.g. `AcagSource._list_annual_zarrs()`,
+        `ModisSource._plan_grid`'s `os.listdir(year_dir)`). Unlike
+        `completed_fetch_files()` (which requires `remote_state='verified'`
+        because FETCH's local staging copy is deleted after push),
+        PREPARE/GRID outputs stay on local disk, so `local_state` alone is
+        the right condition here. *key_prefix* narrows to units whose
+        `unit_id` starts with the given string (e.g. MODIS's per-`{year}/{tile}`
+        FETCH keys, scoped to one year's GRID target)."""
+        query = "SELECT unit_id, local_path FROM artifacts WHERE step = ? AND local_state = ?"
+        params: list[Any] = [step, schema.LocalState.COMPLETE]
+        if key_prefix is not None:
+            query += " AND unit_id LIKE ? ESCAPE '\\'"
+            params.append(key_prefix.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_") + "%")
+        query += " ORDER BY unit_id"
+        result = self._execute_readonly_safe(query, params)
+        if result is None:
+            return []
+        return [(r[0], r[1]) for r in result.fetchall()]
 
     def mark_local_and_remote_batch(self, step: str, unit_ids: Iterable[str], local_state: str, remote_state: str) -> None:
         """Set both `local_state`/`remote_state` for every id in *unit_ids*
@@ -492,7 +633,7 @@ class SourceLedger:
     def remote_states(self, step: str, unit_ids: list[str]) -> dict[str, str]:
         """Batched counterpart to `remote_state()` -- one `IN (...)` query
         instead of one per unit_id, same shape as `_existing_keys()`.
-        `handle_transfer` (src/cli/pipeline/handlers.py) used to call
+        `handle_transfer` (src/cli/data/handlers.py) used to call
         `remote_state()` once per transfer unit to compute its pending list,
         an N+1 pattern costing that many sequential DuckDB round trips
         before any push starts for a source with hundreds-to-thousands of
@@ -516,7 +657,7 @@ class SourceLedger:
     def stats(self, step: str) -> dict[str, int]:
         """One aggregate query -- replaces `get_stats()`/`get_download_stats()`
         (each of which read a whole Parquet column) and the `os.walk()`
-        file-counting `pipeline summary` previously did for FETCH's
+        file-counting `data summary` previously did for FETCH's
         `Completion.NEVER` pseudo-target."""
         row = self._con.execute(
             """
@@ -637,6 +778,8 @@ class SourceLedger:
                     "THEN excluded.remote_state ELSE artifacts.remote_state END, "
                     "bytes = CASE WHEN excluded.updated_at > artifacts.updated_at "
                     "THEN excluded.bytes ELSE artifacts.bytes END, "
+                    "meta = CASE WHEN excluded.updated_at > artifacts.updated_at "
+                    "THEN excluded.meta ELSE artifacts.meta END, "
                     "attempts = greatest(excluded.attempts, artifacts.attempts), "
                     "updated_at = greatest(excluded.updated_at, artifacts.updated_at)"
                 )

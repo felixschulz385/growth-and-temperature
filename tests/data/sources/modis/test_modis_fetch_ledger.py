@@ -77,7 +77,7 @@ def test_execute_fetch_records_failed_in_ledger_on_no_stac_items(tmp_path, monke
 
 def test_execute_fetch_retried_after_failure_can_succeed(tmp_path, monkeypatch):
     """Partial-download resumability: a tile-year that failed once (e.g. a
-    transient STAC search error) is retried on the next `pipeline run` call
+    transient STAC search error) is retried on the next `data run` call
     and, on success, ends up `complete` -- not stuck `failed` forever."""
     source, ctx = _make_source(tmp_path)
     monkeypatch.setattr(source, "_search_items", lambda tile, year: [])

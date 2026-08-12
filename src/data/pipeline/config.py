@@ -8,7 +8,7 @@ one explicit dataclass plus a `raw` escape hatch for source-private config.
 
 File loading and ${VAR}/${VAR:-default} expansion is NOT reimplemented here --
 `src.cli.config.load_config_with_env_vars` already does that (including the
-`*.local.yaml` deep-merge convention) and is what `src/cli/pipeline/handlers.py`
+`*.local.yaml` deep-merge convention) and is what `src/cli/data/handlers.py`
 calls before building a SourceConfig/PipelineContext from the result.
 """
 

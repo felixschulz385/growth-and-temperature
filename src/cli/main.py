@@ -2,9 +2,9 @@
 src.cli.main — root parser and top-level entry point.
 
 Usage:
-    python -m src.cli.main pipeline list
-    python -m src.cli.main pipeline plan   --config cfg.yaml --source acag --step prepare
-    python -m src.cli.main pipeline run    --config cfg.yaml --source acag --step fetch
+    python -m src.cli.main data list
+    python -m src.cli.main data plan   --config cfg.yaml --source acag --step prepare
+    python -m src.cli.main data run    --config cfg.yaml --source acag --step fetch
     python -m src.cli.main assemble create --config cfg.yaml --source main
     python -m src.cli.main assemble update --config cfg.yaml --source main --datasource ntl
     python -m src.cli.main analysis run    --model my_model
@@ -31,7 +31,7 @@ _PROJECT_ROOT = _HERE.parents[2]  # src/cli/main.py → project root
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
-from src.cli import analysis, assemble, pipeline
+from src.cli import analysis, assemble, data
 from src.cli.common import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  src pipeline run    --config cfg.yaml --source acag --step fetch
+  src data run        --config cfg.yaml --source acag --step fetch
   src assemble create --config cfg.yaml --source main_panel
   src assemble update --config cfg.yaml --source main_panel --datasource ntl
   src analysis run    --model baseline_ols
@@ -67,11 +67,11 @@ Examples:
     )
     subparsers.required = True
 
-    # `pipeline` replaced `download`/`preprocess run`/`preprocess transfer`
+    # `data` replaced `download`/`preprocess run`/`preprocess transfer`
     # (docs/design/09-integrated-pipeline.md §8); both domains and their
     # backing src/data/download/ and src/data/preprocess/ packages were
     # removed at cutover (§10) once the step-9 hard gate passed.
-    pipeline.register(subparsers)
+    data.register(subparsers)
     assemble.register(subparsers)
     analysis.register(subparsers)
 

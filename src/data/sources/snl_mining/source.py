@@ -68,7 +68,7 @@ import dataclasses
 import logging
 import os
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from src.data.common.geobox import get_target_geobox
 from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
@@ -79,6 +79,9 @@ from src.data.sources import commodities, layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -274,6 +277,17 @@ class SnlMiningSource(DataSource):
             return self._plan_grid()
         raise AssertionError(f"unreachable: {step}")
 
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` -- see gadm.py's identical
+        `_discover()` for the full rationale. This source's targets are
+        singletons with no year/key selection to apply; `selection` is
+        accepted for interface symmetry only."""
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare()
+        if step is PipelineStep.GRID:
+            return self._discover_grid()
+        raise AssertionError(f"unreachable: {step}")
+
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
@@ -285,6 +299,34 @@ class SnlMiningSource(DataSource):
     # "spatial" stage -- see module docstring) ------------------------------
 
     def _plan_prepare(self) -> List[StepTarget]:
+        """Ledger-backed fast path. `inputs` (`self.duckdb_path`,
+        `self.commodity_prices_path`) are plain config-derived instance
+        attributes, not values discovered by a live crawl -- no need to
+        persist them in `meta`, `build_target` just reads them off `self`
+        directly. Falls back to `_discover_prepare()` -- today's exact live
+        logic -- if no ledger is configured yet, or `data reconcile
+        --step prepare` hasn't populated one yet."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            if row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
+                output_path=row.local_path, inputs=(self.duckdb_path, self.commodity_prices_path),
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_prepare()
+
+    def _discover_prepare(self) -> List[StepTarget]:
         if not os.path.exists(self.duckdb_path):
             logger.warning(
                 "SNL mining stage-0 DuckDB not found at %s -- run "
@@ -295,7 +337,7 @@ class SnlMiningSource(DataSource):
         if not os.path.exists(self.commodity_prices_path):
             logger.warning(
                 "commodity_prices PREPARE output not found at %s -- run "
-                "`pipeline run --source commodity_prices --step prepare` first "
+                "`data run --source commodity_prices --step prepare` first "
                 "(REQUIRES, see module docstring).",
                 self.commodity_prices_path,
             )
@@ -823,6 +865,36 @@ class SnlMiningSource(DataSource):
     # -- GRID: tiled rasterization from the prepared DuckDB ------------------
 
     def _plan_grid(self) -> List[StepTarget]:
+        """Ledger-backed fast path. `meta["years"]` (persisted by
+        `_discover_grid()` below, exactly like gadm's GRID persists
+        `level_files` -- see gadm.py's `_plan_grid()`) is read straight back
+        instead of re-opening `prepared_db_path` and re-running `SELECT
+        DISTINCT year FROM active_mines` -- this is the one source whose
+        live discovery queries a source-specific DuckDB rather than crawling
+        the filesystem, so avoiding that on the fast path is the whole point
+        of this migration for this source."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            years = row.meta.get("years")
+            if not years or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
+                output_path=row.local_path, inputs=(self.prepared_db_path,),
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_grid()
+
+    def _discover_grid(self) -> List[StepTarget]:
         if not os.path.exists(self.prepared_db_path):
             return []
         con = self._connect_duckdb(self.prepared_db_path)

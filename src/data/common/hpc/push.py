@@ -1,6 +1,6 @@
 """One unified push-to-HPC primitive, replacing both FETCH's inline
 tar/rsync/extract/verify (`common/fetch/async_downloader.py`) and the
-separate `pipeline transfer` path (`common/hpc/transfer.py`).
+separate `data transfer` path (`common/hpc/transfer.py`).
 
 docs/design/10-fetch-ledger.md §2. Built entirely on the existing, unchanged
 `HPCClient` (`ensure_directory`, `rsync_transfer`, `extract_tar`,

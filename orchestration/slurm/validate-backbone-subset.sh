@@ -21,7 +21,7 @@
 #
 #   sbatch orchestration/slurm/validate-backbone-subset.sh \
 #       /path/to/eog_ease6933.zarr DNB_BRDF_Corrected_NTL "" "2020 2021"
-#       -> real mode, once `run.py pipeline run --source eog --step grid` has
+#       -> real mode, once `run.py data run --source eog --step grid` has
 #          been run with orchestration/configs/data.yaml's `pipeline.grid`
 #          set to `ease6933` (it defaults to `legacy_4326`). The validity
 #          mask is derived automatically from that store's own nodata/

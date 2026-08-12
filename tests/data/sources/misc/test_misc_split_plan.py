@@ -120,7 +120,7 @@ def test_country_classifications_grid_requires_gadm_output_via_shared_layout(tmp
 
     # GADM's grid output not yet present -> no target (this is the plan()-level
     # check; the runner's REQUIRES enforcement, via MissingPrerequisiteError,
-    # is a separate, earlier gate -- see src/cli/pipeline/handlers.py::_check_requires).
+    # is a separate, earlier gate -- see src/cli/data/handlers.py::_check_requires).
     assert cc.plan(PipelineStep.GRID, TargetSelection()) == []
 
     gadm_grid_dir = os.path.join(ctx.data_root, "misc", "processed", "stage_2", "gadm")

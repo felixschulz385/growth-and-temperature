@@ -3,7 +3,7 @@ paths:
   local_index_dir: "${DATA_NOBACKUP:-data_nobackup}/hpc_data_index"
 
 # docs/design/09-integrated-pipeline.md §9: step is now passed via
-# `run.py pipeline run --step grid`, not a config key (the old `preprocess:
+# `run.py data run --step grid`, not a config key (the old `preprocess:
 # {stage: ...}` block here is dropped -- dask_threads/dask_memory_limit are
 # CLI flags too, e.g. `--dask-threads 1 --dask-memory-limit 4GB`).
 

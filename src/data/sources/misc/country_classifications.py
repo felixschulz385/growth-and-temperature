@@ -35,7 +35,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -46,6 +46,9 @@ from src.data.sources.misc.hdi import read_hdi
 from src.data.sources.misc.worldbank import read_worldbank
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -88,18 +91,34 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
     def data_path(self) -> str:
         return f"{self.cfg.data_path}/{self.cfg.namespace}"
 
+    def _plan_fetch(self) -> List[StepTarget]:
+        return [
+            StepTarget(
+                source_id=self.ID, step=PipelineStep.FETCH, key="all",
+                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
+            )
+        ]
+
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
-            return [
-                StepTarget(
-                    source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                    output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-                )
-            ]
+            return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
         if step is PipelineStep.GRID:
             return self._plan_grid()
+        raise AssertionError(f"unreachable: {step}")
+
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` -- see gadm.py's identical
+        `_discover()` for the full rationale. This source's targets are
+        singletons with no year/key selection to apply; `selection` is
+        accepted for interface symmetry only."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare()
+        if step is PipelineStep.GRID:
+            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -127,6 +146,34 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), name)
 
     def _plan_prepare(self) -> List[StepTarget]:
+        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
+        today's exact live logic -- if no ledger is configured yet, or
+        `data reconcile --step prepare` hasn't populated one yet."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            has_hdi = row.meta.get("has_hdi", False)
+            has_wb = row.meta.get("has_wb", False)
+            if (not has_hdi and not has_wb) or row.local_path is None:
+                return None
+            hdi_file, wb_file = self._raw_file("hdi"), self._raw_file("worldbank")
+            inputs = tuple(f for f, present in ((hdi_file, has_hdi), (wb_file, has_wb)) if present)
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
+                output_path=row.local_path, inputs=inputs,
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_prepare()
+
+    def _discover_prepare(self) -> List[StepTarget]:
         hdi_file, wb_file = self._raw_file("hdi"), self._raw_file("worldbank")
         has_hdi, has_wb = os.path.exists(hdi_file), os.path.exists(wb_file)
         if not has_hdi and not has_wb:
@@ -170,6 +217,36 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
     # -- GRID ("spatial") -----------------------------------------------------
 
     def _plan_grid(self) -> List[StepTarget]:
+        """Ledger-backed fast path. `inputs` (both deterministic, cheaply
+        recomputable paths -- no live crawl involved) is persisted directly
+        in `meta` at discovery time, same pattern as gadm's PREPARE
+        `raw_file` -- see gadm.py's `_plan_prepare()`. The ledger-backed path
+        only needs `row.local_path` for this source's own output; it doesn't
+        re-check the gadm dependency (that's `_check_requires`'s job
+        elsewhere in the CLI, not `plan()`'s)."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            classifications_parquet = row.meta.get("classifications_parquet")
+            gadm_zarr = row.meta.get("gadm_zarr")
+            if classifications_parquet is None or gadm_zarr is None or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
+                output_path=row.local_path, inputs=(classifications_parquet, gadm_zarr),
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_grid()
+
+    def _discover_grid(self) -> List[StepTarget]:
         classifications_parquet = os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet")
         if not os.path.exists(classifications_parquet):
             return []
@@ -211,7 +288,11 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
                 inputs=(classifications_parquet, gadm_zarr), completion=Completion.PATH_EXISTS,
                 # value_cols vary by which of hdi/worldbank were available at
                 # PREPARE time, so only the always-present join key is checked.
-                meta=verify.verification_meta(self.cfg.raw, expected_vars=("GID_0",)),
+                meta={
+                    "classifications_parquet": classifications_parquet,
+                    "gadm_zarr": gadm_zarr,
+                    **verify.verification_meta(self.cfg.raw, expected_vars=("GID_0",)),
+                },
             )
         ]
 

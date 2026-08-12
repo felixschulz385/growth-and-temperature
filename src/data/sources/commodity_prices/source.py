@@ -28,7 +28,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
-from typing import List
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -37,6 +37,9 @@ from src.data.sources.base import DataSource
 from src.data.sources.commodity_prices.prices import read_and_normalize_prices
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -82,16 +85,30 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
     # plan()/execute() dispatch
     # ------------------------------------------------------------------
 
+    def _plan_fetch(self) -> List[StepTarget]:
+        return [
+            StepTarget(
+                source_id=self.ID, step=PipelineStep.FETCH, key="all",
+                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
+            )
+        ]
+
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
-            return [
-                StepTarget(
-                    source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                    output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-                )
-            ]
+            return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
+        raise AssertionError(f"unreachable: {step}")
+
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` -- see gadm.py's identical
+        `_discover()` for the full rationale. This source's PREPARE target is
+        a singleton with no year/key selection to apply; `selection` is
+        accepted for interface symmetry only."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -118,6 +135,31 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _plan_prepare(self) -> List[StepTarget]:
+        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
+        today's exact live logic -- if no ledger is configured yet, or
+        `data reconcile --step prepare` hasn't populated one yet."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            raw_file = row.meta.get("raw_file")
+            if raw_file is None or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
+                output_path=row.local_path, inputs=(raw_file,),
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_prepare()
+
+    def _discover_prepare(self) -> List[StepTarget]:
         raw_file = self._raw_prices_file()
         if not os.path.exists(raw_file):
             return []
@@ -126,6 +168,7 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
                 source_id=self.ID, step=PipelineStep.PREPARE, key="commodity_prices",
                 output_path=os.path.join(self.output_root(PipelineStep.PREPARE), "commodity_prices.parquet"),
                 inputs=(raw_file,), completion=Completion.PATH_EXISTS,
+                meta={"raw_file": raw_file},
             )
         ]
 

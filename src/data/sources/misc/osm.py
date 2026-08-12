@@ -20,7 +20,7 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import TYPE_CHECKING, Any, List, Optional
 
 from zarr.codecs import BloscCodec
 
@@ -32,6 +32,9 @@ from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -69,18 +72,34 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         see `DataSource.data_path`'s docstring (src/data/sources/base.py)."""
         return f"{self.cfg.data_path}/{self.cfg.namespace}"
 
+    def _plan_fetch(self) -> List[StepTarget]:
+        return [
+            StepTarget(
+                source_id=self.ID, step=PipelineStep.FETCH, key="all",
+                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
+            )
+        ]
+
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
-            return [
-                StepTarget(
-                    source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                    output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-                )
-            ]
+            return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
         if step is PipelineStep.GRID:
             return self._plan_grid()
+        raise AssertionError(f"unreachable: {step}")
+
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` -- see gadm.py's identical
+        `_discover()` for the full rationale. OSM's targets are singletons
+        with no year/key selection to apply; `selection` is accepted for
+        interface symmetry only."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare()
+        if step is PipelineStep.GRID:
+            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -107,6 +126,31 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _plan_prepare(self) -> List[StepTarget]:
+        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
+        today's exact live logic -- if no ledger is configured yet, or
+        `data reconcile --step prepare` hasn't populated one yet."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            raw_file = row.meta.get("raw_file")
+            if raw_file is None or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
+                output_path=row.local_path, inputs=(raw_file,),
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_prepare()
+
+    def _discover_prepare(self) -> List[StepTarget]:
         raw_file = self._raw_file_path()
         if not os.path.exists(raw_file):
             index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
@@ -117,6 +161,7 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
                 source_id=self.ID, step=PipelineStep.PREPARE, key="osm",
                 output_path=os.path.join(self.output_root(PipelineStep.PREPARE), "land_polygons_simplified.gpkg"),
                 inputs=(raw_file,), completion=Completion.PATH_EXISTS,
+                meta={"raw_file": raw_file},
             )
         ]
 
@@ -149,6 +194,31 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
     # -- GRID ("spatial") ----------------------------------------------------
 
     def _plan_grid(self) -> List[StepTarget]:
+        """Ledger-backed fast path. `inputs` (a single deterministic vector
+        path) is persisted directly in `meta` at discovery time, same pattern
+        as gadm's PREPARE `raw_file` -- see gadm.py's `_plan_prepare()`."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            vector_path = row.meta.get("vector_path")
+            if vector_path is None or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
+                output_path=row.local_path, inputs=(vector_path,),
+                completion=Completion.MARKER, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_grid()
+
+    def _discover_grid(self) -> List[StepTarget]:
         vector_path = os.path.join(self.output_root(PipelineStep.PREPARE), "land_polygons_simplified.gpkg")
         if not os.path.exists(vector_path):
             return []
@@ -165,9 +235,12 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
                     v2_family="land_mask",
                 ),
                 inputs=(vector_path,), completion=Completion.MARKER,
-                meta=verify.verification_meta(
-                    self.cfg.raw, expected_vars=("land_mask",), value_range=(0, 1)
-                ),
+                meta={
+                    "vector_path": vector_path,
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=("land_mask",), value_range=(0, 1)
+                    ),
+                },
             )
         ]
 

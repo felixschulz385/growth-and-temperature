@@ -254,7 +254,7 @@ def _schemaless_duckdb_file(path: str) -> None:
     (so `_ensure_schema()` never ran) -- e.g. an interrupted first open, or
     a bare file created by something else. Confirmed real: this is exactly
     what crashed `plad`'s GRID step and `esacci`'s PREPARE planning inside
-    `pipeline summary` with a raw `duckdb.CatalogException`."""
+    `data summary` with a raw `duckdb.CatalogException`."""
     import duckdb
 
     duckdb.connect(path).close()
@@ -299,3 +299,126 @@ def test_readonly_safe_reraises_non_catalog_errors(tmp_path):
     with SourceLedger.open(path, data_path="acag/pm25") as ledger:
         with pytest.raises(Exception):
             ledger._execute_readonly_safe("SELECT nonexistent_column FROM artifacts", [])
+
+
+# ---------------------------------------------------------------------------
+# ledger-as-source-of-truth additions: meta, artifacts_for_step,
+# local_complete_units, set_local_states_batch
+# ---------------------------------------------------------------------------
+
+
+def test_ensure_artifact_persists_and_coalesces_meta(ledger):
+    ledger.ensure_artifact("prepare", "2020", local_path="/x/2020.zarr", meta={"year": 2020})
+    rows = ledger.artifacts_for_step("prepare")
+    assert len(rows) == 1
+    assert rows[0].unit_id == "2020"
+    assert rows[0].local_path == "/x/2020.zarr"
+    assert rows[0].meta == {"year": 2020}
+
+    # A later call with meta=None must not clobber the meta already stored --
+    # `data transfer`'s ensure_artifact() calls never pass meta at all.
+    ledger.ensure_artifact("prepare", "2020", remote_path="/remote/2020.zarr")
+    rows = ledger.artifacts_for_step("prepare")
+    assert rows[0].meta == {"year": 2020}
+    assert rows[0].remote_path == "/remote/2020.zarr"
+
+
+def test_artifacts_for_step_empty_for_unpopulated_step(ledger):
+    assert ledger.artifacts_for_step("grid") == []
+
+
+def test_artifacts_for_step_degrades_gracefully_on_schemaless_ledger(tmp_path):
+    path = str(tmp_path / "plad.duckdb")
+    _schemaless_duckdb_file(path)
+    with SourceLedger.open(path, data_path="plad", read_only=True) as ledger:
+        assert ledger.artifacts_for_step("prepare") == []
+
+
+def _pre_meta_column_ledger(path: str) -> None:
+    """A real-world ledger `.duckdb` file created before the `meta` column
+    existed on `artifacts` (i.e. the `_CREATE_ARTIFACTS` DDL that ran to
+    create it predates `_ALTER_ARTIFACTS_ADD_META`), with an actual tracked
+    row -- a read-only open never runs `_ensure_schema()`
+    (`SourceLedger.open()`'s `if not read_only` guard), so this file's
+    schema never gets the ALTER applied unless something opens it
+    read-write first. Confirmed real: this is exactly what broke `pipeline
+    summary`/`plan` for every source with a ledger predating this column,
+    with a raw `duckdb.BinderException` ("column meta not found")."""
+    import duckdb
+
+    con = duckdb.connect(path)
+    con.execute(
+        """
+        CREATE TABLE artifacts (
+            step VARCHAR NOT NULL, unit_id VARCHAR NOT NULL,
+            local_path VARCHAR, remote_path VARCHAR,
+            local_state VARCHAR NOT NULL DEFAULT 'missing',
+            remote_state VARCHAR NOT NULL DEFAULT 'missing',
+            bytes BIGINT, attempts INTEGER NOT NULL DEFAULT 0,
+            last_error VARCHAR, source_url VARCHAR,
+            created_at TIMESTAMP NOT NULL DEFAULT now(), updated_at TIMESTAMP NOT NULL DEFAULT now(),
+            PRIMARY KEY (step, unit_id)
+        )
+        """
+    )
+    con.execute("INSERT INTO artifacts (step, unit_id, local_state) VALUES ('prepare', '2020', 'complete')")
+    con.close()
+
+
+def test_artifacts_for_step_degrades_gracefully_on_pre_meta_column_ledger(tmp_path):
+    path = str(tmp_path / "acag_pm25.duckdb")
+    _pre_meta_column_ledger(path)
+    with SourceLedger.open(path, data_path="acag/pm25", read_only=True) as ledger:
+        assert ledger.artifacts_for_step("prepare") == []
+
+
+def test_artifacts_for_step_self_heals_after_a_read_write_open(tmp_path):
+    # The write-path fix: a single read-write open runs _ensure_schema(),
+    # which applies the ALTER for good -- after that, artifacts_for_step()
+    # sees the pre-existing row (still there, untouched by the migration)
+    # plus its meta, not just an empty list forever.
+    path = str(tmp_path / "acag_pm25.duckdb")
+    _pre_meta_column_ledger(path)
+    with SourceLedger.open(path, data_path="acag/pm25") as ledger:
+        pass  # read-write open alone self-heals the schema
+    with SourceLedger.open(path, data_path="acag/pm25", read_only=True) as ledger:
+        rows = ledger.artifacts_for_step("prepare")
+        assert len(rows) == 1
+        assert rows[0].unit_id == "2020"
+        assert rows[0].meta == {}
+
+
+def test_local_complete_units_filters_by_local_state(ledger):
+    ledger.ensure_artifact("prepare", "2019", local_path="/x/2019.zarr")
+    ledger.ensure_artifact("prepare", "2020", local_path="/x/2020.zarr")
+    ledger.set_local_state("prepare", "2019", LocalState.COMPLETE)
+    ledger.set_local_state("prepare", "2020", LocalState.FAILED)
+
+    assert ledger.local_complete_units("prepare") == [("2019", "/x/2019.zarr")]
+
+
+def test_local_complete_units_key_prefix_scopes_to_matching_units(ledger):
+    ledger.ensure_artifact("fetch", "2020/h10v05", local_path="/x/a.tif")
+    ledger.ensure_artifact("fetch", "2020/h11v05", local_path="/x/b.tif")
+    ledger.ensure_artifact("fetch", "2021/h10v05", local_path="/x/c.tif")
+    for unit_id in ("2020/h10v05", "2020/h11v05", "2021/h10v05"):
+        ledger.set_local_state("fetch", unit_id, LocalState.COMPLETE)
+
+    units = ledger.local_complete_units("fetch", key_prefix="2020/")
+    assert sorted(units) == [("2020/h10v05", "/x/a.tif"), ("2020/h11v05", "/x/b.tif")]
+
+
+def test_set_local_states_batch_applies_per_row_state(ledger):
+    ledger.ensure_artifact("prepare", "2019", local_path="/x/2019.zarr")
+    ledger.ensure_artifact("prepare", "2020", local_path="/x/2020.zarr")
+    ledger.set_local_state("prepare", "2019", LocalState.COMPLETE)
+    ledger.set_local_state("prepare", "2020", LocalState.COMPLETE)
+
+    ledger.set_local_states_batch("prepare", [("2019", LocalState.MISSING), ("2020", LocalState.COMPLETE)])
+
+    assert ledger.local_state("prepare", "2019") == LocalState.MISSING
+    assert ledger.local_state("prepare", "2020") == LocalState.COMPLETE
+
+
+def test_set_local_states_batch_noop_on_empty_updates(ledger):
+    ledger.set_local_states_batch("prepare", [])  # must not raise

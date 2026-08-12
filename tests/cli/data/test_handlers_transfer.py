@@ -1,4 +1,4 @@
-"""``pipeline transfer``'s push-strategy routing (_push_transfer_units) and
+"""``data transfer``'s push-strategy routing (_push_transfer_units) and
 its ledger-tracked skip-already-verified behavior (handle_transfer) --
 docs/design/10-fetch-ledger.md. No live SSH target needed.
 """
@@ -8,7 +8,7 @@ import tarfile
 
 import pytest
 
-from src.cli.pipeline.handlers import _push_transfer_units
+from src.cli.data.handlers import _push_transfer_units
 from src.data.common.hpc.push import HPCPusher
 from src.data.sources.steps import TransferUnit
 

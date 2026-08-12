@@ -21,7 +21,7 @@ remote file list to crawl, only per-(tile, year) STAC queries, so it is
 excluded from `tests/data/sources/test_fetch_protocol.py`'s parametrization.
 Instead it tracks each (year, tile) unit's local/remote state directly in the
 generic `artifacts` table (`SourceLedger.ensure_artifact`/`set_local_state`),
-giving `pipeline summary`/retries the same per-unit visibility other sources
+giving `data summary`/retries the same per-unit visibility other sources
 get from the crawl catalog, without pretending MODIS has one.
 
 **Real bug fixed in the original PREPARE migration, not silently ported**:
@@ -48,7 +48,7 @@ import dataclasses
 import logging
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -61,6 +61,9 @@ from src.data.sources.base import DataSource
 from src.data.sources.modis import tiles as modis_util
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection, TransferUnit
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -246,6 +249,18 @@ class ModisSource(DataSource):
             return self._plan_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile`: FETCH is already a pure
+        config cross-product (tile x year), not a crawl -- `_plan_fetch()`
+        itself is the discovery, tracked directly in the ledger's `artifacts`
+        table by `_execute_fetch()` (this class's own module docstring), not
+        by `reconcile_step`. Only GRID gets a real live-crawl counterpart."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch(selection)
+        if step is PipelineStep.GRID:
+            return self._discover_grid(selection)
+        raise AssertionError(f"unreachable: {step}")
+
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
@@ -268,7 +283,7 @@ class ModisSource(DataSource):
         read-write connection to a given `.duckdb` file at a time, across
         processes (`SourceLedger`'s module docstring), and a multi-hour FETCH
         run holding that connection open continuously starves any concurrent
-        writer against the same file -- concretely, `pipeline transfer
+        writer against the same file -- concretely, `data transfer
         --watch` running alongside a live FETCH, which is exactly the
         "second concurrent writer... needs its own connection strategy" case
         that docstring flags as unhandled. Each connection here touches the
@@ -282,7 +297,7 @@ class ModisSource(DataSource):
         multi-hour FETCH run should not abort entirely over one missed
         ledger write. If every retry is exhausted, this logs and moves on --
         losing one artifact-tracking row is not worse than losing the whole
-        run; a later `pipeline reconcile` (or simply re-running FETCH, which
+        run; a later `data reconcile` (or simply re-running FETCH, which
         checks `is_complete()`/the file's own presence) recovers it.
         """
         path = self._ledger_path()
@@ -547,12 +562,11 @@ class ModisSource(DataSource):
 
     # -- GRID ("spatial": mosaic tiles, reproject onto canonical EPSG:6933) --
 
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+    def _grid_output_path(self) -> str:
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
-        stage1_root = self.output_root(PipelineStep.FETCH)
-        output_path = layout.grid_store_path(
+        return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
             f"modis_{self.product}_timeseries_reprojected.zarr",
@@ -560,6 +574,59 @@ class ModisSource(DataSource):
             layout=self.ctx.layout,
             v2_family=f"modis_lst_{self.product.lower()}",
         )
+
+    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        """Ledger-backed fast path: a year's GRID target's `inputs` (per-tile
+        GeoTIFF paths, up to ~300/year) are re-derived from FETCH's
+        `local_complete_units(key_prefix=f"{year}/")` rather than persisted
+        -- the FETCH key format (`f"{year}/{tile}"`, `_plan_fetch()` above)
+        makes the prefix scope exact. Falls back to `_discover_grid()` for a
+        year with no ledger GRID row yet."""
+        output_path = self._grid_output_path()
+        years_all = self.years or (
+            self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1))
+        ) or []
+
+        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
+            if not row.unit_id.isdigit():
+                return None
+            year = int(row.unit_id)
+            if not selection.matches_year(year):
+                return None
+            tile_files = sorted(path for _, path in ledger.local_complete_units("fetch", key_prefix=f"{year}/"))
+            if not tile_files:
+                return None
+            return StepTarget(
+                source_id=self.cfg.source_id,
+                step=PipelineStep.GRID,
+                key=row.unit_id,
+                output_path=output_path,
+                inputs=tuple(tile_files),
+                # Quirk preserved, not invented -- see module docstring:
+                # the old spatial stage never checked override/existence.
+                completion=Completion.NEVER,
+                meta={
+                    "year": year,
+                    "years_all": years_all,
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=("lst_night",), value_range=(150, 350)
+                    ),
+                },
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.cfg.source_id, self.cfg.source_id,
+        )
+        return self._discover_grid(selection)
+
+    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        stage1_root = self.output_root(PipelineStep.FETCH)
+        output_path = self._grid_output_path()
         years = self.years or (
             self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1))
         ) or []

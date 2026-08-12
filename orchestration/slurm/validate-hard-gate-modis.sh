@@ -171,8 +171,8 @@ run_old() {
 }
 
 run_new() {
-    echo "$(date -Is): NEW  pipeline run --source modis --step grid"
-    "$PYTHON_BIN" run.py pipeline run --config "$TEST_CONFIG" --source modis \
+    echo "$(date -Is): NEW  data run --source modis --step grid"
+    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source modis \
         --step grid --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

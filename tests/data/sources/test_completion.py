@@ -9,8 +9,9 @@ import os
 
 import pytest
 
+from src.data.common.ledger.schema import LocalState
 from src.data.common.ledger.store import PushResult, SourceLedger
-from src.data.sources.steps import Completion, PipelineStep, StepTarget, is_complete, mark_complete
+from src.data.sources.steps import Completion, PipelineStep, StepTarget, is_complete, local_drift, mark_complete
 
 
 @pytest.fixture
@@ -91,3 +92,53 @@ def test_never_completion_always_false_regardless_of_require_remote(tmp_path, le
         output_path=str(tmp_path), completion=Completion.NEVER, require_remote=True,
     )
     assert is_complete(target, ledger=ledger) is False
+
+
+# ---------------------------------------------------------------------------
+# local_drift() -- the automatic self-heal trigger (ledger-as-source-of-truth)
+# ---------------------------------------------------------------------------
+
+
+def test_local_drift_false_when_ledger_agrees_with_disk_complete(tmp_path, ledger):
+    target = _path_exists_target(tmp_path, exists=True)
+    ledger.ensure_artifact("fetch", "2020/h09v05")
+    ledger.set_local_state("fetch", "2020/h09v05", LocalState.COMPLETE)
+    assert local_drift(target, ledger) is False
+
+
+def test_local_drift_false_when_ledger_agrees_with_disk_missing(tmp_path, ledger):
+    target = _path_exists_target(tmp_path, exists=False)
+    ledger.ensure_artifact("fetch", "2020/h09v05")
+    assert local_drift(target, ledger) is False
+
+
+def test_local_drift_true_when_ledger_says_complete_but_disk_missing(tmp_path, ledger):
+    target = _path_exists_target(tmp_path, exists=False)
+    ledger.ensure_artifact("fetch", "2020/h09v05")
+    ledger.set_local_state("fetch", "2020/h09v05", LocalState.COMPLETE)
+    assert local_drift(target, ledger) is True
+
+
+def test_local_drift_true_when_disk_complete_but_ledger_has_no_row(tmp_path, ledger):
+    target = _path_exists_target(tmp_path, exists=True)
+    assert local_drift(target, ledger) is True
+
+
+def test_local_drift_false_for_never_completion(tmp_path, ledger):
+    target = StepTarget(
+        source_id="modis", step=PipelineStep.FETCH, key="all",
+        output_path=str(tmp_path), completion=Completion.NEVER,
+    )
+    assert local_drift(target, ledger) is False
+
+
+def test_local_drift_true_for_marker_completion_mismatch(tmp_path, ledger):
+    output_dir = str(tmp_path / "grid" / "modis.zarr")
+    os.makedirs(output_dir, exist_ok=True)
+    mark_complete(output_dir)
+    target = StepTarget(
+        source_id="modis", step=PipelineStep.GRID, key="all",
+        output_path=output_dir, completion=Completion.MARKER,
+    )
+    ledger.ensure_artifact("grid", "all")  # left at default local_state='missing'
+    assert local_drift(target, ledger) is True

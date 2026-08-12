@@ -76,6 +76,13 @@ CREATE TABLE IF NOT EXISTS artifacts (
 )
 """
 
+#: `CREATE TABLE IF NOT EXISTS` above is a no-op against a ledger created
+#: before this column existed -- `ADD COLUMN IF NOT EXISTS` is the migration
+#: for every such pre-existing `.duckdb` file. Holds `StepTarget.meta` as
+#: JSON so a ledger-backed `plan()` (docs/design/10-fetch-ledger.md's
+#: successor) can reconstruct a target without re-running discovery.
+_ALTER_ARTIFACTS_ADD_META = "ALTER TABLE artifacts ADD COLUMN IF NOT EXISTS meta VARCHAR"
+
 _CREATE_ARTIFACTS_LOCAL_STATE_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_artifacts_local_state ON artifacts(step, local_state)"
 )
@@ -88,6 +95,7 @@ ALL_DDL: tuple[str, ...] = (
     _CREATE_REMOTE_FILES,
     _CREATE_ENTRYPOINTS,
     _CREATE_ARTIFACTS,
+    _ALTER_ARTIFACTS_ADD_META,
     _CREATE_ARTIFACTS_LOCAL_STATE_IDX,
     _CREATE_ARTIFACTS_REMOTE_STATE_IDX,
 )

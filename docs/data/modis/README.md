@@ -134,7 +134,7 @@ present in the FETCH GeoTIFFs, but only `lst_night` is declared/checked by
 \* `emis_29` only exists for `21A2` (`BAND_SPECS["11A1"]` has no `emis_29` asset).
 
 `verification_meta()` (`src/data/sources/verify.py`) only ever powers a *sampled*
-sanity check (finite + in-range on a strided sample) opened via `pipeline
+sanity check (finite + in-range on a strided sample) opened via `data
 summary`/the assembly gate — not a full-array pass. Actual observed value
 distribution, tile/date coverage achieved by a real run, and zarr store size are
 not knowable from code/config alone.

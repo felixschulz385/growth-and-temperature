@@ -9,7 +9,7 @@ arrays.
 
 Results are cached in a `_verification/<name>.json` manifest sibling to the
 output (see `manifest_path()`), keyed by a cheap stat-based fingerprint of
-the output (`_fingerprint()`) -- so `pipeline summary` (which calls this on
+the output (`_fingerprint()`) -- so `data summary` (which calls this on
 every complete GRID target on every invocation) and the assembly gate don't
 re-open/re-sample a store that hasn't changed since it was last verified.
 """

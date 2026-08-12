@@ -13,7 +13,7 @@ in the right order.
 **Explicit human boundary**: FETCH never runs as a SLURM job (Selenium/
 browser/internet-egress constraint -- see jobs.yaml's header comment), so
 there is no job id to chain a source's first SLURM job from. Operator flow:
-run FETCH manually/on an egress-capable host, confirm via ``pipeline
+run FETCH manually/on an egress-capable host, confirm via ``data
 summary``, then run this script to start PREPARE->GRID. A ``host: egress``
 job with ``submit_dependents: true`` (only MODIS's PREPARE today) can
 auto-invoke this script at its end, best-effort, if ``sbatch`` happens to be

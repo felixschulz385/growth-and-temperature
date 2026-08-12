@@ -5,7 +5,7 @@ orchestration/slurm/jobs.yaml, so per-job differences (source, step,
 resources, execution host) live in one small parameter table instead of
 being copy-pasted across many near-identical files.
 
-docs/design/09-integrated-pipeline.md §9: emits `run.py pipeline run
+docs/design/09-integrated-pipeline.md §9: emits `run.py data run
 --source X --step Y` (replacing `preprocess run --source X --stage Y
 [--subsource Z]`). `host: egress` (default `host: slurm`) folds what used to
 be the hand-maintained `orchestration/scripts/modis-ingest-annual.sh` into
@@ -71,7 +71,7 @@ GENERATED_MARKER = (
 #: `sbatch --export=ALL,PIPELINE_OVERRIDE=1 <script>.sh` (env var). Computed
 #: once into $OVERRIDE_FLAG and referenced (unquoted, so it vanishes from
 #: the command entirely when empty rather than passing a stray "") from
-#: `_pipeline_run_cmd`'s emitted command line.
+#: `_data_run_cmd`'s emitted command line.
 OVERRIDE_FLAG_PREAMBLE = [
     "# --override toggle -- either of these works:",
     "#   sbatch <this script>.sh --override",
@@ -89,12 +89,12 @@ OVERRIDE_FLAG_PREAMBLE = [
 ]
 
 
-def _pipeline_run_cmd(job: dict) -> list[str]:
+def _data_run_cmd(job: dict) -> list[str]:
     simple = job.get("simple", False)
     dashboard_port = job.get("dashboard_port", DEFAULT_DASHBOARD_PORT)
 
     cmd_parts = [
-        f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" pipeline run',
+        f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" data run',
         f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
         f"--source {job['source']}",
         f"--step {job['step']}",
@@ -155,7 +155,7 @@ def render_slurm_job(job: dict) -> str:
             "",
         ]
 
-    lines.append(" \\\n    ".join(_pipeline_run_cmd(job)))
+    lines.append(" \\\n    ".join(_data_run_cmd(job)))
     lines.append("")
     return "\n".join(lines)
 
@@ -183,7 +183,7 @@ def render_egress_job(job: dict) -> str:
         "",
         *OVERRIDE_FLAG_PREAMBLE,
     ]
-    lines.append(" \\\n    ".join(_pipeline_run_cmd(job)))
+    lines.append(" \\\n    ".join(_data_run_cmd(job)))
     lines.append("")
 
     transfer_after = job.get("transfer_after")
@@ -192,7 +192,7 @@ def render_egress_job(job: dict) -> str:
             f'echo "{job["step"]} complete -- pushing results to scicore"',
             " \\\n    ".join(
                 [
-                    f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" pipeline transfer',
+                    f'{PYTHON_BIN} "{PROJECT_ROOT}/run.py" data transfer',
                     f'--config "{PROJECT_ROOT}/orchestration/configs/data.yaml"',
                     f"--source {job['source']}",
                     f"--step {transfer_after}",
@@ -253,14 +253,14 @@ def _load_data_yaml_source_keys() -> set[str]:
     return set((data.get("sources") or {}).keys())
 
 
-def _pipeline_run_argv(job: dict) -> list[str]:
-    """The argv `_pipeline_run_cmd` would hand to `pipeline run`, with SLURM's
+def _data_run_argv(job: dict) -> list[str]:
+    """The argv `_data_run_cmd` would hand to `data run`, with SLURM's
     shell-expanded values (``$SLURM_CPUS_PER_TASK``, etc.) replaced by dummy
     literals so it can be fed straight to argparse -- shlex can't split
     something that's only meaningful after the shell substitutes it."""
     import shlex
 
-    parts = _pipeline_run_cmd(job)[1:]  # drop the "python .../run.py pipeline run" launcher token
+    parts = _data_run_cmd(job)[1:]  # drop the "python .../run.py data run" launcher token
     argv: list[str] = []
     for part in parts:
         part = (
@@ -316,15 +316,15 @@ def validate_jobs(jobs: list) -> list[str]:
         if job["source"] not in data_yaml_sources:
             errors.append(f"{name}: source '{job['source']}' is not a key in orchestration/configs/data.yaml's sources: block")
 
-        # Argparse round-trip: catches a job emitting a flag `pipeline run`
+        # Argparse round-trip: catches a job emitting a flag `data run`
         # doesn't define (e.g. --dask-threads before it existed on this
         # parser) before it ever reaches a SLURM queue.
         from src.cli.main import build_parser
 
         try:
-            build_parser().parse_args(["pipeline", "run", *_pipeline_run_argv(job)])
+            build_parser().parse_args(["data", "run", *_data_run_argv(job)])
         except SystemExit:
-            errors.append(f"{name}: rendered command does not parse against `pipeline run`'s argparse spec")
+            errors.append(f"{name}: rendered command does not parse against `data run`'s argparse spec")
 
     return errors
 

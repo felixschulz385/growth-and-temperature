@@ -3,7 +3,7 @@
 docs/design/09-integrated-pipeline.md §4: extends the download side's proven
 lazy-import pattern (src/data/download/sources/registry.py) to cover the whole
 merged pipeline, and adds metadata (`steps`/`requires`) available *without*
-importing the module -- so `pipeline list` and the SLURM generator can
+importing the module -- so `data list` and the SLURM generator can
 validate `(source, step)` pairs without pulling per-source dependencies
 (Selenium, pystac, duckdb, ...) into the process.
 
@@ -78,7 +78,7 @@ def resolve(name: str) -> SourceSpec:
 
 
 def describe(name: str) -> SourceSpec:
-    """Alias for resolve(), for CLI readability (`pipeline list` calls this)."""
+    """Alias for resolve(), for CLI readability (`data list` calls this)."""
     return resolve(name)
 
 

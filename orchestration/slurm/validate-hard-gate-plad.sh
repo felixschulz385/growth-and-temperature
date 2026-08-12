@@ -17,7 +17,7 @@
 # (("gadm", PipelineStep.PREPARE),)` -- confirmed real (not a stale planning
 # assumption the way berman_mining's turned out to be, see
 # validate-hard-gate-berman_mining.sh) and enforced by
-# src/cli/pipeline/handlers.py::_check_requires BEFORE the source is even
+# src/cli/data/handlers.py::_check_requires BEFORE the source is even
 # constructed, for every subcommand including `plan`/`index`, not just
 # `run`. PLAD depends on GADM's PREPARE output specifically (the simplified
 # ADM1/ADM2 .gpkg vector files), not GADM's GRID/rasterized output --
@@ -166,7 +166,7 @@ if [ -f "$PROD_GEOBOX" ]; then
     echo "$(date -Is): seeded cropped target geobox cache from production"
 else
     echo "$(date -Is): ERROR -- no cached target geobox at $PROD_GEOBOX"
-    echo "  Run 'pipeline run --source eog_viirs --step grid' once for real first,"
+    echo "  Run 'data run --source eog_viirs --step grid' once for real first,"
     echo "  or copy a viirs_geobox.pkl from wherever GRID has run before."
     exit 2
 fi
@@ -204,8 +204,8 @@ run_old() {
 }
 
 run_new() {
-    echo "$(date -Is): NEW  pipeline run --source plad --step grid"
-    "$PYTHON_BIN" run.py pipeline run --config "$TEST_CONFIG" --source plad \
+    echo "$(date -Is): NEW  data run --source plad --step grid"
+    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source plad \
         --step grid --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

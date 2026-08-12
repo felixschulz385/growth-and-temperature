@@ -19,7 +19,7 @@ estimation step itself.
 Two modes:
   --variable-zarr PATH   Real mode. PATH is a Zarr store already regridded
                           onto the canonical EASE6933 grid -- i.e. the output
-                          of `run.py pipeline run --source X --step grid`
+                          of `run.py data run --source X --step grid`
                           with `orchestration/configs/data.yaml`'s
                           `pipeline.grid` set to `ease6933`
                           (docs/design/09-integrated-pipeline.md §3; that

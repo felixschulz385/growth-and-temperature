@@ -1,4 +1,4 @@
-"""Handler functions for the ``pipeline`` domain."""
+"""Handler functions for the ``data`` domain."""
 
 from __future__ import annotations
 
@@ -17,13 +17,15 @@ from src.data.sources.steps import (
     PipelineStep,
     TargetSelection,
     is_complete,
+    local_completion_state,
+    local_drift,
 )
 
 logger = logging.getLogger(__name__)
 
 
 def handle_list(args: argparse.Namespace) -> None:
-    """``pipeline list`` -- enumerate every registered source."""
+    """``data list`` -- enumerate every registered source."""
     setup_logging(args.log_level, debug=args.debug)
     for spec in sorted(registry.all_specs(), key=lambda s: s.id):
         steps = ", ".join(s.value for s in spec.steps)
@@ -91,7 +93,7 @@ def _print_source_summary(rows: dict) -> None:
 
 
 def handle_summary(args: argparse.Namespace) -> None:
-    """``pipeline summary`` -- concise per-source, per-step data-availability
+    """``data summary`` -- concise per-source, per-step data-availability
     overview. Builds each source directly (bypassing `_check_requires`, unlike
     `_build()`) since a summary should still show a source's own available
     steps even when an upstream REQUIRES dependency isn't complete yet."""
@@ -243,7 +245,7 @@ def _build(args: argparse.Namespace):
 
 
 def _apply_cli_overrides(ctx, args: argparse.Namespace) -> None:
-    """`pipeline run`'s Dask-sizing flags override whatever `PipelineContext`
+    """`data run`'s Dask-sizing flags override whatever `PipelineContext`
     built from the config file -- same override relationship the old
     `preprocess run --dask-threads/...` flags had over config, carried
     forward here (docs/design/09-integrated-pipeline.md §8). Other
@@ -274,8 +276,38 @@ def _open_ledger_readonly(source):
     return SourceLedger.open(local_ledger_path, data_path=source.data_path, read_only=True)
 
 
+def _heal_local_drift(source, step: PipelineStep, drifted: list[tuple[str, str]]) -> None:
+    """Self-heal `local_drift()`-flagged rows: batch-correct the ledger's
+    `local_state` to match on-disk reality -- the "automatically ... when
+    conflict is detected" half of ledger-as-source-of-truth (the other half
+    being an explicit `data reconcile`, which also re-discovers targets
+    a bare disk-vs-ledger read can't catch, see `local_drift()`'s docstring).
+
+    Called only after the read-only ledger connection used to *detect*
+    drift has already been closed: DuckDB refuses a second same-process
+    connection to one file whose `read_only` setting doesn't match an
+    already-open one (confirmed empirically), so healing needs its own,
+    separately-opened read-write connection, not a reuse of the read-only one.
+    """
+    if not drifted:
+        return
+    from src.data.common.ledger.paths import ledger_path
+    from src.data.common.ledger.store import SourceLedger
+
+    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
+    if local_ledger_path is None:
+        return
+    logger.warning(
+        "Local-disk drift detected for source='%s' step='%s': %d target(s) disagree with the ledger -- "
+        "self-healing: %s",
+        source.ID, step.value, len(drifted), [key for key, _ in drifted],
+    )
+    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
+        ledger.set_local_states_batch(step.value, drifted)
+
+
 def handle_plan(args: argparse.Namespace) -> None:
-    """``pipeline plan`` -- print targets for (source, step) without running them."""
+    """``data plan`` -- print targets for (source, step) without running them."""
     setup_logging(args.log_level, debug=args.debug)
     source, _ = _build(args)
     step = PipelineStep(args.step)
@@ -286,18 +318,26 @@ def handle_plan(args: argparse.Namespace) -> None:
         print(f"No targets for source='{args.source}' step='{step.value}'.")
         return
     ledger = _open_ledger_readonly(source)
+    statuses: dict[str, bool] = {}
+    drifted: list[tuple[str, str]] = []
     try:
         for target in targets:
-            status = "complete" if is_complete(target, ledger=ledger) else "pending"
-            print(f"[{status}] {target.key}  ->  {target.output_path}")
+            statuses[target.key] = is_complete(target, ledger=ledger)
+            if ledger is not None and local_drift(target, ledger):
+                drifted.append((target.key, local_completion_state(target)))
     finally:
         if ledger is not None:
             ledger.close()
+    _heal_local_drift(source, step, drifted)
+
+    for target in targets:
+        status = "complete" if statuses[target.key] else "pending"
+        print(f"[{status}] {target.key}  ->  {target.output_path}")
     source.close()
 
 
 def handle_index(args: argparse.Namespace) -> None:
-    """``pipeline index`` -- build/refresh a FETCH-capable source's ledger
+    """``data index`` -- build/refresh a FETCH-capable source's ledger
     crawl catalog (docs/design/10-fetch-ledger.md). ``--rebuild`` forces
     every entrypoint to be re-crawled, but -- unlike the old
     ``UnifiedDataIndex(rebuild=True)`` -- does not discard already-tracked
@@ -314,7 +354,7 @@ def handle_index(args: argparse.Namespace) -> None:
         raise ValueError(
             f"Source '{args.source}' declares 'fetch' but has no crawlable remote file catalog to index "
             "(e.g. MODIS streams per-(year, tile) STAC queries instead of listing a flat file list) -- "
-            "nothing to index; its fetch state is tracked directly via `pipeline run --step fetch`."
+            "nothing to index; its fetch state is tracked directly via `data run --step fetch`."
         )
 
     from src.data.common.ledger import catalog
@@ -335,7 +375,7 @@ def handle_index(args: argparse.Namespace) -> None:
 
 
 def handle_run(args: argparse.Namespace) -> None:
-    """``pipeline run`` -- execute a (source, step)'s pending targets."""
+    """``data run`` -- execute a (source, step)'s pending targets."""
     setup_logging(args.log_level, debug=args.debug)
     source, _ = _build(args)
     if args.override:
@@ -355,11 +395,17 @@ def handle_run(args: argparse.Namespace) -> None:
     # local/remote state directly), and DuckDB allows only one read-write
     # connection per file at a time, so the two must never overlap.
     ledger = _open_ledger_readonly(source)
+    drifted: list[tuple[str, str]] = []
     try:
         already_complete = {target.key for target in targets if is_complete(target, ledger=ledger)}
+        if ledger is not None:
+            drifted = [
+                (target.key, local_completion_state(target)) for target in targets if local_drift(target, ledger)
+            ]
     finally:
         if ledger is not None:
             ledger.close()
+    _heal_local_drift(source, step, drifted)
 
     failures = []
     for target in targets:
@@ -392,7 +438,7 @@ def handle_run(args: argparse.Namespace) -> None:
 
 
 def handle_reconcile(args: argparse.Namespace) -> None:
-    """``pipeline reconcile`` -- rebuild a source's DuckDB ledger from real
+    """``data reconcile`` -- rebuild a source's DuckDB ledger from real
     on-disk/HPC filesystem state (docs/design/10-fetch-ledger.md §5). A
     manual/occasional operator command, not part of the normal fetch/run hot
     path: run once per source when adopting the ledger, or after any
@@ -542,7 +588,7 @@ def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", l
     1. Read/write the small "what's pending" metadata, close.
     2. Do the actual push -- the slow part (real network I/O, tens of
        seconds+ for a batch) -- with NO ledger connection open at all, so a
-       concurrent `pipeline run --step fetch` (which now also only takes its
+       concurrent `data run --step fetch` (which now also only takes its
        own connection briefly per unit, see
        `ModisSource._ledger_ensure_artifact()`'s docstring) isn't locked out
        for the push's whole duration.
@@ -591,7 +637,7 @@ def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", l
 
 
 def handle_transfer(args: argparse.Namespace) -> None:
-    """``pipeline transfer`` -- push a step's local output to the HPC target.
+    """``data transfer`` -- push a step's local output to the HPC target.
 
     docs/design/10-fetch-ledger.md §2 -- generic across sources via
     `DataSource.transfer_units(step)`, now driven by the same unified
@@ -601,7 +647,7 @@ def handle_transfer(args: argparse.Namespace) -> None:
 
     `--watch`: instead of one scan-and-push pass, loop that pass on a
     `--poll-interval` timer until interrupted (Ctrl-C) -- for running
-    alongside a concurrent `pipeline run --step fetch` so newly-completed
+    alongside a concurrent `data run --step fetch` so newly-completed
     local output (e.g. MODIS's per-tile-year GeoTIFFs, written atomically via
     `os.replace` so `transfer_units()` never sees a partial file) gets pushed
     incrementally rather than requiring a separate manual `transfer` call
@@ -662,7 +708,7 @@ def handle_transfer(args: argparse.Namespace) -> None:
             # retrying (`open_with_retry()`) connections internally -- this
             # `except duckdb.IOException` is a last-resort net for the rare
             # case every retry inside it is exhausted (a concurrently
-            # running `pipeline run --step fetch` holding the lock
+            # running `data run --step fetch` holding the lock
             # unusually long), so this watch loop logs and tries again next
             # poll interval instead of crashing the whole watch command.
             try:

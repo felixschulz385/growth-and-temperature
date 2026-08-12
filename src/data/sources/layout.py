@@ -160,7 +160,7 @@ def index_path(local_index_dir: str | None, data_path: str) -> str | None:
     this changes on purpose: `osm`/`gadm`/`country_classifications` each get a
     distinct `data_path` (unlike today's single `data_path="misc"` shared by
     all four origins), so each gets its own index file -- adopted from the old
-    shared index via `pipeline index --adopt-local` rather than a rename.
+    shared index via `data index --adopt-local` rather than a rename.
 
     Directory: also unifies on the download side's convention
     (`paths.local_index_dir`, config-driven) rather than the preprocess side's

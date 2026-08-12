@@ -3,7 +3,7 @@
 Project-local wrapper for the modular GNT CLI.
 
 Examples:
-  python run.py pipeline run --config config.yaml --source acag --step fetch
+  python run.py data run --config config.yaml --source acag --step fetch
   python run.py assemble create --config config.yaml --source main_panel
   python run.py assemble update --config config.yaml --source main_panel --datasource ntl
   python run.py analysis run --model my_model

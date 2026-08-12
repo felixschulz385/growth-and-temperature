@@ -40,19 +40,23 @@ def reconcile_step(
     (`handle_reconcile`) picks between the two based on whether the source
     implements `RemoteFileCatalog`, not on the step name alone.
 
-    Enumerates `source.plan(step, TargetSelection())` (every target this
-    source currently believes should exist) as ground truth, checks local
-    disk via the existing `is_complete()` machinery, and -- if *client* and
-    *remote_data_root* are both given -- checks remote presence for every
-    target in one batched round trip.
+    Enumerates `source.discover(step, TargetSelection())` (every target this
+    source's live disk/HPC crawl believes should exist -- ground truth,
+    independent of whatever the ledger currently holds) and writes it into
+    the ledger: checks local disk via the existing `is_complete()` machinery,
+    and -- if *client* and *remote_data_root* are both given -- checks remote
+    presence for every target in one batched round trip. This is the one
+    path (besides automatic local-drift self-heal, `steps.py::local_drift()`)
+    that populates/refreshes the ledger's `artifacts` rows for PREPARE/GRID,
+    which a ledger-backed `plan()` then reads back via `_plan_from_ledger()`.
     """
-    targets = source.plan(step, TargetSelection())
+    targets = source.discover(step, TargetSelection())
     result = {"total": len(targets), "local_complete": 0, "remote_verified": 0}
 
     # key -> (probe path for existence-check, output-relative remote path to record)
     remote_targets: dict[str, tuple[str, str]] = {}
     for target in targets:
-        ledger.ensure_artifact(step.value, target.key, local_path=target.output_path)
+        ledger.ensure_artifact(step.value, target.key, local_path=target.output_path, meta=dict(target.meta))
 
         if is_complete(target):
             ledger.set_local_state(step.value, target.key, LocalState.COMPLETE)

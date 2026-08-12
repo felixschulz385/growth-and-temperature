@@ -1,5 +1,5 @@
 """
-Argument registration for the ``pipeline`` domain.
+Argument registration for the ``data`` domain.
 
 Sub-commands
 ------------
@@ -48,7 +48,7 @@ def _add_selection_args(parser: argparse.ArgumentParser) -> None:
 
 
 def register(top_subparsers: argparse._SubParsersAction) -> None:
-    """Register ``pipeline`` and its sub-commands on *top_subparsers*."""
+    """Register ``data`` and its sub-commands on *top_subparsers*."""
     from .handlers import (
         handle_index,
         handle_list,
@@ -59,16 +59,16 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         handle_transfer,
     )
 
-    pipeline_parser = top_subparsers.add_parser(
-        "pipeline",
+    data_parser = top_subparsers.add_parser(
+        "data",
         help="Fetch/prepare/grid a source (replaces download + preprocess run)",
         description=(
             "Run one source through its fetch/prepare/grid lifecycle "
             "(docs/design/09-integrated-pipeline.md)."
         ),
     )
-    add_logging_args(pipeline_parser)
-    sub = pipeline_parser.add_subparsers(dest="pipeline_cmd", metavar="COMMAND")
+    add_logging_args(data_parser)
+    sub = data_parser.add_subparsers(dest="data_cmd", metavar="COMMAND")
     sub.required = True
 
     # ── list ───────────────────────────────────────────────────────────────
@@ -173,7 +173,7 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     transfer_p.add_argument(
         "--watch", action="store_true",
         help="Stay running, re-scanning for newly-completed local output and pushing it as it "
-             "appears (e.g. alongside a concurrently-running `pipeline run --step fetch`). "
+             "appears (e.g. alongside a concurrently-running `data run --step fetch`). "
              "Runs until interrupted (Ctrl-C).",
     )
     transfer_p.add_argument(

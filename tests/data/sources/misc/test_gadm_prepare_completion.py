@@ -1,9 +1,9 @@
-"""Regression test: `pipeline plan --source gadm --step prepare` used to
+"""Regression test: `data plan --source gadm --step prepare` used to
 always report `[pending]` regardless of on-disk state, because PREPARE's
 StepTarget used `completion=Completion.NEVER` (which `is_complete()` always
 reports False for) while the real skip-check lived only inside
 `_execute_prepare`'s custom `os.listdir` logic, invisible to `is_complete()`/
-`pipeline plan`. PREPARE now uses `Completion.MARKER` (a `.complete` sibling
+`data plan`. PREPARE now uses `Completion.MARKER` (a `.complete` sibling
 file next to the output directory), matching how GRID already reports its
 own completion in this same file."""
 

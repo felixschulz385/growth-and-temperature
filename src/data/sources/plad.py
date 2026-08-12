@@ -41,7 +41,7 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -49,6 +49,9 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -160,19 +163,58 @@ class PlaDSource(DataSource):
     # plan()/execute() dispatch
     # ------------------------------------------------------------------
 
+    def _plan_fetch(self) -> List[StepTarget]:
+        return [
+            StepTarget(
+                source_id=self.ID, step=PipelineStep.FETCH, key="all",
+                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
+            )
+        ]
+
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
-            return [
-                StepTarget(
-                    source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                    output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-                )
-            ]
+            return self._plan_fetch()
         if step is PipelineStep.GRID:
             return self._plan_grid()
         raise AssertionError(f"unreachable: {step}")
 
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` -- see gadm.py's identical
+        `_discover()` for the full rationale. PLAD's targets are singletons
+        with no year/key selection to apply; `selection` is accepted for
+        interface symmetry only."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.GRID:
+            return self._discover_grid()
+        raise AssertionError(f"unreachable: {step}")
+
     def _plan_grid(self) -> List[StepTarget]:
+        """Ledger-backed fast path. `inputs` (a single deterministic mapping-
+        file path) is persisted directly in `meta` at discovery time, same
+        pattern as gadm's PREPARE `raw_file` -- see gadm.py's `_plan_prepare()`."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            mapping_file = row.meta.get("mapping_file")
+            if mapping_file is None or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
+                output_path=row.local_path, inputs=(mapping_file,),
+                completion=Completion.PATH_EXISTS, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_grid()
+
+    def _discover_grid(self) -> List[StepTarget]:
         mapping_file = self._gid_mapping_file()
         if not os.path.exists(mapping_file):
             return []
@@ -188,6 +230,7 @@ class PlaDSource(DataSource):
                 meta={
                     "admin_level": self.admin_level,
                     "year_range": self.cfg.year_range,
+                    "mapping_file": mapping_file,
                     **verify.verification_meta(
                         self.cfg.raw, expected_vars=(self._gid_column, "year", "reg_fav")
                     ),

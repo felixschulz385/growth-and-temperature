@@ -8,16 +8,20 @@ docs/design/09-integrated-pipeline.md §4.
 from __future__ import annotations
 
 import abc
+import logging
 import os
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Protocol, runtime_checkable
 
 from src.data.sources import layout
 from src.data.sources.steps import PipelineStep, StepTarget, TargetSelection, TransferUnit, UnsupportedStepError
 
 if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
     from src.data.pipeline.config import SourceConfig
     from src.data.pipeline.context import PipelineContext
     from src.data.sources.verify import VerificationResult
+
+logger = logging.getLogger(__name__)
 
 
 @runtime_checkable
@@ -104,6 +108,82 @@ class DataSource(abc.ABC):
 
     @abc.abstractmethod
     def _execute(self, target: StepTarget) -> bool: ...
+
+    def discover(self, step: PipelineStep, selection: TargetSelection) -> list[StepTarget]:
+        """Ground-truth target enumeration for *step* -- what SHOULD exist,
+        derived by live disk/HPC crawl rather than read from the ledger.
+        `reconcile_step` (src/data/sources/reconcile.py) is the only normal
+        caller: it treats this as authoritative and writes the result into
+        the ledger's `artifacts` table, which a ledger-backed `plan()` (via
+        `_plan_from_ledger()` below) then reads back cheaply.
+
+        Default: identical to `plan()`. A source that hasn't split its
+        `_plan_prepare`/`_plan_grid` into a ledger-backed fast path plus a
+        `_discover_prepare`/`_discover_grid` live-crawl counterpart yet still
+        has `plan()` doing that live discovery itself -- so this default
+        keeps returning correct (if uncached) ground truth for it, and nothing
+        breaks for a not-yet-migrated source. A migrated source overrides
+        `_discover()` to call its own `_discover_fetch`/`_discover_prepare`/
+        `_discover_grid` methods instead, mirroring `plan()`/`_plan()`'s
+        existing dispatch shape.
+        """
+        self._require_step(step)
+        return self._discover(step, selection)
+
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> list[StepTarget]:
+        return self._plan(step, selection)
+
+    def _plan_from_ledger(
+        self,
+        step: PipelineStep,
+        selection: TargetSelection,
+        build_target: "Callable[[ArtifactRow, Any], Optional[StepTarget]]",
+    ) -> "Optional[list[StepTarget]]":
+        """Ledger-backed target enumeration: reads persisted `artifacts` rows
+        for `(self.data_path, step)` and reconstructs each `StepTarget` via
+        *build_target* instead of re-running a live disk crawl every call.
+
+        Returns `None` (not `[]`) when no ledger is configured, or none has
+        been populated yet for this (source, step) -- the signal a source's
+        `_plan_prepare`/`_plan_grid` uses to fall back to
+        `self._discover(step, selection)` (today's exact live-crawl
+        behaviour), so a zero-config setup -- or one that simply hasn't run
+        `data reconcile` for this step yet -- is unaffected by this
+        change rather than silently seeing zero targets.
+
+        `TargetSelection.matches_key` is applied here, generically, since
+        `StepTarget.key` and `artifacts.unit_id` are the same value for
+        every source; `matches_year`/anything needing source-specific key
+        parsing is *build_target*'s responsibility (it has the row's `meta`
+        to work with) -- consistent with every source's existing
+        enumerate-then-filter `_plan_*` pattern.
+
+        *build_target* also receives the open (read-only) `SourceLedger`
+        connection, so a GRID target's `inputs` can be re-derived from the
+        upstream PREPARE step's `local_complete_units()` within the same
+        connection, instead of persisting -- and going stale against --
+        a snapshot of `inputs` at discovery time.
+        """
+        from src.data.common.ledger.paths import ledger_path
+        from src.data.common.ledger.store import SourceLedger
+
+        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
+        if not local_ledger_path or not os.path.exists(local_ledger_path):
+            return None
+
+        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
+            rows = ledger.artifacts_for_step(step.value)
+            if not rows:
+                return None
+
+            targets: list[StepTarget] = []
+            for row in rows:
+                if not selection.matches_key(row.unit_id):
+                    continue
+                target = build_target(row, ledger)
+                if target is not None:
+                    targets.append(target)
+        return targets
 
     def _require_step(self, step: PipelineStep) -> None:
         if step not in self.STEPS:

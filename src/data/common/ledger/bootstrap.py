@@ -4,7 +4,7 @@ filesystem state, treated as ground truth -- rather than trusting whatever
 the ledger currently believes.
 
 docs/design/10-fetch-ledger.md §5 ("no migration of old data" -- this is the
-one-time/occasional operator tool, run via `pipeline reconcile`, that
+one-time/occasional operator tool, run via `data reconcile`, that
 replaces converting the old `UnifiedDataIndex`/`TransferManifest` Parquet
 files). PREPARE/GRID reconciliation is a separate module
 (`src/data/sources/reconcile.py`) since it needs `DataSource.plan()` --

@@ -63,7 +63,7 @@
 #      time, on ANY raster source, not just acag. On scicore this pickle
 #      almost certainly already exists under $DATA_NOBACKUP (every raster
 #      GRID job ever run there created or reused it); if it's missing there
-#      too, generate it once for real via `pipeline run --source eog_viirs
+#      too, generate it once for real via `data run --source eog_viirs
 #      --step grid` before this script.
 #
 #      This script does NOT copy that pickle in verbatim -- it crops it to a
@@ -196,7 +196,7 @@ if [ -f "$PROD_GEOBOX" ]; then
 else
     echo "$(date -Is): ERROR -- no cached target geobox at $PROD_GEOBOX"
     echo "  and no EOG VIIRS raw file + index in this scratch root to build one from."
-    echo "  Run 'pipeline run --source eog_viirs --step grid' once for real first,"
+    echo "  Run 'data run --source eog_viirs --step grid' once for real first,"
     echo "  or copy a viirs_geobox.pkl from wherever GRID has run before."
     exit 2
 fi
@@ -233,8 +233,8 @@ run_old() {
 
 run_new() {
     local step="$1"
-    echo "$(date -Is): NEW  pipeline run --source $SOURCE --step $step --years $YEAR $YEAR"
-    "$PYTHON_BIN" run.py pipeline run --config "$TEST_CONFIG" --source "$SOURCE" \
+    echo "$(date -Is): NEW  data run --source $SOURCE --step $step --years $YEAR $YEAR"
+    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source "$SOURCE" \
         --step "$step" --years "$YEAR" "$YEAR" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

@@ -5,7 +5,7 @@
 Standalone tool, not pipeline-wired -- see the module docstring in
 src/data/sources/snl_mining/source.py for why FETCH is declared absent for
 this source, and imputation.py's module docstring for why this is a script
-rather than a `pipeline run --step` candidate (a genuinely async, hours-long
+rather than a `data run --step` candidate (a genuinely async, hours-long
 external OpenAI Batch API call; PipelineStep only has FETCH/PREPARE/GRID).
 Mirrors scripts/debug_snl_mining_scraper.py's shape.
 

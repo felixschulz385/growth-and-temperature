@@ -31,7 +31,7 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from zarr.codecs import BloscCodec
 
@@ -43,6 +43,9 @@ from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -107,18 +110,37 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
     def data_path(self) -> str:
         return f"{self.cfg.data_path}/{self.cfg.namespace}"
 
+    def _plan_fetch(self) -> List[StepTarget]:
+        return [
+            StepTarget(
+                source_id=self.ID, step=PipelineStep.FETCH, key="all",
+                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
+            )
+        ]
+
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
-            return [
-                StepTarget(
-                    source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                    output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-                )
-            ]
+            return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
         if step is PipelineStep.GRID:
             return self._plan_grid()
+        raise AssertionError(f"unreachable: {step}")
+
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` (src/data/sources/base.py's
+        `discover()`): FETCH has no crawl to redo (a static, I/O-free
+        target), so only PREPARE/GRID get a real live-crawl counterpart
+        distinct from their ledger-backed `_plan_*`. GADM's targets are
+        singletons with no year/key selection to apply, unlike acag's
+        per-year ones -- `selection` is accepted for interface symmetry with
+        every other source's `_discover()` but unused."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare()
+        if step is PipelineStep.GRID:
+            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -145,6 +167,31 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _plan_prepare(self) -> List[StepTarget]:
+        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
+        today's exact live logic -- if no ledger is configured yet, or
+        `data reconcile --step prepare` hasn't populated one yet."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            raw_file = row.meta.get("raw_file")
+            if raw_file is None or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
+                output_path=row.local_path, inputs=(raw_file,),
+                completion=Completion.MARKER, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_prepare()
+
+    def _discover_prepare(self) -> List[StepTarget]:
         raw_file = self._raw_file_path()
         if not os.path.exists(raw_file):
             index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
@@ -157,9 +204,10 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                 inputs=(raw_file,),
                 # Directory output (variable number of per-level .gpkg files) --
                 # same MARKER policy _execute_grid already uses for its own
-                # directory (zarr) output, so `pipeline plan`/is_complete() can
+                # directory (zarr) output, so `data plan`/is_complete() can
                 # actually see completion instead of always reporting pending.
                 completion=Completion.MARKER,
+                meta={"raw_file": raw_file},
             )
         ]
 
@@ -212,7 +260,49 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
 
     # -- GRID ("spatial") -- tiled rasterization -----------------------------
 
+    def _grid_output_path(self) -> str:
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            "countries_grid.zarr",
+            namespace=self.cfg.namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            v2_family="country_id",
+        )
+
     def _plan_grid(self) -> List[StepTarget]:
+        """Ledger-backed fast path. Unlike acag's per-year GRID target,
+        GADM's `inputs` (the per-ADM-level .gpkg paths) aren't re-derivable
+        from a `local_complete_units()` query -- PREPARE tracks its whole
+        output directory as one ledger unit, not one row per level file --
+        so they're persisted directly in `meta` at discovery time instead
+        (small: at most a handful of ADM levels, well within the "meta is
+        always small" invariant every source's `StepTarget.meta` already
+        follows). Falls back to `_discover_grid()` if the ledger has no
+        GRID row yet."""
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            level_files = row.meta.get("level_files")
+            if not level_files or row.local_path is None:
+                return None
+            return StepTarget(
+                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
+                output_path=row.local_path, inputs=tuple(level_files),
+                completion=Completion.MARKER, meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_grid()
+
+    def _discover_grid(self) -> List[StepTarget]:
         vector_dir = self.output_root(PipelineStep.PREPARE)
         adm0_file = os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg")
         if not os.path.exists(adm0_file):
@@ -226,15 +316,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.GRID, key="gadm",
-                output_path=layout.grid_store_path(
-                    self.ctx.data_root,
-                    self.cfg.data_path,
-                    "countries_grid.zarr",
-                    namespace=self.cfg.namespace,
-                    grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                    v2_family="country_id",
-                ),
+                output_path=self._grid_output_path(),
                 inputs=inputs, completion=Completion.MARKER,
                 # No value_range by default: 0 = "no unit at this level",
                 # else a sequential id -- there's no fixed upper bound
@@ -244,7 +326,10 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                 # block adds one. verify.verification_meta() lets that
                 # config block (orchestration/configs/data.yaml) override
                 # any of these without a code change.
-                meta=verify.verification_meta(self.cfg.raw, expected_vars=gid_cols),
+                meta={
+                    **verify.verification_meta(self.cfg.raw, expected_vars=gid_cols),
+                    "level_files": list(inputs),
+                },
             )
         ]
 

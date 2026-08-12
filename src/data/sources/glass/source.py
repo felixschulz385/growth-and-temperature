@@ -33,7 +33,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import dask.array as da
 import numpy as np
@@ -52,6 +52,9 @@ from src.data.sources.base import DataSource
 from src.data.sources.glass.crawler import _CrawlerMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +193,20 @@ class GlassSource(_CrawlerMixin, DataSource):
             return self._plan_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` (src/data/sources/base.py's
+        `discover()`): FETCH has no crawl to redo (`_plan_fetch` is already a
+        static, I/O-free target). PREPARE has no ledger-backed fast path
+        (`_plan_prepare()`'s docstring) -- it's already exactly this live
+        crawl -- so only GRID gets a real distinct discovery."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare(selection)
+        if step is PipelineStep.GRID:
+            return self._discover_grid(selection)
+        raise AssertionError(f"unreachable: {step}")
+
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
@@ -279,6 +296,25 @@ class GlassSource(_CrawlerMixin, DataSource):
         return self._parse_avhrr_filenames(filenames)
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """No ledger-backed fast path here, unlike PREPARE on every other
+        migrated source (acag/esacci/ntl_harm/eog): a GLASS PREPARE target's
+        `inputs` can be hundreds of daily `.hdf` paths per (year[, grid_cell])
+        group (module docstring), too large to persist in `artifacts.meta`
+        (the same "meta must stay small" reasoning acag/gadm follow) --
+        and `_execute_prepare()` genuinely reads `target.inputs` (unlike
+        GRID's `inputs`, which GRID's own ledger fast path below re-derives
+        live from PREPARE's `local_complete_units()`), so there is no cheap
+        further-upstream ledger query that could stand in for it either.
+        `_discover_prepare()` below -- today's exact live logic -- is simply
+        called directly; GRID is the higher-value ledger fast path for this
+        source."""
+        return self._discover_prepare(selection)
+
+    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """Live ground truth for PREPARE, and PREPARE's only enumeration
+        path (see `_plan_prepare()`'s docstring): queries the ledger's
+        FETCH-crawl catalog (`completed_fetch_files()`, not
+        `artifacts`-for-PREPARE) and groups by (year[, grid_cell])."""
         from src.data.common.ledger.paths import ledger_path
         from src.data.common.ledger.store import SourceLedger
 
@@ -287,7 +323,7 @@ class GlassSource(_CrawlerMixin, DataSource):
             logger.warning("Ledger not found: %s", local_ledger_path)
             return []
 
-        with SourceLedger.open(local_ledger_path, data_path=self.data_path, read_only=True) as ledger:
+        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
             relative_paths = ledger.completed_fetch_files()
         if not relative_paths:
             return []
@@ -539,7 +575,11 @@ class GlassSource(_CrawlerMixin, DataSource):
                         continue
         return files
 
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        """Live ground truth for GRID: crawls the PREPARE output directory
+        for annual (year[, grid_cell]) zarrs. Called from `discover()` (via
+        `data reconcile`) and as `_plan_grid()`'s fallback when the
+        ledger has no GRID row yet."""
         annual_files = [f for f in self._get_all_annual_files() if selection.matches_year(f["year"])]
         if not annual_files:
             return []
@@ -605,6 +645,73 @@ class GlassSource(_CrawlerMixin, DataSource):
                 },
             )
         ]
+
+    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        """Ledger-backed fast path: the single GRID target's `inputs` (and
+        its `years_available`/`missing_years`/`grid_cells` meta, for MODIS)
+        are re-derived live from PREPARE's `local_complete_units()` (a cheap
+        indexed ledger query) rather than persisted -- persisting a
+        filename-derived snapshot would go stale the moment a new PREPARE
+        (year[, grid_cell]) lands without a matching GRID reconcile.
+        PREPARE's own keys are `f"{year}/{grid_cell}"` for MODIS or plain
+        `str(year)` for AVHRR (`_plan_prepare`/`_discover_prepare` above),
+        so parsing `unit_id.partition("/")` recovers year (and, for MODIS,
+        grid_cell) without re-deriving anything from disk. Falls back to
+        `_discover_grid()` if the ledger has no GRID row yet."""
+
+        years_requested = (
+            list(range(selection.year_range[0], selection.year_range[1] + 1)) if selection.year_range else None
+        )
+
+        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
+            if row.local_path is None:
+                return None
+            parsed: List[Tuple[int, str, str]] = []
+            for uid, path in ledger.local_complete_units("prepare"):
+                year_str, _, cell = uid.partition("/")
+                if not year_str.isdigit():
+                    continue
+                year = int(year_str)
+                if not selection.matches_year(year):
+                    continue
+                parsed.append((year, cell or "global", path))
+            if not parsed:
+                return None
+
+            years_available = sorted({year for year, _, _ in parsed})
+            missing = sorted(set(years_requested or []) - set(years_available))
+            meta: Dict[str, Any] = {
+                "years_available": years_available,
+                "missing_years": missing,
+                **verify.verification_meta(
+                    self.cfg.raw,
+                    expected_vars=self._STAT_VARS,
+                    value_range=self._LST_VALUE_RANGE,
+                    range_vars=self._RANGE_VARS,
+                ),
+            }
+            if self.data_source_kind == "MODIS":
+                meta["grid_cells"] = sorted({cell for _, cell, _ in parsed})
+
+            return StepTarget(
+                source_id=self.cfg.source_id,
+                step=PipelineStep.GRID,
+                key=row.unit_id,
+                output_path=row.local_path,
+                inputs=tuple(path for _, _, path in parsed),
+                completion=Completion.MARKER,
+                meta=meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.cfg.source_id, self.cfg.source_id,
+        )
+        return self._discover_grid(selection)
 
     def _execute_grid(self, target: StepTarget) -> bool:
         """Ported verbatim from GlassPreprocessor._process_spatial_target and

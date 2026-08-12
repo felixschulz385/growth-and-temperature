@@ -14,14 +14,14 @@ never read by any of the code below (§5).
   once per crawled entrypoint, `update_file_statuses_batch` once per ~50-file
   download batch) — not incremental, the core "not fast" problem.
 - **Two duplicate HPC-push implementations**: FETCH's inline tar/rsync/
-  extract/verify (`async_downloader.py`) and the separate `pipeline
+  extract/verify (`async_downloader.py`) and the separate `data
   transfer` path (`hpc/transfer.py`) — two manifest formats for one
   operation.
 - **`is_complete()` is 100% local-disk** (`src/data/sources/steps.py`) — no
   concept of "complete locally, not yet verified on HPC." `_check_requires`
-  (`src/cli/pipeline/handlers.py`) inherits the same blind spot.
+  (`src/cli/data/handlers.py`) inherits the same blind spot.
 - **No local cleanup after PREPARE/GRID transfer** — only FETCH's own push
-  cleans up; `pipeline transfer` never deletes the local artifact it just
+  cleans up; `data transfer` never deletes the local artifact it just
   pushed.
 - **No SLURM job dependency chaining** — sequencing fetch→prepare→grid and
   cross-source `REQUIRES` edges is pure human responsibility.
@@ -37,7 +37,7 @@ Replaces `common/index/unified_index.py`, `common/fetch/async_downloader.py`,
   the local/remote transfer state of every artifact any step produces
   (`artifacts` table — "what state is each unit in, here and on HPC").
 - **`common/hpc/push.py`** (`HPCPusher`) — one push-to-HPC primitive used by
-  both FETCH (many-small-files, tar-batched) and `pipeline transfer`
+  both FETCH (many-small-files, tar-batched) and `data transfer`
   (few-large-artifacts, one tar or direct rsync per unit), built entirely on
   the existing, unchanged `HPCClient`.
 - **`common/fetch/driver.py`** (`run_fetch`) — the new FETCH driver.
@@ -72,13 +72,13 @@ constraint, unchanged) — confirmed by `orchestration/slurm/jobs.yaml`'s own
 header comment. SLURM dependency chaining (`orchestration/slurm/
 submit_chain.py`, `--dependency=afterok` derived from `REQUIRES` + step
 order) therefore starts at PREPARE, not FETCH: an operator runs FETCH
-manually/on an egress-capable host, confirms via `pipeline summary`, then
+manually/on an egress-capable host, confirms via `data summary`, then
 runs `submit_chain.py` to start the PREPARE→GRID chain on SLURM.
 
 ## 5. No migration of old data
 
 The new ledger is bootstrapped by scanning real on-disk/HPC filesystem state
-(`pipeline reconcile`, `common/ledger/bootstrap.py`) as ground truth, not by
+(`data reconcile`, `common/ledger/bootstrap.py`) as ground truth, not by
 converting old `parquet_*.parquet`/`transfer_*.parquet`/`entrypoints_*.json`
 files — those are left for an operator to delete once bootstrap has run.
 
@@ -86,7 +86,7 @@ files — those are left for an operator to delete once bootstrap has run.
 
 1. Ledger foundation (`common/ledger/{schema,store,catalog}.py`) — testable
    in isolation against a temp `.duckdb` + a fake `RemoteFileCatalog`.
-2. Bootstrap (`bootstrap.py` + `pipeline reconcile`).
+2. Bootstrap (`bootstrap.py` + `data reconcile`).
 3. Unified push primitive (`hpc/push.py`) — standalone against `HPCClient`.
 4. Rewire FETCH (`fetch/driver.py`; swap all `_execute_fetch`/`_plan_prepare`
    call sites); delete `common/index/unified_index.py` +
@@ -119,11 +119,11 @@ directly in the ledger's generic `artifacts` table
 already use, just written to directly instead of seeded from a crawl catalog.
 This gives partial/resumable FETCH runs: a tile-year that fails (e.g. a
 transient STAC error) is left `failed` rather than silently retried forever,
-and the next `pipeline run --source modis --step fetch` call picks up
+and the next `data run --source modis --step fetch` call picks up
 whatever isn't yet complete on disk, same as before -- now with per-unit
 state visible via the ledger rather than only inferrable from the filesystem.
 
-`handle_index`/`pipeline reconcile`'s FETCH branch both now check
+`handle_index`/`data reconcile`'s FETCH branch both now check
 `isinstance(source, RemoteFileCatalog)` before assuming a crawl catalog
 exists, rather than switching purely on the step name -- MODIS's FETCH
 reconciles via the same `reconcile_step()` PREPARE/GRID use (enumerate

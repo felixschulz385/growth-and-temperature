@@ -80,6 +80,49 @@ def is_complete(target: "StepTarget", ledger: "SourceLedger | None" = None) -> b
     return ledger.remote_state(target.step.value, target.key) == RemoteState.VERIFIED
 
 
+def local_completion_state(target: "StepTarget") -> str:
+    """The local-disk truth for *target*, as an `artifacts.local_state`
+    value -- the same stat `is_complete()` performs locally, just returned
+    as the ledger's own vocabulary instead of a bool. Not folded into
+    `is_complete()` (which stays local-only-unless-`require_remote`,
+    signature/behavior unchanged) because `local_drift()`'s self-heal caller
+    (`src/cli/data/handlers.py`) needs this exact value to write back
+    into the ledger when it disagrees, not just a yes/no."""
+    from src.data.common.ledger.schema import LocalState
+
+    if target.completion is Completion.PATH_EXISTS:
+        disk_complete = os.path.exists(target.output_path)
+    elif target.completion is Completion.MARKER:
+        disk_complete = os.path.exists(marker_path(target.output_path))
+    else:
+        disk_complete = False
+    return LocalState.COMPLETE if disk_complete else LocalState.MISSING
+
+
+def local_drift(target: "StepTarget", ledger: "SourceLedger") -> bool:
+    """True if the ledger's belief about *target* disagrees with a cheap,
+    no-network on-disk check -- the trigger for automatic ledger self-heal
+    (as opposed to a manual `data reconcile`). Reuses the exact stat
+    `is_complete()` already performs locally (no new I/O), just compares it
+    against `ledger.local_state(...)` instead of returning it directly.
+
+    Deliberately one-directional in what it can catch: a file present on
+    disk with *no* ledger row at all looks identical to "ledger says
+    missing, disk agrees" from here, since there is no row to disagree
+    with -- that unknown-unknown is only caught by an explicit reconcile,
+    which crawls/discovers rather than reading existing rows. Not a bug;
+    stated in docs/design/10-fetch-ledger.md's successor as an accepted gap.
+    """
+    if target.completion is Completion.NEVER:
+        return False
+
+    from src.data.common.ledger.schema import LocalState
+
+    disk_state = local_completion_state(target)
+    ledger_state = ledger.local_state(target.step.value, target.key)
+    return disk_state != (ledger_state or LocalState.MISSING)
+
+
 def marker_path(output_path: str) -> str:
     """Sibling marker file path for a MARKER-completion directory output."""
     return output_path.rstrip(os.sep) + ".complete"
@@ -177,5 +220,5 @@ class MissingPrerequisiteError(RuntimeError):
             f"Source '{source_id}' requires source '{requires_id}' step "
             f"'{requires_step.value}' to be complete first. Expected output not "
             f"found at: {expected_path}. Run: "
-            f"run.py pipeline run --source {requires_id} --step {requires_step.value}"
+            f"run.py data run --source {requires_id} --step {requires_step.value}"
         )

@@ -9,7 +9,7 @@ into the MODIS sinusoidal grid's CRS and tests each of the 36x18 `hXXvYY`
 tiles for overlap (`src.data.sources.modis.tiles.compute_land_tiles`).
 
 Input: the `osm` source's PREPARE output, `land_polygons_simplified.gpkg`
-(run `python run.py pipeline run --source osm --step prepare` first if it
+(run `python run.py data run --source osm --step prepare` first if it
 doesn't exist yet). GADM's `gadm_levelADM_0_simplified.gpkg` works too --
 any polygon layer distinguishing land from ocean is fine.
 

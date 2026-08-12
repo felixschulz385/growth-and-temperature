@@ -1,4 +1,4 @@
-"""``pipeline summary``'s "verified" column -- GRID-output verification
+"""``data summary``'s "verified" column -- GRID-output verification
 status (src.data.sources.verify), replacing the old completion-only
 "complete" column. "-" when the source has no GRID step or GRID has no
 targets; "pending" when GRID has targets but none are complete yet; "yes"/
@@ -9,7 +9,7 @@ import os
 
 import pytest
 
-from src.cli.pipeline import handlers
+from src.cli.data import handlers
 from src.data.sources.steps import Completion, PipelineStep, StepTarget
 
 

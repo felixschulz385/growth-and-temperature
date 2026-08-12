@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 # Single source of truth for the default Dask dashboard port -- was
 # independently hardcoded as the literal 8787 in six other places
 # (src/data/pipeline/context.py, src/data/assemble/constants.py,
-# src/cli/pipeline/commands.py, src/cli/assemble/{commands,handlers}.py)
+# src/cli/data/commands.py, src/cli/assemble/{commands,handlers}.py)
 # before being consolidated here.
 DEFAULT_DASHBOARD_PORT = 8787
 

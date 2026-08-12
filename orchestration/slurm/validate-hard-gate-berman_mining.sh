@@ -138,7 +138,7 @@ if [ -f "$PROD_GEOBOX" ]; then
     echo "$(date -Is): seeded cropped target geobox cache from production"
 else
     echo "$(date -Is): ERROR -- no cached target geobox at $PROD_GEOBOX"
-    echo "  Run 'pipeline run --source eog_viirs --step grid' once for real first,"
+    echo "  Run 'data run --source eog_viirs --step grid' once for real first,"
     echo "  or copy a viirs_geobox.pkl from wherever GRID has run before."
     exit 2
 fi
@@ -170,8 +170,8 @@ run_old() {
 
 run_new() {
     local step="$1"
-    echo "$(date -Is): NEW  pipeline run --source berman_mining --step $step"
-    "$PYTHON_BIN" run.py pipeline run --config "$TEST_CONFIG" --source berman_mining \
+    echo "$(date -Is): NEW  data run --source berman_mining --step $step"
+    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source berman_mining \
         --step "$step" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -183,7 +183,7 @@ run_new() {
 # deliberately suspended for this one call since a nonzero exit is success.)
 echo "$(date -Is): confirming NEW correctly rejects the undeclared PREPARE step for this source"
 set +e
-"$PYTHON_BIN" run.py pipeline run --config "$TEST_CONFIG" --source berman_mining --step prepare 2>&1 | tail -5
+"$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source berman_mining --step prepare 2>&1 | tail -5
 PREPARE_REJECTED=$?
 set -e
 if [ $PREPARE_REJECTED -eq 0 ]; then

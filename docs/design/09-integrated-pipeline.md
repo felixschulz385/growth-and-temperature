@@ -324,7 +324,7 @@ the coupling becomes documented and test-enforced (§12).
 ### The registry
 
 Extends the download side's already-good lazy-import pattern to cover metadata available *without*
-importing (so `pipeline list` and the SLURM generator can validate `(source, step)` pairs without pulling
+importing (so `data list` and the SLURM generator can validate `(source, step)` pairs without pulling
 Selenium/pystac/duckdb into the process):
 
 ```python
@@ -435,19 +435,19 @@ decision is revisitable without a redesign (§14).
 All three keep `data_path: misc` plus a `namespace` equal to today's subfolder, so every output path is
 byte-identical and no downstream consumer changes. The one real migration: the parquet index filename is
 derived from `data_path` today (shared by all four origins under one `MiscDataSource`), and must become
-per-`source_id`. Handled by a new `pipeline index --adopt-local`, which registers already-present local raw
+per-`source_id`. Handled by a new `data index --adopt-local`, which registers already-present local raw
 files as `completed` without re-fetching.
 
 ## 8. Unified workflow and CLI
 
-**One CLI domain, `pipeline`, replaces `download` and `preprocess run`/`preprocess transfer`:**
+**One CLI domain, `data`, replaces `download` and `preprocess run`/`preprocess transfer`:**
 
 ```
-run.py pipeline list                                          # sources, aliases, steps, requires
-run.py pipeline plan     --config C --source S --step STEP [--years A B] [--key K ...]
-run.py pipeline index    --config C --source S [--rebuild] [--adopt-local]
-run.py pipeline run      --config C --source S --step STEP [--years A B] [--key K ...] [--override]
-run.py pipeline transfer --config C --source S --step STEP [--direction push]
+run.py data list                                              # sources, aliases, steps, requires
+run.py data plan         --config C --source S --step STEP [--years A B] [--key K ...]
+run.py data index        --config C --source S [--rebuild] [--adopt-local]
+run.py data run          --config C --source S --step STEP [--years A B] [--key K ...] [--override]
+run.py data transfer     --config C --source S --step STEP [--direction push]
 ```
 
 - **`index` stays a first-class verb**, not a flag on `--step fetch`: it is an idempotent catalog operation
@@ -507,9 +507,9 @@ are deleted while this hook is touched anyway.
 
 ### `orchestration/slurm/generate_slurm_scripts.py`
 
-- Emits `run.py pipeline run --source X --step Y`; drops `--subsource`/`--admin-level`.
+- Emits `run.py data run --source X --step Y`; drops `--subsource`/`--admin-level`.
 - `host: egress` emits a plain shell script into `orchestration/scripts/` (optionally followed by
-  `pipeline transfer --step <transfer_after>`) instead of an `#SBATCH` script — **folding
+  `data transfer --step <transfer_after>`) instead of an `#SBATCH` script — **folding
   `orchestration/scripts/modis-ingest-annual.sh` into the generator.** Its reason for living outside the
   generator was "not a SLURM job"; that becomes a declared property (`host: egress`) rather than a directory
   convention, so **MODIS's `prepare` step is vocabulary-identical to every other source's `prepare` after
@@ -546,7 +546,7 @@ reading diffs.
 | 4 | Migrate `acag` (pattern-setter). Gate: plan snapshot matches oracle; one year run under both codepaths produces identical Zarr. | Additive |
 | 5 | Migrate `esacci`, `ntl_harm`, `eog`×3, `glass` (ascending risk); GLASS's compositing fix as a separate labelled follow-on commit. | Additive |
 | 6 | Migrate `modis`, including the transfer-manifest rename. | Additive |
-| 7 | The `misc` split (`osm`, `gadm`, `country_classifications`), then `plad`, `berman_mining`, `snl_mining`; one-time index re-registration via `pipeline index --adopt-local`. | Additive code; one-time index re-registration |
+| 7 | The `misc` split (`osm`, `gadm`, `country_classifications`), then `plad`, `berman_mining`, `snl_mining`; one-time index re-registration via `data index --adopt-local`. | Additive code; one-time index re-registration |
 | 8 | Orchestration + config changes; regenerate all SLURM scripts; `git rm` the old ones. | In place |
 | 9 | **Hard validation gate**: one target per archetype (bulk-composite, streaming, vector, tabular-join, point) diffed old-code-vs-new-code output; full test suite green; generator `--check` clean. **Nothing in step 10 starts before this passes.** | — |
 | 10 | Cutover: delete `src/data/download/`, `src/data/preprocess/`, the shims, `src/cli/download/`, `src/cli/preprocess/`; fold in `geobox_patch.py` (1,607 dead lines), dead `demean`/`gcs` wiring. | In place |
@@ -557,7 +557,7 @@ decision, not executed — see §14); step 10's cutover is done. Step 11 (`layou
 additive and opt-in — was never on the critical path, but is no longer outstanding either.
 
 **Overlap strategy**: rather than a runtime flag, the switch is *which CLI verb you invoke* —
-`preprocess run --source acag` and `pipeline run --source acag --step prepare` coexist for as long as both
+`preprocess run --source acag` and `data run --source acag --step prepare` coexist for as long as both
 modules exist, writing the same paths. Commit granularity: one commit per source package, each
 self-contained and independently revertable.
 
@@ -601,7 +601,7 @@ project); no full-panel end-to-end run in tests (that is the step-9 operational 
 
 ## 13. Verification
 
-1. **Per-source migration gate**: `pipeline plan --source X --step Y` diffed against the step-0
+1. **Per-source migration gate**: `data plan --source X --step Y` diffed against the step-0
    characterization snapshot; one real target run through both old and new code, output diffed with a new
    `scripts/compare_step_output.py` (exact dims/dtypes/attrs, `assert_allclose` on values).
 2. **Full test suite** green at every commit checkpoint.
@@ -610,8 +610,8 @@ project); no full-panel end-to-end run in tests (that is the step-9 operational 
    redesign (§1).
 4. **End-to-end validation gate before cutover**: one target per archetype, full `fetch→prepare→grid` run
    under the new code, compared byte-for-byte-equivalent to the existing on-disk artefact from the old code.
-5. **CLI smoke test**: `run.py pipeline list` enumerates all sources with correct steps/requires;
-   `run.py pipeline run --source acag` with no `--step` errors clearly rather than silently defaulting.
+5. **CLI smoke test**: `run.py data list` enumerates all sources with correct steps/requires;
+   `run.py data run --source acag` with no `--step` errors clearly rather than silently defaulting.
 
 ## 14. Open items
 
@@ -647,7 +647,7 @@ project); no full-panel end-to-end run in tests (that is the step-9 operational 
     `orchestration/slurm/jobs.yaml`) are all removed. The dead `assemble demean` CLI+config wiring (§12) is
     removed from `src/cli/assemble/{commands,handlers}.py`, `src/cli/main.py`, and `run.py`. Post-cutover:
     full test suite still green (same pre-existing, unrelated `test_summary_qos.py` failure), generator
-    `--check` still clean, `run.py pipeline list`/`--help`/`assemble --help` smoke-tested clean. The
+    `--check` still clean, `run.py data list`/`--help`/`assemble --help` smoke-tested clean. The
     `validate-hard-gate-*.sh` pilot scripts are kept as-is (audit trail of how the gate was verified) even
     though their OLD-side invocations can no longer run post-cutover.
 - The per-*variable* (not per-source) resampling override [`04-ingest.md`](04-ingest.md) §1 flags as

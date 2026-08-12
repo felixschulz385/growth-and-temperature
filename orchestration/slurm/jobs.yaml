@@ -1,7 +1,7 @@
 # Parameter table for orchestration/slurm/generate_slurm_scripts.py.
 #
 # docs/design/09-integrated-pipeline.md §9: `stage`/`subsource` are retired
-# in favour of `step` (fetch|prepare|grid, matching the new `pipeline run`
+# in favour of `step` (fetch|prepare|grid, matching the new `data run`
 # CLI) and per-source ids (the misc split gives osm/gadm/country_classifications
 # their own entries instead of `source: misc, subsource: ...`). `host: egress`
 # (default `slurm`) folds the previously-hand-maintained
@@ -365,7 +365,7 @@ jobs:
   # modis_robustness_11a1 (data.yaml's second MODIS config block, a bounded
   # tile/year subset -- see its own comment there) resolves to ModisSource
   # too but never had its own GRID job. FETCH is unaffected -- it's the same
-  # egress/manual `pipeline run --source modis_robustness_11a1 --step fetch`
+  # egress/manual `data run --source modis_robustness_11a1 --step fetch`
   # path modis-fetch.sh documents, just not SLURM-generated (no source-
   # specific script needed there, unlike GRID). Resources copied from
   # modis-grid as a conservative starting point (not transcribed from a

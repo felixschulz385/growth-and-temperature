@@ -24,7 +24,7 @@ import os
 import re
 import tempfile
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 import aiohttp
 import pandas as pd
@@ -38,6 +38,9 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
+
+if TYPE_CHECKING:
+    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +166,19 @@ class NtlHarmSource(DataSource):
             return self._plan_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
+    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
+        """Ground truth for `data reconcile` (src/data/sources/base.py's
+        `discover()`): FETCH has no crawl to redo (`_plan_fetch` is already a
+        static, I/O-free target), so only PREPARE/GRID get a real live-crawl
+        counterpart distinct from their ledger-backed `_plan_*`."""
+        if step is PipelineStep.FETCH:
+            return self._plan_fetch()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare(selection)
+        if step is PipelineStep.GRID:
+            return self._discover_grid(selection)
+        raise AssertionError(f"unreachable: {step}")
+
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
@@ -213,6 +229,55 @@ class NtlHarmSource(DataSource):
         return year_files[0]
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """Ledger-backed fast path: reads existing `artifacts` rows instead
+        of re-querying `completed_fetch_files()` and rebuilding the
+        year-grouping every call. Falls back to `_discover_prepare()` --
+        today's exact live logic -- if no ledger is configured yet, or
+        `data reconcile --step prepare` hasn't populated one yet.
+
+        Note this fast path does NOT reproduce the insertion-order quirk
+        `_discover_prepare()` preserves (module docstring): `artifacts_for_step`
+        (`DataSource._plan_from_ledger`) orders rows by `unit_id`, i.e. by
+        year, for every source that uses it -- there is no ledger-level
+        concept of "figshare listing order" to replay. That quirk only
+        applies to the live-crawl path (and to `plan()` when it falls back
+        to it), which is exactly what every existing test here exercises
+        (no `data reconcile` has been run against those fixtures).
+        """
+
+        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
+            year = row.meta.get("year")
+            raw_relative_path = row.meta.get("raw_relative_path")
+            if year is None or raw_relative_path is None or row.local_path is None:
+                return None
+            if not selection.matches_year(year):
+                return None
+            return StepTarget(
+                source_id=self.ID,
+                step=PipelineStep.PREPARE,
+                key=row.unit_id,
+                output_path=row.local_path,
+                inputs=(raw_relative_path,),
+                completion=Completion.MARKER,
+                meta=row.meta,
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.PREPARE, selection, build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_prepare(selection)
+
+    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """Live ground truth for PREPARE: queries the ledger's FETCH-crawl
+        catalog (`completed_fetch_files()`, not `artifacts`-for-PREPARE) and
+        groups by year. Called from `discover()` (via `data reconcile`,
+        which writes its result into `artifacts`) and as `_plan_prepare()`'s
+        fallback when that table isn't populated yet."""
         from src.data.common.ledger.paths import ledger_path
         from src.data.common.ledger.store import SourceLedger
 
@@ -221,7 +286,7 @@ class NtlHarmSource(DataSource):
             logger.warning("Ledger not found: %s", local_ledger_path)
             return []
 
-        with SourceLedger.open(local_ledger_path, data_path=self.data_path, read_only=True) as ledger:
+        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
             relative_paths = ledger.completed_fetch_files()
         if not relative_paths:
             return []
@@ -248,7 +313,7 @@ class NtlHarmSource(DataSource):
                     output_path=os.path.join(self.output_root(PipelineStep.PREPARE), f"{year}.zarr"),
                     inputs=(selected,),
                     completion=Completion.MARKER,
-                    meta={"year": year, "total_candidates": len(year_files)},
+                    meta={"year": year, "total_candidates": len(year_files), "raw_relative_path": selected},
                 )
             )
         return targets
@@ -362,7 +427,21 @@ class NtlHarmSource(DataSource):
                     pass
         return results
 
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+    def _grid_output_path(self) -> str:
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            "ntl_harm_timeseries_reprojected.zarr",
+            namespace=self.cfg.namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            v2_family="ntl_harm",
+        )
+
+    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        """Live ground truth for GRID: crawls the PREPARE output directory
+        for annual zarrs. Called from `discover()` (via `data reconcile`)
+        and as `_plan_grid()`'s fallback when the ledger has no GRID row yet."""
         annual_files = [f for f in self._list_annual_zarrs() if selection.matches_year(f["year"])]
         if not annual_files:
             return []
@@ -371,15 +450,7 @@ class NtlHarmSource(DataSource):
                 source_id=self.ID,
                 step=PipelineStep.GRID,
                 key="all",
-                output_path=layout.grid_store_path(
-                    self.ctx.data_root,
-                    self.cfg.data_path,
-                    "ntl_harm_timeseries_reprojected.zarr",
-                    namespace=self.cfg.namespace,
-                    grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                    v2_family="ntl_harm",
-                ),
+                output_path=self._grid_output_path(),
                 inputs=tuple(f["zarr_path"] for f in annual_files),
                 completion=Completion.MARKER,
                 meta={
@@ -390,6 +461,50 @@ class NtlHarmSource(DataSource):
                 },
             )
         ]
+
+    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
+        """Ledger-backed fast path: the single GRID target's `inputs` are
+        re-derived live from PREPARE's `local_complete_units()` (a cheap
+        indexed ledger query) rather than persisted -- persisting a
+        filename-derived-year snapshot would go stale the moment a new
+        PREPARE year lands without a matching GRID reconcile. Falls back to
+        `_discover_grid()` if the ledger has no GRID row yet."""
+
+        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
+            if row.local_path is None:
+                return None
+            annual = [
+                (uid, path)
+                for uid, path in ledger.local_complete_units("prepare")
+                if uid.isdigit() and selection.matches_year(int(uid))
+            ]
+            if not annual:
+                return None
+            years = sorted(int(uid) for uid, _ in annual)
+            return StepTarget(
+                source_id=self.ID,
+                step=PipelineStep.GRID,
+                key=row.unit_id,
+                output_path=row.local_path,
+                inputs=tuple(path for _, path in annual),
+                completion=Completion.MARKER,
+                meta={
+                    "years_available": years,
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=(self.VARIABLE_NAME,), value_range=(0, 2000)
+                    ),
+                },
+            )
+
+        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
+        if targets is not None:
+            return targets
+        logger.warning(
+            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step grid` for faster planning.",
+            self.ID, self.ID,
+        )
+        return self._discover_grid(selection)
 
     def _execute_grid(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
