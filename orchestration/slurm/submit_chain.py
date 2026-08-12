@@ -85,7 +85,7 @@ def build_chain(source_id: str, jobs: list[dict], *, from_step: str | None = Non
                 continue
             if job["name"] in seen:
                 continue
-            for requires_id, _requires_step in spec.requires:
+            for requires_id, _requires_step in spec.requires_for(step):
                 add_source_chain(requires_id, None)
             chain.append(job)
             seen.add(job["name"])
@@ -96,12 +96,11 @@ def build_chain(source_id: str, jobs: list[dict], *, from_step: str | None = Non
 
 def _job_dependencies(job: dict, chain: list[dict], job_ids: dict[str, str]) -> list[str]:
     """SLURM job ids *job* must wait on: the immediately preceding SLURM job
-    for the same source in this chain (PREPARE -> GRID), plus -- only for
-    the source's *own first* job in this chain -- every `REQUIRES`
-    prerequisite's job already submitted this run (later steps of the same
-    source already inherit that dependency transitively through the
-    intra-source PREPARE -> GRID edge, so repeating it on every step would
-    just be redundant `--dependency` entries on an already-finished job).
+    for the same source in this chain (PREPARE -> GRID) plus every
+    `REQUIRES` prerequisite job scoped to *job*'s own step specifically
+    (`requires_for()`) -- REQUIRES is per-step, not source-level, so a later
+    step's own prerequisite (e.g. snl_mining's GRID needing gadm's GRID) is
+    no longer assumed to be already covered by an earlier step's edge.
     Also applies any explicit `depends_on:` escape-hatch names from
     jobs.yaml, unconditionally.
     """
@@ -110,11 +109,12 @@ def _job_dependencies(job: dict, chain: list[dict], job_ids: dict[str, str]) -> 
     prior_same_source = [j for j in chain[: chain.index(job)] if j["source"] == job["source"]]
     if prior_same_source and prior_same_source[-1]["name"] in job_ids:
         deps.append(job_ids[prior_same_source[-1]["name"]])
-    else:
-        for requires_id, requires_step in registry.resolve(job["source"]).requires:
-            requires_job_name = f"{requires_id}-{requires_step.value}"
-            if requires_job_name in job_ids and job_ids[requires_job_name] not in deps:
-                deps.append(job_ids[requires_job_name])
+
+    job_step = PipelineStep(job["step"])
+    for requires_id, requires_step in registry.resolve(job["source"]).requires_for(job_step):
+        requires_job_name = f"{requires_id}-{requires_step.value}"
+        if requires_job_name in job_ids and job_ids[requires_job_name] not in deps:
+            deps.append(job_ids[requires_job_name])
 
     for dep_name in job.get("depends_on", []):
         if dep_name in job_ids and job_ids[dep_name] not in deps:

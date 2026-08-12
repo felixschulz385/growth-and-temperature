@@ -31,7 +31,8 @@ used for GLASS's `path_prefix`.
 `REQUIRES` on gadm's **GRID** (not PREPARE) -- changed from PREPARE now that
 rasterization (and the polygon geometries it needed) is gone; only the
 integer-id mapping sidecar (`GID_N_code_mapping.json`, produced by gadm's
-GRID step) is still needed.
+GRID step) is still needed. Scoped to this source's own GRID step (only
+`_plan_grid()` touches gadm), so FETCH runs unblocked before gadm exists.
 """
 
 from __future__ import annotations
@@ -64,7 +65,7 @@ class PlaDSource(DataSource):
     ID = "plad"
     ALIASES = ("harvard_plad", "harvard")
     STEPS = (PipelineStep.FETCH, PipelineStep.GRID)
-    REQUIRES = (("gadm", PipelineStep.GRID),)
+    REQUIRES = ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
 
     DATA_SOURCE_NAME = "harvard"
     has_entrypoints = False

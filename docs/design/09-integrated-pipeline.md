@@ -118,8 +118,17 @@ GADM `.gpkg` files; `berman_mining`/`plad`/`snl_mining` all read the geobox cach
 `misc/processed/stage_1/misc`. These become a declared class attribute:
 
 ```python
-REQUIRES: tuple[tuple[str, PipelineStep], ...] = (("gadm", PipelineStep.GRID),)
+REQUIRES: tuple[tuple[PipelineStep, str, PipelineStep], ...] = ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
 ```
+
+Each entry is `(my_step, prereq_source_id, prereq_step)`: it gates only *my_step* of the declaring source, not
+every step. Scoping per-step (rather than blocking the whole source uniformly, which was this design's original
+shape) matters in practice: ecoregions' `REQUIRES` on gadm exists only for its GRID step's `gadm_gid3_dominant`
+overlay target, so `data run --source ecoregions --step fetch` must not be blocked on gadm just because
+ecoregions' *own later step* needs it. `SourceSpec.requires_for(step)` (`src/data/sources/registry.py`) is the
+one place that narrows `REQUIRES` down to the entries relevant to a given step; both `_check_requires()`
+(`src/cli/data/handlers.py`) and `orchestration/slurm/submit_chain.py`'s dependency-chaining call through it
+rather than re-deriving the filter themselves.
 
 The runner resolves each requirement through `layout.output_root()` before planning targets, failing with
 `MissingPrerequisiteError` naming the exact missing artefact and the command that produces it. This is the
@@ -257,7 +266,7 @@ class DataSource(abc.ABC):
     ID: ClassVar[str]
     ALIASES: ClassVar[tuple[str, ...]] = ()
     STEPS: ClassVar[tuple[PipelineStep, ...]]
-    REQUIRES: ClassVar[tuple[tuple[str, PipelineStep], ...]] = ()
+    REQUIRES: ClassVar[tuple[tuple[PipelineStep, str, PipelineStep], ...]] = ()
 
     def __init__(self, ctx: "PipelineContext", cfg: "SourceConfig"): ...
 

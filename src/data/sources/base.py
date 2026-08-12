@@ -72,7 +72,12 @@ class DataSource(abc.ABC):
     ID: ClassVar[str]
     ALIASES: ClassVar[tuple[str, ...]] = ()
     STEPS: ClassVar[tuple[PipelineStep, ...]]
-    REQUIRES: ClassVar[tuple[tuple[str, PipelineStep], ...]] = ()
+    #: Each entry is `(my_step, prereq_source_id, prereq_step)`: running
+    #: *my_step* of this source requires *prereq_step* of *prereq_source_id*
+    #: to be complete first. Scoped per-step (not source-wide) so e.g.
+    #: ecoregions' FETCH isn't gated on gadm just because ecoregions' GRID
+    #: needs it (docs/design/09-integrated-pipeline.md §2).
+    REQUIRES: ClassVar[tuple[tuple[PipelineStep, str, PipelineStep], ...]] = ()
 
     def __init__(self, ctx: "PipelineContext", cfg: "SourceConfig"):
         self.ctx = ctx

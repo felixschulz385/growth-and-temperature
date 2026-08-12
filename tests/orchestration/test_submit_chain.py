@@ -29,7 +29,9 @@ def test_acag_chain_is_prepare_then_grid():
 
 def test_plad_chain_includes_gadm_prepare_prerequisite_first():
     # plad has no PREPARE step of its own (STEPS = FETCH, GRID) -- REQUIRES
-    # is on gadm:prepare, so only plad-grid is plad's own job.
+    # is on gadm:grid (scoped to plad's own GRID step), so only plad-grid is
+    # plad's own job. gadm's full chain (prepare then grid) is still pulled
+    # in first since that's gadm's own earliest-SLURM-step chain.
     chain = sc.build_chain("plad", _jobs())
     assert [j["name"] for j in chain] == ["gadm-prepare", "gadm-grid", "plad-grid"]
 
@@ -46,9 +48,17 @@ def test_snl_mining_chain_includes_gadm_prepare_prerequisite():
 
 
 def test_country_classifications_chain_includes_gadm_grid_prerequisite():
+    # REQUIRES is scoped to country_classifications' own GRID step (not
+    # PREPARE), so gadm's chain is only pulled in once the chain-builder
+    # reaches country_classifications-grid -- its own PREPARE, needing
+    # nothing from gadm, is free to come first. Still a valid submission
+    # order: gadm-grid lands before country_classifications-grid, which is
+    # the only ordering constraint that actually matters
+    # (`_job_dependencies` resolves the `--dependency=afterok` id from
+    # whatever's already in `job_ids` at that point in the loop).
     chain = sc.build_chain("country_classifications", _jobs())
     assert [j["name"] for j in chain] == [
-        "gadm-prepare", "gadm-grid", "country_classifications-prepare", "country_classifications-grid",
+        "country_classifications-prepare", "gadm-prepare", "gadm-grid", "country_classifications-grid",
     ]
 
 
@@ -70,7 +80,7 @@ def test_gadm_chain_has_no_self_requires_duplication():
     assert [j["name"] for j in chain] == ["gadm-prepare", "gadm-grid"]
 
 
-def test_job_dependencies_only_on_source_own_first_job():
+def test_job_dependencies_scoped_to_each_job_own_step():
     jobs = _jobs()
     chain = sc.build_chain("snl_mining", jobs)
     job_ids = {}
@@ -78,32 +88,32 @@ def test_job_dependencies_only_on_source_own_first_job():
         deps = sc._job_dependencies(job, chain, job_ids)
         job_ids[job["name"]] = f"id-{job['name']}"
 
-    # snl_mining-prepare (its first own job in the chain, index 3: gadm-prepare,
-    # gadm-grid, commodity_prices-prepare, snl_mining-prepare, snl_mining-grid)
-    # carries the cross-source REQUIRES dependency on gadm-prepare (polygon
-    # geometries for the admin-count spatial join), gadm-grid
-    # (GID_N_code_mapping.json, for src/data/sources/snl_mining/source.py's
-    # _export_admin_count_tables), and commodity_prices-prepare
-    # (mine_priceshock_* price table) -- REQUIRES is source-level, not
-    # per-step, so all three apply even though only snl_mining's own GRID
-    # step actually reads gadm-grid's output.
+    # snl_mining-prepare (index 3: gadm-prepare, gadm-grid,
+    # commodity_prices-prepare, snl_mining-prepare, snl_mining-grid) carries
+    # only the REQUIRES entries scoped to its own PREPARE step: gadm-prepare
+    # (polygon geometries for the admin-count spatial join) and
+    # commodity_prices-prepare (mine_priceshock_* price table) -- NOT
+    # gadm-grid, which is scoped to snl_mining's own GRID step instead
+    # (REQUIRES is per-step, not source-level).
     known_ids = {
         "gadm-prepare": "id-gadm-prepare", "gadm-grid": "id-gadm-grid",
         "commodity_prices-prepare": "id-commodity_prices-prepare",
     }
     prepare_deps = sc._job_dependencies(chain[3], chain, known_ids)
-    assert prepare_deps == ["id-gadm-prepare", "id-gadm-grid", "id-commodity_prices-prepare"]
+    assert prepare_deps == ["id-gadm-prepare", "id-commodity_prices-prepare"]
 
-    # ...but snl_mining-grid (a later step of the same source) depends only
-    # on snl_mining-prepare, not redundantly on its prerequisites again.
+    # ...and snl_mining-grid (a later step of the same source) depends on the
+    # intra-source PREPARE -> GRID edge *plus* its own REQUIRES entry on
+    # gadm-grid (GID_N_code_mapping.json, for
+    # src/data/sources/snl_mining/source.py's _export_admin_count_tables).
     grid_deps = sc._job_dependencies(
         chain[4], chain, {**known_ids, "snl_mining-prepare": "id-snl_mining-prepare"},
     )
-    assert grid_deps == ["id-snl_mining-prepare"]
+    assert grid_deps == ["id-snl_mining-prepare", "id-gadm-grid"]
 
 
 def test_depends_on_escape_hatch_is_additive():
-    job = {"name": "x-grid", "source": "acag", "depends_on": ["some-other-job"]}
+    job = {"name": "x-grid", "source": "acag", "step": "grid", "depends_on": ["some-other-job"]}
     job_ids = {"some-other-job": "id-other"}
     deps = sc._job_dependencies(job, [job], job_ids)
     assert deps == ["id-other"]

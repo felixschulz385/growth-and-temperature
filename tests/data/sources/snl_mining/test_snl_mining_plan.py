@@ -31,15 +31,17 @@ def test_no_fetch_step():
 def test_requires_gadm_prepare_and_grid():
     # PREPARE for GADM's polygon geometries (admin-count spatial join), GRID
     # for GID_N_code_mapping.json (translating admin-count tables into
-    # gadm's integer ids for the join_on merge -- see module docstring).
-    # PREPARE for commodity_prices' normalized (commodity, year) price table,
-    # joined against the user-owned commodity_shares table to build
-    # mine_priceshock_*.
+    # gadm's integer ids for the join_on merge -- see module docstring) --
+    # each scoped to snl_mining's own matching step (PREPARE needs gadm's
+    # PREPARE, GRID needs gadm's GRID). PREPARE also needs commodity_prices'
+    # normalized (commodity, year) price table, joined against the
+    # user-owned commodity_shares table to build mine_priceshock_*.
     from src.data.sources import registry
 
     assert registry.resolve("snl_mining").requires == (
-        ("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID),
-        ("commodity_prices", PipelineStep.PREPARE),
+        (PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),
+        (PipelineStep.PREPARE, "commodity_prices", PipelineStep.PREPARE),
+        (PipelineStep.GRID, "gadm", PipelineStep.GRID),
     )
 
 

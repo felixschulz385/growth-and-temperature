@@ -28,7 +28,7 @@ def _mark_step_complete(ledger_path_, data_path, step):
 def test_check_requires_finds_misc_split_prerequisite_via_its_namespaced_ledger(tmp_path):
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     config = _config()
-    spec = registry.resolve("ecoregions")  # REQUIRES = gadm PREPARE + gadm GRID
+    spec = registry.resolve("ecoregions")  # REQUIRES = gadm PREPARE + gadm GRID, both scoped to GRID
 
     gadm_data_path = "misc/gadm"  # what GadmSource.data_path actually resolves to
     gadm_ledger_path = ledger_path(ctx.local_index_dir, gadm_data_path)
@@ -43,7 +43,7 @@ def test_check_requires_finds_misc_split_prerequisite_via_its_namespaced_ledger(
     # `data transfer`). Before the fix, _check_requires computed
     # ledger_path(..., "misc") -> a file that doesn't exist, silently skipped
     # the ledger check, and raised on the local os.path.exists() fallback.
-    _check_requires(spec, ctx, config)  # must not raise
+    _check_requires(spec, ctx, config, PipelineStep.GRID)  # must not raise
 
 
 def test_check_requires_still_raises_when_prerequisite_truly_incomplete(tmp_path):
@@ -52,8 +52,20 @@ def test_check_requires_still_raises_when_prerequisite_truly_incomplete(tmp_path
     spec = registry.resolve("ecoregions")
 
     try:
-        _check_requires(spec, ctx, config)
+        _check_requires(spec, ctx, config, PipelineStep.GRID)
     except MissingPrerequisiteError as e:
         assert e.requires_id == "gadm"
     else:
         raise AssertionError("expected MissingPrerequisiteError")
+
+
+def test_check_requires_does_not_gate_steps_without_that_requirement(tmp_path):
+    # ecoregions' REQUIRES on gadm is scoped to its own GRID step only (only
+    # _plan_grid()'s gadm_gid3_dominant target touches gadm) -- FETCH/PREPARE
+    # must run unblocked even with no gadm output anywhere.
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    config = _config()
+    spec = registry.resolve("ecoregions")
+
+    _check_requires(spec, ctx, config, PipelineStep.FETCH)  # must not raise
+    _check_requires(spec, ctx, config, PipelineStep.PREPARE)  # must not raise

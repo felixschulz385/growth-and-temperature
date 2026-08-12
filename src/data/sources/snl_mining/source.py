@@ -26,9 +26,12 @@ retried rasterization skip the expensive DuckDB rebuild.
 
 Ports `src/data/preprocess/sources/snl_mining.py::SnlMiningPreprocessor`.
 `REQUIRES` on gadm's PREPARE (reads `misc/processed/stage_1/gadm/
-gadm_levelADM_{1,2}_simplified.gpkg`, the same GADM artefact PLAD depends on)
-**and** gadm's GRID (reads `GID_1`/`GID_2_code_mapping.json`, to translate
-this source's own admin-count tables into gadm's integer ids -- see below).
+gadm_levelADM_{1,2}_simplified.gpkg`, the same GADM artefact PLAD depends on),
+scoped to this source's own PREPARE step (`_execute_prepare()`'s admin-polygon
+join) **and** gadm's GRID (reads `GID_1`/`GID_2_code_mapping.json`, to
+translate this source's own admin-count tables into gadm's integer ids --
+see below), scoped to this source's own GRID step (`_export_admin_count_
+tables()`) -- so PREPARE isn't blocked on gadm's GRID output, and vice versa.
 
 **Admin-polygon mine counts are no longer rasterized.** `mine_count_adm1`/
 `mine_count_adm2` are constant across every pixel of their containing ADM
@@ -47,7 +50,8 @@ local conflict (Berman et al. 2017, "This Mine Is Mine!"). `REQUIRES` on
 `commodity_prices`'s PREPARE output (a small (commodity, year) -> real-price
 lookup table, resolved via `layout.output_root(...)` directly -- not a
 framework-injected path, mirroring how `_default_admin_variables()` resolves
-gadm's own PREPARE output below) plus a user-owned `commodity_shares` table
+gadm's own PREPARE output below), scoped to this source's own PREPARE step
+like gadm's PREPARE entry above, plus a user-owned `commodity_shares` table
 inside the stage-0 `raw_db` DuckDB (contract: `(property_id VARCHAR,
 commodity VARCHAR, share DOUBLE)`, one row per `(property_id, commodity)`,
 static across a mine's active years, `commodity` already normalized via
@@ -132,8 +136,9 @@ class SnlMiningSource(DataSource):
     ID = "snl_mining"
     STEPS = (PipelineStep.PREPARE, PipelineStep.GRID)
     REQUIRES = (
-        ("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID),
-        ("commodity_prices", PipelineStep.PREPARE),
+        (PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),
+        (PipelineStep.PREPARE, "commodity_prices", PipelineStep.PREPARE),
+        (PipelineStep.GRID, "gadm", PipelineStep.GRID),
     )
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):

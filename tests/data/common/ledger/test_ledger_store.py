@@ -246,6 +246,40 @@ def test_merge_from_remote_noop_when_no_remote_copy(ledger, tmp_path):
     assert client.rsync_calls == []
 
 
+class _FakeHPCClientWithRealPull(_FakeHPCClient):
+    """`_FakeHPCClient`, but `rsync_transfer` actually copies a real file to
+    the requested local destination -- needed to exercise `merge_from_remote`
+    against real (pre-migration-schema) ledger bytes, not just recorded calls."""
+
+    def __init__(self, source_file: str):
+        super().__init__()
+        self.remote_exists = True
+        self._source_file = source_file
+
+    def rsync_transfer(self, source_path, target_path, source_is_local, options, show_progress):
+        import shutil
+
+        self.rsync_calls.append((source_path, target_path, source_is_local))
+        shutil.copy(self._source_file, target_path)
+        return True, "ok"
+
+
+def test_merge_from_remote_migrates_pre_meta_column_remote_copy(ledger, tmp_path):
+    # Reproduces a real deployment hazard: this process's local ledger has
+    # already been schema-migrated (the `ledger` fixture opens read-write,
+    # which runs _ensure_schema()), but the HPC-side remote copy hasn't been
+    # write-opened since the `meta` column was added -- `INSERT INTO
+    # artifacts SELECT * FROM remote_ledger.artifacts` used to raise
+    # `duckdb.BinderException` on the column-count mismatch instead of
+    # merging cleanly.
+    remote_file = str(tmp_path / "remote_old_schema.duckdb")
+    _pre_meta_column_ledger(remote_file)
+    client = _FakeHPCClientWithRealPull(remote_file)
+
+    assert ledger.merge_from_remote(client, str(tmp_path / "tmp")) is True
+    assert ledger.local_state("prepare", "2020") == "complete"
+
+
 # --- read-only open against a schema-less ledger file ----------------------
 
 

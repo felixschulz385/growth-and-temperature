@@ -35,11 +35,19 @@ class SourceSpec:
     module: str
     class_name: str
     steps: tuple[PipelineStep, ...]
-    requires: tuple[tuple[str, PipelineStep], ...] = ()
+    #: `(my_step, prereq_source_id, prereq_step)` triples -- see
+    #: `DataSource.REQUIRES`'s docstring (src/data/sources/base.py).
+    requires: tuple[tuple[PipelineStep, str, PipelineStep], ...] = ()
 
     @property
     def all_names(self) -> tuple[str, ...]:
         return (self.id, *self.aliases)
+
+    def requires_for(self, step: PipelineStep) -> tuple[tuple[str, PipelineStep], ...]:
+        """This source's `(prereq_source_id, prereq_step)` requirements that
+        gate *step* specifically, dropping the ones scoped to its other
+        steps."""
+        return tuple((rid, rstep) for my_step, rid, rstep in self.requires if my_step is step)
 
 
 _REGISTRY: dict[str, SourceSpec] = {}
@@ -53,7 +61,7 @@ def register(
     steps: tuple[PipelineStep, ...],
     *,
     aliases: tuple[str, ...] = (),
-    requires: tuple[tuple[str, PipelineStep], ...] = (),
+    requires: tuple[tuple[PipelineStep, str, PipelineStep], ...] = (),
 ) -> None:
     if id in _BY_ID:
         raise ValueError(f"Source id '{id}' is already registered (module={_BY_ID[id].module})")

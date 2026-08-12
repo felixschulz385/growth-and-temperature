@@ -62,11 +62,17 @@ def test_execute_rejects_a_step_outside_steps(spec, tmp_path):
 
 @pytest.mark.parametrize("spec", registry.all_specs(), ids=lambda s: s.id)
 def test_requires_edges_name_a_registered_source(spec):
-    for requires_id, _requires_step in spec.requires:
+    for _my_step, requires_id, _requires_step in spec.requires:
         registry.resolve(requires_id)  # raises ValueError if unknown
 
 
 @pytest.mark.parametrize("spec", registry.all_specs(), ids=lambda s: s.id)
 def test_requires_never_points_at_itself(spec):
-    for requires_id, _requires_step in spec.requires:
+    for _my_step, requires_id, _requires_step in spec.requires:
         assert requires_id != spec.id, f"{spec.id} REQUIRES itself"
+
+
+@pytest.mark.parametrize("spec", registry.all_specs(), ids=lambda s: s.id)
+def test_requires_edges_scoped_to_a_step_this_source_implements(spec):
+    for my_step, _requires_id, _requires_step in spec.requires:
+        assert my_step in spec.steps, f"{spec.id} REQUIRES entry scoped to step '{my_step.value}' it doesn't implement"

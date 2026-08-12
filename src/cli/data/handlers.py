@@ -31,7 +31,7 @@ def handle_list(args: argparse.Namespace) -> None:
         steps = ", ".join(s.value for s in spec.steps)
         aliases = f" (aliases: {', '.join(spec.aliases)})" if spec.aliases else ""
         requires = (
-            "; requires " + ", ".join(f"{rid}:{rstep.value}" for rid, rstep in spec.requires)
+            "; requires " + ", ".join(f"{my_step.value}<-{rid}:{rstep.value}" for my_step, rid, rstep in spec.requires)
             if spec.requires
             else ""
         )
@@ -165,14 +165,18 @@ def handle_summary(args: argparse.Namespace) -> None:
     _print_source_summary(rows)
 
 
-def _check_requires(spec: registry.SourceSpec, ctx, config) -> None:
+def _check_requires(spec: registry.SourceSpec, ctx, config, step: PipelineStep) -> None:
+    """Gates only the `REQUIRES` entries scoped to *step* (`spec.requires_for`)
+    -- e.g. ecoregions' FETCH runs unblocked even though its GRID entry needs
+    gadm, since each `REQUIRES` triple now names which of *this* source's own
+    steps it applies to."""
     import os
 
     from src.data.common.ledger.paths import ledger_path
     from src.data.common.ledger.store import SourceLedger
     from src.data.sources import layout
 
-    for requires_id, requires_step in spec.requires:
+    for requires_id, requires_step in spec.requires_for(step):
         requires_cfg = get_source_config(config, requires_id)
         expected = layout.output_root(
             ctx.data_root,
@@ -221,7 +225,7 @@ def _selection_from_args(args: argparse.Namespace) -> TargetSelection:
     return TargetSelection(year_range=year_range, keys=keys)
 
 
-def _build(args: argparse.Namespace):
+def _build(args: argparse.Namespace, step: PipelineStep):
     config = load_config_with_env_vars(args.config)
     ctx = build_context(config)
     _apply_cli_overrides(ctx, args)
@@ -239,7 +243,7 @@ def _build(args: argparse.Namespace):
     cfg = get_source_config(config, config_id)
     if getattr(args, "temp_dir", None):
         cfg = dataclasses.replace(cfg, temp_dir=args.temp_dir)
-    _check_requires(spec, ctx, config)
+    _check_requires(spec, ctx, config, step)
     source = registry.create(args.source, ctx, cfg)
     return source, config
 
@@ -309,8 +313,8 @@ def _heal_local_drift(source, step: PipelineStep, drifted: list[tuple[str, str]]
 def handle_plan(args: argparse.Namespace) -> None:
     """``data plan`` -- print targets for (source, step) without running them."""
     setup_logging(args.log_level, debug=args.debug)
-    source, _ = _build(args)
     step = PipelineStep(args.step)
+    source, _ = _build(args, step)
     selection = _selection_from_args(args)
 
     targets = source.plan(step, selection)
@@ -344,7 +348,7 @@ def handle_index(args: argparse.Namespace) -> None:
     download/transfer state; see `SourceLedger.reset_crawl_state()`.
     """
     setup_logging(args.log_level, debug=args.debug)
-    source, _ = _build(args)
+    source, _ = _build(args, PipelineStep.FETCH)
     if PipelineStep.FETCH not in source.STEPS:
         raise ValueError(f"Source '{args.source}' does not implement 'fetch'; nothing to index.")
 
@@ -377,10 +381,10 @@ def handle_index(args: argparse.Namespace) -> None:
 def handle_run(args: argparse.Namespace) -> None:
     """``data run`` -- execute a (source, step)'s pending targets."""
     setup_logging(args.log_level, debug=args.debug)
-    source, _ = _build(args)
+    step = PipelineStep(args.step)
+    source, _ = _build(args, step)
     if args.override:
         source.cfg = dataclasses.replace(source.cfg, override=True)
-    step = PipelineStep(args.step)
     selection = _selection_from_args(args)
 
     targets = source.plan(step, selection)
@@ -661,8 +665,8 @@ def handle_transfer(args: argparse.Namespace) -> None:
             "it (docs/design/10-fetch-ledger.md)."
         )
 
-    source, _ = _build(args)
     step = PipelineStep(args.step)
+    source, _ = _build(args, step)
 
     if not source.ctx.ssh_target:
         source.close()

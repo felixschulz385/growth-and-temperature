@@ -750,6 +750,33 @@ class SourceLedger:
             return False
 
         try:
+            # The pulled-down copy may predate a schema change *this*
+            # process's own ledger already has (e.g. `artifacts.meta`,
+            # added after HPC-side ledgers were last write-opened) --
+            # `INSERT INTO artifacts SELECT * FROM remote_ledger.artifacts`
+            # below requires matching column sets, or DuckDB raises
+            # `BinderException: table "excluded" has N columns available
+            # but M columns specified` (confirmed empirically, not
+            # hypothetical -- this is the exact failure a real HPC-side
+            # ledger predating this column hits on its first merge after
+            # the local side has already migrated). Migrating this
+            # disposable temp copy is safe and has no effect on the actual
+            # remote file: it's a private rsync'd copy, deleted in the
+            # `finally` below regardless of outcome; the real remote file
+            # only ever gets overwritten by `push_to_remote()` re-uploading
+            # *this* connection's own (already-migrated) ledger over it.
+            with duckdb.connect(local_tmp) as tmp_con:
+                for statement in schema.ALL_DDL:
+                    tmp_con.execute(statement)
+        except Exception:
+            logger.exception("Error migrating pulled remote ledger schema before merge")
+            try:
+                os.remove(local_tmp)
+            except OSError:
+                pass
+            return False
+
+        try:
             escaped_path = local_tmp.replace("'", "''")
             self._con.execute(f"ATTACH '{escaped_path}' AS remote_ledger (READ_ONLY)")
             try:

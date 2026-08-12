@@ -9,6 +9,8 @@ together deliberately (not a 4-way split) because they're joined into one
 recorded escape hatch to split further later. `REQUIRES` on gadm's GRID
 output is the first real use of that mechanism in this codebase -- it needs
 `GID_0_code_mapping.json` to translate `iso3` into gadm's integer `GID_0` ids.
+Scoped to this source's own GRID step (`_plan_prepare()` never touches gadm),
+so FETCH/PREPARE run unblocked before gadm exists.
 
 **No longer rasterized.** Every classification value (HDI tier, World Bank
 income group) is constant across all of a country's pixels -- it varies only
@@ -64,7 +66,7 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
 
     ID = "country_classifications"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
-    REQUIRES = (("gadm", PipelineStep.GRID),)
+    REQUIRES = ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
 
     DATA_SOURCE_NAME = "country_classifications"
 
@@ -251,7 +253,7 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
         if not os.path.exists(classifications_parquet):
             return []
 
-        # REQUIRES=(("gadm", GRID),) -- resolve gadm's own layout directly
+        # REQUIRES=((GRID, "gadm", GRID),) -- resolve gadm's own layout directly
         # rather than importing gadm's class (docs/design/09-integrated-pipeline.md
         # §2: cross-source coupling is on artefact paths, never a class import).
         # Must mirror GadmSource._plan_grid()'s own grid_store_path() call

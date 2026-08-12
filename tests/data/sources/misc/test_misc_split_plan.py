@@ -136,7 +136,10 @@ def test_country_classifications_grid_requires_gadm_output_via_shared_layout(tmp
 
 def test_country_classifications_requires_gadm_grid():
     spec = registry.resolve("country_classifications")
-    assert spec.requires == (("gadm", PipelineStep.GRID),)
+    assert spec.requires == ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
+    assert spec.requires_for(PipelineStep.FETCH) == ()
+    assert spec.requires_for(PipelineStep.PREPARE) == ()
+    assert spec.requires_for(PipelineStep.GRID) == (("gadm", PipelineStep.GRID),)
 
 
 def test_osm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):

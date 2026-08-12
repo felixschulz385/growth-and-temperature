@@ -92,5 +92,9 @@ def test_plan_grid_adds_gid3_dominant_target_once_gadm_artifacts_exist(tmp_path)
 
 def test_registry_requires_gadm_prepare_and_grid():
     spec = registry.resolve("ecoregions")
-    assert ("gadm", PipelineStep.PREPARE) in spec.requires
-    assert ("gadm", PipelineStep.GRID) in spec.requires
+    # Both scoped to ecoregions' own GRID step -- only _plan_grid()'s
+    # gadm_gid3_dominant target touches gadm.
+    assert (PipelineStep.GRID, "gadm", PipelineStep.PREPARE) in spec.requires
+    assert (PipelineStep.GRID, "gadm", PipelineStep.GRID) in spec.requires
+    assert spec.requires_for(PipelineStep.FETCH) == ()
+    assert spec.requires_for(PipelineStep.PREPARE) == ()

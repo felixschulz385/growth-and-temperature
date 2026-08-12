@@ -24,9 +24,12 @@ only support raster-cell reducers, no polygon overlay). Written as a tiny
 `GID_3`-keyed parquet sidecar for `TileProcessor`'s `join_on` mechanism to
 merge at assembly time, same pattern as `snl_mining`'s admin-count tables and
 `country_classifications`'s `classifications_by_gid0.parquet`. `REQUIRES` on
-gadm's PREPARE (level-3 simplified polygons) and GRID (`GID_3_code_mapping.json`)
--- resolved via `layout.output_root()`/`gadm.gid_mapping_path()` directly,
-never a class import (docs/design/09-integrated-pipeline.md §2).
+gadm's PREPARE (level-3 simplified polygons) and GRID (`GID_3_code_mapping.json`),
+both scoped to this source's own GRID step -- only `_plan_grid()`'s
+`gadm_gid3_dominant` target touches gadm at all, so FETCH/PREPARE run
+unblocked even before gadm exists -- resolved via
+`layout.output_root()`/`gadm.gid_mapping_path()` directly, never a class
+import (docs/design/09-integrated-pipeline.md §2).
 
 FETCH pulls straight from RESOLVE's own ArcGIS REST Feature Service --
 `.../FeatureServer/0/query` -- rather than any static file: the Esri Hub
@@ -133,7 +136,10 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
     ID = "ecoregions"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
-    REQUIRES = (("gadm", PipelineStep.PREPARE), ("gadm", PipelineStep.GRID))
+    REQUIRES = (
+        (PipelineStep.GRID, "gadm", PipelineStep.PREPARE),
+        (PipelineStep.GRID, "gadm", PipelineStep.GRID),
+    )
 
     DATA_SOURCE_NAME = "ecoregions"
 

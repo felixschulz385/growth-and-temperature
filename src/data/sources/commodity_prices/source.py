@@ -4,8 +4,9 @@ A tiny (commodity, year) -> price lookup table, not spatial -- `STEPS =
 (FETCH, PREPARE)` only, mirroring `docs/design/09-integrated-pipeline.md`'s
 recorded escape hatch for splitting `country_classifications`'s HDI/World
 Bank origins into independent `(FETCH, PREPARE)` sources (§7, end). Consumed
-by `snl_mining`'s own PREPARE step via `REQUIRES = (("commodity_prices",
-PipelineStep.PREPARE),)` and a second DuckDB `ATTACH` (see
+by `snl_mining`'s own PREPARE step via a `REQUIRES` entry `(PipelineStep.
+PREPARE, "commodity_prices", PipelineStep.PREPARE)` and a second DuckDB
+`ATTACH` (see
 `src/data/sources/snl_mining/source.py`), resolving this source's output path
 directly through `layout.output_root(...)` rather than any framework-injected
 path -- `REQUIRES` is pure ordering/scheduling metadata in this codebase

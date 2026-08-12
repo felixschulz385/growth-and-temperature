@@ -48,7 +48,8 @@ def test_no_prepare_step():
 def test_requires_gadm_grid_not_prepare():
     # Rasterization (and the GADM polygon geometries it needed) is gone --
     # only gadm's integer-id mapping sidecar (from GRID) is still needed.
-    assert PlaDSource.REQUIRES == (("gadm", PipelineStep.GRID),)
+    # Scoped to plad's own GRID step (its only step besides FETCH).
+    assert PlaDSource.REQUIRES == ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
 
 
 def test_output_root_hardcodes_plad_prefix_ignoring_data_path(tmp_path):

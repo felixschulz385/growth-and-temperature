@@ -87,7 +87,7 @@ def test_handle_plan_and_run_heal_drift_end_to_end(tmp_path):
         years=None, year_range=None, keys=None, override=False,
     )
 
-    def _fake_build(args_):
+    def _fake_build(args_, step_):
         return _FakeSource(ctx, cfg), ctx
 
     orig_build = handlers._build
