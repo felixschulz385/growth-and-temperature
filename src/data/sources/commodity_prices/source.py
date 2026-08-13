@@ -142,7 +142,21 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
 
         def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
             raw_file = row.meta.get("raw_file")
-            if raw_file is None or row.local_path is None:
+            # `raw_file`/`row.local_path` are absolute paths as recorded by
+            # whichever host wrote this row -- `merge_from_remote()` (pulled
+            # by the FETCH driver/`data reconcile`/`data transfer`) merges
+            # ledger rows across hosts by design (so e.g. a push another
+            # machine already verified is visible here), but a PREPARE row
+            # written on a *different* host carries that host's absolute
+            # paths, which don't resolve on this one. `os.path.exists` here
+            # is the same cheap guard `_discover_prepare()` already performs
+            # on `raw_file` -- a foreign path simply won't exist on this
+            # filesystem, so this row gets skipped in favor of the live-
+            # discovery fallback below instead of `_execute_prepare()` later
+            # handing a foreign `local_path` straight to `os.makedirs()`
+            # (confirmed happening in practice: `PermissionError: '/Users'`
+            # on scicore from a Mac-written row).
+            if raw_file is None or row.local_path is None or not os.path.exists(raw_file):
                 return None
             return StepTarget(
                 source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
@@ -151,11 +165,11 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
             )
 
         targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
-        if targets is not None:
+        if targets:
             return targets
         logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
+            "No usable ledger row for source='%s' step='prepare' -- falling back to live discovery; "
+            "run `data reconcile --source %s --step prepare` on this host for faster planning.",
             self.ID, self.ID,
         )
         return self._discover_prepare()
