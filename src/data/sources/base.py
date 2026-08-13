@@ -213,8 +213,20 @@ class DataSource(abc.ABC):
         onto the same relative path under the remote target's base path.
         Sources with a finer per-unit output layout (e.g. MODIS's per-tile-year
         GeoTIFFs) should override this for finer-grained transfer resumability.
+
+        FETCH is special-cased below (not just left to this coarse default):
+        a `RemoteFileCatalog`-backed source's raw FETCH output is many
+        independent per-file artifacts tracked precisely in its own ledger,
+        not one single-directory unit -- generalizing MODIS's own
+        `transfer_units()` override (the one existing finer-grained example)
+        to every other FETCH-capable source, from one place, instead of each
+        of the ~12 non-MODIS sources repeating it. `isinstance(self,
+        RemoteFileCatalog)` mirrors the same runtime check already used at
+        `handle_reconcile` (src/cli/data/handlers.py).
         """
         self._require_step(step)
+        if step is PipelineStep.FETCH and isinstance(self, RemoteFileCatalog):
+            return self._transfer_units_fetch()
         local_path = self.output_root(step)
         if self.ctx.remote_data_root:
             # Relative to the LOCAL data root, not `remote_data_root` -- the
@@ -237,6 +249,50 @@ class DataSource(abc.ABC):
         else:
             remote_path = os.path.basename(os.path.normpath(local_path))
         return [TransferUnit(unit_id=step.value, local_path=local_path, remote_path=remote_path)]
+
+    def _transfer_units_fetch(self) -> list[TransferUnit]:
+        """Ledger-backed FETCH transfer units: one per raw file whose local
+        download is complete (`SourceLedger.fetch_transfer_units()`). `--ledger
+        local` FETCH (the new default, src/data/common/fetch/driver.py) no
+        longer pushes inline, so this is what makes `data transfer --step
+        fetch` push those files, for every `RemoteFileCatalog`-backed source,
+        without each one needing MODIS's own hand-written override.
+
+        `remote_path` uses the same "empty data_root -> path relative to
+        `ctx.data_root`" convention `run_fetch_with_client()` already uses to
+        build `raw_root` for `HPCPusher.push_batched()` -- so a file pushed
+        via this path lands exactly where FETCH's own former inline push
+        (and PREPARE's `_raw_file()` lookups) already expect it.
+
+        Returns `[]` if no ledger is configured/populated yet -- nothing to
+        transfer, not an error (mirrors `_plan_from_ledger()`'s same
+        no-ledger-yet convention just above)."""
+        import posixpath
+
+        from src.data.common.ledger.paths import ledger_path
+        from src.data.common.ledger.store import SourceLedger
+
+        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
+        if not local_ledger_path or not os.path.exists(local_ledger_path):
+            return []
+
+        # `raw_root()` uses `os.path.join` (`ntpath` on Windows) -- normalize
+        # to POSIX before joining `relative_path` onto it, same reasoning as
+        # `transfer_units()`'s own `.replace(os.sep, "/")` above and
+        # `_push_transfer_units()`'s `posixpath`-only comment
+        # (src/cli/data/handlers.py): `remote_path` is always a remote Linux
+        # path regardless of the local OS.
+        raw_root = layout.raw_root("", self.cfg.data_path, namespace=self.cfg.namespace, layout=self.ctx.layout)
+        raw_root = raw_root.replace(os.sep, "/")
+        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
+            rows = ledger.fetch_transfer_units()
+        return [
+            TransferUnit(
+                unit_id=row.unit_id, local_path=row.local_path,
+                remote_path=posixpath.join(raw_root, row.relative_path),
+            )
+            for row in rows
+        ]
 
     def close(self) -> None:
         """Release sessions/dask clients/etc. Default: nothing to release."""
