@@ -251,47 +251,44 @@ class DataSource(abc.ABC):
         return [TransferUnit(unit_id=step.value, local_path=local_path, remote_path=remote_path)]
 
     def _transfer_units_fetch(self) -> list[TransferUnit]:
-        """Ledger-backed FETCH transfer units: one per raw file whose local
-        download is complete (`SourceLedger.fetch_transfer_units()`). `--ledger
-        local` FETCH (the new default, src/data/common/fetch/driver.py) no
-        longer pushes inline, so this is what makes `data transfer --step
-        fetch` push those files, for every `RemoteFileCatalog`-backed source,
-        without each one needing MODIS's own hand-written override.
+        """FETCH transfer units, ledger-free: one per file actually present
+        under this host's local raw root. FETCH no longer writes per-unit
+        ledger rows at all (`src.data.common.fetch.driver.run_fetch`) -- it's
+        purely local-disk now -- so "locally complete" is just "present on
+        disk", read via one cached directory listing
+        (`src.data.common.fetch.manifest.snapshot_local_listing`), the same
+        primitive FETCH itself uses to decide what's still outstanding. This
+        is what makes `data transfer --step fetch` push those files, for
+        every `RemoteFileCatalog`-backed source, without each one needing
+        MODIS's own hand-written override.
 
         `remote_path` uses the same "empty data_root -> path relative to
-        `ctx.data_root`" convention `run_fetch_with_client()` already uses to
-        build `raw_root` for `HPCPusher.push_batched()` -- so a file pushed
-        via this path lands exactly where FETCH's own former inline push
-        (and PREPARE's `_raw_file()` lookups) already expect it.
+        `ctx.data_root`" convention every other step's default below uses --
+        so a file pushed via this path lands exactly where PREPARE's
+        `_raw_file()`-style lookups already expect it.
 
-        Returns `[]` if no ledger is configured/populated yet -- nothing to
-        transfer, not an error (mirrors `_plan_from_ledger()`'s same
-        no-ledger-yet convention just above)."""
+        Bookkeeping sidecars (`_status/...` -- FETCH's own retry/error state,
+        never meant to be pushed) are excluded."""
         import posixpath
 
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
+        from src.data.common.fetch.manifest import snapshot_local_listing
+        from src.data.common.statusfile import STATUS_SUBDIR
 
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
-            return []
+        local_raw_root = self.output_root(PipelineStep.FETCH)
+        remote_raw_root = layout.raw_root(
+            "", self.cfg.data_path, namespace=self.cfg.namespace, layout=self.ctx.layout
+        ).replace(os.sep, "/")
 
-        # `raw_root()` uses `os.path.join` (`ntpath` on Windows) -- normalize
-        # to POSIX before joining `relative_path` onto it, same reasoning as
-        # `transfer_units()`'s own `.replace(os.sep, "/")` above and
-        # `_push_transfer_units()`'s `posixpath`-only comment
-        # (src/cli/data/handlers.py): `remote_path` is always a remote Linux
-        # path regardless of the local OS.
-        raw_root = layout.raw_root("", self.cfg.data_path, namespace=self.cfg.namespace, layout=self.ctx.layout)
-        raw_root = raw_root.replace(os.sep, "/")
-        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
-            rows = ledger.fetch_transfer_units()
+        listing = snapshot_local_listing(local_raw_root)
+        status_prefix = f"{STATUS_SUBDIR}/"
         return [
             TransferUnit(
-                unit_id=row.unit_id, local_path=row.local_path,
-                remote_path=posixpath.join(raw_root, row.relative_path),
+                unit_id=rel,
+                local_path=os.path.join(local_raw_root, rel.replace("/", os.sep)),
+                remote_path=posixpath.join(remote_raw_root, rel),
             )
-            for row in rows
+            for rel in sorted(listing)
+            if not rel.startswith(status_prefix) and not rel.endswith(".part")
         ]
 
     def close(self) -> None:

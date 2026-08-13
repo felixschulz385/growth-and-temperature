@@ -112,10 +112,9 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         raise AssertionError(f"unreachable: {target.step}")
 
     def _execute_fetch(self, target: StepTarget) -> bool:
-        if not self.ctx.ssh_target:
-            logger.warning("Fetch requires an HPC/remote target to be configured.")
-            return False
-
+        # FETCH is local-disk only now -- no HPC target required. `data
+        # transfer` (separate, manual or auto per source config) is the only
+        # thing that pushes to HPC.
         from src.data.common.fetch.driver import run_fetch
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))

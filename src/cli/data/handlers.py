@@ -92,11 +92,47 @@ def _print_source_summary(rows: dict) -> None:
         print(fmt([name, *(row[step.value] for step in STEP_ORDER), row["verified"]]))
 
 
+def _summarize_fetch(source, *, detailed: bool) -> str:
+    """FETCH's own complete/outstanding/unavailable bucket counts
+    (`src.data.common.fetch.manifest.plan_fetch`), for any
+    `RemoteFileCatalog`-shaped source -- ledger-free, so this always reflects
+    live disk state. `detailed=True` additionally splits `outstanding` into
+    never-attempted vs. currently retrying, by peeking at each unit's status
+    sidecar (`src.data.common.statusfile`)."""
+    from src.data.common import statusfile
+    from src.data.common.fetch import catalog, manifest
+    from src.data.sources import layout
+
+    raw_root = layout.raw_root(
+        source.ctx.data_root, source.cfg.data_path, namespace=source.cfg.namespace, layout=source.ctx.layout
+    )
+    required = catalog.required_files(source, raw_root)
+    if not required:
+        return "no required files declared"
+
+    listing = manifest.snapshot_local_listing(raw_root)
+    plan = manifest.plan_fetch(required, listing, raw_root)
+    base = f"{len(plan.complete)} complete, {len(plan.outstanding)} outstanding, {len(plan.unavailable)} unavailable"
+    if not detailed:
+        return base
+
+    never_attempted = retrying = 0
+    for req in plan.outstanding:
+        status = statusfile.read(statusfile.status_path(raw_root, req.unit_id))
+        if status and status.get("attempts"):
+            retrying += 1
+        else:
+            never_attempted += 1
+    return f"{base} (outstanding: {never_attempted} never attempted, {retrying} retrying)"
+
+
 def handle_summary(args: argparse.Namespace) -> None:
     """``data summary`` -- concise per-source, per-step data-availability
     overview. Builds each source directly (bypassing `_check_requires`, unlike
     `_build()`) since a summary should still show a source's own available
     steps even when an upstream REQUIRES dependency isn't complete yet."""
+    from src.data.sources.base import RemoteFileCatalog
+
     setup_logging(args.log_level, debug=args.debug)
     config = load_config_with_env_vars(args.config)
     ctx = build_context(config)
@@ -128,13 +164,16 @@ def handle_summary(args: argparse.Namespace) -> None:
             try:
                 if step is PipelineStep.FETCH and hasattr(source, "verify_fetch"):
                     # ConfiguredFilesFetchMixin sources (osm/gadm/
-                    # country_classifications) fetch a small, fixed list of
-                    # named files -- report exactly which are missing/
-                    # mismatched instead of the generic disk-walk count,
-                    # which can't tell "N files fetched" from "N files
-                    # fetched under the wrong names."
+                    # country_classifications/commodity_prices) fetch a
+                    # small, fixed list of named files -- report exactly
+                    # which are missing/mismatched instead of the bucket
+                    # counts below, which can't tell "N files fetched" from
+                    # "N files fetched under the wrong names."
                     result = source.verify_fetch()
                     row[step.value] = result.detail
+                    continue
+                if step is PipelineStep.FETCH and isinstance(source, RemoteFileCatalog):
+                    row[step.value] = _summarize_fetch(source, detailed=getattr(args, "detailed", False))
                     continue
                 targets = source.plan(step, TargetSelection())
                 summary, _complete = _summarize_targets(targets)
@@ -340,42 +379,50 @@ def handle_plan(args: argparse.Namespace) -> None:
     source.close()
 
 
-def handle_index(args: argparse.Namespace) -> None:
-    """``data index`` -- build/refresh a FETCH-capable source's ledger
-    crawl catalog (docs/design/10-fetch-ledger.md). ``--rebuild`` forces
-    every entrypoint to be re-crawled, but -- unlike the old
-    ``UnifiedDataIndex(rebuild=True)`` -- does not discard already-tracked
-    download/transfer state; see `SourceLedger.reset_crawl_state()`.
-    """
-    setup_logging(args.log_level, debug=args.debug)
-    source, _ = _build(args, PipelineStep.FETCH)
-    if PipelineStep.FETCH not in source.STEPS:
-        raise ValueError(f"Source '{args.source}' does not implement 'fetch'; nothing to index.")
+#: `transfer_mode` default for a source not explicitly configured either way
+#: (`sources.<id>.transfer_mode: auto|manual` overrides this) -- the
+#: high-disk-usage raster sources default to pushing to HPC automatically
+#: right after a successful FETCH, everything else defaults to requiring an
+#: explicit `data transfer` call.
+AUTO_TRANSFER_DEFAULT_SOURCES = frozenset(
+    {"modis", "modis_lst", "modis_robustness_11a1", "glass_modis", "glass_avhrr", "acag", "esacci", "ntl_harm", "eog"}
+)
 
-    from src.data.sources.base import RemoteFileCatalog
 
-    if not isinstance(source, RemoteFileCatalog):
-        raise ValueError(
-            f"Source '{args.source}' declares 'fetch' but has no crawlable remote file catalog to index "
-            "(e.g. MODIS streams per-(year, tile) STAC queries instead of listing a flat file list) -- "
-            "nothing to index; its fetch state is tracked directly via `data run --step fetch`."
+def _maybe_auto_transfer(source, step: PipelineStep) -> None:
+    """Called after a successful `data run --step fetch` -- pushes whatever
+    just landed locally to HPC if this source's `transfer_mode` resolves to
+    `"auto"`. Silently skipped (not an error) when no HPC target is
+    configured, since plenty of local/dev runs never push anywhere."""
+    if step is not PipelineStep.FETCH:
+        return
+    default_mode = "auto" if getattr(source, "ID", None) in AUTO_TRANSFER_DEFAULT_SOURCES else "manual"
+    mode = source.cfg.raw.get("transfer_mode", default_mode)
+    if mode != "auto":
+        return
+    if not source.ctx.ssh_target:
+        logger.info(
+            "transfer_mode=auto for '%s' but remote.ssh_target is not configured -- skipping auto-transfer",
+            getattr(source, "ID", "?"),
         )
+        return
 
-    from src.data.common.ledger import catalog
+    from src.data.common.hpc.client import HPCClient
     from src.data.common.ledger.paths import ledger_path
-    from src.data.common.ledger.store import SourceLedger
 
     local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
     if local_ledger_path is None:
-        raise ValueError("paths.local_index_dir is not configured -- cannot build/refresh a ledger.")
-
-    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
-        if args.rebuild:
-            ledger.reset_crawl_state()
-        files_indexed = catalog.refresh(ledger, source)
-
-    logger.info("Indexed %s new file(s) for source '%s'", files_indexed, args.source)
-    source.close()
+        return
+    client = HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file)
+    results = _run_transfer_pass(argparse.Namespace(override=False), source, step, local_ledger_path, client)
+    failed = [r for r in results if not r.ok]
+    if failed:
+        logger.warning(
+            "Auto-transfer after fetch for '%s' had %d failure(s): %s",
+            getattr(source, "ID", "?"), len(failed), [(r.unit_id, r.error) for r in failed],
+        )
+    elif results:
+        logger.info("Auto-transfer after fetch for '%s': pushed %d unit(s)", getattr(source, "ID", "?"), len(results))
 
 
 def handle_run(args: argparse.Namespace) -> None:
@@ -385,24 +432,6 @@ def handle_run(args: argparse.Namespace) -> None:
     source, _ = _build(args, step)
     if args.override:
         source.cfg = dataclasses.replace(source.cfg, override=True)
-
-    ledger_mode = getattr(args, "ledger", "local")
-    if ledger_mode != "local" and step is not PipelineStep.FETCH:
-        raise ValueError(f"--ledger {ledger_mode} only applies to --step fetch (got --step '{step.value}').")
-    if ledger_mode == "remote":
-        from src.data.sources.base import RemoteFileCatalog
-
-        if not isinstance(source, RemoteFileCatalog):
-            raise ValueError(
-                f"--ledger remote is not supported for source '{args.source}' "
-                "(it does not use the crawl-catalog ledger)."
-            )
-        # Injected into the same `download:` config block every non-MODIS
-        # FETCH source already forwards verbatim as `run_fetch(self,
-        # **self.cfg.raw.get("download", {}))` -- so this reaches
-        # `run_fetch`'s `ledger_mode` kwarg with zero per-source changes.
-        download_cfg = {**source.cfg.raw.get("download", {}), "ledger_mode": "remote"}
-        source.cfg = dataclasses.replace(source.cfg, raw={**source.cfg.raw, "download": download_cfg})
 
     selection = _selection_from_args(args)
 
@@ -454,6 +483,9 @@ def handle_run(args: argparse.Namespace) -> None:
         if not ok:
             logger.error("Target failed: %s/%s", args.source, target.key)
             failures.append(target.key)
+
+    if not failures:
+        _maybe_auto_transfer(source, step)
     source.close()
 
     if failures:
@@ -462,12 +494,14 @@ def handle_run(args: argparse.Namespace) -> None:
 
 def handle_reconcile(args: argparse.Namespace) -> None:
     """``data reconcile`` -- rebuild a source's DuckDB ledger from real
-    on-disk/HPC filesystem state (docs/design/10-fetch-ledger.md §5). A
-    manual/occasional operator command, not part of the normal fetch/run hot
-    path: run once per source when adopting the ledger, or after any
-    out-of-band filesystem surgery. Never converts the old
-    `UnifiedDataIndex`/`TransferManifest` Parquet files -- the real
-    filesystem/HPC state is ground truth.
+    on-disk/HPC filesystem state (docs/design/10-fetch-ledger.md §5), for its
+    PREPARE/GRID steps. A manual/occasional operator command, not part of
+    the normal run hot path: run once per source when adopting the ledger,
+    or after any out-of-band filesystem surgery.
+
+    FETCH has nothing to reconcile anymore -- it's ledger-free
+    (`src.data.common.fetch.driver`), always derived live from a directory
+    listing, so there's no stored state that could ever drift from disk.
     """
     setup_logging(args.log_level, debug=args.debug)
     config = load_config_with_env_vars(args.config)
@@ -479,11 +513,8 @@ def handle_reconcile(args: argparse.Namespace) -> None:
 
     import os
 
-    from src.data.common.ledger.bootstrap import reconcile_fetch
     from src.data.common.ledger.paths import ledger_path
     from src.data.common.ledger.store import SourceLedger
-    from src.data.sources import layout
-    from src.data.sources.base import RemoteFileCatalog
     from src.data.sources.reconcile import reconcile_step
 
     spec = registry.resolve(args.source)
@@ -491,9 +522,9 @@ def handle_reconcile(args: argparse.Namespace) -> None:
     source = registry.create(args.source, ctx, cfg)
 
     requested_steps = list(spec.steps) if getattr(args, "step", "all") == "all" else [PipelineStep(args.step)]
-    requested_steps = [s for s in requested_steps if s in spec.steps]
+    requested_steps = [s for s in requested_steps if s in spec.steps and s is not PipelineStep.FETCH]
     if not requested_steps:
-        raise ValueError(f"Source '{args.source}' does not implement step '{args.step}'.")
+        raise ValueError(f"Source '{args.source}' has no PREPARE/GRID step matching '{args.step}' to reconcile.")
 
     client = None
     if ctx.ssh_target:
@@ -511,29 +542,11 @@ def handle_reconcile(args: argparse.Namespace) -> None:
             ledger.merge_from_remote(client, tmp_dir)
 
         for step in requested_steps:
-            if step is PipelineStep.FETCH and isinstance(source, RemoteFileCatalog):
-                # NOTE: `source.cfg.data_path`/`source.cfg.namespace` (the
-                # resolved, post-__init__-default config), not
-                # `source.data_path` -- that property is overridden by the
-                # misc-split sources (gadm/osm/country_classifications) to a
-                # combined "<data_path>/<namespace>" string purely for index-
-                # file naming (base.py's own docstring), which would double
-                # up the namespace segment if fed into raw_root() alongside
-                # `namespace=` too.
-                raw_root = layout.raw_root(
-                    "", source.cfg.data_path, namespace=source.cfg.namespace, layout=ctx.layout
-                )
-                result = reconcile_fetch(ledger, source, raw_root=raw_root, client=client)
-                logger.info(
-                    "%s/fetch: discovered=%d verified_present=%d",
-                    args.source, result["discovered"], result["verified_present"],
-                )
-            else:
-                result = reconcile_step(source, step, ledger, client=client, remote_data_root=ctx.remote_data_root)
-                logger.info(
-                    "%s/%s: total=%d local_complete=%d remote_verified=%d",
-                    args.source, step.value, result["total"], result["local_complete"], result["remote_verified"],
-                )
+            result = reconcile_step(source, step, ledger, client=client, remote_data_root=ctx.remote_data_root)
+            logger.info(
+                "%s/%s: total=%d local_complete=%d remote_verified=%d",
+                args.source, step.value, result["total"], result["local_complete"], result["remote_verified"],
+            )
 
     # `push_to_remote()` after the `with` block, not inside it -- scp'ing
     # the ledger's own `.duckdb` file while this process still holds it open

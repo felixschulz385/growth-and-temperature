@@ -50,7 +50,6 @@ def _add_selection_args(parser: argparse.ArgumentParser) -> None:
 def register(top_subparsers: argparse._SubParsersAction) -> None:
     """Register ``data`` and its sub-commands on *top_subparsers*."""
     from .handlers import (
-        handle_index,
         handle_list,
         handle_plan,
         handle_reconcile,
@@ -91,6 +90,10 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         "--source",
         help="Restrict the overview to a single source name (default: all configured sources)",
     )
+    summary_p.add_argument(
+        "--detailed", action="store_true",
+        help="For FETCH rows, break the outstanding count down into never-attempted vs. retrying",
+    )
     # Per-target INFO/WARNING chatter from individual sources' plan() (e.g.
     # MODIS logging one line per missing stage-1 year) defeats the point of a
     # *concise* overview across every source -- default this subcommand's
@@ -110,14 +113,6 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     _add_selection_args(plan_p)
     plan_p.set_defaults(func=handle_plan)
 
-    # ── index ──────────────────────────────────────────────────────────────
-    index_p = sub.add_parser("index", help="Build/refresh a source's completion index")
-    add_logging_args(index_p)
-    add_config_arg(index_p)
-    add_source_arg(index_p)
-    index_p.add_argument("--rebuild", action="store_true", help="Rebuild the index from scratch")
-    index_p.set_defaults(func=handle_index)
-
     # ── reconcile ──────────────────────────────────────────────────────────
     reconcile_p = sub.add_parser(
         "reconcile",
@@ -133,9 +128,11 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     add_source_arg(reconcile_p)
     reconcile_p.add_argument(
         "--step",
-        choices=["fetch", "prepare", "grid", "all"],
+        choices=["prepare", "grid", "all"],
         default="all",
-        help="Restrict reconciliation to one step (default: all steps the source implements)",
+        help="Restrict reconciliation to one step (default: every PREPARE/GRID step the source "
+             "implements -- FETCH has nothing to reconcile: it's ledger-free, always derived live "
+             "from a directory listing).",
     )
     reconcile_p.set_defaults(func=handle_reconcile)
 
@@ -147,15 +144,6 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     _add_step_arg(run_p, required=True)
     _add_selection_args(run_p)
     run_p.add_argument("--override", action="store_true", help="Re-run targets even if already complete")
-    run_p.add_argument(
-        "--ledger", choices=["local", "remote"], default="local",
-        help="FETCH worklist source (--step fetch only, default: local): 'local' crawls the "
-             "source's own origin and downloads what's missing locally, without pushing (push "
-             "separately via `data transfer`). 'remote' skips the crawl and instead clears a "
-             "known backlog from the remote ledger's own belief about what isn't HPC-verified "
-             "yet, downloading from the source's real origin and pushing each file immediately "
-             "after it downloads.",
-    )
     # Dask sizing -- carried over from the old `preprocess run` flags of the
     # same name (docs/design/09-integrated-pipeline.md §8's SourceConfig/
     # PipelineContext replaces the kwargs-smearing, not these CLI knobs).
