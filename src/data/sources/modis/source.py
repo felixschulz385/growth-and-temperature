@@ -488,7 +488,7 @@ class ModisSource(DataSource):
         }
         for key in ("emis_29", "emis_31", "emis_32", "view_angle", "view_time"):
             if key in ds.data_vars:
-                annual_var, _, _, _, _ = composite_to_annual(ds[key], valid_mask)
+                annual_var, *_ = composite_to_annual(ds[key], valid_mask)
                 data_vars[key] = annual_var.squeeze("time", drop=True).astype("float32")
 
         out_ds = xr.Dataset(data_vars)
@@ -496,6 +496,20 @@ class ModisSource(DataSource):
         out_ds.attrs.update(
             {"source_type": "modis", "product": self.product, "tile": tile, "collection": self.collection_id, "platform": self.platform}
         )
+        # Every data_var here is still dask-backed (odc.stac.load is lazy,
+        # and QC-decode/composite_to_annual stay lazy too) -- compute the
+        # whole Dataset in one shot before handing it to
+        # `_write_annual_geotiff()`, which pulls `.values` per band *and*
+        # per month for the two monthly vars (~20-30 separate accesses).
+        # Dask's default scheduler shares no state across separate
+        # `.compute()` calls, so without this each of those accesses
+        # independently re-streamed the same COG bytes from Planetary
+        # Computer and redid the QC-decode/resample chain from scratch.
+        # One Dataset-level `.compute()` merges everything into a single
+        # task graph, so the shared upstream work (raw read, QC decode,
+        # valid_mask) runs once and every band/month below becomes a free
+        # in-memory slice.
+        out_ds = out_ds.compute()
         ok = self._write_annual_geotiff(out_ds, target.output_path)
         size_bytes = os.path.getsize(target.output_path) if ok and os.path.exists(target.output_path) else None
         self._ledger_set_state(target.key, "complete" if ok else "failed", size_bytes=size_bytes)
@@ -503,6 +517,10 @@ class ModisSource(DataSource):
 
     @staticmethod
     def _write_annual_geotiff(ds: xr.Dataset, output_path: str) -> bool:
+        """Expects `ds` already computed (in-memory, not dask-backed) --
+        see the `.compute()` call at the end of `_execute_fetch()`. Each
+        `.values` access below is a free slice of that in-memory array, not
+        a fresh lazy evaluation."""
         import rasterio
 
         band_arrays: List[np.ndarray] = []
