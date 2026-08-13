@@ -221,7 +221,19 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
         import geopandas as gpd
         import pandas as pd
+        import pyogrio
         import requests
+
+        # GDAL's GeoJSON driver refuses to parse any single object past its
+        # own `OGR_GEOJSON_MAX_OBJ_SIZE` ceiling ("GeoJSON object too
+        # complex/large") -- confirmed live: one RESOLVE biome polygon alone
+        # trips it even at `page_size=1`, so no amount of the halving retry
+        # below can ever get past it (unlike a genuine truncated/oversized
+        # *response*, which halving does fix). Raising it to unlimited is
+        # safe here -- this source's own paging already bounds page byte
+        # size independently, this just stops GDAL from second-guessing a
+        # single legitimately huge polygon.
+        pyogrio.set_gdal_config_options({"OGR_GEOJSON_MAX_OBJ_SIZE": "0"})
 
         s = session or requests.Session()
         page_size = self.page_size
@@ -230,28 +242,38 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
         while True:
             page_url = f"{file_url}&resultOffset={offset}&resultRecordCount={page_size}"
-            resp = s.get(page_url, timeout=120)
-            resp.raise_for_status()
-            content = resp.content
-
-            retry_wait = _rate_limit_wait_seconds(content)
-            if retry_wait is not None:
-                logger.warning(
-                    "Ecoregions FETCH rate-limited at offset %d, waiting %ds before retrying",
-                    offset, retry_wait,
-                )
-                time.sleep(retry_wait)
-                continue
-
+            # The request itself (not just the parse below) is inside this
+            # try -- a mid-transfer network failure on a large page (e.g.
+            # `IncompleteRead`, confirmed live on a giant continent-spanning
+            # biome polygon page) used to propagate straight out of
+            # `download()` uncaught, burning one of `pending_fetch`'s only
+            # `max_attempts=5` ledger-tracked retries -- and each of those
+            # restarts this whole method from offset 0, discarding every
+            # page already paged through. Treating a network failure the
+            # same as a parse failure (halve and retry *this* offset) fixes
+            # both: no wasted top-level attempt, and no lost progress.
             try:
+                resp = s.get(page_url, timeout=120)
+                resp.raise_for_status()
+                content = resp.content
+
+                retry_wait = _rate_limit_wait_seconds(content)
+                if retry_wait is not None:
+                    logger.warning(
+                        "Ecoregions FETCH rate-limited at offset %d, waiting %ds before retrying",
+                        offset, retry_wait,
+                    )
+                    time.sleep(retry_wait)
+                    continue
+
                 page = gpd.read_file(io.BytesIO(content))
-            except Exception:
+            except Exception as exc:
                 if page_size <= 1:
                     raise
                 page_size = max(1, page_size // 2)
                 logger.warning(
-                    "Ecoregions FETCH page at offset %d failed to parse, halving page size to %d and retrying",
-                    offset, page_size,
+                    "Ecoregions FETCH page at offset %d failed (%s), halving page size to %d and retrying",
+                    offset, exc, page_size,
                 )
                 continue
 

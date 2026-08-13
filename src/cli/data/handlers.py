@@ -385,6 +385,25 @@ def handle_run(args: argparse.Namespace) -> None:
     source, _ = _build(args, step)
     if args.override:
         source.cfg = dataclasses.replace(source.cfg, override=True)
+
+    ledger_mode = getattr(args, "ledger", "local")
+    if ledger_mode != "local" and step is not PipelineStep.FETCH:
+        raise ValueError(f"--ledger {ledger_mode} only applies to --step fetch (got --step '{step.value}').")
+    if ledger_mode == "remote":
+        from src.data.sources.base import RemoteFileCatalog
+
+        if not isinstance(source, RemoteFileCatalog):
+            raise ValueError(
+                f"--ledger remote is not supported for source '{args.source}' "
+                "(it does not use the crawl-catalog ledger)."
+            )
+        # Injected into the same `download:` config block every non-MODIS
+        # FETCH source already forwards verbatim as `run_fetch(self,
+        # **self.cfg.raw.get("download", {}))` -- so this reaches
+        # `run_fetch`'s `ledger_mode` kwarg with zero per-source changes.
+        download_cfg = {**source.cfg.raw.get("download", {}), "ledger_mode": "remote"}
+        source.cfg = dataclasses.replace(source.cfg, raw={**source.cfg.raw, "download": download_cfg})
+
     selection = _selection_from_args(args)
 
     targets = source.plan(step, selection)
@@ -596,15 +615,20 @@ def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", l
        own connection briefly per unit, see
        `ModisSource._ledger_ensure_artifact()`'s docstring) isn't locked out
        for the push's whole duration.
-    3. Record the results, close -- *then* `push_to_remote()` the ledger
-       file itself. Doing that last step while its own connection was still
-       open (this function's previous shape) reliably failed on Windows
-       (`scp: open local ...: Broken pipe`, confirmed against a real scicore
-       push): the local `.duckdb` file was still held open by this same
-       process's own DuckDB connection when `scp` tried to read it.
+    3. Record the results, merge in the remote ledger's own state
+       (`merge_from_remote()` -- so a push from this machine doesn't clobber
+       state another machine already recorded remotely), close -- *then*
+       `push_to_remote()` the now-merged ledger file itself. Doing that last
+       step while its own connection was still open (this function's
+       previous shape) reliably failed on Windows (`scp: open local ...:
+       Broken pipe`, confirmed against a real scicore push): the local
+       `.duckdb` file was still held open by this same process's own DuckDB
+       connection when `scp` tried to read it.
     """
+    import os
+
     from src.data.common.hpc.push import HPCPusher
-    from src.data.common.ledger.schema import RemoteState
+    from src.data.common.ledger.schema import LocalState, RemoteState
     from src.data.common.ledger.store import SourceLedger
 
     units = source.transfer_units(step)
@@ -636,6 +660,23 @@ def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", l
 
     with SourceLedger.open_with_retry(local_ledger_path, data_path=source.data_path) as ledger:
         ledger.record_push_batch(step.value, results)
+        # HPCPusher's cleanup_local=True (the default every push call here
+        # uses, never overridden to False) already deleted each successfully
+        # pushed unit's local file/directory -- record_push_batch() only
+        # ever updates remote_state, so without this the ledger would keep
+        # saying local_state='complete' for something that no longer exists
+        # on disk. remote_state='verified' + local_state='missing' stays
+        # fully distinguishable from "never fetched at all" (remote_state=
+        # 'missing' too) -- completed_fetch_files() already keys off
+        # remote_state alone, so nothing downstream needs a new state.
+        ledger.set_local_states_batch(step.value, [(r.unit_id, LocalState.MISSING) for r in results if r.ok])
+        # Reconcile local-with-remote (newest `updated_at` wins per row --
+        # this pass's own just-recorded rows always win) *before* pushing
+        # local back out below, so `data transfer` keeps both ledger copies
+        # in sync instead of blindly overwriting remote-only state another
+        # machine may have recorded.
+        merge_tmp_dir = os.path.join(source.ctx.staging_dir or source.ctx.local_index_dir, "transfer_merge_tmp")
+        ledger.merge_from_remote(client, merge_tmp_dir)
     ledger.push_to_remote(client)  # after the `with` block -- connection is closed by now
     return results
 

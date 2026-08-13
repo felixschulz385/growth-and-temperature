@@ -77,6 +77,20 @@ class FetchUnit:
 
 
 @dataclass(frozen=True)
+class FetchTransferUnit:
+    """One FETCH artifact whose local download is complete, as returned by
+    `fetch_transfer_units()` -- the read side of `DataSource.transfer_units()`'s
+    generic FETCH override (`_transfer_units_fetch()`, src/data/sources/base.py).
+    `relative_path` comes from `remote_files`, not `local_path`, since FETCH's
+    local staging path (`{file_hash}_{basename}`) is flat and unrelated to the
+    file's real place in the remote raw tree."""
+
+    unit_id: str
+    local_path: str
+    relative_path: str
+
+
+@dataclass(frozen=True)
 class DownloadResult:
     """One file's download outcome, fed to `record_download_batch()`."""
 
@@ -100,6 +114,56 @@ class ArtifactRow:
     local_state: str
     remote_state: str
     meta: dict[str, Any]
+
+
+def _pull_and_migrate_remote_ledger(client: "Any", data_path: str, local_tmp_path: str) -> Optional[bool]:
+    """Rsync-pull *data_path*'s remote ledger to *local_tmp_path* and
+    schema-migrate that disposable copy in place. Shared first half of
+    `SourceLedger.merge_from_remote()` (which then ATTACHes and merges it
+    into an open local connection) and `SourceLedger.pull_remote_readonly()`
+    (which instead opens it directly, read-only, touching no local state at
+    all -- the `--ledger remote` FETCH mode's worklist source).
+
+    Returns `None` if no remote ledger exists yet (nothing to pull -- a
+    source's very first fetch), `True` on a successful pull+migrate, `False`
+    on a real failure (caller logs specifics; this only signals go/no-go).
+    """
+    remote_path = remote_ledger_path(data_path)
+    full_remote_path = f"{client.base_path}/{remote_path}" if getattr(client, "base_path", None) else remote_path
+    if not client.check_file_exists(full_remote_path):
+        logger.debug("No remote ledger yet at %s", full_remote_path)
+        return None
+
+    os.makedirs(os.path.dirname(local_tmp_path) or ".", exist_ok=True)
+    success, summary = client.rsync_transfer(
+        remote_path,
+        local_tmp_path,
+        source_is_local=False,
+        options={"compress": True, "archive": True, "partial": True, "checksum": True, "verbose": False},
+        show_progress=False,
+    )
+    if not success:
+        logger.warning("Failed to pull remote ledger: %s", summary)
+        return False
+
+    try:
+        # The pulled-down copy may predate a schema change *this* process's
+        # own ledger already has (e.g. `artifacts.meta`, added after
+        # HPC-side ledgers were last write-opened) -- see
+        # `merge_from_remote()`'s identical comment for the confirmed
+        # `BinderException` this avoids. Migrating this disposable temp copy
+        # has no effect on the actual remote file.
+        with duckdb.connect(local_tmp_path) as tmp_con:
+            for statement in schema.ALL_DDL:
+                tmp_con.execute(statement)
+    except Exception:
+        logger.exception("Error migrating pulled remote ledger schema")
+        try:
+            os.remove(local_tmp_path)
+        except OSError:
+            pass
+        return False
+    return True
 
 
 class SourceLedger:
@@ -349,6 +413,30 @@ class SourceLedger:
         ).fetchall()
         return [FetchUnit(file_hash=r[0], relative_path=r[1], source_url=r[2], bytes=r[3]) for r in rows]
 
+    def pending_download(self, limit: int, *, max_attempts: int = 5) -> list[FetchUnit]:
+        """FETCH units not yet downloaded locally, smallest first -- the
+        download-only counterpart to `pending_fetch()` above, which gates on
+        `remote_state` (push progress) instead. Now that FETCH no longer
+        pushes inline (`data transfer` does that separately), this is what
+        the default `--ledger local` fetch loop uses: `local_state` is the
+        only thing that matters for "does this still need downloading",
+        regardless of whether an earlier `data transfer` run already pushed
+        it. `pending_fetch()` itself is untouched -- it becomes the worklist
+        `--ledger remote` mode reads from a *different*, remote-pulled
+        connection (`pull_remote_readonly()` below), unmodified."""
+        rows = self._con.execute(
+            """
+            SELECT rf.file_hash, rf.relative_path, rf.source_url, a.bytes
+            FROM artifacts a
+            JOIN remote_files rf ON rf.file_hash = a.unit_id
+            WHERE a.step = 'fetch' AND a.local_state != ? AND a.attempts < ?
+            ORDER BY a.bytes ASC NULLS LAST
+            LIMIT ?
+            """,
+            [schema.LocalState.COMPLETE, max_attempts, limit],
+        ).fetchall()
+        return [FetchUnit(file_hash=r[0], relative_path=r[1], source_url=r[2], bytes=r[3]) for r in rows]
+
     def record_download_batch(self, results: Iterable[DownloadResult]) -> None:
         """One DuckDB transaction for the whole batch -- the direct fix for
         the old system's whole-file-parquet-rewrite-per-batch cost.
@@ -594,6 +682,32 @@ class SourceLedger:
             return []
         return [(r[0], r[1]) for r in result.fetchall()]
 
+    def fetch_transfer_units(self) -> list[FetchTransferUnit]:
+        """Every FETCH artifact whose local download is complete, joined
+        against `remote_files` for its real raw-tree `relative_path`. Reused
+        by the generic `transfer_units(FETCH)` default (`DataSource.
+        _transfer_units_fetch()`, src/data/sources/base.py) to give every
+        non-MODIS FETCH source MODIS's own fine-grained per-file `data
+        transfer` behavior without a per-source override.
+
+        Deliberately NOT filtered to `remote_state != 'verified'` here --
+        `_run_transfer_pass` (src/cli/data/handlers.py) already applies that
+        filter itself, with `--override` support; filtering twice would make
+        `--override` unable to re-select an already-verified unit."""
+        result = self._execute_readonly_safe(
+            """
+            SELECT a.unit_id, a.local_path, rf.relative_path
+            FROM artifacts a
+            JOIN remote_files rf ON rf.file_hash = a.unit_id
+            WHERE a.step = 'fetch' AND a.local_state = ? AND a.local_path IS NOT NULL
+            ORDER BY a.unit_id
+            """,
+            [schema.LocalState.COMPLETE],
+        )
+        if result is None:
+            return []
+        return [FetchTransferUnit(unit_id=r[0], local_path=r[1], relative_path=r[2]) for r in result.fetchall()]
+
     def mark_local_and_remote_batch(self, step: str, unit_ids: Iterable[str], local_state: str, remote_state: str) -> None:
         """Set both `local_state`/`remote_state` for every id in *unit_ids*
         to the same pair of values, in one `executemany` transaction --
@@ -729,51 +843,15 @@ class SourceLedger:
         its rows into the local copy, newest `updated_at` wins per
         `(step, unit_id)`. Best-effort and non-fatal: a source's very first
         fetch has no remote copy yet, which is a no-op here, not an error.
+        The real remote file only ever gets overwritten by `push_to_remote()`
+        re-uploading *this* connection's own (already-migrated) ledger over
+        it -- never by this method.
         """
-        remote_path = remote_ledger_path(self.data_path)
-        full_remote_path = f"{client.base_path}/{remote_path}" if getattr(client, "base_path", None) else remote_path
-        if not client.check_file_exists(full_remote_path):
-            logger.debug("No remote ledger yet at %s -- nothing to merge", full_remote_path)
-            return True
-
-        os.makedirs(tmp_dir, exist_ok=True)
         local_tmp = os.path.join(tmp_dir, "remote_ledger.duckdb")
-        success, summary = client.rsync_transfer(
-            remote_path,
-            local_tmp,
-            source_is_local=False,
-            options={"compress": True, "archive": True, "partial": True, "checksum": True, "verbose": False},
-            show_progress=False,
-        )
-        if not success:
-            logger.warning("Failed to pull remote ledger for merge: %s", summary)
-            return False
-
-        try:
-            # The pulled-down copy may predate a schema change *this*
-            # process's own ledger already has (e.g. `artifacts.meta`,
-            # added after HPC-side ledgers were last write-opened) --
-            # `INSERT INTO artifacts SELECT * FROM remote_ledger.artifacts`
-            # below requires matching column sets, or DuckDB raises
-            # `BinderException: table "excluded" has N columns available
-            # but M columns specified` (confirmed empirically, not
-            # hypothetical -- this is the exact failure a real HPC-side
-            # ledger predating this column hits on its first merge after
-            # the local side has already migrated). Migrating this
-            # disposable temp copy is safe and has no effect on the actual
-            # remote file: it's a private rsync'd copy, deleted in the
-            # `finally` below regardless of outcome; the real remote file
-            # only ever gets overwritten by `push_to_remote()` re-uploading
-            # *this* connection's own (already-migrated) ledger over it.
-            with duckdb.connect(local_tmp) as tmp_con:
-                for statement in schema.ALL_DDL:
-                    tmp_con.execute(statement)
-        except Exception:
-            logger.exception("Error migrating pulled remote ledger schema before merge")
-            try:
-                os.remove(local_tmp)
-            except OSError:
-                pass
+        pulled = _pull_and_migrate_remote_ledger(client, self.data_path, local_tmp)
+        if pulled is None:
+            return True
+        if not pulled:
             return False
 
         try:
@@ -821,3 +899,24 @@ class SourceLedger:
             except OSError:
                 pass
         return True
+
+    @classmethod
+    def pull_remote_readonly(cls, client: "Any", data_path: str, local_tmp_path: str) -> Optional["SourceLedger"]:
+        """Rsync-pull *data_path*'s remote ledger to *local_tmp_path* and
+        open it read-only -- WITHOUT merging it into any local ledger or
+        otherwise touching local state. The worklist source for `--ledger
+        remote` FETCH mode (`_run_fetch_remote_backlog()`,
+        src/data/common/fetch/driver.py): a stable, point-in-time snapshot of
+        what the remote side believes is still outstanding, queryable via
+        this instance's own `pending_fetch()` exactly like any other ledger.
+
+        Returns `None` if no remote ledger exists yet. Caller owns
+        *local_tmp_path*'s lifecycle: `.close()` this ledger, then remove
+        the file -- mirroring `merge_from_remote()`'s own tmp-file handling,
+        just not automated here since the caller keeps this instance open
+        across multiple `pending_fetch()` calls, unlike `merge_from_remote`'s
+        single internal use.
+        """
+        if not _pull_and_migrate_remote_ledger(client, data_path, local_tmp_path):
+            return None
+        return cls.open(local_tmp_path, data_path=data_path, read_only=True)

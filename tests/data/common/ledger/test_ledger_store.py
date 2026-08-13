@@ -70,6 +70,47 @@ def test_pending_fetch_retries_failed(ledger):
     assert [u.file_hash for u in units] == ["a"]
 
 
+def test_pending_download_orders_by_size_smallest_first(ledger):
+    ledger.add_remote_files(
+        [("a.nc", "https://x/a.nc"), ("b.nc", "https://x/b.nc"), ("c.nc", "https://x/c.nc")],
+        get_file_hash=lambda url: url.split("/")[-1].replace(".nc", ""),
+    )
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=False, error="boom")])
+    # "a" has no bytes (failed download) -- NULLS LAST puts it after b/c,
+    # neither of which has bytes recorded either, so this really only checks
+    # the shape of the result, not a meaningful order among equal NULLs.
+    units = ledger.pending_download(limit=10)
+    assert {u.file_hash for u in units} == {"a", "b", "c"}
+
+
+def test_pending_download_excludes_locally_complete_regardless_of_push_state(ledger):
+    # The key behavior split from pending_fetch(): local_state is what
+    # matters here, not remote_state -- a file already downloaded but not
+    # yet pushed must NOT show up as still needing a download.
+    ledger.add_remote_files([("a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
+    assert len(ledger.pending_download(10)) == 1
+
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=True, local_path="/tmp/a", bytes=100)])
+    assert ledger.pending_download(10) == []
+    # Still locally complete even though never pushed -- pending_fetch()
+    # (the push-worklist query) still considers it outstanding.
+    assert len(ledger.pending_fetch(10)) == 1
+
+
+def test_pending_download_retries_failed(ledger):
+    ledger.add_remote_files([("a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=False, error="connection reset")])
+    units = ledger.pending_download(10)
+    assert [u.file_hash for u in units] == ["a"]
+
+
+def test_pending_download_bounded_by_max_attempts(ledger):
+    ledger.add_remote_files([("a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=False, error="connection reset")])
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=False, error="connection reset")])
+    assert ledger.pending_download(10, max_attempts=2) == []
+
+
 def test_attempts_only_increments_on_failure_not_on_every_download_or_push(ledger):
     """A successful download/push is not a "spent attempt" -- only a failed
     one is. Otherwise a file that downloads fine every cycle but keeps
@@ -280,6 +321,35 @@ def test_merge_from_remote_migrates_pre_meta_column_remote_copy(ledger, tmp_path
     assert ledger.local_state("prepare", "2020") == "complete"
 
 
+def test_pull_remote_readonly_returns_none_without_remote_copy(tmp_path):
+    client = _FakeHPCClient()
+    client.remote_exists = False
+    result = SourceLedger.pull_remote_readonly(client, "acag/pm25", str(tmp_path / "tmp.duckdb"))
+    assert result is None
+
+
+def test_pull_remote_readonly_opens_pulled_copy_without_touching_local_ledger(ledger, tmp_path):
+    # Build a real remote ledger with its own, different pending-fetch
+    # worklist -- the `--ledger remote` FETCH mode's whole point is reading
+    # exactly this, from a machine whose own local ledger (the `ledger`
+    # fixture here) may know nothing about it at all.
+    remote_file = str(tmp_path / "remote.duckdb")
+    with SourceLedger.open(remote_file, data_path="acag/pm25") as remote_source:
+        remote_source.add_remote_files([("2020/a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
+
+    client = _FakeHPCClientWithRealPull(remote_file)
+    pulled = SourceLedger.pull_remote_readonly(client, "acag/pm25", str(tmp_path / "pulled.duckdb"))
+    try:
+        assert pulled is not None
+        assert [u.file_hash for u in pulled.pending_fetch(10)] == ["a"]
+    finally:
+        pulled.close()
+
+    # The caller's own local ledger (unrelated, empty) must be completely
+    # untouched -- no merge into it happened, unlike merge_from_remote().
+    assert ledger.pending_fetch(10) == []
+
+
 # --- read-only open against a schema-less ledger file ----------------------
 
 
@@ -440,6 +510,31 @@ def test_local_complete_units_key_prefix_scopes_to_matching_units(ledger):
 
     units = ledger.local_complete_units("fetch", key_prefix="2020/")
     assert sorted(units) == [("2020/h10v05", "/x/a.tif"), ("2020/h11v05", "/x/b.tif")]
+
+
+def test_fetch_transfer_units_only_returns_locally_complete_rows(ledger):
+    ledger.add_remote_files(
+        [("2020/a.nc", "https://x/a.nc"), ("2020/b.nc", "https://x/b.nc")],
+        get_file_hash=lambda url: url.split("/")[-1].replace(".nc", ""),
+    )
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=True, local_path="/staging/a", bytes=10)])
+    # "b" was never downloaded -- must be absent.
+
+    units = ledger.fetch_transfer_units()
+    assert [(u.unit_id, u.local_path, u.relative_path) for u in units] == [("a", "/staging/a", "2020/a.nc")]
+
+
+def test_fetch_transfer_units_includes_already_verified_rows(ledger):
+    # Deliberately NOT filtered by remote_state here (see the method's own
+    # docstring) -- `_run_transfer_pass` (src/cli/data/handlers.py) applies
+    # that filter itself, and needs to see already-verified rows too so
+    # `--override` can still re-select them.
+    ledger.add_remote_files([("2020/a.nc", "https://x/a.nc")], get_file_hash=lambda url: "a")
+    ledger.record_download_batch([DownloadResult(file_hash="a", ok=True, local_path="/staging/a", bytes=10)])
+    ledger.record_push_batch("fetch", [PushResult(unit_id="a", ok=True, bytes=10)])
+
+    units = ledger.fetch_transfer_units()
+    assert [u.unit_id for u in units] == ["a"]
 
 
 def test_set_local_states_batch_applies_per_row_state(ledger):

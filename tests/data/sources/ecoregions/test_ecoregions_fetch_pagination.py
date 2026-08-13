@@ -1,11 +1,17 @@
 """EcoregionsSource.download(): paginated ArcGIS REST Feature Service query,
-against a fake `requests.Session` -- no real network calls. Covers the two
+against a fake `requests.Session` -- no real network calls. Covers the
 failure modes confirmed live against the real service while building this
 (see src/data/sources/ecoregions/source.py module docstring): a page whose
 response can't be parsed (empirically, an oversized response gets silently
-truncated past ~16MiB) triggers a page-size halving retry; a rate-limit
-error delivered as HTTP 200 + a JSON error body (not a real 429 status)
-triggers a sleep-and-retry at the same page size."""
+truncated past ~16MiB) triggers a page-size halving retry; a mid-transfer
+network failure (e.g. `IncompleteRead` on a giant polygon page) gets the
+same halving retry rather than propagating out of `download()` uncaught; a
+single feature so geometrically complex it trips GDAL's own
+`OGR_GEOJSON_MAX_OBJ_SIZE` ceiling *even at page_size=1* (confirmed live
+against one real RESOLVE biome polygon -- halving can never fix this one,
+since there's nothing left to halve) still parses once that ceiling is
+raised; a rate-limit error delivered as HTTP 200 + a JSON error body (not a
+real 429 status) triggers a sleep-and-retry at the same page size."""
 
 import json
 import os
@@ -45,6 +51,24 @@ def _feature_geojson(n: int, start_id: int = 0) -> bytes:
         for i in range(n)
     ]
     return json.dumps({"type": "FeatureCollection", "features": features}).encode()
+
+
+def _oversized_single_polygon_geojson() -> bytes:
+    """One feature whose geometry alone is large/complex enough to trip
+    GDAL's default `OGR_GEOJSON_MAX_OBJ_SIZE` ceiling on its own (empirically
+    ~19MiB of coordinate text) -- reproduces the real RESOLVE biome polygon
+    that failed even at page_size=1 (halving has nothing left to halve)."""
+    coords = [[float(i % 1000) / 1000.0, float(i // 1000) / 1000.0] for i in range(1_300_000)]
+    coords.append(coords[0])
+    feature = {
+        "type": "Feature",
+        "properties": {
+            "REALM": "Nearctic", "BIOME_NUM": 1, "BIOME_NAME": "Tundra",
+            "ECO_ID": 1, "ECO_NAME": "Giant Eco",
+        },
+        "geometry": {"type": "Polygon", "coordinates": [coords]},
+    }
+    return json.dumps({"type": "FeatureCollection", "features": [feature]}).encode()
 
 
 _RATE_LIMIT_BODY = json.dumps(
@@ -119,6 +143,61 @@ def test_download_halves_page_size_on_unparseable_response(tmp_path, monkeypatch
 
     assert session.requested_sizes[0] == 4  # first attempt at configured page_size
     assert 2 in session.requested_sizes  # halved after the failure
+
+
+def test_download_halves_page_size_on_mid_request_network_failure(tmp_path, monkeypatch):
+    # Confirmed live: a large page (a continent-spanning biome polygon) can
+    # drop mid-transfer (`IncompleteRead`) *before* a response body even
+    # exists to hand to gpd.read_file() -- this must get the same
+    # halve-and-retry treatment as an unparseable response, not propagate
+    # uncaught out of download() and waste one of the ledger's few total
+    # fetch attempts.
+    source, _ = _make(tmp_path, page_size=4)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    class _FakeSession:
+        def __init__(self):
+            self.requested_sizes = []
+
+        def get(self, url, timeout=None):
+            size = int(url.split("resultRecordCount=")[1].split("&")[0])
+            offset = int(url.split("resultOffset=")[1].split("&")[0])
+            self.requested_sizes.append(size)
+            if size == 4:
+                raise ConnectionError("IncompleteRead(8388608 bytes read, 404190 more expected)")
+            remaining = max(0, 3 - offset)
+            return _FakeResponse(_feature_geojson(min(size, remaining)))
+
+    session = _FakeSession()
+    output_path = str(tmp_path / "out" / "ecoregions_raw.gpkg")
+    source.download("https://example.test/query?f=geojson", output_path, session=session)
+
+    assert session.requested_sizes[0] == 4  # first attempt at configured page_size
+    assert 2 in session.requested_sizes  # halved after the network failure
+
+
+def test_download_parses_a_single_feature_page_that_trips_gdals_size_ceiling(tmp_path, monkeypatch):
+    # Regression: even page_size=1 (nothing left to halve) used to raise
+    # "GeoJSON object too complex/large" uncaught for one real oversized
+    # RESOLVE biome polygon -- download() must set OGR_GEOJSON_MAX_OBJ_SIZE
+    # before parsing so this succeeds outright, no retry needed.
+    source, _ = _make(tmp_path, page_size=1)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    class _FakeSession:
+        def get(self, url, timeout=None):
+            offset = int(url.split("resultOffset=")[1].split("&")[0])
+            if offset == 0:
+                return _FakeResponse(_oversized_single_polygon_geojson())
+            return _FakeResponse(_feature_geojson(0))  # empty page ends pagination
+
+    output_path = str(tmp_path / "out" / "ecoregions_raw.gpkg")
+    source.download("https://example.test/query?f=geojson", output_path, session=_FakeSession())
+
+    import geopandas as gpd
+
+    gdf = gpd.read_file(output_path, engine="pyogrio")
+    assert len(gdf) == 1
 
 
 def test_download_sleeps_and_retries_same_page_on_rate_limit(tmp_path, monkeypatch):

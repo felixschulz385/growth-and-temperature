@@ -147,6 +147,15 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     _add_step_arg(run_p, required=True)
     _add_selection_args(run_p)
     run_p.add_argument("--override", action="store_true", help="Re-run targets even if already complete")
+    run_p.add_argument(
+        "--ledger", choices=["local", "remote"], default="local",
+        help="FETCH worklist source (--step fetch only, default: local): 'local' crawls the "
+             "source's own origin and downloads what's missing locally, without pushing (push "
+             "separately via `data transfer`). 'remote' skips the crawl and instead clears a "
+             "known backlog from the remote ledger's own belief about what isn't HPC-verified "
+             "yet, downloading from the source's real origin and pushing each file immediately "
+             "after it downloads.",
+    )
     # Dask sizing -- carried over from the old `preprocess run` flags of the
     # same name (docs/design/09-integrated-pipeline.md §8's SourceConfig/
     # PipelineContext replaces the kwargs-smearing, not these CLI knobs).
