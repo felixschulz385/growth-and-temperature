@@ -58,10 +58,20 @@ def is_complete(target: "StepTarget", ledger: "SourceLedger | None" = None) -> b
     `require_remote=True` (docs/design/10-fetch-ledger.md §6: today, only
     MODIS's FETCH targets do, since that's the one step producing output on
     a machine other than the one GRID later reads it from). In that case,
-    also requires *ledger* to confirm HPC-side verification, so a target
+    ledger-confirmed HPC verification is sufficient on its own, so a target
     isn't reported "complete" just because it happens to still be sitting on
-    the machine that produced it. Passing no *ledger* falls back to the
-    local-only check (preserves every existing caller's behavior unchanged)."""
+    the machine that produced it -- but it also doesn't stop being complete
+    once `data transfer` cleans up that local copy after a verified push
+    (`HPCPusher`'s `cleanup_local=True` default, `handle_transfer()`'s own
+    comment: "remote_state='verified' + local_state='missing' ... nothing
+    downstream needs a new state" -- this is the "downstream" that comment
+    means). Requiring local presence *in addition to* remote verification
+    made a verified-but-locally-cleaned-up target look incomplete again on
+    the next `data run --step fetch`, silently re-fetching/re-streaming from
+    the origin something already safely on HPC -- confirmed happening in
+    practice running `data transfer --watch` alongside a live MODIS FETCH.
+    Passing no *ledger* falls back to the local-only check (preserves every
+    existing caller's behavior unchanged)."""
     if target.completion is Completion.NEVER:
         return False
     if target.completion is Completion.PATH_EXISTS:
@@ -73,8 +83,6 @@ def is_complete(target: "StepTarget", ledger: "SourceLedger | None" = None) -> b
 
     if not target.require_remote or ledger is None:
         return local_ok
-    if not local_ok:
-        return False
     from src.data.common.ledger.schema import RemoteState
 
     return ledger.remote_state(target.step.value, target.key) == RemoteState.VERIFIED

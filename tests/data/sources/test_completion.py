@@ -50,12 +50,17 @@ def test_require_remote_without_ledger_falls_back_to_local(tmp_path):
     assert is_complete(target, ledger=None) is True
 
 
-def test_require_remote_false_locally_even_with_ledger_verified(tmp_path, ledger):
-    # Local file missing -- remote verification can't make it "complete".
+def test_require_remote_true_when_verified_even_if_local_missing(tmp_path, ledger):
+    # Local file missing (e.g. `data transfer` cleaned it up after a
+    # verified push, HPCPusher's cleanup_local=True default) -- remote
+    # verification alone is still sufficient. Requiring local presence too
+    # made a verified-but-cleaned-up target look incomplete again on the
+    # next `data run --step fetch`, silently re-fetching from the origin
+    # something already safely on HPC.
     target = _path_exists_target(tmp_path, require_remote=True, exists=False)
     ledger.ensure_artifact("fetch", "2020/h09v05")
     ledger.record_push_batch("fetch", [PushResult(unit_id="2020/h09v05", ok=True)])
-    assert is_complete(target, ledger=ledger) is False
+    assert is_complete(target, ledger=ledger) is True
 
 
 def test_require_remote_false_when_not_yet_verified(tmp_path, ledger):
