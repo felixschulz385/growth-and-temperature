@@ -6,9 +6,17 @@ under `ID = "eog"` with `ALIASES = ("eog_dmsp", "eog_viirs", "eog_dvnl")`
 EogSource.STEPS, aliases=EogSource.ALIASES)` call) — one Python class
 instantiated three times, once per config block, each producing an
 independent `SourceConfig`. Backs config keys **`eog_dmsp`, `eog_viirs`,
-`eog_dvnl`**. Steps: `STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE,
-PipelineStep.GRID)` — identical across all three variants, since it's one
-class. `REQUIRES`: none (not set; defaults to `()`).
+`eog_dvnl`**. Steps: `STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)` --
+PREPARE reprojects directly onto the tiled output (Plan 2's PREPARE+GRID
+merge, docs/design successor to the ledger); there is no separate GRID step
+(the "## GRID" section below describes PREPARE's own behavior under its old
+name and is due a rename, not a description of a currently-real step).
+`REQUIRES`: none (not set; defaults to `()`).
+
+**`eog_dmsp` and `eog_dvnl` are currently disabled**
+(`orchestration/configs/data.yaml`, commented out like `berman_mining`) --
+only `eog_viirs` is wired into the pipeline. Their code paths below are
+still real and correct where described, just not exercised by any config.
 
 Crawl/download logic is in `src/data/sources/eog/crawler.py`
 (`_CrawlerMixin`) and `src/data/sources/eog/session.py` (`_SessionMixin`),
@@ -48,22 +56,58 @@ delegates to the shared `run_fetch()` driver
 HPC/remote transfer target) to be configured — logs a warning and returns
 `False` otherwise.
 
-**Discovery**: `_CrawlerMixin.list_remote_files()` — a Selenium-driven
+**Discovery, DMSP/DVNL** (`has_entrypoints = False`, `list_remote_files()`
+falls through to `_CrawlerMixin`'s own implementation): a Selenium-driven
 recursive crawl of `base_url` (`session.py::_init_selenium_driver` launches
 headless Chrome). Recurses into subdirectories up to `max_depth=8`, with a
 randomized `1 + random()` second delay before loading each directory page
 ("Add small delay to avoid hammering the server", per the code comment).
 Parses Apache-style directory listing HTML (`td.indexcolname` links,
 falling back to all `<a>` tags), yields `(relative_path, file_url)` pairs
-for links whose extension is in `file_extensions`. Requires authentication:
+for links whose extension is in `file_extensions` -- no product-variant
+filter of its own (see VIIRS below for why that matters). Async listing
+(`list_remote_files_async`) runs the synchronous Selenium crawl in a thread
+pool, since Selenium itself isn't async.
+
+**Discovery, VIIRS annual composites** (`has_entrypoints = True` only for
+`source_type == "viirs_annual"`): `eogdata.mines.edu/nighttime_light/
+annual/v21/` is one flat directory mixing the canonical one-per-calendar-
+year composites with intermediate/rolling reprocessing periods (e.g. a
+`201204-201303` entry alongside `201204-201212`) and several product
+variants per period (`average`/`average_masked`/`cf_cvg`/`cvg`/`lit_mask`/
+`maximum`/`median`/`median_masked`/`minimum`) -- the DMSP-style whole-
+directory crawl above has no way to distinguish them, so using it for VIIRS
+would queue every variant of every period. Instead: `VIIRS_YEAR_RANGE`
+(`(2012, 2021)`) is hardcoded rather than discovered
+(`get_all_entrypoints()` returns one `{"year": y}` entrypoint per year), and
+`_viirs_annual_listing()` does one non-recursive page load
+(`_CrawlerMixin._list_single_directory()`) of `base_url`, in-process-cached
+on `self` so all ten years share one crawl/login rather than ten, then
+picks -- per year -- the one file whose period ends in December of that
+year (`_VIIRS_FILENAME_RE`, excludes the rolling/intermediate periods) and
+whose variant is `VIIRS_VARIANT` (`"average_masked"`, the standard masked
+composite used in nightlights economics literature). The *exact* URL (with
+its unpredictable `_c<timestamp>` processing-code suffix) is still
+discovered live, not templated. Because `has_entrypoints = True`, each
+year's result is cached to `_status/entrypoints/<year>.json`
+(`src.data.common.fetch.catalog.required_files()`, the same mechanism
+esacci/acag/ntl_harm/glass already use) -- only the *first* `data summary`/
+`data fetch` after this year range is adopted needs a live (authenticated)
+crawl per year; every run after that reads the cached listing, unless
+explicitly refreshed.
+
+**Authentication** (both discovery paths, plus downloads):
 `_SessionMixin._check_and_handle_login()` fills a login form
 (`https://eogdata.mines.edu/nighttime_light/login/`, fields `#username`/
-`#password`, submit button `#kc-login`) using `EOG_USERNAME`/`EOG_PASSWORD`
-env vars — a missing/unset credential pair only logs a warning at
+`#password`, submit button `#kc-login`) using credentials from
+`src/data/sources/eog/credentials.py::load_eog_credentials()` -- a
+git-ignored `orchestration/secrets/eog.credentials.json`
+(`{"username": ..., "password": ...}`, matching the S&P Global scraper's
+identical `spglobal.credentials.json` convention), falling back to
+`EOG_USERNAME`/`EOG_PASSWORD` environment variables if that file doesn't
+exist. A missing/unset credential pair only logs a warning at
 `EogSource.__init__` time, not a hard failure; the actual login attempt
 raises `ValueError` if both are still unset when a login form is detected.
-Async listing (`list_remote_files_async`) runs the synchronous Selenium
-crawl in a thread pool, since Selenium itself isn't async.
 
 **Download**: `download_file()` navigates the driver to the file URL, then
 polls the shared Selenium download directory for a new, non-`.tmp`/

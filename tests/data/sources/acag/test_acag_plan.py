@@ -1,7 +1,6 @@
-"""AcagSource: ledger-free FETCH/PREPARE (docs/design successor to the
-ledger, Plan 2 PREPARE+GRID merge). PREPARE is planned by a live crawl of
+"""AcagSource: FETCH/PREPARE. PREPARE is planned by a live crawl of
 FETCH's raw output directory; there is no separate GRID step. See
-tests/data/sources/ntl_harm/test_ntl_harm_plan.py for the pilot this mirrors.
+tests/data/sources/ntl_harm/test_ntl_harm_plan.py for the same shape.
 """
 
 import os

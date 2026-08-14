@@ -1,10 +1,9 @@
-"""The FETCH driver: ledger-free. Replaces the old two `ledger_mode`s
-(`"local"`/`"remote"`) with one flow -- FETCH is now purely local-disk, never
-touching HPC at all. `data transfer` (`src/cli/data/handlers.py`) is the only
-thing that talks to the HPC target now; a source's `download:` config no
-longer needs `ledger_mode`/`ledger_push_every`/`tar_max_files`/
-`tar_max_size_mb` (silently ignored via `**_ignored_config` below, so a
-not-yet-cleaned-up config block doesn't error).
+"""The FETCH driver: purely local-disk, never touching HPC at all. `data
+transfer` (`src/cli/data/handlers.py`) is the only thing that talks to the
+HPC target; a source's `download:` config doesn't need `ledger_mode`/
+`ledger_push_every`/`tar_max_files`/`tar_max_size_mb` (silently ignored via
+`**_ignored_config` below, so a not-yet-cleaned-up config block doesn't
+error).
 
 One pass: `catalog.required_files()` enumerates what a source needs (reusing
 its existing `RemoteFileCatalog` crawl surface unchanged -- see that

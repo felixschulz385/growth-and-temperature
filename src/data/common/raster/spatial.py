@@ -416,10 +416,9 @@ class SpatialProcessor:
 
         `source_ds` should already cover `tile.geobox`'s extent plus
         whatever halo the caller's raw-getter reads for edge-effect-free
-        resampling (docs/design successor to the ledger: halo handling is
-        owned by each source's raw-getter, not this method) -- reprojecting
-        a too-small `source_ds` just leaves nodata at the tile's edges,
-        it does not raise.
+        resampling (halo handling is owned by each source's raw-getter, not
+        this method) -- reprojecting a too-small `source_ds` just leaves
+        nodata at the tile's edges, it does not raise.
 
         `region=` mixes an explicit slice per spatial dim with `"auto"` for
         every other dim (typically `time`/`band`) -- `"auto"` resolves by

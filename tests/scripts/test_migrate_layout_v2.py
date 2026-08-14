@@ -141,13 +141,12 @@ def test_do_move_execute_records_failure_without_raising(tmp_path, monkeypatch):
 
 
 def test_migrate_source_moves_fetch_prepare_grid(tmp_path):
-    # gadm's current code no longer declares a separate GRID step (Plan 2's
-    # PREPARE+GRID merge) -- but pre-merge runs may still have real
-    # legacy-layout GRID output on disk, and migrate_grid() migrates it
-    # regardless of what the *current* class's STEPS says (it's keyed off
-    # the static GRID_FILENAME_AND_FAMILY mapping instead -- see
-    # migrate_grid()'s docstring). PipelineStep.GRID is used explicitly here
-    # rather than legacy.STEPS[2], which no longer includes it.
+    # gadm's current code doesn't declare a separate GRID step, but earlier
+    # runs may still have real legacy-layout GRID output on disk, and
+    # migrate_grid() migrates it regardless of what the *current* class's
+    # STEPS says (it's keyed off the static GRID_FILENAME_AND_FAMILY mapping
+    # instead -- see migrate_grid()'s docstring). PipelineStep.GRID is used
+    # explicitly here rather than legacy.STEPS[2], which doesn't include it.
     legacy, v2 = _gadm_pair(tmp_path)
 
     raw_dir = legacy.output_root(legacy.STEPS[0])  # FETCH
@@ -185,9 +184,9 @@ def test_migrate_source_dry_run_leaves_everything_in_place(tmp_path):
 def test_migrate_source_skips_source_with_nothing_to_migrate(tmp_path):
     # gadm is used here (not acag) because GRID_FILENAME_AND_FAMILY still
     # knows about its historical GRID output and gadm-specific sidecars,
-    # even though its current class no longer declares GRID (Plan 2's
-    # PREPARE+GRID merge) -- migrate_grid() migrates by that static mapping,
-    # not the current class's STEPS (see its docstring).
+    # even though its current class doesn't declare GRID -- migrate_grid()
+    # migrates by that static mapping, not the current class's STEPS (see
+    # its docstring).
     legacy, v2 = _gadm_pair(tmp_path)
     tally = MigrationTally()
     migrate_source("gadm", legacy, v2, execute=True, tally=tally)

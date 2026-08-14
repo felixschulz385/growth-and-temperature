@@ -1,7 +1,6 @@
-"""GlassSource: ledger-free FETCH/PREPARE for both the "glass_modis" and
-"glass_avhrr" registered ids (docs/design successor to the ledger, Plan 2
-PREPARE+GRID merge). PREPARE is planned by a live crawl of FETCH's raw
-output directory; there is no separate GRID step. See
+"""GlassSource: FETCH/PREPARE for both the "glass_modis" and "glass_avhrr"
+registered ids. PREPARE is planned by a live crawl of FETCH's raw output
+directory; there is no separate GRID step. See
 tests/data/sources/acag/test_acag_plan.py for the mirrored shape.
 """
 

@@ -1,26 +1,15 @@
 """Harmonized DMSP-VIIRS nighttime lights (Figshare): fetch + prepare.
 
-Pilot source for the ledger-removal PREPARE+GRID merge (Plan 2 successor to
-docs/design/09-integrated-pipeline.md §5): PREPARE now goes straight from a
-year's raw fetched file to the reprojected output, tile by tile
-(`src.data.common.prepare.driver.run_tiled_prepare`), instead of writing an
-intermediate whole-extent-per-year "annual" zarr and then a separate GRID
-step reprojecting the whole extent again. `STEPS` no longer declares GRID.
+PREPARE goes straight from a year's raw fetched file to the reprojected
+output, tile by tile (`src.data.common.prepare.driver.run_tiled_prepare`);
+there is no intermediate whole-extent-per-year "annual" zarr and no separate
+GRID step.
 
-Two behavioural quirks the ledger-based version preserved are now
-superseded, not silently kept:
-
-1. "PREPARE targets in file-insertion order, not sorted by year" no longer
-   applies -- PREPARE is planned by a live crawl of FETCH's raw output
-   directory (`_files_by_year()`, sorted filenames), not a replay of the
-   Figshare listing's discovery order. There is exactly one PREPARE target
-   now (`key="all"`, one tiled output), so there is no longer a per-year
-   target order to preserve either way.
-2. The `.tif > .zip > .tar.gz > .gz` best-file-for-year preference
-   (`_select_best_file_for_year`) is unchanged -- still the opposite
-   direction from acag/esacci's nc4-over-nc, still intentional (module's
-   prior docstring), just now applied during PREPARE planning instead of
-   during the old annual-zarr step.
+PREPARE is planned by a live crawl of FETCH's raw output directory
+(`_files_by_year()`, sorted filenames). There is exactly one PREPARE target
+(`key="all"`, one tiled output). The `.tif > .zip > .tar.gz > .gz`
+best-file-for-year preference (`_select_best_file_for_year`) is the opposite
+direction from acag/esacci's nc4-over-nc, and intentional.
 """
 
 from __future__ import annotations
@@ -223,8 +212,8 @@ class NtlHarmSource(DataSource):
         return year_files[0]
 
     def _files_by_year(self) -> Dict[int, List[str]]:
-        """Live crawl of FETCH's raw output directory -- ledger-free ground
-        truth for which years have a fetched file (see module docstring)."""
+        """Live crawl of FETCH's raw output directory: ground truth for
+        which years have a fetched file (see module docstring)."""
         raw_root = self.output_root(PipelineStep.FETCH)
         if not os.path.isdir(raw_root):
             return {}
@@ -278,9 +267,7 @@ class NtlHarmSource(DataSource):
 
     def _load_year(self, file_path: str, year: int) -> Optional[xr.Dataset]:
         """Open (decompressing if needed) one year's raw file, expanded with
-        a `time` dim -- unchanged from the old annual-PREPARE step's own
-        `_process_data_files`, just no longer written to an intermediate
-        zarr. Handed to every tile's `raw_getter` call for this year
+        a `time` dim. Handed to every tile's `raw_getter` call for this year
         (cached by the caller, see `_execute_prepare`) -- `xr_reproject`
         crops/warps onto each tile's own geobox internally, so passing the
         same whole-year array to every tile is correct, just not the most

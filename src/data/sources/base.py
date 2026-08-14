@@ -10,13 +10,12 @@ from __future__ import annotations
 import abc
 import logging
 import os
-from typing import TYPE_CHECKING, Any, Callable, ClassVar, Optional, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, ClassVar, Protocol, runtime_checkable
 
 from src.data.sources import layout
 from src.data.sources.steps import PipelineStep, StepTarget, TargetSelection, TransferUnit, UnsupportedStepError
 
 if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
     from src.data.pipeline.config import SourceConfig
     from src.data.pipeline.context import PipelineContext
     from src.data.sources.verify import VerificationResult
@@ -114,82 +113,6 @@ class DataSource(abc.ABC):
     @abc.abstractmethod
     def _execute(self, target: StepTarget) -> bool: ...
 
-    def discover(self, step: PipelineStep, selection: TargetSelection) -> list[StepTarget]:
-        """Ground-truth target enumeration for *step* -- what SHOULD exist,
-        derived by live disk/HPC crawl rather than read from the ledger.
-        `reconcile_step` (src/data/sources/reconcile.py) is the only normal
-        caller: it treats this as authoritative and writes the result into
-        the ledger's `artifacts` table, which a ledger-backed `plan()` (via
-        `_plan_from_ledger()` below) then reads back cheaply.
-
-        Default: identical to `plan()`. A source that hasn't split its
-        `_plan_prepare`/`_plan_grid` into a ledger-backed fast path plus a
-        `_discover_prepare`/`_discover_grid` live-crawl counterpart yet still
-        has `plan()` doing that live discovery itself -- so this default
-        keeps returning correct (if uncached) ground truth for it, and nothing
-        breaks for a not-yet-migrated source. A migrated source overrides
-        `_discover()` to call its own `_discover_fetch`/`_discover_prepare`/
-        `_discover_grid` methods instead, mirroring `plan()`/`_plan()`'s
-        existing dispatch shape.
-        """
-        self._require_step(step)
-        return self._discover(step, selection)
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> list[StepTarget]:
-        return self._plan(step, selection)
-
-    def _plan_from_ledger(
-        self,
-        step: PipelineStep,
-        selection: TargetSelection,
-        build_target: "Callable[[ArtifactRow, Any], Optional[StepTarget]]",
-    ) -> "Optional[list[StepTarget]]":
-        """Ledger-backed target enumeration: reads persisted `artifacts` rows
-        for `(self.data_path, step)` and reconstructs each `StepTarget` via
-        *build_target* instead of re-running a live disk crawl every call.
-
-        Returns `None` (not `[]`) when no ledger is configured, or none has
-        been populated yet for this (source, step) -- the signal a source's
-        `_plan_prepare`/`_plan_grid` uses to fall back to
-        `self._discover(step, selection)` (today's exact live-crawl
-        behaviour), so a zero-config setup -- or one that simply hasn't run
-        `data reconcile` for this step yet -- is unaffected by this
-        change rather than silently seeing zero targets.
-
-        `TargetSelection.matches_key` is applied here, generically, since
-        `StepTarget.key` and `artifacts.unit_id` are the same value for
-        every source; `matches_year`/anything needing source-specific key
-        parsing is *build_target*'s responsibility (it has the row's `meta`
-        to work with) -- consistent with every source's existing
-        enumerate-then-filter `_plan_*` pattern.
-
-        *build_target* also receives the open (read-only) `SourceLedger`
-        connection, so a GRID target's `inputs` can be re-derived from the
-        upstream PREPARE step's `local_complete_units()` within the same
-        connection, instead of persisting -- and going stale against --
-        a snapshot of `inputs` at discovery time.
-        """
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
-
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
-            return None
-
-        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
-            rows = ledger.artifacts_for_step(step.value)
-            if not rows:
-                return None
-
-            targets: list[StepTarget] = []
-            for row in rows:
-                if not selection.matches_key(row.unit_id):
-                    continue
-                target = build_target(row, ledger)
-                if target is not None:
-                    targets.append(target)
-        return targets
-
     def _require_step(self, step: PipelineStep) -> None:
         if step not in self.STEPS:
             raise UnsupportedStepError(self.ID, step, self.STEPS)
@@ -216,13 +139,11 @@ class DataSource(abc.ABC):
 
         FETCH is special-cased below (not just left to this coarse default):
         a `RemoteFileCatalog`-backed source's raw FETCH output is many
-        independent per-file artifacts tracked precisely in its own ledger,
-        not one single-directory unit -- generalizing MODIS's own
-        `transfer_units()` override (the one existing finer-grained example)
-        to every other FETCH-capable source, from one place, instead of each
-        of the ~12 non-MODIS sources repeating it. `isinstance(self,
-        RemoteFileCatalog)` mirrors the same runtime check already used at
-        `handle_reconcile` (src/cli/data/handlers.py).
+        independent per-file artifacts, not one single-directory unit --
+        generalizing MODIS's own `transfer_units()` override (the one
+        existing finer-grained example) to every other FETCH-capable source,
+        from one place, instead of each of the ~12 non-MODIS sources
+        repeating it.
         """
         self._require_step(step)
         if step is PipelineStep.FETCH and isinstance(self, RemoteFileCatalog):
@@ -251,11 +172,10 @@ class DataSource(abc.ABC):
         return [TransferUnit(unit_id=step.value, local_path=local_path, remote_path=remote_path)]
 
     def _transfer_units_fetch(self) -> list[TransferUnit]:
-        """FETCH transfer units, ledger-free: one per file actually present
-        under this host's local raw root. FETCH no longer writes per-unit
-        ledger rows at all (`src.data.common.fetch.driver.run_fetch`) -- it's
-        purely local-disk now -- so "locally complete" is just "present on
-        disk", read via one cached directory listing
+        """FETCH transfer units: one per file actually present under this
+        host's local raw root. FETCH is purely local-disk
+        (`src.data.common.fetch.driver.run_fetch`), so "locally complete" is
+        just "present on disk", read via one cached directory listing
         (`src.data.common.fetch.manifest.snapshot_local_listing`), the same
         primitive FETCH itself uses to decide what's still outstanding. This
         is what makes `data transfer --step fetch` push those files, for
@@ -334,8 +254,8 @@ class DataSource(abc.ABC):
     @staticmethod
     def get_file_hash(file_url: str) -> str:
         """`RemoteFileCatalog`'s stable per-file identifier -- an md5 of the
-        remote URL, used as `artifacts.unit_id`/`remote_files.file_hash` in
-        the ledger.
+        remote URL, used as `RequiredFile.unit_id`
+        (`src.data.common.fetch.catalog.required_files`).
 
         Was duplicated byte-for-byte across acag/plad/berman_mining/
         ntl_harm/esacci/misc/_fetch.py/glass/eog before being factored out

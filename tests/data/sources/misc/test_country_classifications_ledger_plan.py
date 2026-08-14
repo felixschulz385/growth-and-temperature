@@ -1,5 +1,4 @@
-"""CountryClassificationsSource: ledger-free FETCH/PREPARE (docs/design
-successor to the ledger, Plan 2 PREPARE+GRID merge). plan() is a bare live
+"""CountryClassificationsSource: FETCH/PREPARE. plan() is a bare live
 `os.path.exists()` check against the raw fetched files -- see
 tests/data/sources/misc/test_gadm_ledger_plan.py's identical shape.
 """

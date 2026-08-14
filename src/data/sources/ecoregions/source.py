@@ -25,19 +25,16 @@ only support raster-cell reducers, no polygon overlay). Written as a tiny
 merge at assembly time, same pattern as `snl_mining`'s admin-count tables and
 `country_classifications`'s `classifications_by_gid0.parquet`. `REQUIRES` on
 gadm's PREPARE (level-3 simplified polygons AND `GID_3_code_mapping.json`,
-both produced by gadm's PREPARE now -- see module docstring in
+both produced by gadm's PREPARE -- see module docstring in
 `src/data/sources/misc/gadm.py`), resolved via
 `layout.output_root()`/`gadm.gid_mapping_path()` directly, never a class
 import (docs/design/09-integrated-pipeline.md §2).
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. `STEPS` no
-longer declares GRID -- both of this source's GRID targets
-(`ecoregions_grid`, `gadm_gid3_dominant`) are now PREPARE targets, each
-independently resumable/executable (`_execute_prepare` dispatches on
-`target.key`, mirroring the old `_execute_grid`). `REQUIRES` is scoped to
-this source's own (merged) PREPARE step now, not GRID; `gadm_gid3_dominant`
-still only appears once gadm's level-3 output actually exists, same
-"appears once its prerequisite is real" behavior as before -- the
+There is no separate GRID step. Both `ecoregions_grid` and
+`gadm_gid3_dominant` are PREPARE targets, each independently
+resumable/executable (`_execute_prepare` dispatches on `target.key`).
+`REQUIRES` is scoped to this source's own PREPARE step; `gadm_gid3_dominant`
+only appears once gadm's level-3 output actually exists, so the
 `ecoregions_grid` target alone runs unblocked before gadm exists.
 
 FETCH pulls straight from RESOLVE's own ArcGIS REST Feature Service --
@@ -142,11 +139,9 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
     ID = "ecoregions"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
-    # gadm's PREPARE now does what used to be its separate GRID step
-    # (simplified level-3 vectors AND GID_3_code_mapping.json) directly
-    # (docs/design successor to the ledger, Plan 2's PREPARE+GRID merge) --
-    # PipelineStep.GRID no longer exists anywhere, scoped to this source's
-    # own (merged) PREPARE step.
+    # gadm's PREPARE builds the simplified level-3 vectors and
+    # GID_3_code_mapping.json directly; PipelineStep.GRID doesn't exist
+    # anywhere. Scoped to this source's own PREPARE step.
     REQUIRES = ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
     DATA_SOURCE_NAME = "ecoregions"
@@ -185,17 +180,6 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` -- see gadm.py's identical
-        `_discover()` for the full rationale. This source's targets are
-        singletons with no year/key selection to apply; `selection` is
-        accepted for interface symmetry only."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -247,8 +231,8 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             # try -- a mid-transfer network failure on a large page (e.g.
             # `IncompleteRead`, confirmed live on a giant continent-spanning
             # biome polygon page) used to propagate straight out of
-            # `download()` uncaught, burning one of `pending_fetch`'s only
-            # `max_attempts=5` ledger-tracked retries -- and each of those
+            # `download()` uncaught, burning one of this unit's limited
+            # `manifest.record_failure` retry attempts -- and each of those
             # restarts this whole method from offset 0, discarding every
             # page already paged through. Treating a network failure the
             # same as a parse failure (halve and retry *this* offset) fixes
@@ -317,8 +301,7 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
     # Phase 2: tiled rasterization (`ecoregions_grid`) and, once GADM's
     # level-3 output exists, the GID_3 dominant-biome table
     # (`gadm_gid3_dominant`) -- two independently resumable/executable
-    # targets, exposed as one merged PREPARE step (Plan 2's PREPARE+GRID
-    # merge, docs/design successor to the ledger).
+    # targets, exposed as one PREPARE step.
 
     def _raw_file_path(self) -> str:
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)

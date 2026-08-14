@@ -1,17 +1,15 @@
-"""Enumerate a FETCH-capable source's required remote files -- the ledger-
-free replacement for `src.data.common.ledger.catalog.refresh()`. Reuses each
+"""Enumerate a FETCH-capable source's required remote files. Reuses each
 source's existing `RemoteFileCatalog` surface
 (`has_entrypoints`/`list_remote_files`/`get_all_entrypoints`/`get_file_hash`,
-`src.data.sources.base`) completely unchanged; only the bookkeeping around
-it (previously a ledger write) changes.
+`src.data.sources.base`) completely unchanged.
 
 Entrypoint-based sources (`has_entrypoints=True`: esacci/acag/ntl_harm/glass)
 crawl one directory listing per entrypoint (e.g. one per year) -- expensive
 enough that re-doing it on every `data fetch` call would be wasteful. Each
 entrypoint's file listing is cached to a small JSON sidecar
-(`_status/entrypoints/<key>.json`), mirroring the ledger's old
-`entrypoints.crawled` flag: an entrypoint already cached is never re-crawled
-unless the caller explicitly asks for a refresh. A zero-file crawl result is
+(`_status/entrypoints/<key>.json`): an entrypoint already cached is never
+re-crawled unless the caller explicitly asks for a refresh. A zero-file
+crawl result is
 deliberately NOT cached, so a transient failure a source swallows internally
 (e.g. a 5xx a crawler treats as "nothing here") gets retried next call
 instead of silently and permanently losing that entrypoint's files.
@@ -31,9 +29,7 @@ ENTRYPOINT_CACHE_SUBDIR = "_status/entrypoints"
 
 
 def entrypoint_key(entrypoint: dict[str, Any]) -> str:
-    """Stable dedup key for an entrypoint dict -- same shape as the old
-    `ledger.store.entrypoint_key()` (`"<year>_<day>"` or `"<year>"`), kept
-    for continuity even though nothing reads the old ledger's keys anymore."""
+    """Stable dedup key for an entrypoint dict: `"<year>_<day>"` or `"<year>"`."""
     if "day" in entrypoint:
         return f"{entrypoint['year']}_{entrypoint['day']}"
     return str(entrypoint["year"])

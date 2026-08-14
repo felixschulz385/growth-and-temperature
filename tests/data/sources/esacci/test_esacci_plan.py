@@ -1,5 +1,4 @@
-"""EsacciSource: ledger-free FETCH/PREPARE (docs/design successor to the
-ledger, Plan 2 PREPARE+GRID merge). See
+"""EsacciSource: FETCH/PREPARE. See
 tests/data/sources/acag/test_acag_plan.py for the mirrored shape.
 """
 

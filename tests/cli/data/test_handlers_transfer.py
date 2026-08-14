@@ -1,17 +1,15 @@
-"""``data transfer``'s push-strategy routing (_push_transfer_units) and
-its ledger-tracked skip-already-verified behavior (handle_transfer) --
-docs/design/10-fetch-ledger.md. No live SSH target needed.
+"""``data transfer``'s push-strategy routing (_push_transfer_units) and its
+skip-already-on-HPC behavior (_run_transfer_pass) -- a direct remote
+existence check (`check_paths_exist`), no local bookkeeping. No live SSH
+target needed.
 """
 
 import argparse
 import os
 import tarfile
 
-import pytest
-
 from src.cli.data.handlers import _push_transfer_units, _run_transfer_pass
 from src.data.common.hpc.push import HPCPusher
-from src.data.common.ledger.store import SourceLedger
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.steps import PipelineStep, TransferUnit
@@ -53,6 +51,18 @@ class _FakeHPCClient:
 
     def check_files_exist(self, remote_paths):
         return {p: self._resolve(p) in self.remote_files for p in remote_paths}
+
+    def check_paths_exist(self, remote_paths):
+        # `[-e]` semantics: a directory counts as existing if any file
+        # under it does, not just an exact match -- mirrors the real
+        # HPCClient.check_paths_exist's directory-aware behavior.
+        result = {}
+        for path in remote_paths:
+            full = self._resolve(path)
+            result[path] = full in self.remote_files or any(
+                f.startswith(full.rstrip("/") + "/") for f in self.remote_files
+            )
+        return result
 
     def execute_command(self, command):
         if command.startswith("find"):
@@ -152,150 +162,120 @@ def test_mixed_files_and_directories_falls_back_to_concurrent_per_unit(tmp_path)
     assert "/remote/base/grid/b.zarr/0.0" in client.remote_files
 
 
-# --- _run_transfer_pass: reconciles both ledger copies, not just push ------
-
-
-class _FakeHPCClientWithLedgerPull(_FakeHPCClient):
-    """`_FakeHPCClient`, but any `.duckdb` pull is served from a real,
-    pre-built remote ledger file -- lets `_run_transfer_pass`'s new
-    `merge_from_remote()` call (src/cli/data/handlers.py) exercise real
-    merge behavior instead of a no-op "no remote copy yet"."""
-
-    def __init__(self, remote_ledger_file: str, base_path="/remote/base"):
-        super().__init__(base_path=base_path)
-        self._remote_ledger_file = remote_ledger_file
-
-    def check_file_exists(self, remote_path):
-        if remote_path.endswith(".duckdb"):
-            return True
-        return super().check_file_exists(remote_path)
-
-    def rsync_transfer(self, source_path, target_path, source_is_local, options, show_progress):
-        if not source_is_local and source_path.endswith(".duckdb"):
-            import shutil
-
-            shutil.copy(self._remote_ledger_file, target_path)
-            self.rsync_calls.append((source_path, target_path, source_is_local))
-            return True, "ok"
-        return super().rsync_transfer(source_path, target_path, source_is_local, options, show_progress)
+# --- _run_transfer_pass: skip-check is a direct remote existence check ----
 
 
 class _FakeSource:
     """Minimal stand-in exposing exactly what `_run_transfer_pass` touches:
-    `transfer_units()`, `data_path`, `cfg.raw`, `ctx.staging_dir`/
-    `ctx.local_index_dir`."""
+    `transfer_units()`, `cfg.raw`."""
 
     def __init__(self, ctx, cfg, units):
         self.ctx = ctx
         self.cfg = cfg
         self._units = units
 
-    @property
-    def data_path(self):
-        return self.cfg.data_path
-
     def transfer_units(self, step):
         return self._units
 
 
-def test_run_transfer_pass_merges_remote_ledger_before_pushing_local_back(tmp_path):
-    # A row `record_push_batch` below never touches, representing state some
-    # OTHER machine already pushed and recorded remotely -- if
-    # `_run_transfer_pass` only overwrites remote from local (the old
-    # behavior), this row is invisible to it; if it merges first, this row
-    # ends up in the LOCAL ledger too by the time the call returns.
-    remote_ledger_file = str(tmp_path / "remote.duckdb")
-    with SourceLedger.open(remote_ledger_file, data_path="fake") as seed:
-        seed.ensure_artifact("prepare", "other-machine-unit", local_path="/elsewhere/x")
-        seed.set_local_state("prepare", "other-machine-unit", "complete")
-        seed.set_remote_state("prepare", "other-machine-unit", "verified")
-
+def _make_source(tmp_path, units):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"),
         staging_dir=str(tmp_path / "staging"), ssh_target="user@host:/remote/base",
     )
     cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})
+    return _FakeSource(ctx, cfg, units)
+
+
+def test_run_transfer_pass_pushes_pending_units(tmp_path):
     local_path = _write_file(str(tmp_path / "grid" / "a.tif"))
     units = [TransferUnit(unit_id="a", local_path=local_path, remote_path="grid/a.tif")]
-    source = _FakeSource(ctx, cfg, units)
-
-    client = _FakeHPCClientWithLedgerPull(remote_ledger_file)
-    args = argparse.Namespace(override=False, source="fake")
-    local_ledger_path = str(tmp_path / "index" / "fake.duckdb")
-
-    results = _run_transfer_pass(args, source, PipelineStep.GRID, local_ledger_path, client)
-    assert len(results) == 1
-    assert results[0].ok is True
-
-    with SourceLedger.open(local_ledger_path, data_path="fake", read_only=True) as local_ledger:
-        # This pass's own push, recorded locally as always.
-        assert local_ledger.remote_state("grid", "a") == "verified"
-        # The OTHER machine's row, only present here because merge_from_remote()
-        # ran before push_to_remote() re-uploaded the local copy.
-        assert local_ledger.local_state("prepare", "other-machine-unit") == "complete"
-        assert local_ledger.remote_state("prepare", "other-machine-unit") == "verified"
-
-
-def test_run_transfer_pass_resets_local_state_after_cleanup_on_success(tmp_path):
-    # HPCPusher's cleanup_local=True (the default, always used by
-    # _push_transfer_units) deletes the local file once a push succeeds --
-    # local_state must reflect that instead of still saying 'complete' for
-    # bytes that no longer exist on disk.
-    ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"),
-        staging_dir=str(tmp_path / "staging"), ssh_target="user@host:/remote/base",
-    )
-    cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})
-    local_path = _write_file(str(tmp_path / "grid" / "a.tif"))
-    units = [TransferUnit(unit_id="a", local_path=local_path, remote_path="grid/a.tif")]
-    source = _FakeSource(ctx, cfg, units)
+    source = _make_source(tmp_path, units)
 
     client = _FakeHPCClient()
     args = argparse.Namespace(override=False, source="fake")
-    local_ledger_path = str(tmp_path / "index" / "fake.duckdb")
 
-    results = _run_transfer_pass(args, source, PipelineStep.GRID, local_ledger_path, client)
+    results = _run_transfer_pass(args, source, PipelineStep.GRID, client)
+    assert len(results) == 1
     assert results[0].ok is True
-    assert not os.path.exists(local_path)  # HPCPusher really did clean it up
-
-    with SourceLedger.open(local_ledger_path, data_path="fake", read_only=True) as local_ledger:
-        assert local_ledger.local_state("grid", "a") == "missing"
-        assert local_ledger.remote_state("grid", "a") == "verified"
+    assert "/remote/base/grid/a.tif" in client.remote_files
 
 
-def test_run_transfer_pass_leaves_local_state_alone_on_push_failure(tmp_path):
+def test_run_transfer_pass_skips_units_that_already_exist_remotely(tmp_path):
+    local_path = _write_file(str(tmp_path / "grid" / "a.tif"))
+    units = [TransferUnit(unit_id="a", local_path=local_path, remote_path="grid/a.tif")]
+    source = _make_source(tmp_path, units)
+
+    client = _FakeHPCClient()
+    client.remote_files.add("/remote/base/grid/a.tif")  # already pushed
+    args = argparse.Namespace(override=False, source="fake")
+
+    results = _run_transfer_pass(args, source, PipelineStep.GRID, client)
+    assert results == []
+    assert client.rsync_calls == []  # never re-pushed
+    assert os.path.exists(local_path)  # never touched, so never cleaned up
+
+
+def test_run_transfer_pass_skip_check_is_directory_aware(tmp_path):
+    # A directory-shaped unit (e.g. a Zarr store) already fully present
+    # remotely must be recognized as existing even though no single remote
+    # path exactly matches `remote_path` itself -- `[-f]`-only semantics
+    # would report it missing and re-push it on every pass.
+    local_dir = str(tmp_path / "grid" / "acag.zarr")
+    _write_file(os.path.join(local_dir, "0.0"))
+    units = [TransferUnit(unit_id="all", local_path=local_dir, remote_path="grid/acag.zarr")]
+    source = _make_source(tmp_path, units)
+
+    client = _FakeHPCClient()
+    client.remote_files.add("/remote/base/grid/acag.zarr/0.0")  # already pushed
+    args = argparse.Namespace(override=False, source="fake")
+
+    results = _run_transfer_pass(args, source, PipelineStep.GRID, client)
+    assert results == []
+    assert client.rsync_calls == []
+
+
+def test_run_transfer_pass_override_repushes_existing_units(tmp_path):
+    local_path = _write_file(str(tmp_path / "grid" / "a.tif"))
+    units = [TransferUnit(unit_id="a", local_path=local_path, remote_path="grid/a.tif")]
+    source = _make_source(tmp_path, units)
+
+    client = _FakeHPCClient()
+    client.remote_files.add("/remote/base/grid/a.tif")
+    args = argparse.Namespace(override=True, source="fake")
+
+    results = _run_transfer_pass(args, source, PipelineStep.GRID, client)
+    assert len(results) == 1
+    assert results[0].ok is True
+    assert len(client.rsync_calls) == 1
+
+
+def test_run_transfer_pass_cleans_up_local_on_success(tmp_path):
+    local_path = _write_file(str(tmp_path / "grid" / "a.tif"))
+    units = [TransferUnit(unit_id="a", local_path=local_path, remote_path="grid/a.tif")]
+    source = _make_source(tmp_path, units)
+
+    client = _FakeHPCClient()
+    args = argparse.Namespace(override=False, source="fake")
+
+    results = _run_transfer_pass(args, source, PipelineStep.GRID, client)
+    assert results[0].ok is True
+    assert not os.path.exists(local_path)  # HPCPusher's cleanup_local=True default
+
+
+def test_run_transfer_pass_leaves_local_file_alone_on_push_failure(tmp_path):
     class _FailingHPCClient(_FakeHPCClient):
         def rsync_transfer(self, source_path, target_path, source_is_local, options, show_progress):
             self.rsync_calls.append((source_path, target_path, source_is_local))
             return False, "simulated rsync failure"
 
-    ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"),
-        staging_dir=str(tmp_path / "staging"), ssh_target="user@host:/remote/base",
-    )
-    cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})
     local_path = _write_file(str(tmp_path / "grid" / "a.tif"))
     units = [TransferUnit(unit_id="a", local_path=local_path, remote_path="grid/a.tif")]
-    source = _FakeSource(ctx, cfg, units)
-
-    local_ledger_path = str(tmp_path / "index" / "fake.duckdb")
-    # Seed local_state='complete' up front -- the realistic pre-push state
-    # (the file genuinely exists) -- so a failing push can be told apart
-    # from "just left at the schema default", which a fresh row would also
-    # read as 'missing' for reasons unrelated to the fix under test.
-    with SourceLedger.open(local_ledger_path, data_path="fake") as seed:
-        seed.ensure_artifact("grid", "a", local_path=local_path)
-        seed.set_local_state("grid", "a", "complete")
+    source = _make_source(tmp_path, units)
 
     client = _FailingHPCClient()
     args = argparse.Namespace(override=False, source="fake")
 
-    results = _run_transfer_pass(args, source, PipelineStep.GRID, local_ledger_path, client)
+    results = _run_transfer_pass(args, source, PipelineStep.GRID, client)
     assert results[0].ok is False
     assert os.path.exists(local_path)  # never cleaned up -- push failed
-
-    with SourceLedger.open(local_ledger_path, data_path="fake", read_only=True) as local_ledger:
-        # Must NOT have been reset -- the (ok=False) result is filtered out
-        # of the local_state reset, since the file is genuinely still there.
-        assert local_ledger.local_state("grid", "a") == "complete"
-        assert local_ledger.remote_state("grid", "a") == "failed"

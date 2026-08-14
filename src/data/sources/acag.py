@@ -1,12 +1,10 @@
 """ACAG (Atmospheric Composition Analysis Group) PM2.5: fetch + prepare.
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge, applied here
-after the `ntl_harm`/`commodity_prices` pilots (module docstrings there) --
-this is the shape every other bulk-archive raster source (esacci, eog,
-glass) now follows too. PREPARE reprojects straight from each year's raw
+This is the shape every other bulk-archive raster source (esacci, eog,
+glass) follows too. PREPARE reprojects straight from each year's raw
 .nc/.nc4 file to the tiled output (`src.data.common.prepare.driver.
 run_tiled_prepare`); there is no intermediate whole-extent annual zarr and
-no separate GRID step (`STEPS` no longer declares it).
+no separate GRID step.
 """
 
 from __future__ import annotations
@@ -213,8 +211,8 @@ class AcagSource(DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), relative_path)
 
     def _files_by_year(self) -> Dict[int, List[str]]:
-        """Live crawl of FETCH's raw output directory -- ledger-free ground
-        truth for which years have a fetched file."""
+        """Live crawl of FETCH's raw output directory: ground truth for
+        which years have a fetched file."""
         raw_root = self.output_root(PipelineStep.FETCH)
         if not os.path.isdir(raw_root):
             return {}
@@ -229,7 +227,7 @@ class AcagSource(DataSource):
 
     @staticmethod
     def _select_best_file_for_year(candidates: List[str]) -> str:
-        """Prefer .nc4 over .nc -- the order the old ledger-backed discovery used."""
+        """Prefer .nc4 over .nc."""
         return next(
             (f for f in candidates if f.lower().endswith(".nc4")),
             next((f for f in candidates if f.lower().endswith(".nc")), candidates[0]),

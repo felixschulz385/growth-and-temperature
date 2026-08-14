@@ -10,13 +10,12 @@ config-key string matching. Ports the OSM-specific slice of
 stage_2/osm/land_mask.zarr` -- so `src/data/assemble/constants.py` needs no
 edit.
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. OSM's final
-output is one whole-extent `rasterize()` call (no time dimension, no
-per-year resumability need), so unlike the tiled raster sources
+OSM's final output is one whole-extent `rasterize()` call (no time dimension,
+no per-year resumability need), so unlike the tiled raster sources
 (acag/esacci/eog/ntl_harm/glass) this doesn't route through
 `src.data.common.prepare.driver.run_tiled_prepare` -- it's simply one
 PREPARE target that extracts+simplifies the vector, then rasterizes it, in
-one call. `STEPS` no longer declares GRID.
+one call. There is no separate GRID step.
 """
 
 from __future__ import annotations

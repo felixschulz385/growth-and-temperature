@@ -1,9 +1,9 @@
 """process_tile_region(): per-output-tile reprojection + region write, the
-new compute path Plan 2's PREPARE step uses instead of `write_year_to_zarr`'s
-whole-extent-per-year write. Regions must land exactly on the pre-created
-zarr's chunk boundaries (chunk_size == tile_size) and the tile-by-tile result
-must match a single whole-extent write of the same source data byte-for-byte
--- this is a bookkeeping/execution-shape change, not a compute change.
+compute path PREPARE uses to write per-(tile, year) regions rather than
+`write_year_to_zarr`'s whole-extent-per-year write. Regions must land exactly
+on the pre-created zarr's chunk boundaries (chunk_size == tile_size) and the
+tile-by-tile result must match a single whole-extent write of the same
+source data byte-for-byte.
 """
 
 import numpy as np

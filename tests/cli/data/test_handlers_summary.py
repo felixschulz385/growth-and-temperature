@@ -97,9 +97,9 @@ def _fake_config(tmp_path):
 
 
 def test_handle_summary_reports_verified_dash_when_grid_has_no_targets(tmp_path, monkeypatch, capsys):
-    # No raw fetch file -> PREPARE (gadm's own final, verifiable step now --
-    # Plan 2's PREPARE+GRID merge) plans no targets. "verified" is only
-    # meaningful once it has at least one target.
+    # No raw fetch file -> PREPARE (gadm's own final, verifiable step)
+    # plans no targets. "verified" is only meaningful once it has at least
+    # one target.
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
@@ -110,9 +110,9 @@ def test_handle_summary_reports_verified_dash_when_grid_has_no_targets(tmp_path,
 
 
 def test_handle_summary_reports_verified_pending_when_prepare_target_exists_but_incomplete(tmp_path, monkeypatch, capsys):
-    # A raw fetch file exists -> PREPARE (gadm's own single remaining step,
-    # Plan 2's PREPARE+GRID merge) plans a real target immediately, but its
-    # output doesn't exist yet -> "verified" is "pending", not "-".
+    # A raw fetch file exists -> PREPARE (gadm's own single remaining step)
+    # plans a real target immediately, but its output doesn't exist yet ->
+    # "verified" is "pending", not "-".
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
@@ -147,10 +147,9 @@ def test_handle_summary_fetch_column_reports_mismatched_filename_not_generic_cou
 
 
 def _complete_gadm_grid_target(tmp_path, monkeypatch):
-    """Plans a real (merged) PREPARE target for gadm -- its own final,
-    verifiable output, now that PREPARE does what used to be GRID's job
-    (Plan 2's PREPARE+GRID merge, docs/design successor to the ledger) --
-    and marks its output complete, without writing an actual zarr store --
+    """Plans a real PREPARE target for gadm -- its own final, verifiable
+    output -- and marks its output complete, without writing an actual
+    zarr store --
     `source.verify_grid()` is monkeypatched separately per-test, so nothing
     ever tries to open the (nonexistent) store's contents."""
     from src.data.sources.steps import mark_complete

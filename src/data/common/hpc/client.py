@@ -202,6 +202,40 @@ class HPCClient:
                 results[line[len("MISSING:"):]] = False
         return results
 
+    def check_paths_exist(self, remote_paths: List[str]) -> Dict[str, bool]:
+        """Existence check for a mix of files and directories, in one round
+        trip -- `check_files_exist`'s `[ -f ... ]` reports a directory (e.g.
+        an already-pushed Zarr store) as missing even when it's fully
+        present, so callers that need to skip already-transferred
+        directory-shaped output must use this (`[ -e ... ]`) instead."""
+        if not remote_paths:
+            return {}
+
+        resolved = {}
+        for path in remote_paths:
+            if not path.startswith("/") and self.base_path:
+                resolved[path] = f"{self.base_path}/{path}"
+            else:
+                resolved[path] = path
+
+        script = " ; ".join(
+            f"if [ -e '{full}' ]; then echo 'EXISTS:{orig}'; else echo 'MISSING:{orig}'; fi"
+            for orig, full in resolved.items()
+        )
+        success, stdout, stderr = self.execute_command(script)
+        if not success:
+            logger.debug(f"Command failed to check path existence: {stderr}")
+            return {path: False for path in remote_paths}
+
+        results = {path: False for path in remote_paths}
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("EXISTS:"):
+                results[line[len("EXISTS:"):]] = True
+            elif line.startswith("MISSING:"):
+                results[line[len("MISSING:"):]] = False
+        return results
+
     def get_file_info(self, remote_path: str) -> Dict[str, Any]:
         """
         Get information about a file on the HPC system.

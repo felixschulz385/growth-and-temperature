@@ -1,5 +1,4 @@
-"""EogSource: ledger-free FETCH/PREPARE (docs/design successor to the
-ledger, Plan 2 PREPARE+GRID merge). See
+"""EogSource: FETCH/PREPARE. See
 tests/data/sources/acag/test_acag_plan.py for the mirrored shape.
 
 Also covers the missing-method bug fix (see module docstring in
@@ -22,6 +21,18 @@ _BASE_URLS = {
     "dvnl": "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/",
 }
 _DATA_PATHS = {"dmsp": "eog/dmsp", "viirs": "eog/viirs", "dvnl": "eog/dvnl"}
+
+
+@pytest.fixture(autouse=True)
+def _no_real_eog_credentials_file(monkeypatch, tmp_path):
+    """Guard every test in this module against a real
+    orchestration/secrets/eog.credentials.json existing on the machine
+    running these tests -- credential resolution here must be driven by
+    EOG_USERNAME/EOG_PASSWORD only, never ambient host state (see
+    src/data/sources/eog/credentials.py)."""
+    from src.data.sources.eog import credentials as eog_credentials
+
+    monkeypatch.setattr(eog_credentials, "DEFAULT_CREDENTIALS_PATH", tmp_path / "unused-eog-credentials.json")
 
 
 def _make_source(tmp_path, source_type="viirs", layout="legacy", **raw):

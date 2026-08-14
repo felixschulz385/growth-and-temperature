@@ -1,5 +1,4 @@
-"""OsmSource: ledger-free FETCH/PREPARE (docs/design successor to the
-ledger, Plan 2 PREPARE+GRID merge). plan() is a bare live `os.path.exists()`
+"""OsmSource: FETCH/PREPARE. plan() is a bare live `os.path.exists()`
 check against the raw fetched file -- see
 tests/data/sources/acag/test_acag_plan.py's non-tiled counterpart
 (commodity_prices) for the same shape.

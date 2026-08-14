@@ -1,10 +1,7 @@
 """EOG (DMSP/VIIRS/DVNL) nighttime lights: fetch + prepare.
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge, applied
-here following `acag`/`esacci`/`ntl_harm` (module docstrings there). PREPARE
-reprojects straight from each year's raw fetched file to the tiled output;
-there is no intermediate annual zarr and no separate GRID step (`STEPS` no
-longer declares it).
+PREPARE reprojects straight from each year's raw fetched file to the tiled
+output; there is no intermediate annual zarr and no separate GRID step.
 
 **Real bug fixed here, not silently ported** (unchanged from the original
 migration): the old `EOGPreprocessor._generate_annual_targets` called
@@ -35,6 +32,45 @@ drives PREPARE's output variable name and its output filename/`v2_family`.
 Now derived from `cfg.source_id` directly, the same authoritative signal
 `GlassSource.__init__` already uses for its own MODIS/AVHRR variant
 (`data_source_kind`).
+
+**VIIRS annual composites: hardcoded year range, per-year discovery, not a
+full recursive crawl.** `eogdata.mines.edu/nighttime_light/annual/v21/` is
+one flat directory mixing the canonical one-per-calendar-year composites
+with intermediate/rolling reprocessing periods (e.g. a `201204-201303`
+entry alongside `201204-201212`) and, per file, several product variants
+(`average`/`average_masked`/`cf_cvg`/`cvg`/`lit_mask`/`maximum`/`median`/
+`median_masked`/`minimum`). The old whole-directory recursive crawl
+(`_CrawlerMixin.list_remote_files()`, still used for DMSP) had no variant
+filter at all -- it would have queued every variant of every period for
+download, keyed only on `file_extensions`. `VIIRS_YEAR_RANGE` (2012-2021)
+is hardcoded rather than discovered (`get_all_entrypoints()`), each year
+mapped, per `data summary`/`data fetch`, to the one file whose period ends
+in December of that year (excludes the rolling/intermediate periods) and
+whose variant is `VIIRS_VARIANT` (`average_masked` -- the standard masked
+composite used in nightlights economics literature, not raw `average` or
+any of the coverage/min/max/median variants). The *exact* URL (with its
+unpredictable `_c<timestamp>` processing-code suffix) is still discovered
+live, not templated -- `has_entrypoints=True` for this source_type routes
+through the same per-entrypoint listing cache
+(`src.data.common.fetch.catalog.required_files()`,
+`_status/entrypoints/<year>.json`) esacci/acag/ntl_harm/glass already use,
+so only the *first* `data summary`/`data fetch` after this file range is
+adopted needs a live (authenticated) crawl per year; every run after that
+reads the cached listing, unless explicitly refreshed.
+
+**DMSP and DVNL are disabled** (`orchestration/configs/data.yaml`, commented
+out like `berman_mining`) -- only VIIRS annual composites are wired into the
+pipeline currently. Their code paths (the plain recursive crawl, `source_type`
+derivation) are left intact, not deleted, so re-enabling either later is a
+config uncomment, not a rewrite.
+
+**Credentials**: `src/data/sources/eog/credentials.py::load_eog_credentials()`
+-- a git-ignored `orchestration/secrets/eog.credentials.json`
+(`{"username": ..., "password": ...}`), falling back to
+`EOG_USERNAME`/`EOG_PASSWORD` environment variables if that file doesn't
+exist. Replaces a bare `os.environ.get(...)` read that made every
+credentialed EOG operation (including a live VIIRS listing crawl, above)
+depend on the calling shell already having those two variables exported.
 """
 
 from __future__ import annotations
@@ -54,6 +90,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.eog.crawler import _CrawlerMixin
+from src.data.sources.eog.credentials import load_eog_credentials
 from src.data.sources.eog.session import _SessionMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
@@ -77,7 +114,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "eog"  # matches old EOGDataSource: literally "eog", not per-alias
-    has_entrypoints = False
 
     EOG_LOGIN_URL = "https://eogdata.mines.edu/nighttime_light/login/"
 
@@ -85,6 +121,27 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     #: way that must invalidate every already-`complete` tile's status and
     #: force a full reprocess (`run_tiled_prepare`'s `processing_version`).
     PROCESSING_VERSION = "2-tiled"
+
+    #: VIIRS annual-composite years worth fetching (module docstring) --
+    #: hardcoded rather than discovered, since the directory mixes canonical
+    #: composites with intermediate/rolling reprocessing periods with no
+    #: reliable way to tell them apart except by which December they end in
+    #: (see _viirs_annual_listing()).
+    VIIRS_YEAR_RANGE = (2012, 2021)
+
+    #: The VNL product variant fetched -- masked composite (background/
+    #: fire/aurora-corrected), the standard used in nightlights economics
+    #: literature, not raw "average" or the coverage/min/max/median variants
+    #: also present in the same directory.
+    VIIRS_VARIANT = "average_masked"
+
+    #: e.g. "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average_masked.dat.tif.gz"
+    #: -- verified live against eogdata.mines.edu/nighttime_light/annual/v21/.
+    _VIIRS_FILENAME_RE = re.compile(
+        r"VNL_v\d+_\w+_(?P<start_year>\d{4})(?P<start_month>\d{2})-"
+        r"(?P<end_year>\d{4})(?P<end_month>\d{2})_global_\w+_c\d+"
+        r"\.(?P<variant>[a-z_]+)\.dat\.tif(?:\.gz)?$"
+    )
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -97,10 +154,12 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         self.file_extensions: List[str] = cfg.raw.get("file_extensions") or [".tif", ".tgz", ".tar.gz", ".gz"]
         self.resampling = cfg.raw.get("resampling", "sum")
 
-        self._username = os.environ.get("EOG_USERNAME")
-        self._password = os.environ.get("EOG_PASSWORD")
+        self._username, self._password = load_eog_credentials(cfg.raw.get("credentials_path"))
         if not self._username or not self._password:
-            logger.warning("EOG credentials not set in environment variables (EOG_USERNAME, EOG_PASSWORD)")
+            logger.warning(
+                "EOG credentials not set (orchestration/secrets/eog.credentials.json or "
+                "EOG_USERNAME/EOG_PASSWORD environment variables)"
+            )
         self._driver = None
         self._download_dir = None
         self._is_logged_in = False
@@ -108,6 +167,12 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         self.source_type = self._derive_source_type()
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"eog_{self.source_type}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+
+        #: In-process cache for _viirs_annual_listing() -- populated by one
+        #: crawl the first time any year's entrypoint is requested, reused
+        #: for the rest (module docstring: avoids 10 separate logins to
+        #: populate all 10 years' entrypoint caches in one run).
+        self._viirs_listing_cache: Optional[Dict[int, List[Tuple[str, str]]]] = None
 
         from src.data.common import tiling
 
@@ -149,8 +214,70 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
         return None  # matches old EOGDataSource: entrypoints not used
 
+    @property
+    def has_entrypoints(self) -> bool:
+        """VIIRS annual composites go through the per-year, cached listing
+        below (module docstring) -- DMSP/DVNL (disabled sources) keep the
+        plain whole-directory recursive crawl (`_CrawlerMixin`'s own
+        `list_remote_files()`, unchanged), which needs no entrypoints."""
+        return self.source_type == "viirs_annual"
+
     def get_all_entrypoints(self) -> List[Dict[str, Any]]:
-        raise NotImplementedError  # matches BaseDataSource's unoverridden default; never called (has_entrypoints=False)
+        if self.source_type != "viirs_annual":
+            return []
+        start, end = self.VIIRS_YEAR_RANGE
+        return [{"year": year} for year in range(start, end + 1)]
+
+    def list_remote_files(self, entrypoint: Optional[dict] = None):
+        if self.source_type != "viirs_annual" or entrypoint is None:
+            yield from super().list_remote_files(entrypoint)
+            return
+        year = entrypoint["year"]
+        yield from self._viirs_annual_listing().get(year, [])
+
+    def _viirs_annual_listing(self) -> Dict[int, List[Tuple[str, str]]]:
+        """One Selenium page load of `base_url` (`_CrawlerMixin.
+        _list_single_directory()` -- non-recursive, no `file_extensions`
+        filter of its own), parsed and filtered here for `VIIRS_VARIANT`
+        entries whose period ends in December of their own start year (the
+        canonical annual composite -- excludes intermediate/rolling
+        reprocessing periods that live in the same directory, e.g.
+        `201204-201303`). Cached on `self` so every year in
+        `get_all_entrypoints()` shares one crawl/login instead of ten."""
+        if self._viirs_listing_cache is not None:
+            return self._viirs_listing_cache
+
+        listing: Dict[int, List[Tuple[str, str]]] = {}
+        start, end = self.VIIRS_YEAR_RANGE
+        self._init_selenium_driver()
+        try:
+            entries = self._list_single_directory(self.base_url)
+        finally:
+            self._close_selenium_driver()
+
+        for href, full_url in entries:
+            match = self._VIIRS_FILENAME_RE.search(href)
+            if not match:
+                continue
+            if match.group("variant") != self.VIIRS_VARIANT:
+                continue
+            if match.group("end_month") != "12":
+                continue
+            year = int(match.group("end_year"))
+            if not (start <= year <= end):
+                continue
+            listing.setdefault(year, []).append((href, full_url))
+
+        for year, matches in listing.items():
+            if len(matches) > 1:
+                logger.warning(
+                    "Multiple %s candidates matched EOG VIIRS year %d: %s -- using the first",
+                    self.VIIRS_VARIANT, year, [m[0] for m in matches],
+                )
+                listing[year] = matches[:1]
+
+        self._viirs_listing_cache = listing
+        return listing
 
     def download_file(self, file_url, output_path, driver=None):
         """Ported from EOGDataSource.download_file -- polls the shared
@@ -332,8 +459,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
     def _files_by_year(self) -> Dict[int, List[str]]:
-        """Live crawl of FETCH's raw output directory -- ledger-free ground
-        truth for which years have a fetched file."""
+        """Live crawl of FETCH's raw output directory: ground truth for
+        which years have a fetched file."""
         raw_root = self.output_root(PipelineStep.FETCH)
         if not os.path.isdir(raw_root):
             return {}

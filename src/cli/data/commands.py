@@ -6,12 +6,10 @@ Sub-commands
 list       List registered sources, their aliases, steps, and requirements.
 summary    Print a concise data-availability overview across all sources/steps.
 plan       Print the target list for a (source, step) without running anything.
-index      Build/refresh a source's completion index (FETCH-capable sources only).
-reconcile  Rebuild a source's ledger from real on-disk/HPC filesystem state.
 run        Execute a (source, step)'s pending targets.
 transfer   Push a step's local output to the HPC target over SSH.
 
-docs/design/09-integrated-pipeline.md §8, docs/design/10-fetch-ledger.md.
+docs/design/09-integrated-pipeline.md §8.
 """
 
 from __future__ import annotations
@@ -52,7 +50,6 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     from .handlers import (
         handle_list,
         handle_plan,
-        handle_reconcile,
         handle_run,
         handle_summary,
         handle_transfer,
@@ -120,29 +117,6 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
     _add_step_arg(plan_p, required=True)
     _add_selection_args(plan_p)
     plan_p.set_defaults(func=handle_plan)
-
-    # ── reconcile ──────────────────────────────────────────────────────────
-    reconcile_p = sub.add_parser(
-        "reconcile",
-        help="Rebuild a source's ledger from real on-disk/HPC filesystem state",
-        description=(
-            "One-time/occasional bootstrap: reconcile a source's DuckDB ledger against "
-            "what's actually on disk and (if configured) on the HPC target, rather than "
-            "trusting the ledger's own prior state (docs/design/10-fetch-ledger.md §5)."
-        ),
-    )
-    add_logging_args(reconcile_p)
-    add_config_arg(reconcile_p)
-    add_source_arg(reconcile_p)
-    reconcile_p.add_argument(
-        "--step",
-        choices=["prepare", "grid", "all"],
-        default="all",
-        help="Restrict reconciliation to one step (default: every PREPARE/GRID step the source "
-             "implements -- FETCH has nothing to reconcile: it's ledger-free, always derived live "
-             "from a directory listing).",
-    )
-    reconcile_p.set_defaults(func=handle_reconcile)
 
     # ── run ────────────────────────────────────────────────────────────────
     run_p = sub.add_parser("run", help="Execute a (source, step)'s pending targets")

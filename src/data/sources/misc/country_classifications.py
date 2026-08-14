@@ -7,18 +7,16 @@ deliberately (not a 4-way split) because they're joined into one
 `iso3`-keyed table; see the design doc for the full reasoning and the
 recorded escape hatch to split further later.
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. `STEPS` no
-longer declares GRID -- `_execute_prepare` now builds the joined
-`classifications.parquet` (still written as a real, standalone artifact:
+There is no separate GRID step -- `_execute_prepare` builds the joined
+`classifications.parquet` (written as a real, standalone artifact:
 `src/analysis/subsets/resolve.py` reads it directly by its own iso3 key, not
 just as this source's internal intermediate) and then maps it onto gadm's
 `GID_0` ids in the same call. `REQUIRES` on gadm's **PREPARE** output --
-gadm's PREPARE now produces `GID_0_code_mapping.json` directly (gadm's own
-module docstring) -- is scoped to this source's own (now merged) PREPARE
-step, so FETCH runs unblocked before gadm exists, but PREPARE itself must
-wait for it.
+gadm's PREPARE produces `GID_0_code_mapping.json` directly (gadm's own
+module docstring) -- is scoped to this source's own PREPARE step, so FETCH
+runs unblocked before gadm exists, but PREPARE itself must wait for it.
 
-**No longer rasterized.** Every classification value (HDI tier, World Bank
+**Not rasterized.** Every classification value (HDI tier, World Bank
 income group) is constant across all of a country's pixels -- it varies only
 by `GID_0`, never by pixel location -- so this writes a tiny `GID_0`-keyed
 parquet table instead of a full pixel-grid zarr. Assembly merges it directly
@@ -135,8 +133,7 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
     def _classifications_path(self) -> str:
         """The joined-but-not-yet-GID_0-mapped intermediate -- a real,
         externally-read artefact (module docstring), not internal
-        bookkeeping, so it keeps this exact stage_1 path regardless of the
-        PREPARE+GRID merge."""
+        bookkeeping, so it keeps this exact stage_1 path."""
         return os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet")
 
     def _output_path(self) -> str:

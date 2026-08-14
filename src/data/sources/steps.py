@@ -12,10 +12,7 @@ from __future__ import annotations
 import enum
 import os
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Mapping, Sequence
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import SourceLedger
+from typing import Any, Mapping, Sequence
 
 
 class PipelineStep(enum.StrEnum):
@@ -53,82 +50,16 @@ class Completion(enum.StrEnum):
     NEVER = "never"
 
 
-def is_complete(target: "StepTarget", ledger: "SourceLedger | None" = None) -> bool:
-    """Local-disk completion, same as always -- unless *target* declares
-    `require_remote=True` (docs/design/10-fetch-ledger.md §6: today, only
-    MODIS's FETCH targets do, since that's the one step producing output on
-    a machine other than the one GRID later reads it from). In that case,
-    ledger-confirmed HPC verification is sufficient on its own, so a target
-    isn't reported "complete" just because it happens to still be sitting on
-    the machine that produced it -- but it also doesn't stop being complete
-    once `data transfer` cleans up that local copy after a verified push
-    (`HPCPusher`'s `cleanup_local=True` default, `handle_transfer()`'s own
-    comment: "remote_state='verified' + local_state='missing' ... nothing
-    downstream needs a new state" -- this is the "downstream" that comment
-    means). Requiring local presence *in addition to* remote verification
-    made a verified-but-locally-cleaned-up target look incomplete again on
-    the next `data run --step fetch`, silently re-fetching/re-streaming from
-    the origin something already safely on HPC -- confirmed happening in
-    practice running `data transfer --watch` alongside a live MODIS FETCH.
-    Passing no *ledger* falls back to the local-only check (preserves every
-    existing caller's behavior unchanged)."""
+def is_complete(target: "StepTarget") -> bool:
+    """Whether *target*'s output already exists on local disk, per its
+    completion policy."""
     if target.completion is Completion.NEVER:
         return False
     if target.completion is Completion.PATH_EXISTS:
-        local_ok = os.path.exists(target.output_path)
-    elif target.completion is Completion.MARKER:
-        local_ok = os.path.exists(marker_path(target.output_path))
-    else:
-        raise ValueError(f"Unknown completion policy: {target.completion}")
-
-    if not target.require_remote or ledger is None:
-        return local_ok
-    from src.data.common.ledger.schema import RemoteState
-
-    return ledger.remote_state(target.step.value, target.key) == RemoteState.VERIFIED
-
-
-def local_completion_state(target: "StepTarget") -> str:
-    """The local-disk truth for *target*, as an `artifacts.local_state`
-    value -- the same stat `is_complete()` performs locally, just returned
-    as the ledger's own vocabulary instead of a bool. Not folded into
-    `is_complete()` (which stays local-only-unless-`require_remote`,
-    signature/behavior unchanged) because `local_drift()`'s self-heal caller
-    (`src/cli/data/handlers.py`) needs this exact value to write back
-    into the ledger when it disagrees, not just a yes/no."""
-    from src.data.common.ledger.schema import LocalState
-
-    if target.completion is Completion.PATH_EXISTS:
-        disk_complete = os.path.exists(target.output_path)
-    elif target.completion is Completion.MARKER:
-        disk_complete = os.path.exists(marker_path(target.output_path))
-    else:
-        disk_complete = False
-    return LocalState.COMPLETE if disk_complete else LocalState.MISSING
-
-
-def local_drift(target: "StepTarget", ledger: "SourceLedger") -> bool:
-    """True if the ledger's belief about *target* disagrees with a cheap,
-    no-network on-disk check -- the trigger for automatic ledger self-heal
-    (as opposed to a manual `data reconcile`). Reuses the exact stat
-    `is_complete()` already performs locally (no new I/O), just compares it
-    against `ledger.local_state(...)` instead of returning it directly.
-
-    Deliberately one-directional in what it can catch: a file present on
-    disk with *no* ledger row at all looks identical to "ledger says
-    missing, disk agrees" from here, since there is no row to disagree
-    with -- that unknown-unknown is only caught by an explicit reconcile,
-    which crawls/discovers rather than reading existing rows. Not a bug;
-    stated in docs/design/10-fetch-ledger.md's successor as an accepted gap.
-    """
-    if target.completion is Completion.NEVER:
-        return False
-
-    from src.data.common.ledger.schema import LocalState
-
-    disk_state = local_completion_state(target)
-    ledger_state = ledger.local_state(target.step.value, target.key)
-    return disk_state != (ledger_state or LocalState.MISSING)
+        return os.path.exists(target.output_path)
+    if target.completion is Completion.MARKER:
+        return os.path.exists(marker_path(target.output_path))
+    raise ValueError(f"Unknown completion policy: {target.completion}")
 
 
 def marker_path(output_path: str) -> str:
@@ -151,12 +82,6 @@ class StepTarget:
     output_path: str
     inputs: tuple[str, ...] = ()
     completion: Completion = Completion.MARKER
-    #: True only for targets a *different* machine/job than the one that
-    #: produces them will read (today: MODIS's FETCH, which streams from
-    #: Planetary Computer off-cluster and must be pushed to HPC before GRID's
-    #: SLURM job can read it). Default False preserves every other source's
-    #: existing local-only completion semantics unchanged.
-    require_remote: bool = False
     meta: Mapping[str, Any] = field(default_factory=dict)
 
 

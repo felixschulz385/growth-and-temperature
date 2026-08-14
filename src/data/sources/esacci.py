@@ -1,10 +1,8 @@
 """ESA CCI Land Cover annual composites: fetch + prepare.
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge, applied
-here following `acag`/`ntl_harm` (module docstrings there). PREPARE
-reprojects straight from each year's raw (possibly zip-wrapped) NetCDF file
-to the tiled output; there is no intermediate annual zarr and no separate
-GRID step (`STEPS` no longer declares it).
+PREPARE reprojects straight from each year's raw (possibly zip-wrapped)
+NetCDF file to the tiled output; there is no intermediate annual zarr and
+no separate GRID step.
 """
 
 from __future__ import annotations
@@ -196,8 +194,8 @@ class EsacciSource(DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), relative_path)
 
     def _files_by_year(self) -> Dict[int, List[str]]:
-        """Live crawl of FETCH's raw output directory -- ledger-free ground
-        truth for which years have a fetched file."""
+        """Live crawl of FETCH's raw output directory: ground truth for
+        which years have a fetched file."""
         raw_root = self.output_root(PipelineStep.FETCH)
         if not os.path.isdir(raw_root):
             return {}
@@ -212,7 +210,7 @@ class EsacciSource(DataSource):
 
     @staticmethod
     def _select_best_file_for_year(candidates: List[str]) -> str:
-        """Prefer .nc4 over .nc -- the order the old ledger-backed discovery used."""
+        """Prefer .nc4 over .nc."""
         return next(
             (f for f in candidates if f.lower().endswith(".nc4")),
             next((f for f in candidates if f.lower().endswith(".nc")), candidates[0]),

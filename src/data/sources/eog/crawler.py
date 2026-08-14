@@ -150,6 +150,36 @@ class _CrawlerMixin:
         logger.info("Entrypoints not used for this data source")
         return []
 
+    def _list_single_directory(self, url: str) -> List[Tuple[str, str]]:
+        """Non-recursive: parse just one directory listing page's links,
+        returning every `(raw_href, absolute_url)` pair with no filtering of
+        its own (unlike `list_remote_files()`'s `file_extensions` filter --
+        callers that need a narrower selection, e.g. `EogSource
+        ._viirs_annual_listing()`'s per-variant/per-year regex, apply it
+        themselves against these raw hrefs). Requires an already-initialized
+        Selenium driver (`_init_selenium_driver()`) and closes none of its
+        own resources -- caller owns that lifecycle, same convention as
+        `list_remote_files()`'s own `crawl()` closure."""
+        self._driver.get(url)
+        if not self._check_and_handle_login():
+            logger.error("Failed to log in to EOG portal")
+            return []
+
+        WebDriverWait(self._driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        html = self._driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
+
+        td_links = soup.find_all("td", {"class": "indexcolname"})
+        tags = [td.find("a") for td in td_links] if td_links else soup.find_all("a")
+
+        results: List[Tuple[str, str]] = []
+        for tag in tags:
+            href = tag.get("href") if tag else None
+            if not href or href in ("../", "./", "/"):
+                continue
+            results.append((href, urljoin(url, href)))
+        return results
+
     async def list_remote_files_async(self, entrypoint: dict = None) -> list:
         """
         Asynchronous version of list_remote_files.

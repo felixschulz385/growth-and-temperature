@@ -5,11 +5,8 @@ docs/design/09-integrated-pipeline.md §5. Merges
 fetch -- prompts the user for a local file path, since ICPSR requires
 authenticated manual download) and
 `src/data/preprocess/sources/berman_mining.py::BermanMiningPreprocessor`
-(`stage="spatial"` -> what's now PREPARE). Mining-point gridding happens
-directly from the raw `.dta` file in one stage -- there was never a separate
-PREPARE step to merge GRID into (docs/design successor to the ledger, Plan
-2: `PipelineStep.GRID` is renamed to `PipelineStep.PREPARE` here since GRID
-no longer exists as a step name).
+(`stage="spatial"` -> PREPARE). Mining-point gridding happens directly from
+the raw `.dta` file in one stage; there is no separate GRID step.
 
 **No `REQUIRES` on gadm** -- correcting an earlier, unverified planning
 assumption: this source only shares the VIIRS-derived geobox *cache location*

@@ -1,10 +1,9 @@
 """EcoregionsSource.plan() shape: FETCH follows the
 ConfiguredFilesFetchMixin/NEVER pattern shared with gadm/osm/
 country_classifications; PREPARE always emits an `ecoregions_grid` target
-once the raw file exists (Plan 2's PREPARE+GRID merge, docs/design successor
-to the ledger) and conditionally emits a second `gadm_gid3_dominant` target
-only once GADM's own PREPARE artifacts (REQUIRES) are actually present on
-disk."""
+once the raw file exists, and conditionally emits a second
+`gadm_gid3_dominant` target only once GADM's own PREPARE artifacts
+(REQUIRES) are actually present on disk."""
 
 import json
 import os
@@ -85,10 +84,9 @@ def test_plan_prepare_adds_gid3_dominant_target_once_gadm_artifacts_exist(tmp_pa
 
 
 def test_registry_requires_gadm_prepare():
-    # gadm's PREPARE now does what used to be its separate GRID step
-    # directly (Plan 2's PREPARE+GRID merge) -- PipelineStep.GRID no longer
-    # exists anywhere. Scoped to ecoregions' own (merged) PREPARE step --
-    # only _plan_prepare()'s gadm_gid3_dominant target touches gadm.
+    # gadm's PREPARE builds its output directly; PipelineStep.GRID doesn't
+    # exist anywhere. Scoped to ecoregions' own PREPARE step -- only
+    # _plan_prepare()'s gadm_gid3_dominant target touches gadm.
     spec = registry.resolve("ecoregions")
     assert spec.requires == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
     assert spec.requires_for(PipelineStep.FETCH) == ()

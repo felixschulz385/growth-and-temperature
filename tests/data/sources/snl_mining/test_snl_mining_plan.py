@@ -1,7 +1,6 @@
 """SnlMiningSource.plan() must reproduce the relevant slice of the old
 SnlMiningPreprocessor's behaviour. Its DuckDB feature-build and tiled
-rasterization are two internal phases of one merged PREPARE step now (Plan
-2's PREPARE+GRID merge, docs/design successor to the ledger).
+rasterization are two internal phases of one PREPARE step.
 Oracle: tests/data/preprocess/sources/test_characterization_snl_mining.py.
 """
 
@@ -34,12 +33,12 @@ def test_requires_gadm_prepare():
     # GADM's polygon geometries (admin-count spatial join) AND
     # GID_N_code_mapping.json (translating admin-count tables into gadm's
     # integer ids for the join_on merge -- see module docstring) are both
-    # produced by gadm's PREPARE directly now (Plan 2's PREPARE+GRID merge)
-    # -- PipelineStep.GRID no longer exists for gadm to require, and both of
-    # this source's own former uses of gadm now live inside one merged
-    # PREPARE step, so one gadm entry covers both. PREPARE also needs
-    # commodity_prices' normalized (commodity, year) price table, joined
-    # against the user-owned commodity_shares table to build mine_priceshock_*.
+    # produced by gadm's PREPARE directly; PipelineStep.GRID doesn't exist
+    # for gadm to require, and both of this source's own uses of gadm live
+    # inside one PREPARE step, so one gadm entry covers both. PREPARE also
+    # needs commodity_prices' normalized (commodity, year) price table,
+    # joined against the user-owned commodity_shares table to build
+    # mine_priceshock_*.
     from src.data.sources import registry
 
     assert registry.resolve("snl_mining").requires == (
@@ -49,7 +48,7 @@ def test_requires_gadm_prepare():
 
 
 def test_default_output_variables_is_radius_only(tmp_path):
-    # Admin-polygon counts (mine_count_adm1/2) are no longer rasterized --
+    # Admin-polygon counts (mine_count_adm1/2) are not rasterized --
     # they're exported as per-GID parquet sidecars instead (see
     # _export_admin_count_tables), so they must not appear in the zarr's
     # output_variables.
@@ -160,9 +159,8 @@ def test_prepare_plan_empty_when_commodity_prices_missing(tmp_path):
 
 
 def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
-    # Plan 2's PREPARE+GRID merge: the merged PREPARE target's own output is
-    # what used to be GRID's (the final rasterized zarr), not the internal
-    # prepared_db_path intermediate -- planning it no longer needs
+    # The PREPARE target's own output is the final rasterized zarr, not the
+    # internal prepared_db_path intermediate -- planning it doesn't need
     # prepared_db_path to exist yet (that's phase 1, built inside
     # _execute_prepare on demand).
     source, _ = _make_source(tmp_path)
@@ -194,10 +192,10 @@ def test_output_root_grid_honors_ease6933(tmp_path):
 
 
 def test_prepare_target_uses_v2_family_path_under_layout_v2(tmp_path):
-    # Plan 2's PREPARE+GRID merge: the merged target's output path no longer
-    # depends on prepared_db_path existing (that's phase 1, built inside
-    # _execute_prepare on demand) -- planning only needs the stage-0 DuckDB
-    # and commodity_prices' PREPARE output.
+    # The PREPARE target's output path doesn't depend on prepared_db_path
+    # existing (that's phase 1, built inside _execute_prepare on demand) --
+    # planning only needs the stage-0 DuckDB and commodity_prices' PREPARE
+    # output.
     source, ctx = _make_source(tmp_path, layout="v2")
     os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
     open(source.duckdb_path, "w").close()

@@ -17,8 +17,6 @@ from src.data.sources.steps import (
     PipelineStep,
     TargetSelection,
     is_complete,
-    local_completion_state,
-    local_drift,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,8 +93,8 @@ def _print_source_summary(rows: dict) -> None:
 def _summarize_fetch(source, *, detailed: bool) -> str:
     """FETCH's own complete/outstanding/unavailable bucket counts
     (`src.data.common.fetch.manifest.plan_fetch`), for any
-    `RemoteFileCatalog`-shaped source -- ledger-free, so this always reflects
-    live disk state. `detailed=True` additionally splits `outstanding` into
+    `RemoteFileCatalog`-shaped source -- always reflects live disk state.
+    `detailed=True` additionally splits `outstanding` into
     never-attempted vs. currently retrying, by peeking at each unit's status
     sidecar (`src.data.common.statusfile`)."""
     from src.data.common import statusfile
@@ -186,11 +184,9 @@ def handle_summary(args: argparse.Namespace) -> None:
             continue
 
         # Which of this source's own steps produces its final, verifiable
-        # output: GRID if declared (a handful of still-unconverted sources,
-        # e.g. MODIS), else PREPARE -- Plan 2's PREPARE+GRID merge
-        # (docs/design successor to the ledger) means PREPARE now does
-        # GRID's old job for every migrated source, so verification must
-        # follow it there instead of hardcoding GRID.
+        # output: GRID if declared (a handful of sources still using it,
+        # e.g. MODIS), else PREPARE, since PREPARE produces the final output
+        # for every other source.
         if PipelineStep.GRID in spec.steps:
             final_step = PipelineStep.GRID
         elif PipelineStep.PREPARE in spec.steps:
@@ -267,14 +263,13 @@ def _check_requires(spec: registry.SourceSpec, ctx, config, step: PipelineStep) 
     gadm, since each `REQUIRES` triple now names which of *this* source's own
     steps it applies to.
 
-    Ledger-free (docs/design successor to the ledger): a required step's
-    *actual* output location is whatever its own `plan()` says, not a bare
-    `layout.output_root(data_path, step)` guess -- the two used to always
-    agree, but the PREPARE+GRID merge (Plan 2) means a source like gadm now
-    writes its PREPARE target's output to what used to be GRID's path. Build
-    the required source for real and check `is_complete()` against its own
-    planned targets, the same ground truth `data summary`/the runner itself
-    use, instead of re-deriving a path that can now be wrong."""
+    A required step's *actual* output location is whatever its own `plan()`
+    says, not a bare `layout.output_root(data_path, step)` guess -- a source
+    like gadm writes its PREPARE target's output to what `layout.output_root`
+    would compute for GRID, so the two can disagree. Build the required
+    source for real and check `is_complete()` against its own planned
+    targets, the same ground truth `data summary`/the runner itself use,
+    instead of re-deriving a path that can be wrong."""
     for requires_id, requires_step in spec.requires_for(step):
         requires_cfg = get_source_config(config, requires_id)
         requires_source = registry.create(requires_id, ctx, requires_cfg)
@@ -332,53 +327,6 @@ def _apply_cli_overrides(ctx, args: argparse.Namespace) -> None:
         ctx.dashboard_port = args.dashboard_port
 
 
-def _open_ledger_readonly(source):
-    """Best-effort read-only `SourceLedger` for *source*, or None if
-    `local_index_dir` isn't configured or no ledger file exists yet.
-    Lets `is_complete()` honor `StepTarget.require_remote` (today: only
-    MODIS's FETCH targets) from the CLI's hot paths, not just when a caller
-    happens to pass one explicitly (docs/design/10-fetch-ledger.md §6)."""
-    import os
-
-    from src.data.common.ledger.paths import ledger_path
-    from src.data.common.ledger.store import SourceLedger
-
-    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
-    if local_ledger_path is None or not os.path.exists(local_ledger_path):
-        return None
-    return SourceLedger.open(local_ledger_path, data_path=source.data_path, read_only=True)
-
-
-def _heal_local_drift(source, step: PipelineStep, drifted: list[tuple[str, str]]) -> None:
-    """Self-heal `local_drift()`-flagged rows: batch-correct the ledger's
-    `local_state` to match on-disk reality -- the "automatically ... when
-    conflict is detected" half of ledger-as-source-of-truth (the other half
-    being an explicit `data reconcile`, which also re-discovers targets
-    a bare disk-vs-ledger read can't catch, see `local_drift()`'s docstring).
-
-    Called only after the read-only ledger connection used to *detect*
-    drift has already been closed: DuckDB refuses a second same-process
-    connection to one file whose `read_only` setting doesn't match an
-    already-open one (confirmed empirically), so healing needs its own,
-    separately-opened read-write connection, not a reuse of the read-only one.
-    """
-    if not drifted:
-        return
-    from src.data.common.ledger.paths import ledger_path
-    from src.data.common.ledger.store import SourceLedger
-
-    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
-    if local_ledger_path is None:
-        return
-    logger.warning(
-        "Local-disk drift detected for source='%s' step='%s': %d target(s) disagree with the ledger -- "
-        "self-healing: %s",
-        source.ID, step.value, len(drifted), [key for key, _ in drifted],
-    )
-    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
-        ledger.set_local_states_batch(step.value, drifted)
-
-
 def handle_plan(args: argparse.Namespace) -> None:
     """``data plan`` -- print targets for (source, step) without running them."""
     setup_logging(args.log_level, debug=args.debug)
@@ -390,21 +338,9 @@ def handle_plan(args: argparse.Namespace) -> None:
     if not targets:
         print(f"No targets for source='{args.source}' step='{step.value}'.")
         return
-    ledger = _open_ledger_readonly(source)
-    statuses: dict[str, bool] = {}
-    drifted: list[tuple[str, str]] = []
-    try:
-        for target in targets:
-            statuses[target.key] = is_complete(target, ledger=ledger)
-            if ledger is not None and local_drift(target, ledger):
-                drifted.append((target.key, local_completion_state(target)))
-    finally:
-        if ledger is not None:
-            ledger.close()
-    _heal_local_drift(source, step, drifted)
 
     for target in targets:
-        status = "complete" if statuses[target.key] else "pending"
+        status = "complete" if is_complete(target) else "pending"
         print(f"[{status}] {target.key}  ->  {target.output_path}")
     source.close()
 
@@ -438,13 +374,9 @@ def _maybe_auto_transfer(source, step: PipelineStep) -> None:
         return
 
     from src.data.common.hpc.client import HPCClient
-    from src.data.common.ledger.paths import ledger_path
 
-    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
-    if local_ledger_path is None:
-        return
     client = HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file)
-    results = _run_transfer_pass(argparse.Namespace(override=False), source, step, local_ledger_path, client)
+    results = _run_transfer_pass(argparse.Namespace(override=False), source, step, client)
     failed = [r for r in results if not r.ok]
     if failed:
         logger.warning(
@@ -470,24 +402,7 @@ def handle_run(args: argparse.Namespace) -> None:
         logger.warning("No targets for source='%s' step='%s'.", args.source, step.value)
         return
 
-    # Completeness (incl. any StepTarget.require_remote gate) is resolved
-    # once, up front, against a read-only ledger connection -- then closed
-    # before any target executes. A source's own execute() may need its own
-    # read-write ledger connection (today: MODIS's FETCH, tracking per-unit
-    # local/remote state directly), and DuckDB allows only one read-write
-    # connection per file at a time, so the two must never overlap.
-    ledger = _open_ledger_readonly(source)
-    drifted: list[tuple[str, str]] = []
-    try:
-        already_complete = {target.key for target in targets if is_complete(target, ledger=ledger)}
-        if ledger is not None:
-            drifted = [
-                (target.key, local_completion_state(target)) for target in targets if local_drift(target, ledger)
-            ]
-    finally:
-        if ledger is not None:
-            ledger.close()
-    _heal_local_drift(source, step, drifted)
+    already_complete = {target.key for target in targets if is_complete(target)}
 
     failures = []
     for target in targets:
@@ -522,72 +437,6 @@ def handle_run(args: argparse.Namespace) -> None:
         raise RuntimeError(f"{len(failures)} target(s) failed for source='{args.source}' step='{step.value}': {failures}")
 
 
-def handle_reconcile(args: argparse.Namespace) -> None:
-    """``data reconcile`` -- rebuild a source's DuckDB ledger from real
-    on-disk/HPC filesystem state (docs/design/10-fetch-ledger.md §5), for its
-    PREPARE/GRID steps. A manual/occasional operator command, not part of
-    the normal run hot path: run once per source when adopting the ledger,
-    or after any out-of-band filesystem surgery.
-
-    FETCH has nothing to reconcile anymore -- it's ledger-free
-    (`src.data.common.fetch.driver`), always derived live from a directory
-    listing, so there's no stored state that could ever drift from disk.
-    """
-    setup_logging(args.log_level, debug=args.debug)
-    config = load_config_with_env_vars(args.config)
-    ctx = build_context(config)
-    sources_cfg = config.get("sources", {}) or {}
-
-    if args.source not in sources_cfg:
-        raise KeyError(f"Source '{args.source}' not found in configuration. Available: {sorted(sources_cfg)}")
-
-    import os
-
-    from src.data.common.ledger.paths import ledger_path
-    from src.data.common.ledger.store import SourceLedger
-    from src.data.sources.reconcile import reconcile_step
-
-    spec = registry.resolve(args.source)
-    cfg = get_source_config(config, args.source)
-    source = registry.create(args.source, ctx, cfg)
-
-    requested_steps = list(spec.steps) if getattr(args, "step", "all") == "all" else [PipelineStep(args.step)]
-    requested_steps = [s for s in requested_steps if s in spec.steps and s is not PipelineStep.FETCH]
-    if not requested_steps:
-        raise ValueError(f"Source '{args.source}' has no PREPARE/GRID step matching '{args.step}' to reconcile.")
-
-    client = None
-    if ctx.ssh_target:
-        from src.data.common.hpc.client import HPCClient
-
-        client = HPCClient(target=ctx.ssh_target, key_file=ctx.key_file)
-
-    local_ledger_path = ledger_path(ctx.local_index_dir, source.data_path)
-    if local_ledger_path is None:
-        raise ValueError("paths.local_index_dir is not configured -- cannot open/create a ledger")
-
-    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
-        if client is not None:
-            tmp_dir = os.path.join(ctx.staging_dir or ctx.local_index_dir, "reconcile_tmp")
-            ledger.merge_from_remote(client, tmp_dir)
-
-        for step in requested_steps:
-            result = reconcile_step(source, step, ledger, client=client, remote_data_root=ctx.remote_data_root)
-            logger.info(
-                "%s/%s: total=%d local_complete=%d remote_verified=%d",
-                args.source, step.value, result["total"], result["local_complete"], result["remote_verified"],
-            )
-
-    # `push_to_remote()` after the `with` block, not inside it -- scp'ing
-    # the ledger's own `.duckdb` file while this process still holds it open
-    # for read-write fails on Windows (`scp: open local ...: Broken pipe`,
-    # same bug as `_run_transfer_pass()`'s docstring describes).
-    if client is not None:
-        ledger.push_to_remote(client)
-
-    source.close()
-
-
 def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_size_mb: int) -> list:
     """Route `TransferUnit`s to the right `HPCPusher` strategy.
 
@@ -597,9 +446,8 @@ def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_siz
 
     Many units, all single files sharing one output tree (MODIS's per-
     tile-year GeoTIFFs): batch-tar them via `push_batched()` -- pushing
-    hundreds of files one rsync+extract round trip *each* (as the old
-    `transfer_units()` serial loop did) is exactly the inefficiency
-    docs/design/10-fetch-ledger.md §1 flags. `remote_base_dir` is the
+    hundreds of files one rsync+extract round trip *each* would be far
+    slower than amortizing over one shared tar. `remote_base_dir` is the
     longest common ancestor of every unit's `remote_path`; each unit's
     `PushUnit.remote_path` becomes the tar arcname relative to it, so nested
     structure (e.g. `<year>/<tile>.tif`) survives extraction intact.
@@ -639,99 +487,52 @@ def _push_transfer_units(pusher, units: list, *, tar_max_files: int, tar_max_siz
     return pusher.push_units_concurrent(push_units)
 
 
-def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", local_ledger_path: str, client) -> list:
+def _run_transfer_pass(args: argparse.Namespace, source, step: "PipelineStep", client) -> list:
     """One scan-and-push cycle: re-lists `source.transfer_units(step)` (a
     fresh filesystem scan for MODIS-style sources -- see its docstring),
-    skips units the ledger already marked `VERIFIED` (unless `--override`),
+    skips units that already exist on the HPC target (unless `--override`),
     and pushes the rest. Returns the `PushResult` list for whatever was
     actually pushed (empty if nothing was pending).
 
-    Split out of `handle_transfer` so `--watch` mode (below) can call this
-    repeatedly without duplicating the skip/push/record logic.
-
-    Three separate, short-lived ledger connections (via `open_with_retry()`),
-    not one held for the whole pass:
-    1. Read/write the small "what's pending" metadata, close.
-    2. Do the actual push -- the slow part (real network I/O, tens of
-       seconds+ for a batch) -- with NO ledger connection open at all, so a
-       concurrent `data run --step fetch` (which now also only takes its
-       own connection briefly per unit, see
-       `ModisSource._ledger_ensure_artifact()`'s docstring) isn't locked out
-       for the push's whole duration.
-    3. Record the results, merge in the remote ledger's own state
-       (`merge_from_remote()` -- so a push from this machine doesn't clobber
-       state another machine already recorded remotely), close -- *then*
-       `push_to_remote()` the now-merged ledger file itself. Doing that last
-       step while its own connection was still open (this function's
-       previous shape) reliably failed on Windows (`scp: open local ...:
-       Broken pipe`, confirmed against a real scicore push): the local
-       `.duckdb` file was still held open by this same process's own DuckDB
-       connection when `scp` tried to read it.
+    The skip-check is a direct remote existence check (`check_paths_exist`,
+    one batched round trip), not a cached belief -- always current, and
+    doesn't need any local bookkeeping to stay in sync with what's really on
+    HPC. Split out of `handle_transfer` so `--watch` mode (below) can call
+    this repeatedly without duplicating the skip/push logic.
     """
-    import os
-
-    from src.data.common.hpc.push import HPCPusher
-    from src.data.common.ledger.schema import LocalState, RemoteState
-    from src.data.common.ledger.store import SourceLedger
+    from src.data.common.hpc.push import HPCPusher, _full_remote_path
 
     units = source.transfer_units(step)
     if not units:
         return []
 
-    with SourceLedger.open_with_retry(local_ledger_path, data_path=source.data_path) as ledger:
-        for u in units:
-            ledger.ensure_artifact(step.value, u.unit_id, local_path=u.local_path, remote_path=u.remote_path)
-
-        if not args.override:
-            states = ledger.remote_states(step.value, [u.unit_id for u in units])
-            pending = [u for u in units if states.get(u.unit_id) != RemoteState.VERIFIED]
-            skipped = len(units) - len(pending)
-            if skipped:
-                logger.info("Skipping %d already-transferred unit(s)", skipped)
-            units = pending
+    if not args.override:
+        full_paths = {u.unit_id: _full_remote_path(client, u.remote_path) for u in units}
+        existence = client.check_paths_exist(list(full_paths.values()))
+        pending = [u for u in units if not existence.get(full_paths[u.unit_id])]
+        skipped = len(units) - len(pending)
+        if skipped:
+            logger.info("Skipping %d already-transferred unit(s)", skipped)
+        units = pending
 
     if not units:
         return []
 
     logger.info("Transferring %d unit(s) for source '%s' step '%s'", len(units), args.source, step.value)
     pusher = HPCPusher(client)
-    results = _push_transfer_units(
+    return _push_transfer_units(
         pusher, units,
         tar_max_files=source.cfg.raw.get("download", {}).get("tar_max_files", 100),
         tar_max_size_mb=source.cfg.raw.get("download", {}).get("tar_max_size_mb", 500),
     )
 
-    with SourceLedger.open_with_retry(local_ledger_path, data_path=source.data_path) as ledger:
-        ledger.record_push_batch(step.value, results)
-        # HPCPusher's cleanup_local=True (the default every push call here
-        # uses, never overridden to False) already deleted each successfully
-        # pushed unit's local file/directory -- record_push_batch() only
-        # ever updates remote_state, so without this the ledger would keep
-        # saying local_state='complete' for something that no longer exists
-        # on disk. remote_state='verified' + local_state='missing' stays
-        # fully distinguishable from "never fetched at all" (remote_state=
-        # 'missing' too) -- completed_fetch_files() already keys off
-        # remote_state alone, so nothing downstream needs a new state.
-        ledger.set_local_states_batch(step.value, [(r.unit_id, LocalState.MISSING) for r in results if r.ok])
-        # Reconcile local-with-remote (newest `updated_at` wins per row --
-        # this pass's own just-recorded rows always win) *before* pushing
-        # local back out below, so `data transfer` keeps both ledger copies
-        # in sync instead of blindly overwriting remote-only state another
-        # machine may have recorded.
-        merge_tmp_dir = os.path.join(source.ctx.staging_dir or source.ctx.local_index_dir, "transfer_merge_tmp")
-        ledger.merge_from_remote(client, merge_tmp_dir)
-    ledger.push_to_remote(client)  # after the `with` block -- connection is closed by now
-    return results
-
 
 def handle_transfer(args: argparse.Namespace) -> None:
     """``data transfer`` -- push a step's local output to the HPC target.
 
-    docs/design/10-fetch-ledger.md §2 -- generic across sources via
-    `DataSource.transfer_units(step)`, now driven by the same unified
-    `HPCPusher` FETCH uses (`common/hpc/push.py`) instead of the old
-    dedicated, duplicated `common/hpc/transfer.py`. Push status is tracked in
-    the source's own DuckDB ledger, not a separate Parquet manifest.
+    Generic across sources via `DataSource.transfer_units(step)`, driven by
+    the unified `HPCPusher` (`common/hpc/push.py`). Already-pushed units are
+    skipped via a direct remote existence check, not any local bookkeeping.
 
     `--watch`: instead of one scan-and-push pass, loop that pass on a
     `--poll-interval` timer until interrupted (Ctrl-C) -- for running
@@ -745,8 +546,7 @@ def handle_transfer(args: argparse.Namespace) -> None:
     if args.direction == "pull":
         raise NotImplementedError(
             "--direction pull is not implemented; included in the CLI for interface "
-            "symmetry with the push direction, not because any current source needs "
-            "it (docs/design/10-fetch-ledger.md)."
+            "symmetry with the push direction, not because any current source needs it."
         )
 
     step = PipelineStep(args.step)
@@ -757,17 +557,11 @@ def handle_transfer(args: argparse.Namespace) -> None:
         raise ValueError("remote.ssh_target is not configured")
 
     from src.data.common.hpc.client import HPCClient
-    from src.data.common.ledger.paths import ledger_path
-
-    local_ledger_path = ledger_path(source.ctx.local_index_dir, source.data_path)
-    if local_ledger_path is None:
-        source.close()
-        raise ValueError("paths.local_index_dir is not configured -- cannot track transfer state")
 
     client = HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file)
 
     if not getattr(args, "watch", False):
-        results = _run_transfer_pass(args, source, step, local_ledger_path, client)
+        results = _run_transfer_pass(args, source, step, client)
         source.close()
         if not results:
             logger.info("Nothing to transfer for source='%s' step='%s'.", args.source, step.value)
@@ -782,8 +576,6 @@ def handle_transfer(args: argparse.Namespace) -> None:
 
     import time
 
-    import duckdb
-
     poll_interval = getattr(args, "poll_interval", 30.0)
     logger.info(
         "Watching for source='%s' step='%s' output (poll every %.0fs) -- Ctrl-C to stop",
@@ -792,18 +584,8 @@ def handle_transfer(args: argparse.Namespace) -> None:
     total_ok, total_failed = 0, 0
     try:
         while True:
-            # `_run_transfer_pass` already opens its own short-lived,
-            # retrying (`open_with_retry()`) connections internally -- this
-            # `except duckdb.IOException` is a last-resort net for the rare
-            # case every retry inside it is exhausted (a concurrently
-            # running `data run --step fetch` holding the lock
-            # unusually long), so this watch loop logs and tries again next
-            # poll interval instead of crashing the whole watch command.
             try:
-                results = _run_transfer_pass(args, source, step, local_ledger_path, client)
-            except duckdb.IOException:
-                logger.info("Ledger busy (FETCH holds it) -- will retry after the next poll interval")
-                results = []
+                results = _run_transfer_pass(args, source, step, client)
             except Exception:
                 logger.exception("Transfer pass failed; will retry after the next poll interval")
                 results = []

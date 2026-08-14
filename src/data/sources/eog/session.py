@@ -56,7 +56,11 @@ class _SessionMixin:
             password = getattr(current_driver, '_eog_password', None) or self._password
 
             if not username or not password:
-                raise ValueError("EOG_USERNAME and EOG_PASSWORD must be set in environment variables")
+                raise ValueError(
+                    "EOG credentials not set -- create orchestration/secrets/eog.credentials.json "
+                    "({\"username\": ..., \"password\": ...}) or set EOG_USERNAME/EOG_PASSWORD "
+                    "(src/data/sources/eog/credentials.py)"
+                )
 
             # Fill in login form
             username_field.send_keys(username)

@@ -1,10 +1,9 @@
-"""`_check_requires()`: ledger-free (docs/design successor to the ledger) --
-builds the actual required source and checks `is_complete()` against its own
-`plan()`-ed targets, rather than guessing a path from
-`layout.output_root(data_path, step)`. Regression coverage for the bug that
-guess reintroduced: gadm's PREPARE now writes to what used to be GRID's
-path (Plan 2's PREPARE+GRID merge), so the generic per-step path guess
-silently pointed at the wrong (always-empty) directory.
+"""`_check_requires()` builds the actual required source and checks
+`is_complete()` against its own `plan()`-ed targets, rather than guessing a
+path from `layout.output_root(data_path, step)`. Regression coverage for the
+bug that guess reintroduced: gadm's PREPARE writes to GRID's path, so the
+generic per-step path guess silently pointed at the wrong (always-empty)
+directory.
 """
 
 import os

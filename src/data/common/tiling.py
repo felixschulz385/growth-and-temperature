@@ -1,8 +1,8 @@
 """The one shared 2048x2048 output tile grid every raster PREPARE step uses.
 
-Plan 2 (docs/design successor to the ledger) replaces GRID's old
-whole-extent-per-year zarr writes with per-(tile, year) region writes, so
-every source needs the *same* tile grid -- if `acag` and `esacci` diced the
+PREPARE writes output in per-(tile, year) regions rather than whole-extent-
+per-year zarr writes, so every source needs the *same* tile grid -- if `acag`
+and `esacci` diced the
 shared target geobox (`src.data.common.geobox.target.get_target_geobox`)
 into tiles independently, two sources' tile #17 would not necessarily cover
 the same pixels, breaking any cross-source per-tile assembly. One function,

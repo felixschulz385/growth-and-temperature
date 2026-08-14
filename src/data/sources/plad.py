@@ -1,20 +1,17 @@
-"""PLAD (Political Leaders and Development): fetch + grid, no separate prepare.
+"""PLAD (Political Leaders and Development): fetch + prepare, no grid step.
 
 docs/design/09-integrated-pipeline.md §5. Merges
 `src/data/download/sources/harvard.py::HarvardDataSource` (Harvard Dataverse
-API fetch -- registered under aliases `harvard_plad`/`harvard`, never
-actually wired to the old preprocessor, which built its own `create_source()`
-`None` special-case instead) and
-`src/data/preprocess/sources/plad.py::PLADPreprocessor` (`stage="spatial"`
--> GRID). **No PREPARE step**: PLAD's raw `.dta` table already carries GADM's
-native `gid_1`/`gid_2` string codes directly, so there's no vector-boundary
-pre-step to build.
+API fetch -- registered under aliases `harvard_plad`/`harvard`) and
+`src/data/preprocess/sources/plad.py::PLADPreprocessor` (`stage="spatial"`).
+PLAD's raw `.dta` table already carries GADM's native `gid_1`/`gid_2` string
+codes directly, so there's no vector-boundary pre-step to build.
 
-**No longer rasterized.** Regional favoritism (`reg_fav`) is constant across
+**Not rasterized.** Regional favoritism (`reg_fav`) is constant across
 every pixel of the favored admin unit for a given year -- it varies only by
-`GID_1`/`GID_2` and year, never by pixel location -- so GRID now writes a
+`GID_1`/`GID_2` and year, never by pixel location -- so PREPARE writes a
 tiny `(GID_N, year)`-keyed parquet table of favored units instead of a full
-pixel-grid zarr, and no longer needs GADM's polygon geometries at all (only
+pixel-grid zarr, and doesn't need GADM's polygon geometries at all (only
 `GID_N_code_mapping.json`, to translate PLAD's native `gid_1`/`gid_2` string
 codes into the same integer ids gadm's own per-pixel `GID_N` grid uses).
 Assembly merges it directly onto rows via
@@ -29,14 +26,11 @@ here via an `output_root()` override, mirroring the identical pattern already
 used for GLASS's `path_prefix`.
 
 `REQUIRES` on gadm's **PREPARE** step -- only the integer-id mapping sidecar
-(`GID_N_code_mapping.json`) is needed, not gadm's polygon geometries.
-Gadm's PREPARE now does what used to be its separate GRID step (rasterize +
-write the mapping sidecar) directly (docs/design successor to the ledger,
-Plan 2's PREPARE+GRID merge) -- `PipelineStep.GRID` no longer exists
-anywhere. This source's own former GRID step is renamed PREPARE too (no
-merge needed -- PLAD never had a separate PREPARE step of its own), scoped
-to this source's own PREPARE step (only `_plan_prepare()` touches gadm), so
-FETCH runs unblocked before gadm exists.
+(`GID_N_code_mapping.json`) is needed, not gadm's polygon geometries. Gadm's
+PREPARE builds the rasterized output and writes the mapping sidecar directly;
+`PipelineStep.GRID` doesn't exist anywhere. Scoped to this source's own
+PREPARE step (only `_plan_prepare()` touches gadm), so FETCH runs unblocked
+before gadm exists.
 """
 
 from __future__ import annotations
@@ -96,13 +90,11 @@ class PlaDSource(DataSource):
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         if step is PipelineStep.PREPARE:
-            # This source's PREPARE step is a rename of its former GRID step
-            # (Plan 2's PREPARE+GRID merge, docs/design successor to the
-            # ledger) -- output stays at the same on-disk location that step
-            # always wrote to (`stage_2`, via layout's own PipelineStep.GRID
-            # convention), not the generic `stage_1` a plain PREPARE would map
-            # to. Same rationale as gadm/osm/country_classifications: PREPARE
-            # writes to what used to be GRID's path.
+            # This source's PREPARE output lives at the on-disk location
+            # `stage_2` (via layout's own PipelineStep.GRID convention), not
+            # the generic `stage_1` a plain PREPARE would map to. Same
+            # rationale as gadm/osm/country_classifications: PREPARE writes
+            # to the GRID path.
             return layout.output_root(
                 self.ctx.data_root,
                 self.OUTPUT_PREFIX,
@@ -185,17 +177,6 @@ class PlaDSource(DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` -- see gadm.py's identical
-        `_discover()` for the full rationale. PLAD's targets are singletons
-        with no year/key selection to apply; `selection` is accepted for
-        interface symmetry only."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare()
         raise AssertionError(f"unreachable: {step}")
 
     def _plan_prepare(self) -> List[StepTarget]:

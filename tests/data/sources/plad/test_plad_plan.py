@@ -1,12 +1,10 @@
 """PlaDSource.plan()/execute() tests.
 
-PLAD's former GRID step -- renamed PREPARE (Plan 2's PREPARE+GRID merge,
-docs/design successor to the ledger; PLAD never had a separate PREPARE step
-of its own, so this is a pure rename, no merge logic) -- no longer
-rasterizes: regional favoritism is constant within a GID_1/GID_2 admin unit
-for a given year, so it writes a small (GID_N, year)-keyed parquet table
-merged directly during assembly (src.data.assemble.processors.TileProcessor's
-join_on mechanism) instead of a pixel-grid zarr.
+PLAD's PREPARE step doesn't rasterize: regional favoritism is constant
+within a GID_1/GID_2 admin unit for a given year, so it writes a small
+(GID_N, year)-keyed parquet table merged directly during assembly
+(src.data.assemble.processors.TileProcessor's join_on mechanism) instead of
+a pixel-grid zarr.
 """
 
 import json
@@ -47,11 +45,10 @@ def test_steps_is_fetch_and_prepare_only():
 
 
 def test_requires_gadm_prepare():
-    # Rasterization (and the GADM polygon geometries it needed) is gone --
-    # only gadm's integer-id mapping sidecar is still needed, now produced
-    # by gadm's PREPARE step directly (Plan 2's PREPARE+GRID merge --
-    # PipelineStep.GRID no longer exists anywhere). Scoped to plad's own
-    # (renamed) PREPARE step (its only step besides FETCH).
+    # PLAD doesn't rasterize, so it doesn't need GADM's polygon geometries --
+    # only gadm's integer-id mapping sidecar, produced by gadm's PREPARE
+    # step directly (PipelineStep.GRID doesn't exist anywhere). Scoped to
+    # plad's own PREPARE step (its only step besides FETCH).
     assert PlaDSource.REQUIRES == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
 

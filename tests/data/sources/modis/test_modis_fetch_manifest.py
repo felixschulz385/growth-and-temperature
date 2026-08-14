@@ -1,8 +1,9 @@
-"""ModisSource's FETCH step tracks each (year, tile) unit's local state in
-its own DuckDB ledger (docs/design/10-fetch-ledger.md), the same generic
-`artifacts` table PREPARE/GRID units use -- MODIS has no crawl catalog to
-seed it from (see module docstring), so `_execute_fetch()` calls
-`ensure_artifact`/`set_local_state` directly instead.
+"""ModisSource's FETCH step: completion is plain local-disk presence
+(`Completion.PATH_EXISTS`, matching every other source,
+`src.data.common.fetch.manifest`), and a failed (year, tile) unit's
+retry/error history lives in a small JSON sidecar under FETCH's own output
+root, written via `manifest.record_failure`/`clear_failure` directly (MODIS
+has no crawl catalog, see module docstring).
 """
 
 import numpy as np
@@ -11,8 +12,7 @@ import pytest
 import rioxarray  # noqa: F401 -- registers the .rio accessor _write_annual_geotiff needs
 import xarray as xr
 
-from src.data.common.ledger.paths import ledger_path
-from src.data.common.ledger.store import SourceLedger
+from src.data.common import statusfile
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.modis.source import ModisSource
@@ -39,7 +39,7 @@ def _fake_dataset() -> xr.Dataset:
     return xr.Dataset({"lst": lst, "qc": qc})
 
 
-def test_execute_fetch_records_complete_in_ledger(tmp_path, monkeypatch):
+def test_execute_fetch_writes_output_and_clears_any_prior_failure_status(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path)
     monkeypatch.setattr(source, "_search_items", lambda tile, year: ["fake-item"])
     monkeypatch.setattr(source, "_load_tile_year", lambda items: _fake_dataset())
@@ -52,13 +52,14 @@ def test_execute_fetch_records_complete_in_ledger(tmp_path, monkeypatch):
     assert ok is True
     source.close()
 
-    with SourceLedger.open(
-        ledger_path(ctx.local_index_dir, source.data_path), data_path=source.data_path, read_only=True
-    ) as ledger:
-        assert ledger.local_state("fetch", target.key) == "complete"
+    import os
+
+    assert os.path.exists(target.output_path)
+    status_dir = source.output_root(PipelineStep.FETCH)
+    assert statusfile.read(statusfile.status_path(status_dir, target.key)) is None
 
 
-def test_execute_fetch_records_failed_in_ledger_on_no_stac_items(tmp_path, monkeypatch):
+def test_execute_fetch_records_failure_status_on_no_stac_items(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path)
     monkeypatch.setattr(source, "_search_items", lambda tile, year: [])
 
@@ -69,16 +70,17 @@ def test_execute_fetch_records_failed_in_ledger_on_no_stac_items(tmp_path, monke
     assert ok is False
     source.close()
 
-    with SourceLedger.open(
-        ledger_path(ctx.local_index_dir, source.data_path), data_path=source.data_path, read_only=True
-    ) as ledger:
-        assert ledger.local_state("fetch", target.key) == "failed"
+    status_dir = source.output_root(PipelineStep.FETCH)
+    status = statusfile.read(statusfile.status_path(status_dir, target.key))
+    assert status is not None
+    assert status["status"] == "retrying"
+    assert status["attempts"] == 1
 
 
 def test_execute_fetch_retried_after_failure_can_succeed(tmp_path, monkeypatch):
     """Partial-download resumability: a tile-year that failed once (e.g. a
     transient STAC search error) is retried on the next `data run` call
-    and, on success, ends up `complete` -- not stuck `failed` forever."""
+    and, on success, ends up complete -- not stuck failed forever."""
     source, ctx = _make_source(tmp_path)
     monkeypatch.setattr(source, "_search_items", lambda tile, year: [])
 
@@ -94,7 +96,9 @@ def test_execute_fetch_retried_after_failure_can_succeed(tmp_path, monkeypatch):
     assert source2.execute(targets2[0]) is True
     source2.close()
 
-    with SourceLedger.open(
-        ledger_path(ctx.local_index_dir, source.data_path), data_path=source.data_path, read_only=True
-    ) as ledger:
-        assert ledger.local_state("fetch", target.key) == "complete"
+    import os
+
+    assert os.path.exists(target.output_path)
+    status_dir = source.output_root(PipelineStep.FETCH)
+    # Cleared by the successful retry, not left stuck 'retrying'.
+    assert statusfile.read(statusfile.status_path(status_dir, target.key)) is None

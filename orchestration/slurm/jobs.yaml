@@ -283,35 +283,32 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: eog_viirs
 
-  # eog_dmsp/eog_dvnl -- never had their own PREPARE/GRID jobs before either
-  # merge (docs/design/09-integrated-pipeline.md §5's three equally-
-  # registered eog_dmsp/eog_viirs/eog_dvnl ids; only eog_viirs did, since its
-  # first commit). Resources below are a starting point copied from the
-  # eog_viirs sibling and should be re-tuned against real DMSP/DVNL run
-  # behavior, unlike every other resource value in this file.
-  - name: eog-dmsp-prepare
-    log_key: eog_dmsp
-    source: eog_dmsp
-    step: prepare
-    partition: scicore
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 8
-    mem: 256G
-    mem_fraction: 0.9
-    temp_dir_prefix: eog_dmsp
-
-  - name: eog-dvnl-prepare
-    log_key: eog_dvnl
-    source: eog_dvnl
-    step: prepare
-    partition: scicore
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 8
-    mem: 256G
-    mem_fraction: 0.9
-    temp_dir_prefix: eog_dvnl
+  # eog_dmsp/eog_dvnl disabled as sources (orchestration/configs/data.yaml)
+  # -- left commented rather than deleted so they can be re-enabled by
+  # uncommenting both this and the config block.
+  # - name: eog-dmsp-prepare
+  #   log_key: eog_dmsp
+  #   source: eog_dmsp
+  #   step: prepare
+  #   partition: scicore
+  #   time: "06:00:00"
+  #   qos: 6hours
+  #   cpus: 8
+  #   mem: 256G
+  #   mem_fraction: 0.9
+  #   temp_dir_prefix: eog_dmsp
+  #
+  # - name: eog-dvnl-prepare
+  #   log_key: eog_dvnl
+  #   source: eog_dvnl
+  #   step: prepare
+  #   partition: scicore
+  #   time: "06:00:00"
+  #   qos: 6hours
+  #   cpus: 8
+  #   mem: 256G
+  #   mem_fraction: 0.9
+  #   temp_dir_prefix: eog_dvnl
 
   # plad's GRID step is renamed PREPARE (Plan 2's PREPARE+GRID merge,
   # docs/design successor to the ledger) -- PLAD never had a separate

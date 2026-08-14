@@ -156,17 +156,19 @@ sources:
       value_range: [150, 350]
       range_vars: ["mean", "median", "max", "min", "rollmax3", "rollmin3"]
 
-  # EOG DMSP Nightlights
-  eog_dmsp:
-    type: "eog_dmsp"
-    base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
-    data_path: "eog/dmsp"
-    year_range: [1992, 2013]  # DMSP data availability period
-
-    # DMSP is a classic 6-bit DN (0-63).
-    verification:
-      expected_vars: ["dmsp"]
-      value_range: [0, 63]
+  # EOG DMSP Nightlights -- disabled for now, not run by the pipeline. Left
+  # commented rather than deleted so it can be re-enabled by uncommenting
+  # (src/data/sources/eog/source.py's DMSP code path is untouched).
+  # eog_dmsp:
+  #   type: "eog_dmsp"
+  #   base_url: "https://eogdata.mines.edu/wwwdata/dmsp/v4composites_rearrange/"
+  #   data_path: "eog/dmsp"
+  #   year_range: [1992, 2013]  # DMSP data availability period
+  #
+  #   # DMSP is a classic 6-bit DN (0-63).
+  #   verification:
+  #     expected_vars: ["dmsp"]
+  #     value_range: [0, 63]
 
   # EOG VIIRS
   eog_viirs:
@@ -180,16 +182,18 @@ sources:
       expected_vars: ["viirs_annual"]
       value_range: [0, 1000]
 
-  # EOG DVNL
-  eog_dvnl:
-    type: "eog_dvnl"
-    base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
-    data_path: "eog/dvnl"
-    year_range: [2013, 2019]  # DVNL data availability period
-
-    verification:
-      expected_vars: ["viirs_dvnl"]
-      value_range: [0, 1000]
+  # EOG DVNL -- disabled for now, not run by the pipeline. Left commented
+  # rather than deleted so it can be re-enabled by uncommenting
+  # (src/data/sources/eog/source.py's DVNL code path is untouched).
+  # eog_dvnl:
+  #   type: "eog_dvnl"
+  #   base_url: "https://eogdata.mines.edu/wwwdata/viirs_products/dvnl/"
+  #   data_path: "eog/dvnl"
+  #   year_range: [2013, 2019]  # DVNL data availability period
+  #
+  #   verification:
+  #     expected_vars: ["viirs_dvnl"]
+  #     value_range: [0, 1000]
 
   # Harmonized Nighttime Lights (DMSP-VIIRS)
   ntl_harm:

@@ -23,9 +23,8 @@ config override lets PREPARE read an already-staged local copy directly,
 bypassing FETCH entirely (used for the copy already present at
 `data/raw/commodity_prices/auxiliary/CMO-Historical-Data-Annual.xlsx`).
 
-PREPARE has no ledger fast path (the ledger is gone): `plan()` is a bare
-`os.path.exists()` check every call, same as every other single-file,
-non-tiled output (docs/design successor to the ledger).
+`plan()` is a bare `os.path.exists()` check every call, same as every other
+single-file, non-tiled output.
 """
 
 from __future__ import annotations
@@ -102,17 +101,6 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
             return self._plan_prepare()
         raise AssertionError(f"unreachable: {step}")
 
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` -- see gadm.py's identical
-        `_discover()` for the full rationale. This source's PREPARE target is
-        a singleton with no year/key selection to apply; `selection` is
-        accepted for interface symmetry only."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare()
-        raise AssertionError(f"unreachable: {step}")
-
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
@@ -136,9 +124,8 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _plan_prepare(self) -> List[StepTarget]:
-        """No ledger left to fast-path through (docs/design successor to the
-        ledger): a single-file, non-tiled output is cheap enough to plan by
-        a bare `os.path.exists()` check every call -- see `_discover_prepare()`."""
+        """A single-file, non-tiled output is cheap enough to plan by a bare
+        `os.path.exists()` check every call -- see `_discover_prepare()`."""
         return self._discover_prepare()
 
     def _discover_prepare(self) -> List[StepTarget]:

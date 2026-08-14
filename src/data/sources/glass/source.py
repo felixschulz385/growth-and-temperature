@@ -1,4 +1,4 @@
-"""GLASS (Global LAnd Surface Satellite) LST: fetch + prepare + grid.
+"""GLASS (Global LAnd Surface Satellite) LST: fetch + prepare.
 
 docs/design/09-integrated-pipeline.md §5: registered as TWO separate ids,
 `glass_modis` and `glass_avhrr` (not one id with two aliases) -- unlike EOG's
@@ -25,19 +25,15 @@ compositing). Fixing it here is explicitly deferred to a separate,
 labelled follow-on change (docs/design/09-integrated-pipeline.md §5/§14),
 not silently folded into this mechanical migration.
 
-**Plan 2 (docs/design successor to the ledger) update**: `STEPS` no longer
-declares GRID -- `_execute_prepare` now runs what used to be `_execute_grid`
-right after building/reusing each (year[, grid_cell])'s daily->annual stats
-zarr, as one step. Unlike `acag`/`esacci`/`eog`/`ntl_harm`, GLASS keeps its
+There is no separate GRID step -- `_execute_prepare` reprojects each
+(year[, grid_cell])'s daily->annual stats zarr right after building/reusing
+it, as one step. Unlike `acag`/`esacci`/`eog`/`ntl_harm`, GLASS keeps its
 own bespoke per-tile reprojection path (`_process_years_chunked` /
 `_process_year_tiles`, with a 32px halo pad and "mode" resampling) rather
 than routing through `src.data.common.prepare.driver.run_tiled_prepare` --
-that machinery predates the shared driver (module docstring above) and
-already does exactly what the driver would, just shaped around this
-source's own daily-to-annual aggregation step first. The annual stats zarr
-is still a real, expensive-to-recompute intermediate (not ledger bloat);
-only the *step boundary* between it and the final reprojected output is
-gone, along with the ledger-backed fast paths for planning both.
+that machinery already does exactly what the driver would, just shaped
+around this source's own daily-to-annual aggregation step first. The annual
+stats zarr is still a real, expensive-to-recompute intermediate.
 """
 
 from __future__ import annotations
@@ -289,13 +285,11 @@ class GlassSource(_CrawlerMixin, DataSource):
 
     def _group_daily_files(self, selection: TargetSelection) -> List[Dict[str, Any]]:
         """Live ground truth for which daily files exist per (year[,
-        grid_cell]) group -- ledger-free crawl of FETCH's raw output
-        directory (`snapshot_local_listing`, the same primitive FETCH's own
-        driver uses), replacing the old `completed_fetch_files()` ledger
-        query. Called both to plan PREPARE (`_plan_prepare`) and, again, to
+        grid_cell]) group: a crawl of FETCH's raw output directory
+        (`snapshot_local_listing`, the same primitive FETCH's own driver
+        uses). Called both to plan PREPARE (`_plan_prepare`) and, again, to
         execute it (`_execute_prepare` re-derives rather than trusting a
-        StepTarget snapshot, since a group's daily file list can be large
-        and there's no longer a ledger to persist it in between calls)."""
+        StepTarget snapshot, since a group's daily file list can be large)."""
         from src.data.common.fetch.manifest import snapshot_local_listing
         from src.data.common.statusfile import STATUS_SUBDIR
 
@@ -340,7 +334,7 @@ class GlassSource(_CrawlerMixin, DataSource):
         """One PREPARE target per source ("all") -- `_execute_prepare`
         builds/reuses each (year[, grid_cell])'s daily->annual stats zarr
         internally, then reprojects them all into the final output in the
-        same call (module docstring: the PREPARE+GRID merge)."""
+        same call (module docstring)."""
         groups = self._group_daily_files(selection)
         if not groups:
             return []
@@ -538,12 +532,10 @@ class GlassSource(_CrawlerMixin, DataSource):
 
     def _ensure_annual_zarr(self, group: Dict[str, Any]) -> Optional[str]:
         """Build (or reuse) one (year[, grid_cell]) group's daily->annual
-        stats zarr -- what used to be a whole separate PREPARE StepTarget's
-        `_execute_prepare()` call, now the first phase of the single merged
-        PREPARE target's execution. Resumable the same way every other
-        MARKER-completion output is: a sibling `.complete` file, checked
-        directly rather than via a StepTarget (there isn't one per group
-        anymore)."""
+        stats zarr -- the first phase of the PREPARE target's execution.
+        Resumable the same way every other MARKER-completion output is: a
+        sibling `.complete` file, checked directly rather than via a
+        StepTarget (there isn't one per group)."""
         from src.data.sources.steps import marker_path
 
         annual_path = self._annual_zarr_path(group)
@@ -561,8 +553,7 @@ class GlassSource(_CrawlerMixin, DataSource):
         return annual_path
 
     def _execute_prepare(self, target: StepTarget) -> bool:
-        """Merges what used to be two separate steps (module docstring):
-        first ensure every requested (year[, grid_cell])'s daily->annual
+        """First ensure every requested (year[, grid_cell])'s daily->annual
         stats zarr exists, then reproject them all into the final output,
         tile by tile, using GLASS's own bespoke reprojection path
         (`_process_years_chunked`/`_process_year_tiles`, ported verbatim

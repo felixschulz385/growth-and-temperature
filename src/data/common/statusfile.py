@@ -1,6 +1,6 @@
-"""Small per-unit JSON sidecar files -- the ledger replacement for state that
-plain `ls` genuinely can't see (a FETCH unit's retry/error history; a PREPARE
-tile's completion, once that lands too). Deliberately dumb: read/write/remove
+"""Small per-unit JSON sidecar files for state that plain `ls` genuinely
+can't see (a FETCH unit's retry/error history; a PREPARE tile's completion,
+once that lands too). Deliberately dumb: read/write/remove
 one JSON file at a time, atomically. No index, no cross-file query -- callers
 that need "all outstanding units" get that from a directory listing plus a
 handful of these reads, not from this module.
@@ -25,9 +25,8 @@ _UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9_.-]")
 
 def sanitize_unit_id(unit_id: str) -> str:
     """A unit id (e.g. `"2020/h12v09"`, `"commodity_prices"`) as a single
-    filesystem-safe filename component -- mirrors
-    `src/data/common/ledger/paths.py::safe_data_path`'s approach (replace,
-    don't hash, so the file stays human-inspectable)."""
+    filesystem-safe filename component (replace, don't hash, so the file
+    stays human-inspectable)."""
     return _UNSAFE_CHARS.sub("_", unit_id)
 
 

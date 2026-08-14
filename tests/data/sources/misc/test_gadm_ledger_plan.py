@@ -1,5 +1,4 @@
-"""GadmSource: ledger-free FETCH/PREPARE (docs/design successor to the
-ledger, Plan 2 PREPARE+GRID merge). plan() is a bare live `os.path.exists()`
+"""GadmSource: FETCH/PREPARE. plan() is a bare live `os.path.exists()`
 check against the raw fetched file -- see
 tests/data/sources/misc/test_osm_ledger_plan.py's identical shape.
 """

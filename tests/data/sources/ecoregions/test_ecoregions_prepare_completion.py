@@ -1,7 +1,6 @@
 """PREPARE's phase 1 (`_ensure_vector_file`) produces one fixed-name
 simplified vector file (`ecoregions_simplified.gpkg`), shared by both PREPARE
-targets (Plan 2's PREPARE+GRID merge, docs/design successor to the ledger).
-The `ecoregions_grid` PREPARE target itself uses `Completion.MARKER` (a
+targets. The `ecoregions_grid` PREPARE target itself uses `Completion.MARKER` (a
 tiled zarr store) -- unlike `country_classifications`'s single-file
 `Completion.PATH_EXISTS` PREPARE output, this source's PREPARE produces a
 tiled raster, same rationale as gadm's own rasterized `Completion.MARKER`

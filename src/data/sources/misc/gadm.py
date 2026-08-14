@@ -1,31 +1,30 @@
-"""GADM administrative boundaries: fetch + prepare + grid.
+"""GADM administrative boundaries: fetch + prepare.
 
 docs/design/09-integrated-pipeline.md §7 (the misc split). Ports the
 GADM-specific slice of `src/data/download/sources/misc.py::MiscDataSource`
 and `src/data/preprocess/sources/misc.py::MiscPreprocessor`'s
 `_process_gadm_target`/`_rasterize_gadm_target`/`_create_empty_gadm_zarr`/
-`_process_gadm_tiles` (`stage="vector"` -> PREPARE, `stage="spatial"` ->
-GRID). Output paths unchanged: `misc/processed/stage_1/gadm/gadm_level*_simplified.gpkg`,
+`_process_gadm_tiles` (`stage="vector"`, `stage="spatial"`, both under
+PREPARE). Output paths unchanged: `misc/processed/stage_1/gadm/gadm_level*_simplified.gpkg`,
 `misc/processed/stage_2/gadm/countries_grid.zarr` -- so `snl_mining`'s config and
 `src/data/common/neighbourhood/`'s cross-border masking (docs/design/03-neighbourhood-engine.md
 §5) need no edits.
 
-GRID rasterizes every ADM level present in PREPARE's output (not just ADM_0/ADM_1),
-one zarr variable per level named after its GADM id column (`GID_0`, `GID_1`, ...,
-matching the level's own `ADM_N` suffix) rather than the old `country`/`subdivision`
-names. Each variable holds uint32 integer ids (0 = no unit at that level), with a
-`{GID_N}_code_mapping.json` sidecar per level mapping GADM's string GID code to the
-integer id. `country_code_mapping.json`/`subdivision_code_mapping.json` are gone --
-`src/analysis/subsets/registry.py` and `country_classifications.py` were updated to
-read `GID_0_code_mapping.json` and the `GID_0` variable instead.
+PREPARE rasterizes every ADM level present in its own vector output (not just
+ADM_0/ADM_1), one zarr variable per level named after its GADM id column
+(`GID_0`, `GID_1`, ..., matching the level's own `ADM_N` suffix) rather than
+`country`/`subdivision` names. Each variable holds uint32 integer ids (0 = no
+unit at that level), with a `{GID_N}_code_mapping.json` sidecar per level
+mapping GADM's string GID code to the integer id.
+`src/analysis/subsets/registry.py` and `country_classifications.py` read
+`GID_0_code_mapping.json` and the `GID_0` variable.
 
-docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. GADM's
-rasterization was already tiled (`GeoboxTiles`, `_process_gadm_tiles`, region
-writes) -- unlike OSM's single whole-extent `rasterize()` call -- but still
-has no time dimension needing per-year resumability, so this stays its own
-bespoke two-phase `_execute_prepare` (vector extraction, then rasterization)
-rather than routing through `src.data.common.prepare.driver.run_tiled_prepare`.
-`STEPS` no longer declares GRID.
+GADM's rasterization is tiled (`GeoboxTiles`, `_process_gadm_tiles`, region
+writes) -- unlike OSM's single whole-extent `rasterize()` call -- but has no
+time dimension needing per-year resumability, so this stays its own bespoke
+two-phase `_execute_prepare` (vector extraction, then rasterization) rather
+than routing through `src.data.common.prepare.driver.run_tiled_prepare`.
+There is no separate GRID step.
 """
 
 from __future__ import annotations

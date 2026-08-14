@@ -51,10 +51,9 @@ def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees_
     )
 
 
-# osm/gadm's own PREPARE-target tests now live in
+# osm/gadm's own PREPARE-target tests live in
 # tests/data/sources/misc/test_osm_ledger_plan.py / test_gadm_ledger_plan.py --
-# both sources no longer declare a separate GRID step (Plan 2's PREPARE+GRID
-# merge, docs/design successor to the ledger).
+# neither source declares a separate GRID step.
 
 
 def test_country_classifications_prepare_target_tracks_which_sources_present(tmp_path):
@@ -72,10 +71,9 @@ def test_country_classifications_prepare_target_tracks_which_sources_present(tmp
 
 
 def test_country_classifications_prepare_target_output_path(tmp_path):
-    # Plan 2's PREPARE+GRID merge (docs/design successor to the ledger):
-    # country_classifications' PREPARE target's own output is what used to
-    # be GRID's -- planning it no longer needs to probe gadm's output at
-    # all (that's the runner's REQUIRES enforcement's job,
+    # country_classifications' PREPARE target's own output is at GRID's
+    # path -- planning it doesn't need to probe gadm's output at all
+    # (that's the runner's REQUIRES enforcement's job,
     # src/cli/data/handlers.py::_check_requires, gated before PREPARE runs).
     cc, _ = _make(tmp_path, "country_classifications")
     raw_dir = cc.output_root(PipelineStep.FETCH)
@@ -90,10 +88,9 @@ def test_country_classifications_prepare_target_output_path(tmp_path):
 
 
 def test_country_classifications_requires_gadm_prepare():
-    # gadm's PREPARE now does what used to be its separate GRID step
-    # directly (Plan 2's PREPARE+GRID merge) -- PipelineStep.GRID no longer
-    # exists for gadm to require, and country_classifications' own
-    # dependency on it is scoped to its own (now merged) PREPARE step.
+    # gadm's PREPARE builds its output directly; PipelineStep.GRID doesn't
+    # exist for gadm to require, and country_classifications' own dependency
+    # on it is scoped to its own PREPARE step.
     spec = registry.resolve("country_classifications")
     assert spec.requires == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
     assert spec.requires_for(PipelineStep.FETCH) == ()

@@ -23,28 +23,25 @@ def _jobs():
 
 
 def test_acag_chain_is_a_single_prepare_job():
-    # acag's PREPARE now does the tiled reprojection work directly (Plan 2's
-    # PREPARE+GRID merge) -- there is no separate GRID job to chain after it.
+    # acag's PREPARE does the tiled reprojection work directly -- there is
+    # no separate GRID job to chain after it.
     chain = sc.build_chain("acag", _jobs())
     assert [j["name"] for j in chain] == ["acag-prepare"]
 
 
 def test_plad_chain_includes_gadm_prepare_prerequisite_first():
-    # plad's former GRID step is renamed PREPARE too (STEPS = FETCH, PREPARE
-    # -- Plan 2's PREPARE+GRID merge; plad never had a separate PREPARE step
-    # of its own, so this is a pure rename, no merge) -- REQUIRES is on
-    # gadm:prepare (scoped to plad's own PREPARE step), so only
-    # plad-prepare is plad's own job. gadm's PREPARE now does what used to
-    # be its separate GRID step directly -- one job, still pulled in first
-    # since that's gadm's own earliest-SLURM-step chain.
+    # plad's STEPS = FETCH, PREPARE -- REQUIRES is on gadm:prepare (scoped
+    # to plad's own PREPARE step), so only plad-prepare is plad's own job.
+    # gadm's PREPARE is one job, still pulled in first since that's gadm's
+    # own earliest-SLURM-step chain.
     chain = sc.build_chain("plad", _jobs())
     assert [j["name"] for j in chain] == ["gadm-prepare", "plad-prepare"]
 
 
 def test_snl_mining_chain_includes_gadm_prepare_prerequisite():
-    # snl_mining's DuckDB feature-build and tiled rasterization are now one
-    # merged PREPARE job (Plan 2's PREPARE+GRID merge) -- there is no
-    # separate GRID job to chain after it. REQUIRES also includes
+    # snl_mining's DuckDB feature-build and tiled rasterization are one
+    # PREPARE job -- there is no separate GRID job to chain after it.
+    # REQUIRES also includes
     # commodity_prices:prepare (mine_priceshock_*,
     # src/data/sources/snl_mining/source.py) -- its own prerequisite chain
     # has no jobs of its own (commodity_prices has no REQUIRES), so only
@@ -56,9 +53,9 @@ def test_snl_mining_chain_includes_gadm_prepare_prerequisite():
 
 
 def test_country_classifications_chain_includes_gadm_prepare_prerequisite():
-    # country_classifications now has a single PREPARE job (Plan 2's
-    # PREPARE+GRID merge) and REQUIRES is scoped to that same step, so
-    # gadm's chain is pulled in before country_classifications-prepare runs.
+    # country_classifications has a single PREPARE job and REQUIRES is
+    # scoped to that same step, so gadm's chain is pulled in before
+    # country_classifications-prepare runs.
     chain = sc.build_chain("country_classifications", _jobs())
     assert [j["name"] for j in chain] == ["gadm-prepare", "country_classifications-prepare"]
 
@@ -93,9 +90,9 @@ def test_job_dependencies_scoped_to_each_job_own_step():
     # snl_mining-prepare) carries the REQUIRES entries scoped to its own
     # (merged) PREPARE step: gadm-prepare (polygon geometries for the
     # admin-count spatial join AND GID_N_code_mapping.json for
-    # _export_admin_count_tables -- both now produced by gadm's PREPARE
-    # directly, Plan 2's PREPARE+GRID merge) and commodity_prices-prepare
-    # (mine_priceshock_* price table).
+    # _export_admin_count_tables -- both produced by gadm's PREPARE
+    # directly) and commodity_prices-prepare (mine_priceshock_* price
+    # table).
     known_ids = {
         "gadm-prepare": "id-gadm-prepare",
         "commodity_prices-prepare": "id-commodity_prices-prepare",

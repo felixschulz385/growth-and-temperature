@@ -1,5 +1,4 @@
-"""Generic per-(tile, year) PREPARE execution loop -- the ledger-free
-replacement for the old PREPARE+GRID split. A source declares its required
+"""Generic per-(tile, year) PREPARE execution loop. A source declares its required
 output shape once (`years`, `variables`, `raw_getter`) and this drives the
 same bootstrap-then-fill-tiles sequence every tiled raster source needs:
 create the empty, chunk-aligned output zarr if missing, then for every

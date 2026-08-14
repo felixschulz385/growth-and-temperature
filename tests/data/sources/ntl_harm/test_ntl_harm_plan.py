@@ -1,13 +1,12 @@
-"""NtlHarmSource: ledger-free FETCH/PREPARE.
+"""NtlHarmSource: FETCH/PREPARE.
 
-PREPARE is planned by a live crawl of FETCH's raw output directory (no
-ledger fast path -- see src/data/sources/ntl_harm.py's module docstring) and
-executed as one tiled `run_tiled_prepare()` call per source (no separate
-GRID step, no intermediate annual zarr). The old insertion-order/GRID-target
-tests this file used to have are gone with the ledger they depended on;
-`test_execute_prepare_writes_a_real_reprojected_tiled_output` is the new
-end-to-end replacement, exercising the full raw-file -> tiled zarr path
-against a real (synthetic) raster instead of mocks.
+PREPARE is planned by a live crawl of FETCH's raw output directory (see
+src/data/sources/ntl_harm.py's module docstring) and executed as one tiled
+`run_tiled_prepare()` call per source (no separate GRID step, no
+intermediate annual zarr).
+`test_execute_prepare_writes_a_real_reprojected_tiled_output` exercises the
+full raw-file -> tiled zarr path against a real (synthetic) raster instead
+of mocks.
 """
 
 import contextlib

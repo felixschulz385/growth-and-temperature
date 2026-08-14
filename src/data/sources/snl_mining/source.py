@@ -1,4 +1,4 @@
-"""SNL/S&P Global mining property tables: prepare + grid, no fetch.
+"""SNL/S&P Global mining property tables: prepare only, no fetch, no grid.
 
 docs/design/09-integrated-pipeline.md §6: newly registered (today it's
 unregistered on the download side -- notebooks + README only, because its
@@ -15,31 +15,25 @@ the same reason -- login/browser-session fragility means it still needs a
 human at the keyboard, not the unattended per-file resumability `FETCH`
 promises.
 
-**Two internal phases, one PREPARE step** (docs/design successor to the
-ledger, Plan 2's PREPARE+GRID merge): the old `SnlMiningPreprocessor.
-process_target` did DuckDB feature-building (`_prepare_duckdb_features` --
-buffer tables, ADM count tables, R-tree indexes) and tiled rasterization
-together inside one `stage="spatial"` call; an earlier revision of this
-module split them into separate PREPARE (writes `prepared_db_path`) and GRID
-(reads it) *steps*. They're a single `PREPARE` step again now, but the
-internal split is preserved as two phases inside one `_execute_prepare()`
-(`_build_prepared_db()`, resumable via a plain `os.path.exists()` check on
-`prepared_db_path`, then rasterization) -- a retried rasterization still
-skips the expensive DuckDB rebuild.
+**Two internal phases, one PREPARE step**: DuckDB feature-building
+(`_prepare_duckdb_features` -- buffer tables, ADM count tables, R-tree
+indexes) and tiled rasterization run as two phases inside one
+`_execute_prepare()` (`_build_prepared_db()`, resumable via a plain
+`os.path.exists()` check on `prepared_db_path`, then rasterization) -- a
+retried rasterization still skips the expensive DuckDB rebuild.
 
 Ports `src/data/preprocess/sources/snl_mining.py::SnlMiningPreprocessor`.
 `REQUIRES` on gadm's PREPARE -- both for the admin-polygon join (reads
 `misc/processed/stage_1/gadm/gadm_levelADM_{1,2}_simplified.gpkg`, the same
 GADM artefact PLAD depends on) and for `GID_1`/`GID_2_code_mapping.json` (to
 translate this source's own admin-count tables into gadm's integer ids --
-see below) -- both now produced by gadm's PREPARE directly (Plan 2's
-PREPARE+GRID merge) -- `PipelineStep.GRID` no longer exists for gadm to
-require. Scoped to this source's own (merged) PREPARE step.
+see below) -- both produced by gadm's PREPARE directly; `PipelineStep.GRID`
+doesn't exist for gadm to require. Scoped to this source's own PREPARE step.
 
-**Admin-polygon mine counts are no longer rasterized.** `mine_count_adm1`/
+**Admin-polygon mine counts are not rasterized.** `mine_count_adm1`/
 `mine_count_adm2` are constant across every pixel of their containing ADM
 polygon for a given year -- they vary only by `GID_1`/`GID_2` and year, never
-by pixel location -- so GRID now writes them as tiny `(GID_N, year)`-keyed
+by pixel location -- so PREPARE writes them as tiny `(GID_N, year)`-keyed
 parquet sidecars instead of full pixel-grid zarr variables. Assembly merges
 them directly onto rows via
 `src.data.assemble.processors.TileProcessor`'s `join_on` mechanism. The
@@ -135,12 +129,9 @@ class SnlMiningSource(DataSource):
 
     ID = "snl_mining"
     STEPS = (PipelineStep.PREPARE,)
-    # gadm's PREPARE now does what used to be its separate GRID step
-    # directly (docs/design successor to the ledger, Plan 2's PREPARE+GRID
-    # merge) -- PipelineStep.GRID no longer exists for gadm to require. Both
-    # of this source's own former uses of gadm (admin-polygon join, GID_N
-    # mapping sidecars) now live inside one merged PREPARE step, so one
-    # gadm entry covers both.
+    # gadm's PREPARE builds both the admin-polygon join output and the GID_N
+    # mapping sidecars directly; PipelineStep.GRID doesn't exist for gadm to
+    # require, so one gadm entry covers both.
     REQUIRES = (
         (PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),
         (PipelineStep.PREPARE, "commodity_prices", PipelineStep.PREPARE),
@@ -285,23 +276,13 @@ class SnlMiningSource(DataSource):
             return self._plan_prepare()
         raise AssertionError(f"unreachable: {step}")
 
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` -- see gadm.py's identical
-        `_discover()` for the full rationale. This source's targets are
-        singletons with no year/key selection to apply; `selection` is
-        accepted for interface symmetry only."""
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare()
-        raise AssertionError(f"unreachable: {step}")
-
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     # -- PREPARE: DuckDB feature build (phase 1, `_build_prepared_db()`) +
-    # tiled rasterization from it (phase 2) -- one merged step, docs/design
-    # successor to the ledger, Plan 2's PREPARE+GRID merge. -----------------
+    # tiled rasterization from it (phase 2), one step. ----------------------
 
     def _plan_prepare(self) -> List[StepTarget]:
         if not os.path.exists(self.duckdb_path):

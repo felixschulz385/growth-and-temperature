@@ -4,12 +4,11 @@ StepTarget used `completion=Completion.NEVER` (which `is_complete()` always
 reports False for) while the real skip-check lived only inside
 `_execute_prepare`'s custom `os.listdir` logic, invisible to `is_complete()`/
 `data plan`. PREPARE now uses `Completion.MARKER` (a `.complete` sibling
-file next to the final output zarr -- what used to be GRID's own output,
-Plan 2's PREPARE+GRID merge, docs/design successor to the ledger).
+file next to the final output zarr).
 
 `_rasterize_levels` (phase 2: tiled rasterization, needs a real target
 geobox/dask client) is stubbed out in every test here -- these tests are
-about resumability/marker semantics around the merged PREPARE step, not
+about resumability/marker semantics around the PREPARE step, not
 rasterization correctness (covered by
 tests/data/sources/misc/test_gadm_osm_grid_geobox.py instead).
 """

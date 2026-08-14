@@ -1,7 +1,6 @@
 """CountryClassificationsSource._execute_prepare(): writes a small
 GID_0-keyed parquet table instead of rasterizing (classification values are
-constant within a country, never per-pixel -- see module docstring). Plan
-2's PREPARE+GRID merge: this used to be a separate `_execute_grid()`."""
+constant within a country, never per-pixel -- see module docstring)."""
 
 import json
 import os

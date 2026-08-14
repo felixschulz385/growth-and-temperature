@@ -158,11 +158,10 @@ def test_gadm_create_empty_zarr_uses_lat_lon_dims_for_legacy_geobox(tmp_path, mo
 
 
 def test_gadm_rasterize_levels_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypatch):
-    # Plan 2's PREPARE+GRID merge (src/data/sources/misc/gadm.py module
-    # docstring): the old _execute_grid body is now `_rasterize_levels()`,
-    # called directly by `_execute_prepare` -- exercised directly here
-    # rather than through a StepTarget, since there's no separate GRID
-    # target anymore.
+    # `_rasterize_levels()` is called directly by `_execute_prepare`
+    # (src/data/sources/misc/gadm.py module docstring) -- exercised
+    # directly here rather than through a StepTarget, since there's no
+    # separate GRID target.
     gadm, ctx = _make(tmp_path, "gadm", grid_id="ease6933")
 
     import src.data.common.geobox as geobox_module
@@ -211,10 +210,10 @@ class _FakeClient:
 
 
 def test_osm_rasterize_uses_y_x_dims_for_ease_geobox(tmp_path, monkeypatch):
-    # Plan 2's PREPARE+GRID merge (src/data/sources/misc/osm.py module
-    # docstring): the old _execute_grid body is now `_rasterize()`, called
-    # directly by `_execute_prepare` -- exercised directly here rather than
-    # through a StepTarget, since there's no separate GRID target anymore.
+    # `_rasterize()` is called directly by `_execute_prepare`
+    # (src/data/sources/misc/osm.py module docstring) -- exercised directly
+    # here rather than through a StepTarget, since there's no separate GRID
+    # target.
     osm, ctx = _make(tmp_path, "osm", grid_id="ease6933")
 
     import src.data.common.geobox as geobox_module
