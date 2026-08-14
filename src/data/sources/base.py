@@ -42,6 +42,17 @@ class RemoteFileCatalog(Protocol):
     `FETCH`-capable sources implement this so `UnifiedDataIndex`/
     `AsyncHPCDownloader` (deliberately untouched by this refactor -- both are
     large and have zero test coverage) keep working unmodified.
+
+    Optional, not part of this Protocol (accessed via `getattr(..., None)`,
+    so a source that doesn't set it keeps the safe unbounded-walk default):
+    `RAW_LISTING_DEPTH: int | None` -- the max number of path segments any
+    `relative_path` this source's `list_remote_files()`/entrypoint crawl can
+    ever produce (e.g. 2 for a `<year>/<file>` layout, 1 for a flat
+    directory). Lets `manifest.snapshot_local_listing()` prune its walk
+    instead of descending arbitrarily deep under the raw root. Leave unset
+    for a source whose real nesting isn't fixed/known (e.g. EOG DMSP's
+    variable-depth directory crawl) -- a wrong (too-shallow) depth here
+    would make already-fetched files look outstanding again.
     """
 
     data_path: str

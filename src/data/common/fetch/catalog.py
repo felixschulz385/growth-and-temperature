@@ -18,6 +18,7 @@ instead of silently and permanently losing that entrypoint's files.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Any
 
 from src.data.common import statusfile
@@ -67,4 +68,42 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
         for rel, url in pairs:
             required.append(RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url))
 
+    return required
+
+
+def cached_required_files(source: Any, status_dir: str) -> "list[RequiredFile] | None":
+    """Network-free variant for display-only callers (`data summary`):
+    never calls `list_remote_files()`/`get_all_entrypoints()` -- both can
+    themselves hit the network (GLASS's `get_all_entrypoints()` crawls its
+    directory tree just to enumerate years), not just the per-entrypoint
+    listing `required_files()` already caches. Only reads whatever's
+    already on disk under `_status/entrypoints/`.
+
+    Non-entrypoint sources (module docstring: `has_entrypoints=False` means
+    "one `list_remote_files()` call, fresh every time", no cache at all) have
+    nothing to read without a live call -- returns `None` for those, not
+    `[]`, so a caller can tell "unknown without a live crawl" apart from
+    "genuinely zero files required". Entrypoint sources: entrypoints never
+    crawled by a real `data run --step fetch` yet are silently omitted, not
+    reported as missing.
+    """
+    if not getattr(source, "has_entrypoints", False):
+        return None
+
+    get_hash = source.get_file_hash
+    cache_dir = os.path.join(status_dir, ENTRYPOINT_CACHE_SUBDIR)
+    try:
+        filenames = os.listdir(cache_dir)
+    except OSError:
+        filenames = []
+
+    required: list[RequiredFile] = []
+    for filename in filenames:
+        if not filename.endswith(".json"):
+            continue
+        cached = statusfile.read(os.path.join(cache_dir, filename))
+        if not cached:
+            continue
+        for rel, url in cached.get("files", []):
+            required.append(RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url))
     return required

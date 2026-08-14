@@ -22,7 +22,7 @@ on that host's PATH (see ``generate_slurm_scripts.py::render_egress_job``).
 Usage:
   python orchestration/slurm/submit_chain.py --source acag
   python orchestration/slurm/submit_chain.py --source plad --dry-run
-  python orchestration/slurm/submit_chain.py --source modis --from-step grid
+  python orchestration/slurm/submit_chain.py --source modis --from-step prepare
 """
 
 from __future__ import annotations

@@ -55,6 +55,7 @@ class NtlHarmSource(DataSource):
 
     DATA_SOURCE_NAME = "ntl_harm"
     has_entrypoints = True
+    RAW_LISTING_DEPTH = 1  # flat filename, see list_remote_files() below
 
     VARIABLE_NAME = "ntl_harm"
     FIGSHARE_API_BASE = "https://api.figshare.com/v2"

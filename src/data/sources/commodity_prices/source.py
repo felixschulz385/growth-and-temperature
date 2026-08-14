@@ -41,6 +41,7 @@ from src.data.sources.base import DataSource
 from src.data.sources.commodity_prices.prices import read_and_normalize_prices
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources.verify import VerificationResult
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +116,21 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
         from src.data.common.fetch.driver import run_fetch
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
+
+    def verify_fetch(self) -> VerificationResult:
+        """`ConfiguredFilesFetchMixin.verify_fetch()` only ever checks
+        `output_root(FETCH)/<name>` -- when `prices_path` is configured
+        (module docstring), PREPARE reads the override path instead and
+        FETCH's own output is never populated, so that check would report a
+        confusing "missing" even though nothing is actually wrong."""
+        if self._raw_prices_path_override:
+            exists = os.path.exists(self._raw_prices_path_override)
+            detail = (
+                f"using prices_path override: {self._raw_prices_path_override} "
+                f"({'present' if exists else 'MISSING'}) -- FETCH step itself is bypassed"
+            )
+            return VerificationResult(exists, detail)
+        return super().verify_fetch()
 
     # -- PREPARE ----------------------------------------------------------
 

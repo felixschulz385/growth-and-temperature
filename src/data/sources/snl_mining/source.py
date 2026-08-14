@@ -281,6 +281,18 @@ class SnlMiningSource(DataSource):
             return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
+    def verify_fetch(self) -> "verify.VerificationResult":
+        """No FETCH step is declared (module docstring: acquisition is a
+        manual S&P Global `.xls` export + OpenAI enrichment loop, genuinely
+        not automatable) -- but `data summary` checks for this hook
+        regardless of `STEPS` (`src/cli/data/handlers.py::handle_summary`),
+        so the FETCH column still reports whether the stage-0 DuckDB this
+        source depends on (`self.duckdb_path`) is actually present, instead
+        of a blank "-" that looks identical to "not applicable"."""
+        exists = os.path.exists(self.duckdb_path)
+        detail = f"manual export: {self.duckdb_path} ({'present' if exists else 'MISSING'})"
+        return verify.VerificationResult(exists, detail)
+
     # -- PREPARE: DuckDB feature build (phase 1, `_build_prepared_db()`) +
     # tiled rasterization from it (phase 2), one step. ----------------------
 

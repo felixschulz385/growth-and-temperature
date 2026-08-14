@@ -115,7 +115,7 @@ def run_fetch(
 
     try:
         required = catalog.required_files(source, raw_root, refresh_entrypoints=refresh_entrypoints)
-        listing = manifest.snapshot_local_listing(raw_root)
+        listing = manifest.snapshot_local_listing(raw_root, max_depth=getattr(source, "RAW_LISTING_DEPTH", None))
         plan = manifest.plan_fetch(required, listing, raw_root)
 
         if plan.unavailable:

@@ -67,14 +67,29 @@ class FetchPlan:
         }
 
 
-def snapshot_local_listing(root: str) -> dict[str, ListingEntry]:
+def snapshot_local_listing(root: str, *, max_depth: Optional[int] = None) -> dict[str, ListingEntry]:
     """One walk of *root* -- callers cache this for the whole run, never
     re-stat per file. A missing *root* is an empty listing, not an error (a
-    source's raw dir may not exist yet on a fresh checkout)."""
+    source's raw dir may not exist yet on a fresh checkout).
+
+    *max_depth* (a source's `RAW_LISTING_DEPTH`, see `src.data.sources.base
+    .RemoteFileCatalog`) prunes `os.walk()` once a subdirectory is *max_depth*
+    levels below *root* -- e.g. depth 2 for a `<year>/<file>` layout stops
+    descending past the year directories. `None` (default) walks unbounded,
+    the only safe choice for a source whose real nesting isn't known/fixed.
+    Always skips `statusfile.STATUS_SUBDIR` regardless of depth -- those are
+    FETCH's own bookkeeping sidecars, never a downloaded file."""
     listing: dict[str, ListingEntry] = {}
     if not os.path.isdir(root):
         return listing
-    for dirpath, _dirnames, filenames in os.walk(root):
+    root = os.path.normpath(root)
+    for dirpath, dirnames, filenames in os.walk(root):
+        if statusfile.STATUS_SUBDIR in dirnames:
+            dirnames.remove(statusfile.STATUS_SUBDIR)
+        if max_depth is not None:
+            depth = 0 if dirpath == root else dirpath[len(root) :].count(os.sep)
+            if depth >= max_depth - 1:
+                dirnames[:] = []
         for name in filenames:
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, root).replace(os.sep, "/")
@@ -121,15 +136,24 @@ def plan_fetch(
 ) -> FetchPlan:
     """Diff *required* against *listing*. A required file with a status
     sidecar marked `STATUS_UNAVAILABLE` (see `record_failure()`) is bucketed
-    separately from a plain `outstanding` retry."""
+    separately from a plain `outstanding` retry.
+
+    One `os.listdir()` of the status directory up front (`statusfile
+    .list_status_filenames()`), not one `open()` attempt per missing file --
+    the common case (a mostly-incomplete tree) is mostly units that were
+    never attempted at all and have no status file, so this turns N mostly-
+    failed opens into 1 listdir + a handful of real reads."""
     complete: list[RequiredFile] = []
     outstanding: list[RequiredFile] = []
     unavailable: list[RequiredFile] = []
+    status_filenames = statusfile.list_status_filenames(status_dir)
     for req in required:
         if _is_present(listing.get(req.relative_path), req):
             complete.append(req)
             continue
-        status = statusfile.read(statusfile.status_path(status_dir, req.unit_id))
+        status = None
+        if f"{statusfile.sanitize_unit_id(req.unit_id)}.json" in status_filenames:
+            status = statusfile.read(statusfile.status_path(status_dir, req.unit_id))
         if status and status.get("status") == STATUS_UNAVAILABLE:
             unavailable.append(req)
         else:

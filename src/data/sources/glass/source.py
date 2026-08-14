@@ -100,6 +100,7 @@ class GlassSource(_CrawlerMixin, DataSource):
 
     DATA_SOURCE_NAME = "glass"
     has_entrypoints = True
+    RAW_LISTING_DEPTH = 3  # <year>/<day>/<file>, see crawler.py's list_remote_files()
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         # Which variant: derived from the registered id ("glass_modis" /

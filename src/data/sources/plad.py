@@ -64,6 +64,7 @@ class PlaDSource(DataSource):
 
     DATA_SOURCE_NAME = "harvard"
     has_entrypoints = False
+    RAW_LISTING_DEPTH = 1  # flat filename, see list_remote_files() below
     OUTPUT_PREFIX = "plad"  # hardcoded in the old code, see module docstring
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):

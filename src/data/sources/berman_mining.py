@@ -52,6 +52,7 @@ class BermanMiningSource(DataSource):
 
     DATA_SOURCE_NAME = "berman_mining"
     has_entrypoints = False
+    RAW_LISTING_DEPTH = 2  # <subfolder>/<file>, see MANUAL_FILE below
 
     MANUAL_FILE = {
         "name": "BCRT_baseline.dta",

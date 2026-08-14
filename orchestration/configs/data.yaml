@@ -200,7 +200,7 @@ sources:
     type: "ntl_harm"
     base_url: "https://api.figshare.com/v2/articles/9828827"
     data_path: "ntl_harm/harmonized"
-    year_range: [1992, 2018]  # Harmonized data availability period
+    year_range: [1992, 2024]  # Harmonized data availability period
     file_extensions: [".tif", ".zip", ".tar.gz", ".gz"]
 
     # Download settings

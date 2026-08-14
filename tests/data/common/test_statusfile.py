@@ -38,3 +38,13 @@ def test_remove_missing_file_is_a_noop(tmp_path):
 def test_status_path_sanitizes_unit_id():
     path = statusfile.status_path("/data/raw", "2020/h12v09")
     assert path == os.path.join("/data/raw", "_status", "2020_h12v09.json")
+
+
+def test_list_status_filenames_empty_when_subdir_missing(tmp_path):
+    assert statusfile.list_status_filenames(str(tmp_path)) == set()
+
+
+def test_list_status_filenames_lists_what_was_written(tmp_path):
+    statusfile.write(statusfile.status_path(str(tmp_path), "a"), {"status": "retrying"})
+    statusfile.write(statusfile.status_path(str(tmp_path), "b/c"), {"status": "retrying"})
+    assert statusfile.list_status_filenames(str(tmp_path)) == {"a.json", "b_c.json"}

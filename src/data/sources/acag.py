@@ -48,6 +48,7 @@ class AcagSource(DataSource):
     # -- RemoteFileCatalog contract (src/data/sources/base.py) --------------
     DATA_SOURCE_NAME = "acag"
     has_entrypoints = True
+    RAW_LISTING_DEPTH = 3  # GL/Annual/<file>, see KNOWN_FILES below
 
     # -- fetch-side inventory, unchanged from ACAGDataSource -----------------
     SHARED_LINK_URL = "https://wustl.app.box.com/s/y143mciw7jz7ft2qe3hccjw65m3xe8f2"

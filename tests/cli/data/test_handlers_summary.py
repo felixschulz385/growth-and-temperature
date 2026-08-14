@@ -70,13 +70,15 @@ def test_summarize_targets_fetch_pseudo_target_has_no_complete_concept(tmp_path)
 
 def test_print_source_summary_includes_verified_column(capsys):
     rows = {
-        "acag": {"fetch": "3 file(s) fetched", "prepare": "1/1 (100%)", "grid": "1/1 (100%)", "verified": "yes"},
-        "modis": {"fetch": "no local data", "prepare": "-", "grid": "0/2 (0%)", "verified": "pending"},
+        "acag": {"fetch": "3 file(s) fetched", "prepare": "1/1 (100%)", "grid": "-", "verified": "yes"},
+        "modis": {"fetch": "no local data", "prepare": "-", "grid": "-", "verified": "pending"},
     }
     handlers._print_source_summary(rows)
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines[0].split() == ["source", "fetch", "prepare", "grid", "verified"]
+    # GRID is display-only omitted -- no registered source declares it any
+    # more (module-level _SUMMARY_STEPS docstring).
+    assert lines[0].split() == ["source", "fetch", "prepare", "verified"]
     assert "yes" in lines[1] or "yes" in lines[2]
     assert "pending" in out
 
@@ -86,7 +88,54 @@ def test_print_source_summary_empty(capsys):
     assert "No sources found." in capsys.readouterr().out
 
 
+def test_print_source_summary_wraps_long_text_to_fit_narrow_terminal(capsys, monkeypatch):
+    import os
+    import shutil
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((60, 24)))
+    rows = {
+        "plad": {
+            "fetch": "0 complete, 26 outstanding, 0 unavailable -- run `data run --step fetch` to discover files",
+            "prepare": "no targets",
+            "grid": "-",
+            "verified": "-",
+        },
+    }
+    handlers._print_source_summary(rows)
+    lines = capsys.readouterr().out.splitlines()
+    assert all(len(line) <= 60 for line in lines)
+    # Every word from the long fetch message survives somewhere in the
+    # wrapped output (nothing silently truncated/dropped), even though it
+    # no longer fits on one line.
+    joined = " ".join(lines)
+    for word in rows["plad"]["fetch"].split():
+        assert word in joined
+
+
+def test_print_source_summary_single_line_per_row_when_it_fits(capsys, monkeypatch):
+    import os
+    import shutil
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((300, 24)))
+    rows = {"acag": {"fetch": "3 file(s) fetched", "prepare": "1/1 (100%)", "grid": "-", "verified": "yes"}}
+    handlers._print_source_summary(rows)
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 3  # header, separator, one row -- no wrap needed
+
+
 # --- handle_summary end-to-end ------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _wide_terminal(monkeypatch):
+    """Every test in this module except the dedicated wrapping tests below
+    asserts on a single unbroken row line -- force a wide terminal so
+    _print_source_summary()'s wrapping never kicks in here. The wrapping
+    tests locally override this with a narrow width."""
+    import os
+    import shutil
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda fallback=(80, 24): os.terminal_size((300, 24)))
 
 
 def _fake_config(tmp_path):
@@ -284,6 +333,127 @@ def test_handle_summary_by_tile_shows_per_target_breakdown(tmp_path, monkeypatch
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if line.startswith("acag"))
     assert "pm25: 2/4 complete, 2 outstanding, 0 unavailable" in row
+
+
+# --- _summarize_fetch / _year_based_fetch_summary: network-free by design -
+
+
+class _FakeYearlySource:
+    """Just enough of a `RemoteFileCatalog` source for `_summarize_fetch()`:
+    an entrypoint source with nothing cached yet, but a declared
+    `cfg.year_range` and a real `filename_to_entrypoint()` -- the shape EOG
+    VIIRS/ntl_harm are in on a fresh checkout."""
+
+    has_entrypoints = True
+    RAW_LISTING_DEPTH = 1
+
+    def __init__(self, ctx, cfg):
+        self.ctx = ctx
+        self.cfg = cfg
+
+    def filename_to_entrypoint(self, relative_path):
+        import re
+
+        match = re.search(r"(\d{4})", relative_path)
+        return {"year": int(match.group(1))} if match else None
+
+    @staticmethod
+    def get_file_hash(url):
+        import hashlib
+
+        return hashlib.md5(url.encode("utf-8")).hexdigest()
+
+
+def _make_yearly_source(tmp_path, year_range=None):
+    from src.data.pipeline.config import SourceConfig
+    from src.data.pipeline.context import PipelineContext
+
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    raw = {"data_path": "yearly"}
+    if year_range is not None:
+        raw["year_range"] = list(year_range)
+    cfg = SourceConfig.from_dict("yearly", raw)
+    return _FakeYearlySource(ctx, cfg)
+
+
+def test_summarize_fetch_falls_back_to_year_count_when_nothing_cached(tmp_path):
+    from src.data.sources import layout
+
+    source = _make_yearly_source(tmp_path, year_range=(2020, 2022))
+    raw_root = layout.raw_root(source.ctx.data_root, source.cfg.data_path, layout=source.ctx.layout)
+    os.makedirs(raw_root, exist_ok=True)
+    open(os.path.join(raw_root, "file_2020.tif"), "w").close()
+
+    summary = handlers._summarize_fetch(source, detailed=False)
+    assert summary == "1/3 year(s) complete (not yet crawled -- run `data run --step fetch` for exact file status)"
+
+
+def test_summarize_fetch_reports_not_yet_crawled_without_year_range(tmp_path):
+    source = _make_yearly_source(tmp_path, year_range=None)
+    summary = handlers._summarize_fetch(source, detailed=False)
+    assert summary == "not yet crawled -- run `data run --step fetch` to discover files"
+
+
+# --- _summarize_fetch_targets: MODIS-shaped FETCH (no crawl, real targets) -
+
+
+def test_summarize_fetch_targets_buckets_complete_outstanding_unavailable(tmp_path):
+    from src.data.common.fetch import manifest
+
+    raw_root = tmp_path / "raw"
+    os.makedirs(raw_root, exist_ok=True)
+    status_dir = str(raw_root)
+    targets = [
+        _path_exists_target(raw_root, "a", PipelineStep.FETCH, exists=True),
+        _path_exists_target(raw_root, "b", PipelineStep.FETCH, exists=False),
+        _path_exists_target(raw_root, "c", PipelineStep.FETCH, exists=False),
+    ]
+    manifest.record_failure(status_dir, "c", "boom", max_attempts=1, permanent=True)  # -> unavailable
+
+    class _FakeSource:
+        def output_root(self, step):
+            return status_dir
+
+    summary = handlers._summarize_fetch_targets(_FakeSource(), targets, detailed=False)
+    assert summary == "1 complete, 1 outstanding, 1 unavailable"
+
+
+def test_summarize_fetch_targets_detailed_splits_never_attempted_and_retrying(tmp_path):
+    from src.data.common.fetch import manifest
+
+    raw_root = tmp_path / "raw"
+    os.makedirs(raw_root, exist_ok=True)
+    status_dir = str(raw_root)
+    targets = [
+        _path_exists_target(raw_root, "never", PipelineStep.FETCH, exists=False),
+        _path_exists_target(raw_root, "retrying", PipelineStep.FETCH, exists=False),
+    ]
+    manifest.record_failure(status_dir, "retrying", "transient", max_attempts=5)
+
+    class _FakeSource:
+        def output_root(self, step):
+            return status_dir
+
+    summary = handlers._summarize_fetch_targets(_FakeSource(), targets, detailed=True)
+    assert summary == "0 complete, 2 outstanding, 0 unavailable (outstanding: 1 never attempted, 1 retrying)"
+
+
+def test_handle_summary_shows_verify_fetch_for_source_without_fetch_step(tmp_path, monkeypatch, capsys):
+    # snl_mining declares STEPS=(PREPARE,) -- no FETCH -- but still depends
+    # on a manual export (verify_fetch()). The FETCH column must report that
+    # instead of the "-" every other stepless column gets.
+    config = {
+        "paths": {"data_root": str(tmp_path / "data_root"), "local_index_dir": str(tmp_path / "index")},
+        "sources": {"snl_mining": {}},
+    }
+    monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: config)
+    args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="snl_mining")
+
+    handlers.handle_summary(args)
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if line.startswith("snl_mining"))
+    assert "manual export" in row
+    assert "MISSING" in row
 
 
 def test_handle_summary_unknown_source_raises(tmp_path, monkeypatch):

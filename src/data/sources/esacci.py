@@ -66,6 +66,7 @@ class EsacciSource(DataSource):
 
     DATA_SOURCE_NAME = "esacci"
     has_entrypoints = True
+    RAW_LISTING_DEPTH = 2  # <year>/<file>, see list_remote_files() below
 
     DATASET = "satellite-land-cover"
     DEFAULT_VERSIONS = ["v2_0_7cds", "v2_1_1"]

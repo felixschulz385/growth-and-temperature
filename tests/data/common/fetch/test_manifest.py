@@ -21,6 +21,37 @@ def test_snapshot_local_listing_walks_nested_files(tmp_path):
     assert listing["2020/a.nc"].size == 2000
 
 
+def test_snapshot_local_listing_always_excludes_status_subdir(tmp_path):
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "a.nc"), 2000)
+    statusfile.write(statusfile.status_path(root, "a"), {"status": "retrying", "attempts": 1})
+    listing = manifest.snapshot_local_listing(root)
+    assert set(listing) == {"a.nc"}
+
+
+def test_snapshot_local_listing_max_depth_prunes_deeper_files(tmp_path):
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "2020", "a.nc"), 2000)
+    _write_file(os.path.join(root, "2020", "extra", "b.nc"), 2000)  # deeper than depth=2 expects
+    listing = manifest.snapshot_local_listing(root, max_depth=2)
+    assert set(listing) == {"2020/a.nc"}
+
+
+def test_snapshot_local_listing_max_depth_one_stays_flat(tmp_path):
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "flat.nc"), 2000)
+    _write_file(os.path.join(root, "2020", "a.nc"), 2000)  # would need depth>=2 to be found
+    listing = manifest.snapshot_local_listing(root, max_depth=1)
+    assert set(listing) == {"flat.nc"}
+
+
+def test_snapshot_local_listing_max_depth_three_matches_year_day_file(tmp_path):
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "2020", "001", "a.nc"), 2000)
+    listing = manifest.snapshot_local_listing(root, max_depth=3)
+    assert set(listing) == {"2020/001/a.nc"}
+
+
 class _FakeHPCClient:
     def __init__(self, stdout: str, ok: bool = True):
         self._stdout = stdout

@@ -233,10 +233,10 @@ jobs:
     simple: true
     transfer_after: fetch
 
-  - name: modis-grid
+  - name: modis-prepare
     log_key: modis
     source: modis
-    step: grid
+    step: prepare
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
@@ -246,17 +246,18 @@ jobs:
 
   # modis_robustness_11a1 (data.yaml's second MODIS config block, a bounded
   # tile/year subset -- see its own comment there) resolves to ModisSource
-  # too but never had its own GRID job. FETCH is unaffected -- it's the same
-  # egress/manual `data run --source modis_robustness_11a1 --step fetch`
-  # path modis-fetch.sh documents, just not SLURM-generated (no source-
-  # specific script needed there, unlike GRID). Resources copied from
-  # modis-grid as a conservative starting point (not transcribed from a
-  # prior committed script); the robustness arm is a handful of tiles/years,
-  # so this is likely over-provisioned and can be right-sized down later.
-  - name: modis-robustness-11a1-grid
+  # too but never had its own PREPARE job. FETCH is unaffected -- it's the
+  # same egress/manual `data run --source modis_robustness_11a1 --step
+  # fetch` path modis-fetch.sh documents, just not SLURM-generated (no
+  # source-specific script needed there, unlike PREPARE). Resources copied
+  # from modis-prepare as a conservative starting point (not transcribed
+  # from a prior committed script); the robustness arm is a handful of
+  # tiles/years, so this is likely over-provisioned and can be right-sized
+  # down later.
+  - name: modis-robustness-11a1-prepare
     log_key: modis_robustness_11a1
     source: modis_robustness_11a1
-    step: grid
+    step: prepare
     time: "1-00:00:00"
     qos: 1day
     cpus: 8

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=modis-robustness-11a1-grid
+#SBATCH --job-name=modis-robustness-11a1-prepare
 #SBATCH --output=./log/preprocess/modis_robustness_11a1/%x-%j.out
 #SBATCH --error=./log/preprocess/modis_robustness_11a1/%x-%j.err
 #SBATCH --time=1-00:00:00
@@ -36,7 +36,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
 /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/run.py" data run \
     --config "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/orchestration/configs/data.yaml" \
     --source modis_robustness_11a1 \
-    --step grid \
+    --step prepare \
     $OVERRIDE_FLAG \
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \

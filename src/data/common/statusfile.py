@@ -37,6 +37,20 @@ def status_path(base_dir: str, unit_id: str, *, subdir: str = STATUS_SUBDIR) -> 
     return os.path.join(base_dir, subdir, f"{sanitize_unit_id(unit_id)}.json")
 
 
+def list_status_filenames(base_dir: str, *, subdir: str = STATUS_SUBDIR) -> set[str]:
+    """Every status filename actually on disk under *base_dir*'s *subdir*,
+    one `os.listdir()` -- lets a caller checking many units (e.g.
+    `manifest.plan_fetch()` over every outstanding required file) test set
+    membership before opening a file, instead of paying one failed `open()`
+    per unit that was simply never attempted (the common case for a mostly-
+    incomplete FETCH tree). Empty set, not an error, if *subdir* doesn't
+    exist yet."""
+    try:
+        return set(os.listdir(os.path.join(base_dir, subdir)))
+    except OSError:
+        return set()
+
+
 def read(path: str) -> Optional[dict]:
     """The status dict at *path*, or `None` if it doesn't exist or is
     corrupt (a killed-mid-write file predating the atomic-replace discipline,

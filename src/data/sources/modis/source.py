@@ -1,4 +1,4 @@
-"""MODIS LST (Planetary Computer STAC streaming): fetch + grid.
+"""MODIS LST (Planetary Computer STAC streaming): fetch + prepare.
 
 docs/design/09-integrated-pipeline.md §5/§6: MODIS was already closest to the
 target shape before that migration -- no separate download-side counterpart
@@ -24,9 +24,12 @@ A failed (year, tile) unit's retry/error history lives in a small JSON
 sidecar under FETCH's own output root, written via `manifest.record_failure`/
 `clear_failure` (`src.data.common.fetch.manifest`, matching every other
 source); completion is plain local-disk presence (`Completion.PATH_EXISTS`),
-same as everywhere else -- no cross-machine remote-verification gate. GRID
-likewise reads FETCH's tile files straight off local disk (`_discover_grid`
-below).
+same as everywhere else -- no cross-machine remote-verification gate.
+PREPARE (the mosaic + reprojection step, `STEPS = (FETCH, PREPARE)` --
+renamed from GRID so MODIS's own step names/CLI/`data summary` columns line
+up with every other source's shape; the physical output tier is still
+"GRID", see `output_root()`) likewise reads FETCH's tile files straight off
+local disk (`_discover_prepare` below).
 
 **Real bug fixed in the original PREPARE migration, not silently ported**:
 the old `get_preprocessor_class()` only matched `--source` values `"modis"`/
@@ -38,9 +41,9 @@ class as `--source eog_viirs` (docs/design/09-integrated-pipeline.md §1).
 Fixed here by registering `modis_robustness_11a1` as a real alias.
 
 **Quirk deliberately preserved, not "fixed"**: unlike every other source's
-GRID/spatial step, MODIS's `_process_spatial_target` never checks
+PREPARE/spatial step, MODIS's `_process_spatial_target` never checks
 `override`/output-existence before writing a year into the shared multi-year
-zarr -- it always re-runs. Modeled here as `Completion.NEVER` on GRID
+zarr -- it always re-runs. Modeled here as `Completion.NEVER` on PREPARE
 targets rather than inventing a skip-if-exists check that never existed
 (pinned by tests/data/preprocess/sources/test_characterization_modis.py
 against the old code).
@@ -122,7 +125,7 @@ SPATIAL_RESAMPLING = "nearest"
 class ModisSource(DataSource):
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
-    STEPS = (PipelineStep.FETCH, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         self.product = cfg.raw.get("product", "21A2")
@@ -158,30 +161,48 @@ class ModisSource(DataSource):
         self._stac_client = None
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
-        """Overrides the base default in two places:
+        """Overrides the base default in two places -- MODIS's own step
+        names (`STEPS`) are deliberately decoupled from the physical
+        `layout.py` tier each one writes into, so this dispatches on `step`
+        (MODIS's declared identity) but always passes the *unchanged*
+        literal `PipelineStep` value to `layout.output_root()` on the
+        physical side (renaming MODIS's own GRID step to PREPARE, for
+        `data summary`/CLI consistency with every other source, must not
+        move any file):
 
-        - GRID: the old MODISPreprocessor hardcodes `stage_2_ease6933` for
-          its spatial output regardless of any global grid config -- the one
-          deliberate MODIS-only ad hoc case docs/design/05-migration.md §1 /
-          docs/design/09-integrated-pipeline.md §3 describe. Force
-          `grid_id="ease6933"` here rather than deferring to `self.ctx.grid_id`
-          (which defaults to legacy_4326).
+        - PREPARE (mosaic + reproject onto the canonical grid; was GRID
+          before the rename): the old MODISPreprocessor hardcodes
+          `stage_2_ease6933` for its spatial output regardless of any global
+          grid config -- the one deliberate MODIS-only ad hoc case
+          docs/design/05-migration.md §1 / docs/design/09-integrated-
+          pipeline.md §3 describe. Force `grid_id="ease6933"` here rather
+          than deferring to `self.ctx.grid_id` (which defaults to
+          legacy_4326), and pass the literal `PipelineStep.GRID` through to
+          `layout.output_root()` -- the physical tier is still "GRID"
+          (`stage_2_ease6933`/`grid/ease6933`), only MODIS's own declared
+          step name changed. Also accepts the literal `PipelineStep.GRID`
+          itself (not just PREPARE): `scripts/migrate_layout_v2.py
+          ::migrate_grid()` calls `output_root(PipelineStep.GRID)` on every
+          source regardless of whether GRID is still in that source's own
+          `STEPS` (by design -- see its own docstring), so this must keep
+          answering that literal call the same way it always has.
         - FETCH: writes to the physical artifact tree (`processed/stage_1`
           legacy / `prepared/<data_path>` v2) -- STAC-streamed-then-composited
           annual GeoTIFFs, not a bag of raw bytes under `layout.raw_root()`'s
           bare `<data_path>/raw` convention every crawler-based FETCH source
-          uses. `PipelineStep.PREPARE` below is a path-computation
-          implementation detail only -- MODIS doesn't declare that step
-          (`STEPS`).
+          uses. The literal `PipelineStep.PREPARE` passed to
+          `layout.output_root()` below is a physical-tier borrow only --
+          unrelated to MODIS's own PREPARE step (handled by the branch
+          above), which is a completely different physical location.
         """
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
-        if step is PipelineStep.GRID:
+        if step in (PipelineStep.PREPARE, PipelineStep.GRID):
             return layout.output_root(
                 self.ctx.data_root,
                 self.cfg.data_path,
-                step,
+                PipelineStep.GRID,
                 namespace=namespace,
                 grid_id=EASE_GRID_ID,
                 layout=self.ctx.layout,
@@ -198,7 +219,7 @@ class ModisSource(DataSource):
         return super().output_root(step, namespace=namespace)
 
     # ------------------------------------------------------------------
-    # transfer_units -- per-(year, tile) files for FETCH, default for GRID
+    # transfer_units -- per-(year, tile) files for FETCH, default for PREPARE
     # ------------------------------------------------------------------
 
     def transfer_units(self, step: PipelineStep) -> List[TransferUnit]:
@@ -244,15 +265,15 @@ class ModisSource(DataSource):
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
             return self._plan_fetch(selection)
-        if step is PipelineStep.GRID:
-            return self._discover_grid(selection)
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare(selection)
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
+        if target.step is PipelineStep.PREPARE:
+            return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     # -- FETCH ("annual": STAC streaming ingest + compositing) -------------
@@ -496,9 +517,13 @@ class ModisSource(DataSource):
                 os.remove(tmp_path)
             return False
 
-    # -- GRID ("spatial": mosaic tiles, reproject onto canonical EPSG:6933) --
+    # -- PREPARE ("spatial": mosaic tiles, reproject onto canonical EPSG:6933) --
+    # Named GRID until the rename that aligned MODIS's STEPS with every
+    # other source's (FETCH, PREPARE) shape (module docstring) -- the
+    # physical output tier is still "GRID" (see output_root() above), this
+    # is MODIS's own declared step identity only.
 
-    def _grid_output_path(self) -> str:
+    def _prepare_output_path(self) -> str:
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
@@ -511,13 +536,13 @@ class ModisSource(DataSource):
             v2_family=f"modis_lst_{self.product.lower()}",
         )
 
-    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """A year's GRID target's `inputs` (per-tile GeoTIFF paths, up to
+    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """A year's PREPARE target's `inputs` (per-tile GeoTIFF paths, up to
         ~300/year) come straight from an `os.listdir()` of FETCH's own
         output directory, matching every other source's live-filesystem-crawl
-        PREPARE/GRID planning."""
+        PREPARE planning."""
         stage1_root = self.output_root(PipelineStep.FETCH)
-        output_path = self._grid_output_path()
+        output_path = self._prepare_output_path()
         years = self.years or (
             self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1))
         ) or []
@@ -536,7 +561,7 @@ class ModisSource(DataSource):
             targets.append(
                 StepTarget(
                     source_id=self.cfg.source_id,
-                    step=PipelineStep.GRID,
+                    step=PipelineStep.PREPARE,
                     key=str(year),
                     output_path=output_path,
                     inputs=tuple(tile_files),
@@ -582,7 +607,7 @@ class ModisSource(DataSource):
         datasets = [self._read_annual_geotiff(f, year) for f in tile_files]
         return xr.combine_by_coords(datasets, combine_attrs="override")
 
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_or_create_canonical_geobox
         from src.data.common.raster.spatial import SpatialProcessor
 

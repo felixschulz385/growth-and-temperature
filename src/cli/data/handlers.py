@@ -70,33 +70,127 @@ def _summarize_targets(targets: list) -> tuple[str, "bool | None"]:
     return f"{complete}/{total} ({pct}%)", complete == total
 
 
+#: Never shrink a step column's wrapped width below this -- otherwise a
+#: narrow terminal could wrap "outstanding"-style words into an unreadable
+#: single-character-per-line column.
+_MIN_WRAPPED_COL_WIDTH = 10
+
+#: Columns `data summary` actually displays -- GRID excluded: no registered
+#: source declares it any more (MODIS was the last one, renamed to PREPARE),
+#: so it was always a dead "-" column. Still part of `STEP_ORDER`/`PipelineStep`
+#: for everything else (a source's own `STEPS`, `layout.py`'s physical tiers,
+#: `--step` choices) -- this is a display-only omission, not a removal.
+_SUMMARY_STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+
+
 def _print_source_summary(rows: dict) -> None:
+    """Prints the summary table, wrapping the free-text FETCH/PREPARE
+    columns (verify_fetch()/_summarize_fetch()-style detail strings can run
+    well past 100 characters) to fit the current terminal width, instead of
+    emitting one unbroken line per source that scrolls off-screen. `source`/
+    `verified` stay unwrapped -- both are short and bounded by design (a
+    source id, or one of a fixed handful of words)."""
+    import shutil
+    import textwrap
+
     if not rows:
         print("No sources found.")
         return
-    headers = ["source", *(step.value for step in STEP_ORDER), "verified"]
-    widths = [max(len(headers[0]), *(len(name) for name in rows))]
-    for i, step in enumerate(STEP_ORDER, start=1):
-        widths.append(max(len(headers[i]), *(len(row[step.value]) for row in rows.values())))
-    widths.append(max(len(headers[-1]), *(len(row["verified"]) for row in rows.values())))
+    headers = ["source", *(step.value for step in _SUMMARY_STEPS), "verified"]
+    sep = "  "
 
-    def fmt(cells: list) -> str:
-        return "  ".join(cell.ljust(w) for cell, w in zip(cells, widths))
+    natural_widths = [max(len(headers[0]), *(len(name) for name in rows))]
+    for i, step in enumerate(_SUMMARY_STEPS, start=1):
+        natural_widths.append(max(len(headers[i]), *(len(row[step.value]) for row in rows.values())))
+    natural_widths.append(max(len(headers[-1]), *(len(row["verified"]) for row in rows.values())))
 
-    print(fmt(headers))
-    print(fmt(["-" * w for w in widths]))
+    term_width = shutil.get_terminal_size(fallback=(120, 24)).columns
+    total_natural = sum(natural_widths) + len(sep) * (len(headers) - 1)
+    if total_natural <= term_width:
+        widths = natural_widths
+    else:
+        # Shrink only the step columns, proportional to their natural width;
+        # "source"/"verified" keep their natural (already short) width
+        # unconditionally. Guarantees the total always fits term_width --
+        # _MIN_WRAPPED_COL_WIDTH is a preference (kept whenever there's
+        # room), not an override that lets the row overflow on a very
+        # narrow terminal.
+        fixed = natural_widths[0] + natural_widths[-1] + len(sep) * (len(headers) - 1)
+        step_natural = natural_widths[1:-1]
+        budget = max(term_width - fixed, 0)
+        total_step_natural = sum(step_natural) or 1
+        step_widths = [
+            min(w, max(_MIN_WRAPPED_COL_WIDTH, int(budget * w / total_step_natural))) for w in step_natural
+        ]
+        overflow = sum(step_widths) - budget
+        if overflow > 0:
+            # Floors pushed the total past budget -- claw it back from the
+            # widest column(s) first, never below _MIN_WRAPPED_COL_WIDTH
+            # unless budget itself is smaller than that.
+            floor = min(_MIN_WRAPPED_COL_WIDTH, budget // len(step_widths) if step_widths else 0)
+            for i in sorted(range(len(step_widths)), key=lambda i: -step_widths[i]):
+                if overflow <= 0:
+                    break
+                reducible = max(0, step_widths[i] - floor)
+                take = min(reducible, overflow)
+                step_widths[i] -= take
+                overflow -= take
+        widths = [natural_widths[0], *step_widths, natural_widths[-1]]
+
+    def print_row(cells: list) -> None:
+        wrapped = [textwrap.wrap(cell, w) or [""] for cell, w in zip(cells, widths)]
+        for i in range(max(len(lines) for lines in wrapped)):
+            parts = [(lines[i] if i < len(lines) else "").ljust(w) for lines, w in zip(wrapped, widths)]
+            print(sep.join(parts))
+
+    print(sep.join(h.ljust(w) for h, w in zip(headers, widths)))
+    print(sep.join("-" * w for w in widths))
     for name in sorted(rows):
         row = rows[name]
-        print(fmt([name, *(row[step.value] for step in STEP_ORDER), row["verified"]]))
+        print_row([name, *(row[step.value] for step in _SUMMARY_STEPS), row["verified"]])
+
+
+def _year_based_fetch_summary(source, raw_root: str, max_depth) -> "str | None":
+    """Network-free "years found vs. years expected" fallback for an
+    entrypoint source with nothing cached yet (`_summarize_fetch()` below,
+    when `catalog.cached_required_files()` comes back empty) -- `None` if
+    this source doesn't declare enough to make the fallback meaningful.
+
+    Uses `source.cfg.year_range` (the source's own declared expected span,
+    e.g. EOG VIIRS's `[2012, 2021]`) as the denominator, and maps whatever's
+    already on local disk back to a year via `filename_to_entrypoint()` --
+    both already-existing per-source plumbing, no live crawl needed."""
+    year_range = getattr(source.cfg, "year_range", None)
+    if not year_range:
+        return None
+
+    from src.data.common.fetch import manifest
+
+    listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
+    found_years = set()
+    for rel in listing:
+        entrypoint = source.filename_to_entrypoint(rel)
+        if entrypoint and "year" in entrypoint:
+            found_years.add(int(entrypoint["year"]))
+
+    expected = set(range(year_range[0], year_range[1] + 1))
+    complete = len(found_years & expected)
+    return f"{complete}/{len(expected)} year(s) complete (not yet crawled -- run `data run --step fetch` for exact file status)"
 
 
 def _summarize_fetch(source, *, detailed: bool) -> str:
-    """FETCH's own complete/outstanding/unavailable bucket counts
-    (`src.data.common.fetch.manifest.plan_fetch`), for any
-    `RemoteFileCatalog`-shaped source -- always reflects live disk state.
-    `detailed=True` additionally splits `outstanding` into
-    never-attempted vs. currently retrying, by peeking at each unit's status
-    sidecar (`src.data.common.statusfile`)."""
+    """FETCH's own complete/outstanding/unavailable bucket counts, for any
+    `RemoteFileCatalog`-shaped source. Network-free by design (`data
+    summary` must never make a live remote call -- `data run --step fetch`
+    is what actually crawls): uses `catalog.cached_required_files()`, so a
+    source with no cached crawl yet (or a non-entrypoint source, which has
+    no cache at all -- see that function's docstring) falls back to a plain
+    local file count instead of comparing against a required list this call
+    has no way to know without hitting the network.
+
+    `detailed=True` additionally splits `outstanding` into never-attempted
+    vs. currently retrying, by peeking at each unit's status sidecar
+    (`src.data.common.statusfile`)."""
     from src.data.common import statusfile
     from src.data.common.fetch import catalog, manifest
     from src.data.sources import layout
@@ -104,23 +198,72 @@ def _summarize_fetch(source, *, detailed: bool) -> str:
     raw_root = layout.raw_root(
         source.ctx.data_root, source.cfg.data_path, namespace=source.cfg.namespace, layout=source.ctx.layout
     )
-    required = catalog.required_files(source, raw_root)
+    max_depth = getattr(source, "RAW_LISTING_DEPTH", None)
+    required = catalog.cached_required_files(source, raw_root)
+    if required is None:
+        listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
+        count = len(listing)
+        return "no local data" if count == 0 else f"{count} file(s) on disk (uncrawled -- run `data run --step fetch`)"
     if not required:
-        return "no required files declared"
+        by_year = _year_based_fetch_summary(source, raw_root, max_depth)
+        return by_year if by_year is not None else "not yet crawled -- run `data run --step fetch` to discover files"
 
-    listing = manifest.snapshot_local_listing(raw_root)
+    listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
     plan = manifest.plan_fetch(required, listing, raw_root)
     base = f"{len(plan.complete)} complete, {len(plan.outstanding)} outstanding, {len(plan.unavailable)} unavailable"
     if not detailed:
         return base
 
     never_attempted = retrying = 0
+    status_filenames = statusfile.list_status_filenames(raw_root)
     for req in plan.outstanding:
-        status = statusfile.read(statusfile.status_path(raw_root, req.unit_id))
+        filename = f"{statusfile.sanitize_unit_id(req.unit_id)}.json"
+        status = statusfile.read(statusfile.status_path(raw_root, req.unit_id)) if filename in status_filenames else None
         if status and status.get("attempts"):
             retrying += 1
         else:
             never_attempted += 1
+    return f"{base} (outstanding: {never_attempted} never attempted, {retrying} retrying)"
+
+
+def _summarize_fetch_targets(source, targets: list, *, detailed: bool) -> str:
+    """Same complete/outstanding/unavailable bucket vocabulary as
+    `_summarize_fetch()`, for a FETCH step whose full target list is
+    already known with no crawl needed at all (e.g. MODIS's tile x year
+    cross-product, config-derived rather than discovered) -- not
+    `RemoteFileCatalog`-shaped (no remote catalog to enumerate), but still a
+    real per-unit target list, not the single "sync whatever's missing"
+    `Completion.NEVER` pseudo-target every crawler-based FETCH source models
+    instead. `is_complete()` per target, and this source's own status
+    sidecars (`src.data.common.statusfile`, e.g.
+    `manifest.record_failure()`) for the outstanding/unavailable split --
+    the same statusfile-based bookkeeping every FETCH-capable source uses,
+    just addressed by `target.key` directly instead of a crawled unit_id."""
+    from src.data.common import statusfile
+    from src.data.common.fetch.manifest import STATUS_UNAVAILABLE
+
+    status_dir = source.output_root(PipelineStep.FETCH)
+    status_filenames = statusfile.list_status_filenames(status_dir)
+    complete = outstanding = unavailable = 0
+    never_attempted = retrying = 0
+    for target in targets:
+        if is_complete(target):
+            complete += 1
+            continue
+        filename = f"{statusfile.sanitize_unit_id(target.key)}.json"
+        status = statusfile.read(statusfile.status_path(status_dir, target.key)) if filename in status_filenames else None
+        if status and status.get("status") == STATUS_UNAVAILABLE:
+            unavailable += 1
+        elif status and status.get("attempts"):
+            retrying += 1
+            outstanding += 1
+        else:
+            never_attempted += 1
+            outstanding += 1
+
+    base = f"{complete} complete, {outstanding} outstanding, {unavailable} unavailable"
+    if not detailed:
+        return base
     return f"{base} (outstanding: {never_attempted} never attempted, {retrying} retrying)"
 
 
@@ -184,9 +327,8 @@ def handle_summary(args: argparse.Namespace) -> None:
             continue
 
         # Which of this source's own steps produces its final, verifiable
-        # output: GRID if declared (a handful of sources still using it,
-        # e.g. MODIS), else PREPARE, since PREPARE produces the final output
-        # for every other source.
+        # output: GRID if declared (no registered source does today -- every
+        # source, including MODIS, now ends in PREPARE), else PREPARE.
         if PipelineStep.GRID in spec.steps:
             final_step = PipelineStep.GRID
         elif PipelineStep.PREPARE in spec.steps:
@@ -196,6 +338,17 @@ def handle_summary(args: argparse.Namespace) -> None:
 
         had_error = False
         final_step_targets: list = []
+        # A source without a declared FETCH step can still depend on a
+        # manual/external input worth surfacing (e.g. snl_mining's S&P
+        # Global manual export, src/data/sources/snl_mining/source.py) --
+        # verify_fetch() is checked here too, before the STEPS-gated loop
+        # below skips FETCH entirely, so it shows up in the FETCH column
+        # instead of a blank "-" that looks identical to "not applicable".
+        if PipelineStep.FETCH not in spec.steps and hasattr(source, "verify_fetch"):
+            try:
+                row[PipelineStep.FETCH.value] = source.verify_fetch().detail
+            except Exception as exc:
+                row[PipelineStep.FETCH.value] = f"error: {exc}"
         for step in STEP_ORDER:
             if step not in spec.steps:
                 continue
@@ -214,6 +367,18 @@ def handle_summary(args: argparse.Namespace) -> None:
                     row[step.value] = _summarize_fetch(source, detailed=getattr(args, "detailed", False))
                     continue
                 targets = source.plan(step, TargetSelection())
+                if step is PipelineStep.FETCH and targets and not (
+                    len(targets) == 1 and targets[0].completion is Completion.NEVER
+                ):
+                    # A FETCH step whose plan() is already a complete,
+                    # no-crawl-needed per-unit enumeration (e.g. MODIS's
+                    # tile x year cross-product) -- same bucket vocabulary
+                    # as the RemoteFileCatalog branch above, just without a
+                    # remote catalog to compare against.
+                    row[step.value] = _summarize_fetch_targets(source, targets, detailed=getattr(args, "detailed", False))
+                    if step is final_step:
+                        final_step_targets = targets
+                    continue
                 if step is PipelineStep.PREPARE and getattr(args, "by_tile", False):
                     # Per-target tile breakdown for whichever targets are
                     # tile-shaped (run_tiled_prepare()'s Completion.MARKER +

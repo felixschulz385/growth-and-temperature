@@ -152,3 +152,20 @@ def test_output_path_uses_v2_family_under_layout_v2(tmp_path):
     ):
         source, ctx = _make_source(tmp_path, source_type, layout="v2")
         assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", f"{family}.zarr")
+
+
+def test_filename_to_entrypoint_extracts_year_for_viirs_annual(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs")
+    filename = "VNL_v21_npp_202001-202012_global_vcmslcfg_c202103122300.average_masked.dat.tif.gz"
+    assert source.filename_to_entrypoint(filename) == {"year": 2020}
+
+
+def test_filename_to_entrypoint_none_for_unrecognized_filename(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs")
+    assert source.filename_to_entrypoint("not_a_viirs_file.tif") is None
+
+
+def test_filename_to_entrypoint_dmsp_always_none(tmp_path):
+    # DMSP/DVNL: entrypoints not used at all (matches old EOGDataSource).
+    source, _ = _make_source(tmp_path, "dmsp")
+    assert source.filename_to_entrypoint("F182020.v4d_web.stable_lights.avg_vis.tif") is None

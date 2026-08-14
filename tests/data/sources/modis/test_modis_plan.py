@@ -18,13 +18,26 @@ def _make_source(tmp_path, tiles=("h18v04", "h20v08"), year_range=(2019, 2020), 
     return ModisSource(ctx, cfg), ctx
 
 
-def test_fetch_and_grid_are_the_only_steps():
-    assert ModisSource.STEPS == (PipelineStep.FETCH, PipelineStep.GRID)
+def test_fetch_and_prepare_are_the_only_steps():
+    assert ModisSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_output_root_uses_ease6933_suffix_for_grid(tmp_path):
+def test_output_root_uses_ease6933_suffix_for_prepare(tmp_path):
+    # PREPARE (renamed from GRID -- module docstring/output_root() -- so
+    # MODIS's own step names line up with every other source's) keeps the
+    # same physical "GRID" tier path; only MODIS's own step identity changed.
     source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_1")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_2_ease6933")
+
+
+def test_output_root_grid_literal_still_works_for_migrate_layout_v2(tmp_path):
+    # scripts/migrate_layout_v2.py::migrate_grid() calls
+    # output_root(PipelineStep.GRID) on every source regardless of whether
+    # GRID is still in that source's own STEPS (by design) -- must keep
+    # resolving to the same ease6933 path the renamed PREPARE branch does.
+    source, ctx = _make_source(tmp_path)
+    assert source.output_root(PipelineStep.GRID) == source.output_root(PipelineStep.PREPARE)
     assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_2_ease6933")
 
 
@@ -58,23 +71,23 @@ def test_fetch_targets_use_explicit_years_override_not_year_range(tmp_path):
     assert {t.key for t in targets} == {"2004/h18v04", "2014/h18v04", "2023/h18v04"}
 
 
-def test_grid_targets_one_per_year_with_stage1_output(tmp_path):
+def test_prepare_targets_one_per_year_with_stage1_output(tmp_path):
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
     stage1 = source.output_root(PipelineStep.FETCH)
     year_dir = os.path.join(stage1, "2019")
     os.makedirs(year_dir, exist_ok=True)
     open(os.path.join(year_dir, "h18v04.tif"), "w").close()
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].key == "2019"
     assert targets[0].inputs == (os.path.join(year_dir, "h18v04.tif"),)
     assert targets[0].output_path == os.path.join(
-        source.output_root(PipelineStep.GRID), "modis_21A2_timeseries_reprojected.zarr"
+        source.output_root(PipelineStep.PREPARE), "modis_21A2_timeseries_reprojected.zarr"
     )
 
 
-def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+def test_prepare_target_uses_v2_family_path_under_layout_v2(tmp_path):
     for product, family in (("21A2", "modis_lst_21a2"), ("11A1", "modis_lst_11a1")):
         source, ctx = _make_source(tmp_path, year_range=(2019, 2020), layout="v2", product=product)
         stage1 = source.output_root(PipelineStep.FETCH)
@@ -82,14 +95,14 @@ def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
         os.makedirs(year_dir, exist_ok=True)
         open(os.path.join(year_dir, "h18v04.tif"), "w").close()
 
-        targets = source.plan(PipelineStep.GRID, TargetSelection())
+        targets = source.plan(PipelineStep.PREPARE, TargetSelection())
         assert len(targets) == 1
         # MODIS forces grid_id=ease6933 unconditionally (see output_root()),
         # independent of ctx.grid_id -- so the v2 path reflects that too.
         assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "ease6933", f"{family}.zarr")
 
 
-def test_grid_targets_always_never_complete_the_quirk(tmp_path):
+def test_prepare_targets_always_never_complete_the_quirk(tmp_path):
     from src.data.sources.steps import Completion, is_complete
 
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
@@ -98,13 +111,13 @@ def test_grid_targets_always_never_complete_the_quirk(tmp_path):
     os.makedirs(year_dir, exist_ok=True)
     open(os.path.join(year_dir, "h18v04.tif"), "w").close()
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert targets[0].completion is Completion.NEVER
     os.makedirs(targets[0].output_path, exist_ok=True)  # pretend the shared zarr already exists
     assert is_complete(targets[0]) is False
 
 
-def test_plan_grid_reads_tile_files_directly_from_disk(tmp_path):
+def test_plan_prepare_reads_tile_files_directly_from_disk(tmp_path):
     # plan()/_discover() both resolve to the same live os.listdir() crawl
     # of FETCH's own output directory -- no reconcile step needed to
     # populate anything first.
@@ -117,13 +130,13 @@ def test_plan_grid_reads_tile_files_directly_from_disk(tmp_path):
     open(tile_a, "w").close()
     open(tile_b, "w").close()
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].key == "2019"
     assert sorted(targets[0].inputs) == sorted([tile_a, tile_b])
 
 
-def test_grid_targets_use_explicit_years_override_not_year_range(tmp_path):
+def test_prepare_targets_use_explicit_years_override_not_year_range(tmp_path):
     source, _ = _make_source(tmp_path, tiles=("h18v04",), years=[2004, 2014])
     stage1 = source.output_root(PipelineStep.FETCH)
     for year in (2004, 2014):
@@ -131,7 +144,7 @@ def test_grid_targets_use_explicit_years_override_not_year_range(tmp_path):
         os.makedirs(year_dir, exist_ok=True)
         open(os.path.join(year_dir, "h18v04.tif"), "w").close()
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert {t.key for t in targets} == {"2004", "2014"}
 
 
@@ -147,11 +160,11 @@ def test_transfer_units_one_per_tile_year_file_for_fetch(tmp_path):
     assert {u.unit_id for u in units} == {"2019/h18v04.tif", "2019/h20v08.tif"}
 
 
-def test_transfer_units_grid_falls_back_to_single_unit_default(tmp_path):
+def test_transfer_units_prepare_falls_back_to_single_unit_default(tmp_path):
     source, _ = _make_source(tmp_path, year_range=(2019, 2020))
-    units = source.transfer_units(PipelineStep.GRID)
+    units = source.transfer_units(PipelineStep.PREPARE)
     assert len(units) == 1
-    assert units[0].unit_id == "grid"
+    assert units[0].unit_id == "prepare"
 
 
 def test_modis_robustness_11a1_alias_resolves():

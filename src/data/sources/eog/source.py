@@ -212,7 +212,18 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     # get_file_hash: inherited from DataSource (src/data/sources/base.py).
 
     def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
-        return None  # matches old EOGDataSource: entrypoints not used
+        """`None` for DMSP/DVNL (old EOGDataSource: entrypoints not used).
+        VIIRS annual composites: the year is the filename's own `end_year`
+        group, same regex `_viirs_annual_listing()` matches against -- lets
+        `data summary` map an already-downloaded local file back to its year
+        without needing a live crawl (`_summarize_fetch()`'s
+        cached_required_files()-is-empty fallback)."""
+        if self.source_type != "viirs_annual":
+            return None
+        match = self._VIIRS_FILENAME_RE.search(os.path.basename(relative_path))
+        if not match:
+            return None
+        return {"year": int(match.group("end_year"))}
 
     @property
     def has_entrypoints(self) -> bool:
@@ -221,6 +232,15 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         plain whole-directory recursive crawl (`_CrawlerMixin`'s own
         `list_remote_files()`, unchanged), which needs no entrypoints."""
         return self.source_type == "viirs_annual"
+
+    @property
+    def RAW_LISTING_DEPTH(self) -> "int | None":
+        """VIIRS annual composites land as a flat filename under the raw
+        root (`_viirs_annual_listing()`'s `href` values have no
+        subdirectory) -- depth 1. DMSP/DVNL's plain recursive crawler
+        (`crawler.py`) allows up to 8 levels of real, variable directory
+        nesting, so left unbounded (`None`) rather than guessed."""
+        return 1 if self.source_type == "viirs_annual" else None
 
     def get_all_entrypoints(self) -> List[Dict[str, Any]]:
         if self.source_type != "viirs_annual":

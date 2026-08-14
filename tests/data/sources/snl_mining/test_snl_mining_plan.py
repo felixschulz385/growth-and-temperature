@@ -68,6 +68,28 @@ def test_default_duckdb_and_prepared_db_paths(tmp_path):
     assert source.prepared_db_path == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb")
 
 
+def test_verify_fetch_reports_missing_manual_export(tmp_path):
+    # No FETCH step is declared (module docstring: acquisition is a manual
+    # S&P Global .xls export, not automatable) -- verify_fetch() still
+    # reports on the stage-0 DuckDB it depends on, so `data summary` doesn't
+    # show a blank "-" that looks identical to "not applicable".
+    source, _ = _make_source(tmp_path)
+    result = source.verify_fetch()
+    assert result.ok is False
+    assert source.duckdb_path in result.detail
+    assert "MISSING" in result.detail
+
+
+def test_verify_fetch_reports_present_manual_export(tmp_path):
+    source, _ = _make_source(tmp_path)
+    os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
+    open(source.duckdb_path, "w").close()
+
+    result = source.verify_fetch()
+    assert result.ok is True
+    assert "present" in result.detail
+
+
 def test_duckdb_path_honors_layout_v2(tmp_path):
     # Stage-0's manual export is this source's raw input -- routed through
     # output_root(FETCH) (-> layout.raw_root()) so it moves under

@@ -89,3 +89,34 @@ def test_verify_fetch_respects_configured_filename_overrides(tmp_path):
 
     result = source.verify_fetch()
     assert result.ok is True
+
+
+def test_commodity_prices_verify_fetch_checks_override_path_not_fetch_dir(tmp_path):
+    # prices_path bypasses FETCH entirely (module docstring,
+    # src/data/sources/commodity_prices/source.py) -- verify_fetch() must
+    # follow that override, not report the (deliberately unused) FETCH
+    # directory as "missing".
+    staged = tmp_path / "staged" / "prices.xlsx"
+    os.makedirs(staged.parent, exist_ok=True)
+    source, _ = _make(tmp_path, "commodity_prices", prices_path=str(staged))
+
+    result = source.verify_fetch()
+    assert result.ok is False
+    assert str(staged) in result.detail
+    assert "MISSING" in result.detail
+
+    staged.write_text("data")
+    result = source.verify_fetch()
+    assert result.ok is True
+    assert "present" in result.detail
+
+
+def test_commodity_prices_verify_fetch_falls_back_to_fetch_dir_without_override(tmp_path):
+    source, _ = _make(tmp_path, "commodity_prices")
+    fetch_dir = source.output_root(PipelineStep.FETCH)
+    os.makedirs(fetch_dir, exist_ok=True)
+    open(os.path.join(fetch_dir, source.CONFIGURED_FILES[0].name), "w").close()
+
+    result = source.verify_fetch()
+    assert result.ok is True
+    assert "expected file(s) present" in result.detail
