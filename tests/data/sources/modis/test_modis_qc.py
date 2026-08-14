@@ -83,6 +83,70 @@ def test_decode_qc_valid_mask_21a2_best_category_passes():
     assert bool(modis_util.decode_qc_valid_mask(qc, max_lst_error_k=2.0, product="21A2").values[0, 0]) is True
 
 
+def _lst(value: float) -> xr.DataArray:
+    return xr.DataArray(np.array([[value]], dtype="float32"), dims=("y", "x"))
+
+
+def test_decode_qc_valid_mask_without_lst_is_unaffected_by_the_new_param():
+    # lst=None (the default) must reproduce the pre-existing QC-only
+    # behavior exactly -- this is the only production call site's shape
+    # before this test file's other lst= cases were added.
+    qc = _qc(mandatory_qa=0b00, error_bits=0b00)
+    assert bool(modis_util.decode_qc_valid_mask(qc, max_lst_error_k=2.0, product="11A1").values[0, 0]) is True
+
+
+def test_decode_qc_valid_mask_rejects_good_qc_but_physically_impossible_lst():
+    # The real, observed gap this guards: tile h09v02/2002 had single-
+    # observation pixels with a "good" QC flag (mandatory QA 00, best error
+    # category) whose decoded LST was 744K/791K -- physically impossible,
+    # QC bits alone don't catch it.
+    qc = _qc(mandatory_qa=0b00, error_bits=0b00)
+    lst = _lst(744.4)
+    valid = modis_util.decode_qc_valid_mask(qc, max_lst_error_k=2.0, product="11A1", lst=lst)
+    assert bool(valid.values[0, 0]) is False
+
+
+def test_decode_qc_valid_mask_accepts_good_qc_and_plausible_lst():
+    qc = _qc(mandatory_qa=0b00, error_bits=0b00)
+    lst = _lst(288.0)  # a perfectly ordinary night LST
+    valid = modis_util.decode_qc_valid_mask(qc, max_lst_error_k=2.0, product="11A1", lst=lst)
+    assert bool(valid.values[0, 0]) is True
+
+
+def test_decode_qc_valid_mask_rejects_lst_at_and_beyond_both_bounds():
+    qc = _qc(mandatory_qa=0b00, error_bits=0b00)
+    too_cold = modis_util.decode_qc_valid_mask(
+        qc, max_lst_error_k=2.0, product="11A1", lst=_lst(149.9), min_lst_k=150.0, max_lst_k=350.0
+    )
+    too_hot = modis_util.decode_qc_valid_mask(
+        qc, max_lst_error_k=2.0, product="11A1", lst=_lst(350.1), min_lst_k=150.0, max_lst_k=350.0
+    )
+    at_bounds = modis_util.decode_qc_valid_mask(
+        qc, max_lst_error_k=2.0, product="11A1", lst=_lst(150.0), min_lst_k=150.0, max_lst_k=350.0
+    )
+    assert bool(too_cold.values[0, 0]) is False
+    assert bool(too_hot.values[0, 0]) is False
+    assert bool(at_bounds.values[0, 0]) is True  # inclusive bound
+
+
+def test_decode_qc_valid_mask_rejects_nan_lst():
+    # A fill-masked LST value (already NaN by the time it reaches here --
+    # ModisSource._load_tile_year's fill masking) must not be treated as
+    # "in range" by a naive comparison.
+    qc = _qc(mandatory_qa=0b00, error_bits=0b00)
+    valid = modis_util.decode_qc_valid_mask(qc, max_lst_error_k=2.0, product="11A1", lst=_lst(np.nan))
+    assert bool(valid.values[0, 0]) is False
+
+
+def test_decode_qc_valid_mask_lst_check_does_not_override_a_bad_qc_flag():
+    # A physically plausible LST with bad QC bits must still be rejected --
+    # the LST range check is an additional exclusion, not a replacement for
+    # the QC-bit check.
+    qc = _qc(mandatory_qa=0b10, error_bits=0b00)  # cloud-affected pixel
+    valid = modis_util.decode_qc_valid_mask(qc, max_lst_error_k=2.0, product="11A1", lst=_lst(288.0))
+    assert bool(valid.values[0, 0]) is False
+
+
 def test_band_specs_21a2_view_angle_matches_mxd21_users_guide_table_11():
     view_angle = BAND_SPECS["21A2"]["assets"]["view_angle"]
     assert view_angle["offset"] == -65.0

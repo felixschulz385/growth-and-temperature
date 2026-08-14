@@ -1,12 +1,15 @@
-"""The FETCH driver. `data transfer` (`src/cli/data/handlers.py`) is still
-the only thing that *pushes* to the HPC target; this only *reads* it, and
-only for a `transfer_mode=auto` source (`src.data.common.fetch
-.transfer_mode`) -- one whose local copy is disposable because it gets
-pushed to HPC right after FETCH, so "already fetched" has to be judged
-against the HPC target instead of local disk or a locally-pruned file looks
-outstanding forever. A `transfer_mode=manual` source (the default) stays
-exactly as before: purely local-disk, never touching HPC at all. A source's
-`download:` config doesn't need `ledger_mode`/`ledger_push_every`/
+"""The FETCH driver. For a `transfer_mode=auto` source (`src.data.common
+.fetch.transfer_mode`) -- one whose local copy is disposable because it gets
+pushed to HPC right after FETCH -- this both *reads* the HPC target (to
+decide what's already fetched, so a locally-pruned file doesn't look
+outstanding forever) and *pushes* to it, immediately after each individual
+file downloads successfully, not just once at the end of the run
+(`_maybe_auto_transfer()`, `src/cli/data/handlers.py`, still runs too, as a
+batched safety net for anything an individual push failed to deliver). A
+`transfer_mode=manual` source (the default) stays exactly as before: purely
+local-disk, never touching HPC at all; `data transfer`
+(`src/cli/data/handlers.py`) is the only thing that pushes for those. A
+source's `download:` config doesn't need `ledger_mode`/`ledger_push_every`/
 `tar_max_files`/`tar_max_size_mb` (silently ignored via `**_ignored_config`
 below, so a not-yet-cleaned-up config block doesn't error).
 
@@ -31,6 +34,7 @@ from typing import Any, Optional
 
 from src.data.common import lockfile, statusfile
 from src.data.common.fetch import catalog, manifest
+from src.data.common.fetch.transfer_mode import resolve_transfer_mode
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +88,24 @@ def _download_batch(
     return asyncio.run(_download_batch_async(source, batch, raw_root, max_concurrent))
 
 
+def _push_one(pusher: Any, ctx: Any, raw_root: str, req: manifest.RequiredFile) -> None:
+    """Push *req*'s just-downloaded file to HPC immediately -- the golden
+    invariant every FETCH transfer path relies on (`DataSource
+    .transfer_units()`'s docstring): a local FETCH path's remote counterpart
+    is always that same path relative to `ctx.data_root`, mirrored under the
+    HPC target's own base path. A push failure here is logged, not raised --
+    the file did genuinely download; `_maybe_auto_transfer()`'s end-of-run
+    batched pass (`src/cli/data/handlers.py`) or a manual `data transfer`
+    will pick up anything missed."""
+    from src.data.common.hpc.push import PushUnit
+
+    local_path = os.path.join(raw_root, req.relative_path)
+    remote_path = os.path.relpath(local_path, ctx.data_root).replace(os.sep, "/")
+    result = pusher.push_unit(PushUnit(unit_id=req.unit_id, local_path=local_path, remote_path=remote_path))
+    if not result.ok:
+        logger.warning("Auto-transfer failed for %s: %s", req.relative_path, result.error)
+
+
 def run_fetch(
     source: Any,
     *,
@@ -120,6 +142,13 @@ def run_fetch(
         logger.warning("Fetch already running for %s -- skipping this invocation: %s", source_id, exc)
         return False
 
+    pusher = None
+    if resolve_transfer_mode(source) == "auto" and ctx.ssh_target:
+        from src.data.common.hpc.client import HPCClient
+        from src.data.common.hpc.push import HPCPusher
+
+        pusher = HPCPusher(HPCClient(target=ctx.ssh_target, key_file=ctx.key_file))
+
     try:
         required = catalog.required_files(source, raw_root, refresh_entrypoints=refresh_entrypoints)
         listing, from_remote = manifest.resolve_fetch_listing(source, raw_root)
@@ -146,6 +175,8 @@ def run_fetch(
                 if ok:
                     manifest.clear_failure(raw_root, req.unit_id)
                     total_downloaded += 1
+                    if pusher is not None:
+                        _push_one(pusher, ctx, raw_root, req)
                 else:
                     manifest.record_failure(raw_root, req.unit_id, error or "unknown error", max_attempts=max_attempts)
                     total_failed += 1

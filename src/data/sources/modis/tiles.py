@@ -156,13 +156,40 @@ _QC_LAYOUT_WARNED = False
 _QC_LAYOUT_CONFIRMED_PRODUCTS = frozenset(_LST_ERROR_K_BY_BITS)
 
 
-def decode_qc_valid_mask(qc: xr.DataArray, max_lst_error_k: float = 2.0, product: Optional[str] = None) -> xr.DataArray:
+def decode_qc_valid_mask(
+    qc: xr.DataArray,
+    max_lst_error_k: float = 2.0,
+    product: Optional[str] = None,
+    *,
+    lst: Optional[xr.DataArray] = None,
+    min_lst_k: float = 150.0,
+    max_lst_k: float = 350.0,
+) -> xr.DataArray:
     """Boolean valid-observation mask from a QC_Day/QC_Night band.
 
     Bit layout confirmed for `product="11A1"` and `product="21A2"` -- see the
     module comment above for the two primary sources and the bit-value
     inversion between them. Requires mandatory QA bits == 00 ("good") and the
     LST error category <= `max_lst_error_k`.
+
+    `lst`, when given, additionally requires the *decoded* (already
+    scale/offset-applied, Kelvin) LST value to fall within
+    `[min_lst_k, max_lst_k]`. This is a real, observed gap in the QC bits
+    alone, not a hypothetical: a small fraction of raw MODIS pixels (single-
+    observation, i.e. one bad granule reading) carry a "good" QC flag
+    (mandatory QA 00, low error category) alongside a corrupted encoded
+    value that decodes to a physically impossible temperature -- e.g. 744K,
+    791K observed in tile h09v02/2002. `composite_to_annual`'s averaging
+    dilutes but doesn't remove one of these from an annual composite still
+    diluted from a single bad monthly reading. The default bounds mirror the
+    codebase's existing `lst_night` GRID-verification range
+    (`ModisSource._discover_prepare`'s `value_range=(150, 350)`), so a pixel
+    that would already fail post-hoc verification is excluded from the
+    composite in the first place instead of merely being flagged after the
+    fact by a coarse, easily-missed sample check. A NaN `lst` value (already
+    masked as the asset's fill value) compares False against both bounds, so
+    it's excluded here too -- consistent with, not an addition to, the
+    existing fill-masking in `ModisSource._load_tile_year`.
     """
     global _QC_LAYOUT_WARNED
     if product not in _QC_LAYOUT_CONFIRMED_PRODUCTS and not _QC_LAYOUT_WARNED:
@@ -184,4 +211,7 @@ def decode_qc_valid_mask(qc: xr.DataArray, max_lst_error_k: float = 2.0, product
     for bits, k in error_k_by_bits.items():
         error_k = xr.where(error_bits == bits, k, error_k)
 
-    return (mandatory_qa == 0) & (error_k <= max_lst_error_k)
+    mask = (mandatory_qa == 0) & (error_k <= max_lst_error_k)
+    if lst is not None:
+        mask = mask & (lst >= min_lst_k) & (lst <= max_lst_k)
+    return mask

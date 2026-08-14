@@ -26,8 +26,10 @@ def test_output_root_uses_ease6933_suffix_for_prepare(tmp_path):
     # PREPARE (renamed from GRID -- module docstring/output_root() -- so
     # MODIS's own step names line up with every other source's) keeps the
     # same physical "GRID" tier path; only MODIS's own step identity changed.
+    # FETCH uses the same raw/<data_path> convention every other source does
+    # (no more MODIS-only special case -- output_root()'s own docstring).
     source, ctx = _make_source(tmp_path)
-    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_1")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "modis/21A2", "raw")
     assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "modis/21A2", "processed", "stage_2_ease6933")
 
 
@@ -42,11 +44,10 @@ def test_output_root_grid_literal_still_works_for_migrate_layout_v2(tmp_path):
 
 
 def test_output_root_fetch_uses_top_level_tree_under_layout_v2(tmp_path):
-    # FETCH is a rename of the old PREPARE ("annual") step -- the physical
-    # artifact tree is unchanged, not layout.raw_root()'s bare <data_path>/raw
-    # convention every crawler-based FETCH source uses (module docstring).
+    # v2's top-level raw/ tree -- layout.raw_root(), same as every other
+    # FETCH-capable source.
     source, ctx = _make_source(tmp_path, layout="v2")
-    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "prepared", "modis/21A2")
+    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "modis/21A2")
 
 
 def test_data_path_defaults_to_product_specific(tmp_path):

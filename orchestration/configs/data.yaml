@@ -103,7 +103,7 @@ sources:
     # source's land_polygons_simplified.gpkg works too, per that script's
     # docstring, but wasn't fetched here) -- resolves the ~317-tile figure
     # docs/design/07a-modis-band-reference.md flagged UNVERIFIED.
-    land_tiles: [
+    land_tiles: &modis_land_tiles [
       "h00v08", "h00v09", "h00v10", "h01v07", "h01v08", "h01v09", "h01v10", "h01v11", "h02v06", "h02v08",
       "h02v09", "h02v10", "h02v11", "h02v12", "h03v06", "h03v07", "h03v09", "h03v10", "h03v11", "h04v09",
       "h04v10", "h04v11", "h05v10", "h05v11", "h05v13", "h06v03", "h06v11", "h07v03", "h07v05", "h07v06",
@@ -137,11 +137,34 @@ sources:
     transfer:
       steps: ["fetch"]
 
-    # GRID-output verification -- "lst_night" is already Kelvin (scale/offset
-    # applied at FETCH time), so no packed decode is needed on read.
+    # GRID-output verification -- "lst_night_mean" is already Kelvin
+    # (scale/offset applied at FETCH time), so no packed decode is needed on
+    # read.
     verification:
-      expected_vars: ["lst_night"]
+      expected_vars: ["lst_night_mean"]
       value_range: [150, 350]
+
+  # Emissivity + view geometry -- split out of `modis:` so the main
+  # lst_night-stats fetch doesn't also pay for these rarely-needed bands.
+  # Shares modis:'s STAC/QC/tile-list plumbing (one ModisSource class,
+  # variant picked from the "extended" in this id -- src/data/sources/modis
+  # /source.py); its own data_path/PREPARE zarr so it never collides with
+  # modis:'s output.
+  #
+  # DISABLED for now -- commented out (not removed) so `data list`/`data
+  # summary` don't show it as active and it can't be run by accident;
+  # uncomment to re-enable, no code changes needed.
+  # modis_extended:
+  #   type: "modis"
+  #   product: "21A2"
+  #   platform: "aqua"
+  #   year_range: [2002, 2025]
+  #   lat_clip_deg: 60.0
+  #   qc_max_lst_error_k: 2.0
+  #   stac_url: "https://planetarycomputer.microsoft.com/api/stac/v1"
+  #   land_tiles: *modis_land_tiles
+  #   transfer:
+  #     steps: ["fetch"]
 
   modis_robustness_11a1:
     type: "modis"

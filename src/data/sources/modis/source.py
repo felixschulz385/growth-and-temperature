@@ -122,7 +122,20 @@ DEFAULT_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 SPATIAL_RESAMPLING = "nearest"
 
 
+#: main variant's lst_night stats (month-weighted -- composite_annual_stats)
+MAIN_LST_STATS = ("mean", "median", "std", "valid_period_count", "valid_month_count", "count_above", "count_below")
+#: extended variant's bands: everything besides lst_night itself, mean only.
+EXTENDED_VARS = ("emis_29", "emis_31", "emis_32", "view_angle", "view_time")
+
+
 class ModisSource(DataSource):
+    """Registered twice (`registry.register()` calls at module end, mirroring
+    GLASS's `glass_modis`/`glass_avhrr` dual-registration): `modis` (main --
+    lst_night summary stats + valid counts) and `modis_extended` (emissivity
+    + view geometry). One class, `self.variant` derived from `cfg.source_id`,
+    so both share FETCH's STAC/QC plumbing; each writes its own tiles/PREPARE
+    zarr (`data_path`/`v2_family` include the variant so they never collide)."""
+
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
@@ -131,8 +144,10 @@ class ModisSource(DataSource):
         self.product = cfg.raw.get("product", "21A2")
         if self.product not in BAND_SPECS:
             raise ValueError(f"Unsupported product '{self.product}'. Use one of {list(BAND_SPECS)}.")
+        self.variant = "extended" if "extended" in cfg.source_id.lower() else "main"
         if cfg.data_path is None:
-            cfg = dataclasses.replace(cfg, data_path=f"modis/{self.product}")  # old MODISPreprocessor default
+            suffix = "" if self.variant == "main" else "_extended"
+            cfg = dataclasses.replace(cfg, data_path=f"modis/{self.product}{suffix}")
         super().__init__(ctx, cfg)
 
         self.band_spec = BAND_SPECS[self.product]
@@ -153,6 +168,21 @@ class ModisSource(DataSource):
         self.years = cfg.raw.get("years")
 
         self.qc_max_lst_error_k = float(cfg.raw.get("qc_max_lst_error_k", 2.0))
+        # A "good" QC flag alone isn't sufficient: a small fraction of raw
+        # pixels carry good QC bits alongside a corrupted decoded value (a
+        # physically impossible temperature) -- see
+        # decode_qc_valid_mask()'s docstring (src/data/sources/modis/tiles.py)
+        # for the observed case that motivated this. Defaults mirror the
+        # existing lst_night GRID-verification range (_discover_prepare's
+        # value_range=(150, 350)) rather than inventing a second bound.
+        self.lst_min_k = float(cfg.raw.get("lst_min_k", 150.0))
+        self.lst_max_k = float(cfg.raw.get("lst_max_k", 350.0))
+        # count_above/count_below thresholds for the main variant's
+        # lst_night stats -- default lines mirror common night heat-health
+        # (25C) and freezing (0C) thresholds; GLASS's own gt30C/lt0C
+        # (src/data/sources/glass/source.py) is the naming precedent.
+        self.heat_stress_k = float(cfg.raw.get("heat_stress_k", 298.15))
+        self.cold_stress_k = float(cfg.raw.get("cold_stress_k", 273.15))
         self.stac_url = cfg.raw.get("stac_url", DEFAULT_STAC_URL)
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="modis_processor_")
@@ -161,39 +191,21 @@ class ModisSource(DataSource):
         self._stac_client = None
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
-        """Overrides the base default in two places -- MODIS's own step
-        names (`STEPS`) are deliberately decoupled from the physical
-        `layout.py` tier each one writes into, so this dispatches on `step`
-        (MODIS's declared identity) but always passes the *unchanged*
-        literal `PipelineStep` value to `layout.output_root()` on the
-        physical side (renaming MODIS's own GRID step to PREPARE, for
-        `data summary`/CLI consistency with every other source, must not
-        move any file):
+        """Overrides the base default for PREPARE/GRID only -- MODIS's own
+        PREPARE step (mosaic + reproject onto the canonical grid; was GRID
+        before the FETCH/PREPARE rename) hardcodes `grid_id="ease6933"`
+        regardless of any global grid config (docs/design/05-migration.md
+        §1), and passes the literal `PipelineStep.GRID` through to
+        `layout.output_root()` since the physical tier is still "GRID"
+        (`stage_2_ease6933`/`grid/ease6933`), only MODIS's own declared step
+        name changed. Also accepts the literal `PipelineStep.GRID` itself
+        (not just PREPARE): `scripts/migrate_layout_v2.py::migrate_grid()`
+        calls `output_root(PipelineStep.GRID)` on every source regardless of
+        whether GRID is still in that source's own `STEPS`.
 
-        - PREPARE (mosaic + reproject onto the canonical grid; was GRID
-          before the rename): the old MODISPreprocessor hardcodes
-          `stage_2_ease6933` for its spatial output regardless of any global
-          grid config -- the one deliberate MODIS-only ad hoc case
-          docs/design/05-migration.md §1 / docs/design/09-integrated-
-          pipeline.md §3 describe. Force `grid_id="ease6933"` here rather
-          than deferring to `self.ctx.grid_id` (which defaults to
-          legacy_4326), and pass the literal `PipelineStep.GRID` through to
-          `layout.output_root()` -- the physical tier is still "GRID"
-          (`stage_2_ease6933`/`grid/ease6933`), only MODIS's own declared
-          step name changed. Also accepts the literal `PipelineStep.GRID`
-          itself (not just PREPARE): `scripts/migrate_layout_v2.py
-          ::migrate_grid()` calls `output_root(PipelineStep.GRID)` on every
-          source regardless of whether GRID is still in that source's own
-          `STEPS` (by design -- see its own docstring), so this must keep
-          answering that literal call the same way it always has.
-        - FETCH: writes to the physical artifact tree (`processed/stage_1`
-          legacy / `prepared/<data_path>` v2) -- STAC-streamed-then-composited
-          annual GeoTIFFs, not a bag of raw bytes under `layout.raw_root()`'s
-          bare `<data_path>/raw` convention every crawler-based FETCH source
-          uses. The literal `PipelineStep.PREPARE` passed to
-          `layout.output_root()` below is a physical-tier borrow only --
-          unrelated to MODIS's own PREPARE step (handled by the branch
-          above), which is a completely different physical location.
+        FETCH now uses the base class's default (`raw/<data_path>` v2 /
+        `<data_path>/raw` legacy -- `layout.raw_root()`), same as every
+        other FETCH-capable source; no longer a MODIS-only special case.
         """
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
@@ -205,15 +217,6 @@ class ModisSource(DataSource):
                 PipelineStep.GRID,
                 namespace=namespace,
                 grid_id=EASE_GRID_ID,
-                layout=self.ctx.layout,
-            )
-        if step is PipelineStep.FETCH:
-            return layout.output_root(
-                self.ctx.data_root,
-                self.cfg.data_path,
-                PipelineStep.PREPARE,
-                namespace=namespace if namespace is not None else self.cfg.namespace,
-                grid_id=self.ctx.grid_id,
                 layout=self.ctx.layout,
             )
         return super().output_root(step, namespace=namespace)
@@ -405,7 +408,7 @@ class ModisSource(DataSource):
         return xr.Dataset(renamed).assign_attrs(ds.attrs)
 
     def _execute_fetch(self, target: StepTarget) -> bool:
-        from src.data.common.raster.compositing import composite_to_annual
+        from src.data.common.raster.compositing import composite_annual_stats
         from src.data.sources.steps import is_complete
 
         status_dir = self.output_root(PipelineStep.FETCH)
@@ -427,27 +430,28 @@ class ModisSource(DataSource):
             manifest.record_failure(status_dir, target.key, "failed to load required bands")
             return False
 
-        valid_mask = modis_util.decode_qc_valid_mask(ds["qc"], self.qc_max_lst_error_k, product=self.product)
-        annual_lst, monthly_lst, monthly_count, annual_count, annual_month_count = composite_to_annual(
-            ds["lst"], valid_mask
+        valid_mask = modis_util.decode_qc_valid_mask(
+            ds["qc"], self.qc_max_lst_error_k, product=self.product,
+            lst=ds["lst"], min_lst_k=self.lst_min_k, max_lst_k=self.lst_max_k,
         )
 
-        data_vars = {
-            "lst_night": annual_lst.squeeze("time", drop=True).astype("float32"),
-            "lst_night_monthly": monthly_lst.astype("float32"),
-            "valid_period_count_monthly": monthly_count.astype("float32"),
-            "valid_period_count_annual": annual_count.squeeze("time", drop=True).astype("float32"),
-            # Count of months that actually contributed to lst_night's own
-            # averaging -- unlike valid_period_count_annual (a raw
-            # observation-density count), this is the correctly-denominated
-            # reliability diagnostic for a month-first-then-annual composite;
-            # see composite_to_annual()'s docstring for why the two differ.
-            "valid_month_count_annual": annual_month_count.squeeze("time", drop=True).astype("float32"),
-        }
-        for key in ("emis_29", "emis_31", "emis_32", "view_angle", "view_time"):
-            if key in ds.data_vars:
-                annual_var, *_ = composite_to_annual(ds[key], valid_mask)
-                data_vars[key] = annual_var.squeeze("time", drop=True).astype("float32")
+        data_vars = {}
+        if self.variant == "main":
+            lst_stats = composite_annual_stats(
+                ds["lst"], valid_mask, stats=MAIN_LST_STATS, thresholds=(self.cold_stress_k, self.heat_stress_k)
+            )
+            data_vars["lst_night_mean"] = lst_stats["mean"].squeeze("time", drop=True).astype("float32")
+            data_vars["lst_night_median"] = lst_stats["median"].squeeze("time", drop=True).astype("float32")
+            data_vars["lst_night_sd"] = lst_stats["std"].squeeze("time", drop=True).astype("float32")
+            data_vars["lst_night_gt_heat"] = lst_stats["count_above"].squeeze("time", drop=True).astype("float32")
+            data_vars["lst_night_lt_cold"] = lst_stats["count_below"].squeeze("time", drop=True).astype("float32")
+            data_vars["valid_period_count_annual"] = lst_stats["valid_period_count"].squeeze("time", drop=True).astype("float32")
+            data_vars["valid_month_count_annual"] = lst_stats["valid_month_count"].squeeze("time", drop=True).astype("float32")
+        else:
+            for key in EXTENDED_VARS:
+                if key in ds.data_vars:
+                    var_stats = composite_annual_stats(ds[key], valid_mask, stats=("mean",))
+                    data_vars[key] = var_stats["mean"].squeeze("time", drop=True).astype("float32")
 
         out_ds = xr.Dataset(data_vars)
         out_ds = out_ds.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
@@ -486,29 +490,12 @@ class ModisSource(DataSource):
         band_arrays: List[np.ndarray] = []
         band_names: List[str] = []
 
-        for var in (
-            "lst_night", "valid_period_count_annual", "valid_month_count_annual",
-            "emis_29", "emis_31", "emis_32", "view_angle", "view_time",
-        ):
-            if var not in ds.data_vars:
-                continue
-            arr = ds[var]
+        for var, arr in ds.data_vars.items():
             for dim in ("time", "band"):
                 if dim in arr.dims:
                     arr = arr.squeeze(dim, drop=True)
             band_arrays.append(np.asarray(arr.values, dtype="float32"))
             band_names.append(var)
-
-        for var in ("lst_night_monthly", "valid_period_count_monthly"):
-            if var not in ds.data_vars:
-                continue
-            monthly = ds[var]
-            if "band" in monthly.dims:
-                monthly = monthly.squeeze("band", drop=True)
-            for i in range(monthly.sizes.get("time", 0)):
-                month_label = pd.Timestamp(monthly["time"].values[i]).strftime("%m")
-                band_arrays.append(np.asarray(monthly.isel(time=i).values, dtype="float32"))
-                band_names.append(f"{var}_{month_label}")
 
         if not band_arrays:
             logger.error("No bands to write for %s", output_path)
@@ -524,7 +511,12 @@ class ModisSource(DataSource):
             with rasterio.open(
                 tmp_path, "w", driver="GTiff", height=stacked.shape[1], width=stacked.shape[2],
                 count=stacked.shape[0], dtype="float32", crs=crs, transform=transform,
-                nodata=np.nan, compress="deflate", predictor=3, tiled=True,
+                nodata=np.nan, compress="LERC_ZSTD", zstd_level=9, tiled=True,
+                # ~32% smaller than DEFLATE+predictor3 at the same write
+                # speed on this tile's sparse/NaN-heavy float32 bands
+                # (benchmarked directly against a real tile) -- lossless
+                # (default MAX_Z_ERROR=0), no predictor (LERC has its own
+                # delta encoding, predictor is a DEFLATE/LZW-only concept).
             ) as dst:
                 dst.write(stacked)
                 for i, name in enumerate(band_names, start=1):
@@ -548,13 +540,17 @@ class ModisSource(DataSource):
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
+        # `v2_family` alone determines a v2-layout store's path (independent
+        # of `data_path`) -- must include the variant or main/extended would
+        # collide on the same zarr.
+        suffix = "" if self.variant == "main" else "_extended"
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            f"modis_{self.product}_timeseries_reprojected.zarr",
+            f"modis_{self.product}{suffix}_timeseries_reprojected.zarr",
             grid_id=EASE_GRID_ID,
             layout=self.ctx.layout,
-            v2_family=f"modis_lst_{self.product.lower()}",
+            v2_family=f"modis_lst_{self.product.lower()}{suffix}",
         )
 
     def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
@@ -592,12 +588,18 @@ class ModisSource(DataSource):
                     meta={
                         "year": year,
                         "years_all": years,
-                        # "lst_night" is always written by _execute_fetch's
-                        # data_vars dict regardless of product; already Kelvin
-                        # (scale/offset applied at FETCH time), so no packed
-                        # decode is needed here.
-                        **verify.verification_meta(
-                            self.cfg.raw, expected_vars=("lst_night",), value_range=(150, 350)
+                        # Already Kelvin (scale/offset applied at FETCH time)
+                        # for the main variant's lst_night_mean, so no packed
+                        # decode is needed here; extended has no LST band, so
+                        # sanity-check emissivity's 0-1 range instead.
+                        **(
+                            verify.verification_meta(
+                                self.cfg.raw, expected_vars=("lst_night_mean",), value_range=(150, 350)
+                            )
+                            if self.variant == "main"
+                            else verify.verification_meta(
+                                self.cfg.raw, expected_vars=("emis_31",), value_range=(0, 1)
+                            )
                         ),
                     },
                 )
@@ -671,4 +673,10 @@ registry.register(
     ModisSource.__name__,
     ModisSource.STEPS,
     aliases=ModisSource.ALIASES,
+)
+registry.register(
+    "modis_extended",
+    __name__,
+    ModisSource.__name__,
+    ModisSource.STEPS,
 )

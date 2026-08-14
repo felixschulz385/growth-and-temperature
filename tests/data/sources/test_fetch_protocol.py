@@ -43,7 +43,7 @@ _CONSTRUCT_AS: dict[str, str] = {
 #: per-(year, day[, tile]) target list attempted-and-logged directly, not a
 #: crawlable remote listing -- no `get_all_entrypoints()`/`list_remote_files()`
 #: either.
-_CRAWLER_PROTOCOL_EXEMPT = {"modis", "glass_modis", "glass_avhrr"}
+_CRAWLER_PROTOCOL_EXEMPT = {"modis", "modis_extended", "glass_modis", "glass_avhrr"}
 
 
 def _fetch_capable_specs():

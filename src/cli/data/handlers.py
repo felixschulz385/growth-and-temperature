@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import logging
+import os
 
 from src.cli.common import setup_logging
 from src.cli.config import load_config_with_env_vars
@@ -527,6 +528,30 @@ def _maybe_auto_transfer(source, step: PipelineStep) -> None:
         logger.info("Auto-transfer after fetch for '%s': pushed %d unit(s)", getattr(source, "ID", "?"), len(results))
 
 
+def _push_one_target(pusher, source, target) -> None:
+    """Push immediately after one FETCH target's successful download, for a
+    source with a real per-target list (MODIS/GLASS) rather than the single
+    `Completion.NEVER` pseudo-target the driver-based sources
+    (acag/esacci/ntl_harm/eog/...) use -- those already push per-file inside
+    `run_fetch()` itself (`src/data/common/fetch/driver.py`), so this never
+    runs for them.
+
+    GLASS's real filename is only known at execute time (its trailing
+    processing-date is unpredictable -- see `GlassSource._execute_fetch()`),
+    so `target.output_path` can be a synthetic placeholder; `_last_fetch
+    _output_path`, when a source sets it, is preferred over `target
+    .output_path`. Every other source's `target.output_path` is already
+    correct post-execute, so the `getattr` fallback covers them with no
+    per-source opt-in needed."""
+    from src.data.common.hpc.push import PushUnit
+
+    local_path = getattr(source, "_last_fetch_output_path", None) or target.output_path
+    remote_path = os.path.relpath(local_path, source.ctx.data_root).replace(os.sep, "/")
+    result = pusher.push_unit(PushUnit(unit_id=target.key, local_path=local_path, remote_path=remote_path))
+    if not result.ok:
+        logger.warning("Auto-transfer failed for %s: %s", target.key, result.error)
+
+
 def handle_run(args: argparse.Namespace) -> None:
     """``data run`` -- execute a (source, step)'s pending targets.
 
@@ -535,7 +560,11 @@ def handle_run(args: argparse.Namespace) -> None:
     -- see `TargetSelection.local_only`'s docstring): those sources push
     every fetched file to HPC right after FETCH and don't keep a permanent
     local copy, so local presence isn't a reliable "already fetched" signal
-    for them.
+    for them. For the same reason, each individual target is pushed right
+    after it downloads successfully (`_push_one_target()`), not batched
+    until the whole run finishes -- `_maybe_auto_transfer()` still runs once
+    at the end too, as a cheap, idempotent safety net for anything an
+    individual push failed to deliver.
     """
     setup_logging(args.log_level, debug=args.debug)
     step = PipelineStep(args.step)
@@ -551,6 +580,13 @@ def handle_run(args: argparse.Namespace) -> None:
         return
 
     already_complete = {target.key for target in targets if is_complete(target)}
+
+    push_pusher = None
+    if step is PipelineStep.FETCH and resolve_transfer_mode(source) == "auto" and source.ctx.ssh_target:
+        from src.data.common.hpc.client import HPCClient
+        from src.data.common.hpc.push import HPCPusher
+
+        push_pusher = HPCPusher(HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file))
 
     failures = []
     for target in targets:
@@ -576,6 +612,8 @@ def handle_run(args: argparse.Namespace) -> None:
         if not ok:
             logger.error("Target failed: %s/%s", args.source, target.key)
             failures.append(target.key)
+        elif push_pusher is not None:
+            _push_one_target(push_pusher, source, target)
 
     if not failures:
         _maybe_auto_transfer(source, step)

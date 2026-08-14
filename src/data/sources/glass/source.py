@@ -365,7 +365,18 @@ class GlassSource(DataSource):
         from src.data.sources.steps import is_complete
 
         status_dir = self.output_root(PipelineStep.FETCH)
+        # `target.output_path` is only a reliable "what got written" answer
+        # when it was resolved from a real local/remote listing entry at
+        # plan time (`_plan_fetch()`) -- an outstanding target's is the
+        # synthetic `_pending_path()` placeholder, since the real filename's
+        # trailing processing-date is unpredictable until the listing below
+        # resolves it. `handle_run` (`src/cli/data/handlers.py`) reads this
+        # attribute, falling back to `target.output_path`, to push the right
+        # file immediately after a successful fetch instead of a guaranteed-
+        # wrong placeholder path.
+        self._last_fetch_output_path = None
         if not self.cfg.override and is_complete(target):
+            self._last_fetch_output_path = target.output_path
             return True
 
         year, day, tile = target.meta["year"], target.meta["day"], target.meta["tile"]
@@ -401,6 +412,7 @@ class GlassSource(DataSource):
             return False
 
         manifest.clear_failure(status_dir, target.key)
+        self._last_fetch_output_path = output_path
         return True
 
     # -- PREPARE ("annual") -----------------------------------------------
