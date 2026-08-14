@@ -48,6 +48,7 @@ class AcagSource(DataSource):
     # -- RemoteFileCatalog contract (src/data/sources/base.py) --------------
     DATA_SOURCE_NAME = "acag"
     has_entrypoints = True
+    STATIC_ENTRYPOINTS = True  # get_all_entrypoints() derives from the static KNOWN_FILES list, no network call
     RAW_LISTING_DEPTH = 3  # GL/Annual/<file>, see KNOWN_FILES below
 
     # -- fetch-side inventory, unchanged from ACAGDataSource -----------------

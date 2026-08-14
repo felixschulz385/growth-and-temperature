@@ -38,6 +38,7 @@ stats zarr is still a real, expensive-to-recompute intermediate.
 
 from __future__ import annotations
 
+import calendar
 import dataclasses
 import logging
 import os
@@ -59,14 +60,27 @@ from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
-from src.data.sources.glass.crawler import _CrawlerMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
 
-class GlassSource(_CrawlerMixin, DataSource):
+def daterange_doy(start: Tuple[int, int], end: Tuple[int, int]):
+    """(year, day) pairs from *start* through *end* inclusive, leap-aware.
+    Neither bound needs to land on a calendar-year edge -- the first/last
+    year are clipped to the given day, interior years use their own real
+    365/366-day count (docs/design/11-glass-static-fetch.md §2)."""
+    (y0, d0), (y1, d1) = start, end
+    for year in range(y0, y1 + 1):
+        days_in_year = 366 if calendar.isleap(year) else 365
+        first_day = d0 if year == y0 else 1
+        last_day = d1 if year == y1 else days_in_year
+        for day in range(first_day, last_day + 1):
+            yield year, day
+
+
+class GlassSource(DataSource):
     """GLASS LST, MODIS (multiple tiles/day) or AVHRR (one global file/day).
 
     FETCH   -- crawl + download the configured `base_url` directory tree.
@@ -99,8 +113,6 @@ class GlassSource(_CrawlerMixin, DataSource):
     _LST_VALUE_RANGE = (150, 350)
 
     DATA_SOURCE_NAME = "glass"
-    has_entrypoints = True
-    RAW_LISTING_DEPTH = 3  # <year>/<day>/<file>, see crawler.py's list_remote_files()
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         # Which variant: derived from the registered id ("glass_modis" /
@@ -117,7 +129,32 @@ class GlassSource(_CrawlerMixin, DataSource):
         self.base_url: Optional[str] = cfg.raw.get("base_url")
         if not self.base_url:
             raise ValueError("'base_url' is required.")
-        self.file_extensions: List[str] = cfg.raw.get("file_extensions") or [".hdf"]
+
+        # FETCH target space (docs/design/11-glass-static-fetch.md §2): static
+        # (year, day-of-year) bounds, not derived from `cfg.year_range` (that
+        # implies a calendar-year-aligned span; these bounds start/end
+        # mid-year). No default -- every real config sets this explicitly.
+        day_range = cfg.raw.get("day_range")
+        if not day_range or "start" not in day_range or "end" not in day_range:
+            raise ValueError("'day_range' with 'start'/'end' [year, day] pairs is required.")
+        self.day_range_start: Tuple[int, int] = tuple(day_range["start"])
+        self.day_range_end: Tuple[int, int] = tuple(day_range["end"])
+
+        # MODIS variant only: land tiles, same sinusoidal grid `modis:`'s own
+        # config resolves (docs/design/11-glass-static-fetch.md §4.1) -- reuse
+        # its precomputed `land_tiles` list via config rather than
+        # recomputing a second allowlist.
+        self.tiles: List[str] = []
+        if self.data_source_kind == "MODIS":
+            from src.data.sources.modis import tiles as modis_util
+
+            lat_clip_deg = float(cfg.raw.get("lat_clip_deg", 60.0))
+            land_tiles = cfg.raw.get("land_tiles")
+            land_tiles_set = set(land_tiles) if land_tiles else None
+            self.tiles = cfg.raw.get("tiles") or modis_util.get_modis_sinusoidal_tiles(
+                lat_clip_deg, land_tiles=land_tiles_set
+            )
+
         self.version = cfg.raw.get("version", "v1")
         self.grid_cells: Optional[List[str]] = cfg.raw.get("grid_cells")
         self.chunk_size = cfg.raw.get("chunk_size") or {"band": 1, "x": 500, "y": 500}
@@ -125,6 +162,15 @@ class GlassSource(_CrawlerMixin, DataSource):
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"glass_{self.data_source_kind}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+
+        # In-run-only memoization of one (year,day)/(year) directory listing
+        # across many sibling targets (every land tile sharing a MODIS day,
+        # every day sharing an AVHRR year) -- never persisted to disk
+        # (docs/design/11-glass-static-fetch.md §4.3): `source.execute()` is
+        # called once per target from the same long-lived instance
+        # (src/cli/data/handlers.py::handle_run's `for target in targets`
+        # loop), so this dict lives exactly as long as one FETCH run needs.
+        self._listing_cache: Dict[Any, List[Tuple[str, str]]] = {}
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         """Overrides the base default: GLASS's output root is keyed by the
@@ -140,14 +186,6 @@ class GlassSource(_CrawlerMixin, DataSource):
             layout=self.ctx.layout,
         )
 
-    # ------------------------------------------------------------------
-    # RemoteFileCatalog contract -- list_remote_files/get_all_entrypoints
-    # come from _CrawlerMixin.
-    # ------------------------------------------------------------------
-
-    def local_path(self, relative_path: str) -> str:
-        return os.path.join("data", relative_path)
-
     def download(self, file_url: str, output_path: str, session: Any = None) -> None:
         import requests
 
@@ -159,42 +197,13 @@ class GlassSource(_CrawlerMixin, DataSource):
             for chunk in r.iter_content(chunk_size=8192):
                 f.write(chunk)
 
-    async def download_async(self, file_url: str, output_path: str, session: Any = None) -> None:
-        import asyncio
-
-        import aiohttp
-
-        from src.data.common.fetch.http import download_with_retries
-
-        await asyncio.sleep(0.5)
-
-        if session is None:
-            connector = aiohttp.TCPConnector(limit=5, limit_per_host=2)
-            timeout = aiohttp.ClientTimeout(total=300, connect=30)
-            async with aiohttp.ClientSession(connector=connector, timeout=timeout) as sess:
-                await download_with_retries(sess, file_url, output_path)
-        else:
-            await download_with_retries(session, file_url, output_path)
-
-    def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
-        filename = os.path.basename(relative_path)
-        try:
-            parts = filename.split(".")
-            date_part = next(part for part in parts if part.startswith("A"))
-            return {"year": int(date_part[1:5]), "day": int(date_part[5:])}
-        except (IndexError, ValueError, StopIteration):
-            return None
-
-    # get_file_hash: inherited from DataSource (src/data/sources/base.py) --
-    # this redefinition used to shadow _CrawlerMixin's identical one.
-
     # ------------------------------------------------------------------
     # plan()/execute() dispatch
     # ------------------------------------------------------------------
 
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
-            return self._plan_fetch()
+            return self._plan_fetch(selection)
         if step is PipelineStep.PREPARE:
             return self._plan_prepare(selection)
         raise AssertionError(f"unreachable: {step}")
@@ -206,26 +215,181 @@ class GlassSource(_CrawlerMixin, DataSource):
             return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
-    # -- FETCH ----------------------------------------------------------
+    # -- FETCH: static per-(year, day[, tile]) target list, attempt-and-log,
+    # no crawl/entrypoint cache (docs/design/11-glass-static-fetch.md) -------
 
-    def _plan_fetch(self) -> List[StepTarget]:
-        return [
-            StepTarget(
-                source_id=self.cfg.source_id,
-                step=PipelineStep.FETCH,
-                key="all",
-                output_path=self.output_root(PipelineStep.FETCH),
-                completion=Completion.NEVER,
-            )
-        ]
+    def _index_existing_fetch_files(self, relative_paths: List[str]) -> Dict[tuple, str]:
+        """Already-downloaded files on disk, keyed by the same `(year, day[,
+        tile])` tuple `_plan_fetch()` generates targets for -- reuses
+        `_parse_modis_filenames`/`_parse_avhrr_filenames` (already needed by
+        PREPARE's `_group_daily_files`), just re-keyed here for a plan-time
+        completion lookup instead of a year-keyed grouping. One bulk parse
+        up front rather than a per-target existence check -- necessary at
+        this target count (up to ~2M for glass_modis's full tile x day
+        cross-product)."""
+        df = self._parse_filenames(relative_paths)
+        if df.empty:
+            return {}
+        if self.data_source_kind == "MODIS":
+            tile_strs = "h" + df["h"].astype(str).str.zfill(2) + "v" + df["v"].astype(str).str.zfill(2)
+            keys = zip(df["year"], df["day"], tile_strs)
+        else:
+            keys = zip(df["year"], df["day"])
+        return dict(zip(keys, df["path"]))
+
+    def _pending_path(self, raw_root: str, year: int, day: int, tile: Optional[str]) -> str:
+        """Deterministic placeholder for a not-yet-downloaded target's
+        `StepTarget.output_path` -- only used for the `Completion.PATH_EXISTS`
+        check (guaranteed not to exist yet, real filenames always start with
+        "GLASS..."), never as an actual download destination
+        (`_execute_fetch()` computes the real path itself once the remote
+        listing resolves the true, unpredictable filename)."""
+        if tile:
+            return os.path.join(raw_root, str(year), f"{day:03d}", f"pending.{tile}.hdf")
+        return os.path.join(raw_root, str(year), f"pending.{year}{day:03d}.hdf")
+
+    def _plan_fetch(self, selection: TargetSelection) -> List[StepTarget]:
+        from src.data.common.fetch.manifest import snapshot_local_listing
+        from src.data.common.statusfile import STATUS_SUBDIR
+
+        raw_root = self.output_root(PipelineStep.FETCH)
+        listing = snapshot_local_listing(raw_root)
+        status_prefix = f"{STATUS_SUBDIR}/"
+        relative_paths = [rel for rel in listing if not rel.startswith(status_prefix)]
+        found = self._index_existing_fetch_files(relative_paths)
+
+        targets = []
+        units = self.tiles if self.data_source_kind == "MODIS" else [None]
+        for year, day in daterange_doy(self.day_range_start, self.day_range_end):
+            if not selection.matches_year(year):
+                continue
+            for tile in units:
+                key = f"{year}/{day:03d}/{tile}" if tile else f"{year}/{day:03d}"
+                if not selection.matches_key(key):
+                    continue
+                found_key = (year, day, tile) if tile else (year, day)
+                existing_rel = found.get(found_key)
+                output_path = (
+                    os.path.join(raw_root, existing_rel)
+                    if existing_rel is not None
+                    else self._pending_path(raw_root, year, day, tile)
+                )
+                targets.append(
+                    StepTarget(
+                        source_id=self.cfg.source_id,
+                        step=PipelineStep.FETCH,
+                        key=key,
+                        output_path=output_path,
+                        completion=Completion.PATH_EXISTS,
+                        meta={"year": year, "day": day, "tile": tile},
+                    )
+                )
+        return targets
+
+    def _listing_url(self, year: int, day: int) -> str:
+        """Day directory (MODIS: `<year>/<day>/`) or year directory (AVHRR:
+        `<year>/`, no day subdirectory -- confirmed against the real site,
+        docs/design/11-glass-static-fetch.md §3)."""
+        if self.data_source_kind == "MODIS":
+            return f"{self.base_url}{year}/{day:03d}/"
+        return f"{self.base_url}{year}/"
+
+    @staticmethod
+    def _list_single_directory(url: str) -> List[Tuple[str, str]]:
+        """Non-recursive: one GET, parse one directory listing page's links
+        -- every `(raw_href, absolute_url)` pair, no filtering (mirrors EOG's
+        `_CrawlerMixin._list_single_directory()`, `src/data/sources/eog/
+        crawler.py`, the same non-recursive shape already used elsewhere in
+        this codebase for exactly this purpose)."""
+        import requests
+        from bs4 import BeautifulSoup
+        from urllib.parse import urljoin
+
+        res = requests.get(url)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "html.parser")
+        results = []
+        for link in soup.find_all("a"):
+            href = link.get("href")
+            if not href or href in ("../", "./"):
+                continue
+            results.append((href, urljoin(url, href)))
+        return results
+
+    def _listing_for(self, year: int, day: int) -> List[Tuple[str, str]]:
+        """Memoized per §4.3 -- one real GET per (year,day) [MODIS] or per
+        year [AVHRR], shared across every sibling target that scope
+        resolves, for the lifetime of this source instance (one FETCH run)."""
+        cache_key = (year, day) if self.data_source_kind == "MODIS" else year
+        if cache_key not in self._listing_cache:
+            self._listing_cache[cache_key] = self._list_single_directory(self._listing_url(year, day))
+        return self._listing_cache[cache_key]
+
+    @staticmethod
+    def _match_in_listing(
+        listing: List[Tuple[str, str]], year: int, day: int, tile: Optional[str]
+    ) -> Optional[Tuple[str, str]]:
+        """The one listing entry matching this target's `(year, day[, tile])`
+        -- filenames always embed `A{year}{day:03d}` (and, for MODIS,
+        `.{tile}.`) verbatim, e.g. `GLASS06A01.V01.A2000055.h00v10.
+        2022021.hdf` -- the trailing processing-date segment is the only
+        unpredictable part, which this doesn't need to know."""
+        token = f"A{year}{day:03d}"
+        needle = f".{token}.{tile}." if tile else f".{token}."
+        for href, url in listing:
+            if needle in href:
+                return href, url
+        return None
+
+    def _downloaded_path(self, raw_root: str, year: int, day: int, href: str) -> str:
+        if self.data_source_kind == "MODIS":
+            return os.path.join(raw_root, str(year), f"{day:03d}", href)
+        return os.path.join(raw_root, str(year), href)
 
     def _execute_fetch(self, target: StepTarget) -> bool:
-        # FETCH is local-disk only now -- no HPC target required. `data
-        # transfer` (separate, manual or auto per source config) is the only
-        # thing that pushes to HPC.
-        from src.data.common.fetch.driver import run_fetch
+        import requests
 
-        return run_fetch(self, **self.cfg.raw.get("download", {}))
+        from src.data.common.fetch import manifest
+        from src.data.sources.steps import is_complete
+
+        status_dir = self.output_root(PipelineStep.FETCH)
+        if not self.cfg.override and is_complete(target):
+            return True
+
+        year, day, tile = target.meta["year"], target.meta["day"], target.meta["tile"]
+        try:
+            listing = self._listing_for(year, day)
+        except requests.HTTPError as exc:
+            # A 404 on the listing itself (the day/year directory never
+            # existed) is a real, permanent absence, not a transient
+            # error -- distinguished from other request failures (timeout,
+            # 5xx) below, which stay retryable.
+            permanent = exc.response is not None and exc.response.status_code == 404
+            manifest.record_failure(status_dir, target.key, f"listing fetch failed: {exc}", permanent=permanent)
+            return False
+        except requests.RequestException as exc:
+            manifest.record_failure(status_dir, target.key, f"listing fetch failed: {exc}")
+            return False
+
+        match = self._match_in_listing(listing, year, day, tile)
+        if match is None:
+            # Listing loaded fine but this tile/day genuinely isn't in it --
+            # a real absence (sensor gap, non-land tile that slipped through
+            # the filter), not a transient error. No point retrying against
+            # a directory that will never populate.
+            manifest.record_failure(status_dir, target.key, "not present in remote listing", permanent=True)
+            return False
+
+        href, url = match
+        output_path = self._downloaded_path(status_dir, year, day, href)
+        try:
+            self.download(url, output_path)
+        except Exception as exc:
+            manifest.record_failure(status_dir, target.key, f"download failed: {exc}")
+            return False
+
+        manifest.clear_failure(status_dir, target.key)
+        return True
 
     # -- PREPARE ("annual") -----------------------------------------------
 

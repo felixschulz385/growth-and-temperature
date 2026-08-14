@@ -114,6 +114,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "eog"  # matches old EOGDataSource: literally "eog", not per-alias
+    STATIC_ENTRYPOINTS = True  # get_all_entrypoints() below is VIIRS_YEAR_RANGE-derived, no network call
 
     EOG_LOGIN_URL = "https://eogdata.mines.edu/nighttime_light/login/"
 

@@ -55,6 +55,7 @@ class NtlHarmSource(DataSource):
 
     DATA_SOURCE_NAME = "ntl_harm"
     has_entrypoints = True
+    STATIC_ENTRYPOINTS = True  # get_all_entrypoints() below is cfg.year_range-derived, no network call
     RAW_LISTING_DEPTH = 1  # flat filename, see list_remote_files() below
 
     VARIABLE_NAME = "ntl_harm"
@@ -138,9 +139,16 @@ class NtlHarmSource(DataSource):
         return {"year": int(year), "day": 1} if year is not None else None
 
     def get_all_entrypoints(self) -> List[Dict[str, Any]]:
-        years = {self._extract_year_from_filename(f.get("name", "")) for f in self._get_figshare_files()}
-        years.discard(None)
-        return [{"year": int(y), "day": 1} for y in sorted(years)]
+        """Static from `cfg.year_range` (one file/year, matching
+        `data.yaml`'s `[1992, 2024]`) -- no network call, unlike the old
+        `_get_figshare_files()`-derived version this replaces. Resolving
+        which figshare file id/URL a given year maps to still needs that
+        API listing, but only once per entrypoint crawl
+        (`list_remote_files()`, `_get_figshare_files()`'s own 1h cache),
+        not just to enumerate which years exist."""
+        if not self.cfg.year_range:
+            return []
+        return [{"year": y, "day": 1} for y in range(self.cfg.year_range[0], self.cfg.year_range[1] + 1)]
 
     async def download_async(self, source_url: str, output_path: str, session: Optional[aiohttp.ClientSession] = None) -> None:
         from src.data.common.fetch.http import download_with_retries

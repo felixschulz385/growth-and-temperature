@@ -150,34 +150,6 @@ def _print_source_summary(rows: dict) -> None:
         print_row([name, *(row[step.value] for step in _SUMMARY_STEPS), row["verified"]])
 
 
-def _year_based_fetch_summary(source, raw_root: str, max_depth) -> "str | None":
-    """Network-free "years found vs. years expected" fallback for an
-    entrypoint source with nothing cached yet (`_summarize_fetch()` below,
-    when `catalog.cached_required_files()` comes back empty) -- `None` if
-    this source doesn't declare enough to make the fallback meaningful.
-
-    Uses `source.cfg.year_range` (the source's own declared expected span,
-    e.g. EOG VIIRS's `[2012, 2021]`) as the denominator, and maps whatever's
-    already on local disk back to a year via `filename_to_entrypoint()` --
-    both already-existing per-source plumbing, no live crawl needed."""
-    year_range = getattr(source.cfg, "year_range", None)
-    if not year_range:
-        return None
-
-    from src.data.common.fetch import manifest
-
-    listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
-    found_years = set()
-    for rel in listing:
-        entrypoint = source.filename_to_entrypoint(rel)
-        if entrypoint and "year" in entrypoint:
-            found_years.add(int(entrypoint["year"]))
-
-    expected = set(range(year_range[0], year_range[1] + 1))
-    complete = len(found_years & expected)
-    return f"{complete}/{len(expected)} year(s) complete (not yet crawled -- run `data run --step fetch` for exact file status)"
-
-
 def _summarize_fetch(source, *, detailed: bool) -> str:
     """FETCH's own complete/outstanding/unavailable bucket counts, for any
     `RemoteFileCatalog`-shaped source. Network-free by design (`data
@@ -199,16 +171,18 @@ def _summarize_fetch(source, *, detailed: bool) -> str:
         source.ctx.data_root, source.cfg.data_path, namespace=source.cfg.namespace, layout=source.ctx.layout
     )
     max_depth = getattr(source, "RAW_LISTING_DEPTH", None)
+    listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
     required = catalog.cached_required_files(source, raw_root)
     if required is None:
-        listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
         count = len(listing)
         return "no local data" if count == 0 else f"{count} file(s) on disk (uncrawled -- run `data run --step fetch`)"
     if not required:
-        by_year = _year_based_fetch_summary(source, raw_root, max_depth)
-        return by_year if by_year is not None else "not yet crawled -- run `data run --step fetch` to discover files"
+        counts = catalog.cached_entrypoint_counts(source, raw_root, listing)
+        if counts is not None:
+            complete, outstanding, unavailable = counts
+            return f"{complete} complete, {outstanding} outstanding, {unavailable} unavailable"
+        return "not yet crawled -- run `data run --step fetch` to discover files"
 
-    listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)
     plan = manifest.plan_fetch(required, listing, raw_root)
     base = f"{len(plan.complete)} complete, {len(plan.outstanding)} outstanding, {len(plan.unavailable)} unavailable"
     if not detailed:

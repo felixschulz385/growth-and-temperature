@@ -15,13 +15,18 @@ _BASE_URLS = {
     "glass_modis": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/",
     "glass_avhrr": "https://glass.hku.hk/archive/LST/AVHRR/0.05D/",
 }
+_DAY_RANGES = {
+    "glass_modis": {"start": [2000, 55], "end": [2020, 365]},
+    "glass_avhrr": {"start": [1992, 1], "end": [2020, 365]},
+}
 
 
 def _make_source(tmp_path, source_id, layout="legacy", **extra_raw):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
     )
-    cfg = SourceConfig.from_dict(source_id, {"base_url": _BASE_URLS[source_id], **extra_raw})
+    raw = {"base_url": _BASE_URLS[source_id], "day_range": _DAY_RANGES[source_id], **extra_raw}
+    cfg = SourceConfig.from_dict(source_id, raw)
     return GlassSource(ctx, cfg), ctx
 
 

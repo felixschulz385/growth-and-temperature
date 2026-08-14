@@ -22,11 +22,19 @@ import os
 from typing import Any
 
 from src.data.common import statusfile
+from src.data.common.fetch import manifest
 from src.data.common.fetch.manifest import RequiredFile
 
 logger = logging.getLogger(__name__)
 
 ENTRYPOINT_CACHE_SUBDIR = "_status/entrypoints"
+
+#: Cache key for non-entrypoint sources' one-shot `list_remote_files()`
+#: result -- same sidecar mechanism as a real entrypoint (module docstring),
+#: just keyed by this constant instead of a year/day, so `cached_required_files()`
+#: has something to read for these sources too instead of always returning
+#: `None` (see that function's docstring).
+_FLAT_CACHE_KEY = "_flat"
 
 
 def entrypoint_key(entrypoint: dict[str, Any]) -> str:
@@ -45,6 +53,8 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
 
     if not getattr(source, "has_entrypoints", False):
         pairs = list(source.list_remote_files())
+        cache_path = statusfile.status_path(status_dir, _FLAT_CACHE_KEY, subdir=ENTRYPOINT_CACHE_SUBDIR)
+        statusfile.write(cache_path, {"files": pairs})
         return [RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url) for rel, url in pairs]
 
     required: list[RequiredFile] = []
@@ -62,7 +72,9 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
                 continue
             if pairs:
                 statusfile.write(cache_path, {"files": pairs})
+                manifest.clear_failure(status_dir, key)
             else:
+                manifest.record_failure(status_dir, key, "no files listed for entrypoint")
                 logger.warning("No files found for entrypoint %s -- will retry next run", entrypoint)
 
         for rel, url in pairs:
@@ -80,17 +92,24 @@ def cached_required_files(source: Any, status_dir: str) -> "list[RequiredFile] |
     already on disk under `_status/entrypoints/`.
 
     Non-entrypoint sources (module docstring: `has_entrypoints=False` means
-    "one `list_remote_files()` call, fresh every time", no cache at all) have
-    nothing to read without a live call -- returns `None` for those, not
-    `[]`, so a caller can tell "unknown without a live crawl" apart from
-    "genuinely zero files required". Entrypoint sources: entrypoints never
-    crawled by a real `data run --step fetch` yet are silently omitted, not
-    reported as missing.
+    "one `list_remote_files()` call, fresh every time") still get a cache --
+    `required_files()` writes its listing to the same `_flat` sidecar every
+    real run, same as an entrypoint's per-year cache. A source never run
+    through a real `data run --step fetch` yet has no sidecar at all --
+    returns `None` for those, not `[]`, so a caller can tell "unknown
+    without a live crawl" apart from "genuinely zero files required".
+    Entrypoint sources: entrypoints never crawled by a real
+    `data run --step fetch` yet are silently omitted, not reported as
+    missing.
     """
-    if not getattr(source, "has_entrypoints", False):
-        return None
-
     get_hash = source.get_file_hash
+    if not getattr(source, "has_entrypoints", False):
+        cache_path = statusfile.status_path(status_dir, _FLAT_CACHE_KEY, subdir=ENTRYPOINT_CACHE_SUBDIR)
+        cached = statusfile.read(cache_path)
+        if cached is None:
+            return None
+        return [RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url) for rel, url in cached["files"]]
+
     cache_dir = os.path.join(status_dir, ENTRYPOINT_CACHE_SUBDIR)
     try:
         filenames = os.listdir(cache_dir)
@@ -107,3 +126,55 @@ def cached_required_files(source: Any, status_dir: str) -> "list[RequiredFile] |
         for rel, url in cached.get("files", []):
             required.append(RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url))
     return required
+
+
+def cached_entrypoint_counts(
+    source: Any, status_dir: str, listing: dict
+) -> "tuple[int, int, int] | None":
+    """Network-free complete/outstanding/unavailable counts at *entrypoint*
+    granularity -- the fallback `_summarize_fetch()` (`src.cli.data.handlers`)
+    uses to report the same three-bucket vocabulary as a real file-level
+    crawl even before `required_files()` has ever populated
+    `cached_required_files()`.
+
+    `complete` comes from *listing* (a `manifest.snapshot_local_listing()`
+    result) mapped back to entrypoints via `source.filename_to_entrypoint()`
+    -- an entrypoint's actual files being present on disk, not merely that
+    its remote listing was cached (that would call a not-yet-downloaded
+    entrypoint "complete"). `unavailable` comes from each entrypoint's own
+    status sidecar (`manifest.record_failure()`, keyed by
+    `entrypoint_key()`). The full target list itself
+    (`source.get_all_entrypoints()`) only gets called for sources that
+    declare `STATIC_ENTRYPOINTS = True` -- i.e. verified network-free
+    (esacci/glass/acag/eog/ntl_harm are all `year_range`-derived); a future
+    entrypoint source whose `get_all_entrypoints()` genuinely needs a live
+    call (not declaring the flag) gets `None` here instead, letting the
+    caller fall back further."""
+    if not getattr(source, "has_entrypoints", False) or not getattr(source, "STATIC_ENTRYPOINTS", False):
+        return None
+    entrypoints = source.get_all_entrypoints()
+    if not entrypoints:
+        return None
+
+    found_keys = set()
+    for rel in listing:
+        entrypoint = source.filename_to_entrypoint(rel)
+        if entrypoint is not None:
+            found_keys.add(entrypoint_key(entrypoint))
+
+    status_filenames = statusfile.list_status_filenames(status_dir)
+
+    complete = outstanding = unavailable = 0
+    for entrypoint in entrypoints:
+        key = entrypoint_key(entrypoint)
+        if key in found_keys:
+            complete += 1
+            continue
+        filename = f"{statusfile.sanitize_unit_id(key)}.json"
+        if filename in status_filenames and (statusfile.read(statusfile.status_path(status_dir, key)) or {}).get(
+            "status"
+        ) == manifest.STATUS_UNAVAILABLE:
+            unavailable += 1
+        else:
+            outstanding += 1
+    return complete, outstanding, unavailable

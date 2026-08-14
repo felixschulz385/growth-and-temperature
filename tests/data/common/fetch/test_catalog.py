@@ -68,6 +68,33 @@ def test_zero_file_entrypoint_result_is_not_cached_and_retried(tmp_path):
     assert len(calls) == 2  # re-crawled both times, never cached as "done"
 
 
+def test_zero_file_entrypoint_becomes_unavailable_after_max_attempts(tmp_path):
+    from src.data.common.fetch import manifest
+
+    calls = []
+    source = _EntrypointSource(entrypoints=[{"year": 2020}], files_by_year={2020: []}, crawl_calls=calls)
+    for _ in range(manifest.DEFAULT_MAX_ATTEMPTS):
+        catalog.required_files(source, str(tmp_path))
+    status = statusfile.read(statusfile.status_path(str(tmp_path), "2020"))
+    assert status["status"] == manifest.STATUS_UNAVAILABLE
+    assert status["attempts"] == manifest.DEFAULT_MAX_ATTEMPTS
+
+
+def test_entrypoint_becoming_non_empty_clears_unavailable_status(tmp_path):
+    from src.data.common.fetch import manifest
+
+    empty_source = _EntrypointSource(entrypoints=[{"year": 2020}], files_by_year={2020: []})
+    for _ in range(manifest.DEFAULT_MAX_ATTEMPTS):
+        catalog.required_files(empty_source, str(tmp_path))
+    assert statusfile.read(statusfile.status_path(str(tmp_path), "2020"))["status"] == manifest.STATUS_UNAVAILABLE
+
+    recovered_source = _EntrypointSource(
+        entrypoints=[{"year": 2020}], files_by_year={2020: [("2020/a.nc", "https://x/2020/a.nc")]}
+    )
+    catalog.required_files(recovered_source, str(tmp_path))
+    assert statusfile.read(statusfile.status_path(str(tmp_path), "2020")) is None
+
+
 def test_refresh_entrypoints_forces_recrawl(tmp_path):
     calls = []
     source = _EntrypointSource(
@@ -126,6 +153,41 @@ def test_cached_required_files_reads_only_the_entrypoint_cache_never_the_network
     network_free_source = _NetworkAssertingEntrypointSource(entrypoints=[], files_by_year={})
     required = catalog.cached_required_files(network_free_source, str(tmp_path))
     assert sorted(r.relative_path for r in required) == ["2020/a.nc", "2021/b.nc"]
+
+
+class _YearOnlySource(_EntrypointSource):
+    STATIC_ENTRYPOINTS = True
+
+    def filename_to_entrypoint(self, relative_path):
+        import re
+
+        match = re.search(r"(\d{4})", relative_path)
+        return {"year": int(match.group(1))} if match else None
+
+
+def test_cached_entrypoint_counts_buckets_by_disk_presence_and_status(tmp_path):
+    from src.data.common.fetch import manifest
+
+    # 2020 never crawled -> outstanding. 2021 crawled empty repeatedly ->
+    # unavailable. 2022 has a real file on disk -> complete, regardless of
+    # whether it was ever crawled.
+    empty_source = _YearOnlySource(entrypoints=[{"year": 2021}], files_by_year={2021: []})
+    for _ in range(manifest.DEFAULT_MAX_ATTEMPTS):
+        catalog.required_files(empty_source, str(tmp_path))
+
+    source = _YearOnlySource(entrypoints=[{"year": 2020}, {"year": 2021}, {"year": 2022}], files_by_year={})
+    listing = {"2022/a.nc": None}
+
+    counts = catalog.cached_entrypoint_counts(source, str(tmp_path), listing)
+    assert counts == (1, 1, 1)
+
+
+def test_cached_entrypoint_counts_none_when_not_static(tmp_path):
+    # _EntrypointSource declares no STATIC_ENTRYPOINTS -- e.g. ntl_harm,
+    # whose get_all_entrypoints() hits the figshare API, so this must not
+    # be called here (`_NetworkAssertingEntrypointSource` covers that).
+    source = _EntrypointSource(entrypoints=[{"year": 2020}], files_by_year={})
+    assert catalog.cached_entrypoint_counts(source, str(tmp_path), {}) is None
 
 
 def test_cached_required_files_omits_uncrawled_entrypoints_silently(tmp_path):

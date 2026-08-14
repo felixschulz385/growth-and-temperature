@@ -335,21 +335,27 @@ def test_handle_summary_by_tile_shows_per_target_breakdown(tmp_path, monkeypatch
     assert "pm25: 2/4 complete, 2 outstanding, 0 unavailable" in row
 
 
-# --- _summarize_fetch / _year_based_fetch_summary: network-free by design -
+# --- _summarize_fetch / cached_entrypoint_counts: network-free by design -
 
 
 class _FakeYearlySource:
     """Just enough of a `RemoteFileCatalog` source for `_summarize_fetch()`:
-    an entrypoint source with nothing cached yet, but a declared
-    `cfg.year_range` and a real `filename_to_entrypoint()` -- the shape EOG
-    VIIRS/ntl_harm are in on a fresh checkout."""
+    an entrypoint source with nothing cached yet, but a declared, static
+    (network-free) `get_all_entrypoints()` and a real `filename_to_entrypoint()`
+    -- the shape EOG VIIRS/ESACCI/GLASS/ACAG are in on a fresh checkout."""
 
     has_entrypoints = True
+    STATIC_ENTRYPOINTS = True
     RAW_LISTING_DEPTH = 1
 
     def __init__(self, ctx, cfg):
         self.ctx = ctx
         self.cfg = cfg
+
+    def get_all_entrypoints(self):
+        if not self.cfg.year_range:
+            return []
+        return [{"year": y} for y in range(self.cfg.year_range[0], self.cfg.year_range[1] + 1)]
 
     def filename_to_entrypoint(self, relative_path):
         import re
@@ -376,7 +382,7 @@ def _make_yearly_source(tmp_path, year_range=None):
     return _FakeYearlySource(ctx, cfg)
 
 
-def test_summarize_fetch_falls_back_to_year_count_when_nothing_cached(tmp_path):
+def test_summarize_fetch_falls_back_to_entrypoint_counts_when_nothing_cached(tmp_path):
     from src.data.sources import layout
 
     source = _make_yearly_source(tmp_path, year_range=(2020, 2022))
@@ -385,7 +391,7 @@ def test_summarize_fetch_falls_back_to_year_count_when_nothing_cached(tmp_path):
     open(os.path.join(raw_root, "file_2020.tif"), "w").close()
 
     summary = handlers._summarize_fetch(source, detailed=False)
-    assert summary == "1/3 year(s) complete (not yet crawled -- run `data run --step fetch` for exact file status)"
+    assert summary == "1 complete, 2 outstanding, 0 unavailable"
 
 
 def test_summarize_fetch_reports_not_yet_crawled_without_year_range(tmp_path):

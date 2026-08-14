@@ -66,6 +66,7 @@ class EsacciSource(DataSource):
 
     DATA_SOURCE_NAME = "esacci"
     has_entrypoints = True
+    STATIC_ENTRYPOINTS = True  # get_all_entrypoints() is cfg.year_range-derived, no network call
     RAW_LISTING_DEPTH = 2  # <year>/<file>, see list_remote_files() below
 
     DATASET = "satellite-land-cover"

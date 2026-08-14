@@ -125,10 +125,7 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
         confusing "missing" even though nothing is actually wrong."""
         if self._raw_prices_path_override:
             exists = os.path.exists(self._raw_prices_path_override)
-            detail = (
-                f"using prices_path override: {self._raw_prices_path_override} "
-                f"({'present' if exists else 'MISSING'}) -- FETCH step itself is bypassed"
-            )
+            detail = f"manual download: {self._raw_prices_path_override} ({'present' if exists else 'MISSING'})"
             return VerificationResult(exists, detail)
         return super().verify_fetch()
 

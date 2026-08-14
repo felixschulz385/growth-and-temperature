@@ -40,12 +40,13 @@ import json
 import logging
 import os
 import tempfile
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
+from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
 
@@ -53,8 +54,27 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_DOI = "doi:10.7910/DVN/YUS575"
 
+#: The dataset's one file this pipeline needs, hardcoded rather than
+#: resolved via a live Dataverse API call (`GET .../api/datasets/
+#: :persistentId?persistentId=...`) -- that endpoint sits behind an AWS WAF
+#: bot challenge that blocks plain HTTP clients (confirmed directly, not
+#: just suspected), so a live-call-based FETCH could never actually
+#: succeed unattended. Looked up once via the dataset's file listing page
+#: (`https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/
+#: DVN/YUS575`): the file labeled "PLAD_April_2024.tab" (Dataverse's
+#: auto-converted tabular view of the uploaded Stata file) has id 10119325.
+#: `dataFile.originalFileName` for that entry -- and the name this pipeline
+#: expects on disk (`_resolve_plad_data_file()` below) -- is
+#: "PLAD_April_2024.dta", even though the plain access URL (no
+#: `?format=original`) actually serves Dataverse's tab-delimited bytes,
+#: matching `_build_reg_fav_table()`'s `pd.read_table()` parse below: the
+#: `.dta` extension on disk is inherited original-upload metadata, not a
+#: claim about the byte format.
+DEFAULT_FILE_ID = "10119325"
+DEFAULT_FILENAME = "PLAD_April_2024.dta"
 
-class PlaDSource(DataSource):
+
+class PlaDSource(ConfiguredFilesFetchMixin, DataSource):
     """Political Leaders and Development: regional-favoritism (GID_N, year) table."""
 
     ID = "plad"
@@ -63,8 +83,6 @@ class PlaDSource(DataSource):
     REQUIRES = ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
     DATA_SOURCE_NAME = "harvard"
-    has_entrypoints = False
-    RAW_LISTING_DEPTH = 1  # flat filename, see list_remote_files() below
     OUTPUT_PREFIX = "plad"  # hardcoded in the old code, see module docstring
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
@@ -74,9 +92,13 @@ class PlaDSource(DataSource):
             cfg = dataclasses.replace(cfg, year_range=(1980, 2022))  # old PLADPreprocessor default
         super().__init__(ctx, cfg)
 
-        self.doi = cfg.raw.get("doi") or cfg.raw.get("base_url") or DEFAULT_DOI
-        self.base_url = cfg.raw.get("base_url") or f"https://dataverse.harvard.edu/dataset.xhtml?persistentId={self.doi}"
-        self.file_extensions = cfg.raw.get("file_extensions") or [".csv", ".nc", ".tif", ".zip"]
+        file_id = cfg.raw.get("file_id", DEFAULT_FILE_ID)
+        filename = cfg.raw.get("filename", DEFAULT_FILENAME)
+        self.CONFIGURED_FILES: List[ConfiguredFile] = [
+            ConfiguredFile(
+                key="plad", url=f"https://dataverse.harvard.edu/api/access/datafile/{file_id}", name=filename
+            )
+        ]
 
         self.admin_level = cfg.raw.get("admin_level", 1)
         if self.admin_level not in (1, 2):
@@ -106,60 +128,10 @@ class PlaDSource(DataSource):
             )
         return super().output_root(step, namespace=namespace)
 
-    # ------------------------------------------------------------------
-    # RemoteFileCatalog contract (ports HarvardDataSource verbatim)
-    # ------------------------------------------------------------------
-
-    def list_remote_files(self, entrypoint: Optional[dict] = None) -> List[tuple]:
-        import requests
-
-        api_url = f"https://dataverse.harvard.edu/api/datasets/:persistentId?persistentId={self.doi}"
-        try:
-            response = requests.get(api_url)
-            response.raise_for_status()
-            files = response.json()["data"]["latestVersion"]["files"]
-            result = []
-            for file in files:
-                label = file["label"]
-                if not self.file_extensions or any(label.endswith(ext) for ext in self.file_extensions):
-                    relative_path = file["dataFile"].get("originalFileName", label)
-                    file_id = file["dataFile"]["id"]
-                    result.append((relative_path, f"https://dataverse.harvard.edu/api/access/datafile/{file_id}"))
-            return result
-        except Exception:
-            logger.exception("Error listing files from Harvard Dataverse")
-            return []
-
-    def local_path(self, relative_path: str) -> str:
-        return os.path.join("data", self.DATA_SOURCE_NAME, relative_path)
-
-    # get_file_hash: inherited from DataSource (src/data/sources/base.py).
-
-    def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
-        return None
-
-    def get_all_entrypoints(self) -> List[Dict[str, Any]]:
-        return []
-
-    def download(self, file_url: str, output_path: str, session: Any = None) -> None:
-        import time
-
-        import requests
-
-        s = session or requests.Session()
-        time.sleep(0.5)
-        r = s.get(file_url, stream=True)
-        r.raise_for_status()
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        with open(output_path, "wb") as f:
-            for chunk in r.iter_content(chunk_size=8192):
-                f.write(chunk)
-
-    async def download_async(self, file_url: str, output_path: str, session: Any = None) -> None:
-        import asyncio
-
-        await asyncio.sleep(0.5)
-        await asyncio.get_event_loop().run_in_executor(None, self.download, file_url, output_path, None)
+    # list_remote_files/local_path/filename_to_entrypoint/get_all_entrypoints/
+    # download/download_async/has_entrypoints: inherited from
+    # ConfiguredFilesFetchMixin (src/data/sources/misc/_fetch.py), driven by
+    # self.CONFIGURED_FILES set in __init__ above.
 
     # ------------------------------------------------------------------
     # plan()/execute() dispatch

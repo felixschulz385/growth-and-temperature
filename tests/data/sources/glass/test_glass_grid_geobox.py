@@ -30,7 +30,13 @@ def _make_source(tmp_path, grid_id="legacy_4326", layout="legacy"):
         grid_id=grid_id,
         layout=layout,
     )
-    cfg = SourceConfig.from_dict("glass_modis", {"base_url": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/"})
+    cfg = SourceConfig.from_dict(
+        "glass_modis",
+        {
+            "base_url": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/",
+            "day_range": {"start": [2000, 55], "end": [2020, 365]},
+        },
+    )
     return GlassSource(ctx, cfg), ctx
 
 

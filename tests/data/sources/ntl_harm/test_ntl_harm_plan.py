@@ -40,6 +40,23 @@ def test_steps_is_fetch_and_prepare_only():
     assert NtlHarmSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
+def test_get_all_entrypoints_is_static_from_year_range(tmp_path, monkeypatch):
+    """`get_all_entrypoints()` must never hit the network -- `data summary`
+    (`catalog.cached_entrypoint_counts()`) relies on `STATIC_ENTRYPOINTS`
+    sources being genuinely safe to call outside a real FETCH run."""
+    import requests
+
+    def _boom(*args, **kwargs):
+        raise AssertionError("get_all_entrypoints() must not touch the network")
+
+    monkeypatch.setattr(requests, "get", _boom)
+
+    source, _ = _make_source(tmp_path, year_range=[2020, 2022])
+    assert source.get_all_entrypoints() == [
+        {"year": 2020, "day": 1}, {"year": 2021, "day": 1}, {"year": 2022, "day": 1},
+    ]
+
+
 def test_default_resampling_is_sum(tmp_path):
     source, _ = _make_source(tmp_path)
     assert source.resampling == "sum"

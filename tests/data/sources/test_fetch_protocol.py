@@ -22,8 +22,6 @@ from src.data.sources.steps import PipelineStep
 
 _EXTRA_CONFIG: dict[str, dict] = {
     "eog": {"base_url": "https://example.invalid/eog"},
-    "glass_modis": {"base_url": "https://example.invalid/glass/modis/"},
-    "glass_avhrr": {"base_url": "https://example.invalid/glass/avhrr/"},
 }
 
 #: `source_id` to actually construct with, for sources whose bare `spec.id`
@@ -40,8 +38,12 @@ _CONSTRUCT_AS: dict[str, str] = {
 #: per-(year, tile) STAC queries from Planetary Computer, not a crawlable flat
 #: file list, so there is no `list_remote_files()`/`download_async()` to
 #: satisfy -- it tracks per-unit state directly in the ledger's generic
-#: `artifacts` table instead (`_get_ledger()`/`_execute_fetch()`).
-_CRAWLER_PROTOCOL_EXEMPT = {"modis"}
+#: `artifacts` table instead (`_get_ledger()`/`_execute_fetch()`). GLASS
+#: (docs/design/11-glass-static-fetch.md) is the same shape: a static
+#: per-(year, day[, tile]) target list attempted-and-logged directly, not a
+#: crawlable remote listing -- no `get_all_entrypoints()`/`list_remote_files()`
+#: either.
+_CRAWLER_PROTOCOL_EXEMPT = {"modis", "glass_modis", "glass_avhrr"}
 
 
 def _fetch_capable_specs():
