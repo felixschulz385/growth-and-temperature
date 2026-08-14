@@ -224,17 +224,43 @@ def _run_verification(
     return VerificationResult(True, "exists (unrecognized format, existence-only check)")
 
 
-def _stride_sample(da, target_size: int = 200_000):
+def _stride_sample(da, target_size: int = 200_000, max_chunks_per_dim: int = 4):
     """A small sample spread across the *entire* extent of every dim, not a
     fixed central crop. Several sources (e.g. mine-count grids) are globally
     sparse -- a center-of-array window would find nothing but nodata on
     legitimately good output. Striding across the full extent instead keeps
-    the sample cheap while still being representative."""
+    the sample cheap while still being representative.
+
+    Samples in *chunk*-index space, not element-index space: a handful of
+    chunk positions per dim (spread across the chunk grid), each contributing
+    a dense run of elements, rather than one element position per dim spread
+    across every chunk. Same full-extent coverage, but bounds the number of
+    distinct chunks opened to roughly `max_chunks_per_dim ** ndim` instead of
+    one chunk per sampled element -- the difference between dozens of chunk
+    reads and thousands on a store chunked as finely as one (year, tile) per
+    chunk (see src/data/sources/snl_mining/source.py's `to_zarr` encoding)."""
+    import numpy as np
+
     dims = list(da.sizes.items())
     if not dims:
         return da.compute()
+
     per_dim_target = max(1, round(target_size ** (1 / len(dims))))
-    indexers = {dim: slice(None, None, max(1, size // per_dim_target)) for dim, size in dims}
+    chunks = da.chunks  # dask block-size tuples per dim, in `dims` order; None if not dask-backed
+    if chunks is None:
+        indexers = {dim: slice(None, None, max(1, size // per_dim_target)) for dim, size in dims}
+        return da.isel(indexers).compute()
+
+    indexers = {}
+    for (dim, size), block_sizes in zip(dims, chunks):
+        n_chunks = len(block_sizes)
+        starts = np.cumsum((0,) + block_sizes[:-1])
+        n_pick = min(max_chunks_per_dim, n_chunks)
+        picked_starts = starts[np.linspace(0, n_chunks - 1, n_pick, dtype=int)]
+        run_len = max(1, per_dim_target // n_pick)
+        indexers[dim] = np.concatenate(
+            [np.arange(start, min(start + run_len, size)) for start in picked_starts]
+        )
     return da.isel(indexers).compute()
 
 
