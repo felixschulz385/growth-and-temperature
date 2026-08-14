@@ -497,7 +497,7 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
         for col, var in CLASS_COLUMNS.items():
             with open(os.path.join(output_dir, f"{var}_code_mapping.json"), "w") as f:
-                json.dump(code_to_id[col], f, indent=2, default=str)
+                json.dump({str(k): v for k, v in code_to_id[col].items()}, f, indent=2, default=str)
 
         mark_complete(target.output_path)
         return True
