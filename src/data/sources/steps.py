@@ -48,17 +48,25 @@ class Completion(enum.StrEnum):
     PATH_EXISTS = "path_exists"
     #: Always re-run (side-effecting or intentionally non-idempotent targets).
     NEVER = "never"
+    #: Decided once at plan time and carried on the target rather than
+    #: re-derived from a live check (`target.meta["complete"]`) -- for a
+    #: FETCH target whose completeness was judged against a remote HPC
+    #: listing instead of local disk (`src.data.common.fetch.manifest
+    #: .resolve_fetch_listing`), where there's no single local path left for
+    #: a bare `os.path.exists()` to re-check against.
+    PRECOMPUTED = "precomputed"
 
 
 def is_complete(target: "StepTarget") -> bool:
-    """Whether *target*'s output already exists on local disk, per its
-    completion policy."""
+    """Whether *target*'s output already exists, per its completion policy."""
     if target.completion is Completion.NEVER:
         return False
     if target.completion is Completion.PATH_EXISTS:
         return os.path.exists(target.output_path)
     if target.completion is Completion.MARKER:
         return os.path.exists(marker_path(target.output_path))
+    if target.completion is Completion.PRECOMPUTED:
+        return bool(target.meta.get("complete", False))
     raise ValueError(f"Unknown completion policy: {target.completion}")
 
 
@@ -107,6 +115,16 @@ class TargetSelection:
     years: tuple[int, ...] | None = None
     year_range: tuple[int, int] | None = None
     keys: tuple[str, ...] | None = None
+    #: Whether a FETCH `_plan_fetch()` must judge completeness from local
+    #: disk only, even for a `transfer_mode=auto` source that would
+    #: otherwise check the HPC target instead
+    #: (`src.data.common.fetch.manifest.resolve_fetch_listing`). Defaults to
+    #: the safe, pre-existing local-only behavior; `data plan`/`data run`
+    #: explicitly opt out of it (`src/cli/data/handlers.py`) since those are
+    #: the commands that actually decide what to (re-)fetch. `data summary`
+    #: leaves this at its default -- it's documented to never make a live
+    #: remote call.
+    local_only: bool = True
 
     def matches_year(self, year: int | None) -> bool:
         if year is None:

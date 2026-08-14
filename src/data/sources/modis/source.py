@@ -279,7 +279,21 @@ class ModisSource(DataSource):
     # -- FETCH ("annual": STAC streaming ingest + compositing) -------------
 
     def _plan_fetch(self, selection: TargetSelection) -> List[StepTarget]:
+        from src.data.common.fetch.manifest import resolve_fetch_listing
+
         stage1_root = self.output_root(PipelineStep.FETCH)
+        # `transfer_mode=auto` (default for MODIS -- src.data.common.fetch
+        # .transfer_mode.AUTO_TRANSFER_DEFAULT_SOURCES): each tile-year's
+        # local .tif gets pushed to HPC right after FETCH and isn't kept
+        # around indefinitely, so a bare local os.path.exists() would make
+        # an already-pushed, locally-pruned tile look outstanding forever.
+        # `from_remote` decides between `Completion.PRECOMPUTED` (checked
+        # once here, against the HPC listing) and the original
+        # `Completion.PATH_EXISTS` (checked later, per-target, against local
+        # disk) -- `selection.local_only` (`data summary`'s deliberately
+        # network-free targets) forces the latter regardless of transfer_mode.
+        listing, from_remote = resolve_fetch_listing(self, stage1_root, allow_remote=not selection.local_only)
+
         targets = []
         for tile in self.tiles:
             years = self.years or (
@@ -291,14 +305,21 @@ class ModisSource(DataSource):
                 key = f"{year}/{tile}"
                 if not selection.matches_key(key):
                     continue
+                output_path = os.path.join(stage1_root, str(year), f"{tile}.tif")
+                if from_remote:
+                    completion = Completion.PRECOMPUTED
+                    meta = {"year": year, "tile": tile, "complete": f"{year}/{tile}.tif" in listing}
+                else:
+                    completion = Completion.PATH_EXISTS
+                    meta = {"year": year, "tile": tile}
                 targets.append(
                     StepTarget(
                         source_id=self.cfg.source_id,
                         step=PipelineStep.FETCH,
                         key=key,
-                        output_path=os.path.join(stage1_root, str(year), f"{tile}.tif"),
-                        completion=Completion.PATH_EXISTS,
-                        meta={"year": year, "tile": tile},
+                        output_path=output_path,
+                        completion=completion,
+                        meta=meta,
                     )
                 )
         return targets

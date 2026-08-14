@@ -249,11 +249,17 @@ class GlassSource(DataSource):
         return os.path.join(raw_root, str(year), f"pending.{year}{day:03d}.hdf")
 
     def _plan_fetch(self, selection: TargetSelection) -> List[StepTarget]:
-        from src.data.common.fetch.manifest import snapshot_local_listing
+        from src.data.common.fetch.manifest import resolve_fetch_listing
         from src.data.common.statusfile import STATUS_SUBDIR
 
         raw_root = self.output_root(PipelineStep.FETCH)
-        listing = snapshot_local_listing(raw_root)
+        # `transfer_mode=auto` (default for glass_modis/glass_avhrr) pushes
+        # each fetched file to HPC right after FETCH and doesn't keep it
+        # locally indefinitely -- same reasoning as MODIS's own
+        # `_plan_fetch()`, see its comment. `selection.local_only` (`data
+        # summary`'s deliberately network-free targets) forces the local
+        # listing regardless of transfer_mode.
+        listing, from_remote = resolve_fetch_listing(self, raw_root, allow_remote=not selection.local_only)
         status_prefix = f"{STATUS_SUBDIR}/"
         relative_paths = [rel for rel in listing if not rel.startswith(status_prefix)]
         found = self._index_existing_fetch_files(relative_paths)
@@ -274,14 +280,20 @@ class GlassSource(DataSource):
                     if existing_rel is not None
                     else self._pending_path(raw_root, year, day, tile)
                 )
+                if from_remote:
+                    completion = Completion.PRECOMPUTED
+                    meta = {"year": year, "day": day, "tile": tile, "complete": existing_rel is not None}
+                else:
+                    completion = Completion.PATH_EXISTS
+                    meta = {"year": year, "day": day, "tile": tile}
                 targets.append(
                     StepTarget(
                         source_id=self.cfg.source_id,
                         step=PipelineStep.FETCH,
                         key=key,
                         output_path=output_path,
-                        completion=Completion.PATH_EXISTS,
-                        meta={"year": year, "day": day, "tile": tile},
+                        completion=completion,
+                        meta=meta,
                     )
                 )
         return targets

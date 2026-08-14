@@ -128,3 +128,51 @@ def test_run_fetch_refuses_concurrent_invocation(ctx, cfg):
         assert run_fetch(source) is False
     finally:
         lockfile.release(lock_path)
+
+
+def test_run_fetch_skips_a_file_already_on_hpc_when_transfer_mode_auto(tmp_path, monkeypatch):
+    # transfer_mode=auto (src.data.common.fetch.transfer_mode): a file
+    # already pushed to HPC counts as fetched even though nothing lands on
+    # local disk for it -- only the genuinely-outstanding file gets
+    # downloaded.
+    class _FakeClient:
+        def __init__(self, target, key_file=None):
+            self.base_path = "base"
+
+        def execute_command(self, command):
+            return True, "2000 1700000000.0 a.nc\n", ""
+
+    monkeypatch.setattr("src.data.common.hpc.client.HPCClient", _FakeClient)
+
+    ctx = PipelineContext(
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), ssh_target="user@host:base"
+    )
+    cfg = SourceConfig.from_dict("fake", {"data_path": "fake", "transfer_mode": "auto"})
+    files = [("a.nc", "https://x/a.nc"), ("b.nc", "https://x/b.nc")]
+    source = _FakeSource(ctx, cfg, files)
+
+    assert run_fetch(source) is True
+    root = _raw_root(ctx, cfg)
+    assert not os.path.exists(os.path.join(root, "a.nc"))  # already on HPC -- never downloaded
+    assert os.path.exists(os.path.join(root, "b.nc"))  # genuinely outstanding -- downloaded
+
+
+def test_run_fetch_stays_local_only_when_transfer_mode_manual_even_with_ssh_target(tmp_path, monkeypatch):
+    class _FakeClient:
+        def __init__(self, target, key_file=None):
+            self.base_path = "base"
+
+        def execute_command(self, command):
+            raise AssertionError("transfer_mode=manual must never consult the remote target")
+
+    monkeypatch.setattr("src.data.common.hpc.client.HPCClient", _FakeClient)
+
+    ctx = PipelineContext(
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), ssh_target="user@host:base"
+    )
+    cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})  # "fake" isn't an auto-transfer default
+    source = _FakeSource(ctx, cfg, [("a.nc", "https://x/a.nc")])
+
+    assert run_fetch(source) is True
+    root = _raw_root(ctx, cfg)
+    assert os.path.exists(os.path.join(root, "a.nc"))

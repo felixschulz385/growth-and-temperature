@@ -8,6 +8,7 @@ import logging
 
 from src.cli.common import setup_logging
 from src.cli.config import load_config_with_env_vars
+from src.data.common.fetch.transfer_mode import resolve_transfer_mode
 from src.data.pipeline.config import build_context, get_source_config
 from src.data.sources import registry
 from src.data.sources.steps import (
@@ -422,10 +423,10 @@ def _check_requires(spec: registry.SourceSpec, ctx, config, step: PipelineStep) 
             requires_source.close()
 
 
-def _selection_from_args(args: argparse.Namespace) -> TargetSelection:
+def _selection_from_args(args: argparse.Namespace, *, local_only: bool = True) -> TargetSelection:
     year_range = tuple(args.years) if getattr(args, "years", None) else None
     keys = tuple(args.keys) if getattr(args, "keys", None) else None
-    return TargetSelection(year_range=year_range, keys=keys)
+    return TargetSelection(year_range=year_range, keys=keys, local_only=local_only)
 
 
 def _build(args: argparse.Namespace, step: PipelineStep):
@@ -467,11 +468,18 @@ def _apply_cli_overrides(ctx, args: argparse.Namespace) -> None:
 
 
 def handle_plan(args: argparse.Namespace) -> None:
-    """``data plan`` -- print targets for (source, step) without running them."""
+    """``data plan`` -- print targets for (source, step) without running them.
+
+    Unlike `data summary` (deliberately network-free), a FETCH plan for a
+    `transfer_mode=auto` source checks the HPC target instead of local disk
+    (`local_only=False` -- see `TargetSelection.local_only`'s docstring) --
+    this command exists specifically to show what's actually outstanding to
+    fetch, and local disk isn't the right ground truth for those sources.
+    """
     setup_logging(args.log_level, debug=args.debug)
     step = PipelineStep(args.step)
     source, _ = _build(args, step)
-    selection = _selection_from_args(args)
+    selection = _selection_from_args(args, local_only=False)
 
     targets = source.plan(step, selection)
     if not targets:
@@ -484,26 +492,19 @@ def handle_plan(args: argparse.Namespace) -> None:
     source.close()
 
 
-#: `transfer_mode` default for a source not explicitly configured either way
-#: (`sources.<id>.transfer_mode: auto|manual` overrides this) -- the
-#: high-disk-usage raster sources default to pushing to HPC automatically
-#: right after a successful FETCH, everything else defaults to requiring an
-#: explicit `data transfer` call.
-AUTO_TRANSFER_DEFAULT_SOURCES = frozenset(
-    {"modis", "modis_lst", "modis_robustness_11a1", "glass_modis", "glass_avhrr", "acag", "esacci", "ntl_harm", "eog"}
-)
-
-
 def _maybe_auto_transfer(source, step: PipelineStep) -> None:
     """Called after a successful `data run --step fetch` -- pushes whatever
     just landed locally to HPC if this source's `transfer_mode` resolves to
-    `"auto"`. Silently skipped (not an error) when no HPC target is
-    configured, since plenty of local/dev runs never push anywhere."""
+    `"auto"` (`src.data.common.fetch.transfer_mode.resolve_transfer_mode` --
+    also the source of truth `data run`/`data plan` use to decide whether a
+    FETCH target's completeness should be checked against the HPC target
+    instead of local disk, since both questions come from the same
+    "local copy is disposable" fact about an auto-transfer source).
+    Silently skipped (not an error) when no HPC target is configured, since
+    plenty of local/dev runs never push anywhere."""
     if step is not PipelineStep.FETCH:
         return
-    default_mode = "auto" if getattr(source, "ID", None) in AUTO_TRANSFER_DEFAULT_SOURCES else "manual"
-    mode = source.cfg.raw.get("transfer_mode", default_mode)
-    if mode != "auto":
+    if resolve_transfer_mode(source) != "auto":
         return
     if not source.ctx.ssh_target:
         logger.info(
@@ -527,14 +528,22 @@ def _maybe_auto_transfer(source, step: PipelineStep) -> None:
 
 
 def handle_run(args: argparse.Namespace) -> None:
-    """``data run`` -- execute a (source, step)'s pending targets."""
+    """``data run`` -- execute a (source, step)'s pending targets.
+
+    For a `transfer_mode=auto` source's FETCH step, "already complete" is
+    checked against the HPC target instead of local disk (`local_only=False`
+    -- see `TargetSelection.local_only`'s docstring): those sources push
+    every fetched file to HPC right after FETCH and don't keep a permanent
+    local copy, so local presence isn't a reliable "already fetched" signal
+    for them.
+    """
     setup_logging(args.log_level, debug=args.debug)
     step = PipelineStep(args.step)
     source, _ = _build(args, step)
     if args.override:
         source.cfg = dataclasses.replace(source.cfg, override=True)
 
-    selection = _selection_from_args(args)
+    selection = _selection_from_args(args, local_only=False)
 
     targets = source.plan(step, selection)
     if not targets:

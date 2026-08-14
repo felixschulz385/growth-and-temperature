@@ -1,4 +1,5 @@
 import os
+from types import SimpleNamespace
 
 from src.data.common import statusfile
 from src.data.common.fetch import manifest
@@ -145,3 +146,115 @@ def test_clear_failure_removes_status_file(tmp_path):
     assert os.path.exists(path)
     manifest.clear_failure(status_dir, "u")
     assert not os.path.exists(path)
+
+
+def test_remote_listing_for_local_root_returns_none_without_ssh_target(tmp_path):
+    ctx = SimpleNamespace(ssh_target=None, data_root=str(tmp_path), key_file=None)
+    assert manifest.remote_listing_for_local_root(ctx, str(tmp_path / "raw")) is None
+
+
+def test_remote_listing_for_local_root_queries_the_mirrored_remote_path(tmp_path, monkeypatch):
+    captured = {}
+
+    class _FakeClient:
+        def __init__(self, target, key_file=None):
+            captured["target"] = target
+            captured["key_file"] = key_file
+            self.base_path = "remote_base"
+
+        def execute_command(self, command):
+            captured["command"] = command
+            return True, "2000 1700000000.0 2020/a.nc\n", ""
+
+    monkeypatch.setattr("src.data.common.hpc.client.HPCClient", _FakeClient)
+
+    data_root = str(tmp_path / "data_root")
+    local_root = os.path.join(data_root, "modis", "raw")
+    ctx = SimpleNamespace(ssh_target="user@host:remote_base", data_root=data_root, key_file=None)
+
+    listing = manifest.remote_listing_for_local_root(ctx, local_root)
+    assert listing["2020/a.nc"].size == 2000
+    assert captured["target"] == "user@host:remote_base"
+    # The remote `find` root mirrors local_root's offset from ctx.data_root.
+    assert "remote_base/modis/raw" in captured["command"]
+
+
+def test_remote_listing_for_local_root_excludes_status_subdir(tmp_path, monkeypatch):
+    class _FakeClient:
+        def __init__(self, target, key_file=None):
+            self.base_path = "remote_base"
+
+        def execute_command(self, command):
+            stdout = f"2000 1700000000.0 a.nc\n10 1700000000.0 {statusfile.STATUS_SUBDIR}/a.json\n"
+            return True, stdout, ""
+
+    monkeypatch.setattr("src.data.common.hpc.client.HPCClient", _FakeClient)
+    ctx = SimpleNamespace(ssh_target="user@host:remote_base", data_root=str(tmp_path), key_file=None)
+    listing = manifest.remote_listing_for_local_root(ctx, str(tmp_path / "raw"))
+    assert set(listing) == {"a.nc"}
+
+
+class _FakeSource:
+    def __init__(self, ctx, transfer_mode):
+        self.ctx = ctx
+        self.cfg = SimpleNamespace(source_id="fake", raw={"transfer_mode": transfer_mode})
+        self.ID = "fake"
+
+
+def test_resolve_fetch_listing_falls_back_to_local_when_manual(tmp_path):
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "a.nc"), 2000)
+    ctx = SimpleNamespace(ssh_target="user@host:base", data_root=str(tmp_path), key_file=None)
+    source = _FakeSource(ctx, "manual")
+
+    listing, from_remote = manifest.resolve_fetch_listing(source, root)
+    assert from_remote is False
+    assert set(listing) == {"a.nc"}
+
+
+def test_resolve_fetch_listing_falls_back_to_local_when_no_ssh_target(tmp_path):
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "a.nc"), 2000)
+    ctx = SimpleNamespace(ssh_target=None, data_root=str(tmp_path), key_file=None)
+    source = _FakeSource(ctx, "auto")
+
+    listing, from_remote = manifest.resolve_fetch_listing(source, root)
+    assert from_remote is False
+    assert set(listing) == {"a.nc"}
+
+
+def test_resolve_fetch_listing_uses_remote_when_auto_and_ssh_target_configured(tmp_path, monkeypatch):
+    class _FakeClient:
+        def __init__(self, target, key_file=None):
+            self.base_path = "base"
+
+        def execute_command(self, command):
+            return True, "2000 1700000000.0 remote_only.nc\n", ""
+
+    monkeypatch.setattr("src.data.common.hpc.client.HPCClient", _FakeClient)
+    root = str(tmp_path / "raw")  # deliberately empty locally -- only remote has the file
+    ctx = SimpleNamespace(ssh_target="user@host:base", data_root=str(tmp_path), key_file=None)
+    source = _FakeSource(ctx, "auto")
+
+    listing, from_remote = manifest.resolve_fetch_listing(source, root)
+    assert from_remote is True
+    assert set(listing) == {"remote_only.nc"}
+
+
+def test_resolve_fetch_listing_allow_remote_false_forces_local_even_when_auto(tmp_path, monkeypatch):
+    class _FakeClient:
+        def __init__(self, target, key_file=None):
+            self.base_path = "base"
+
+        def execute_command(self, command):
+            raise AssertionError("must not consult the remote target when allow_remote=False")
+
+    monkeypatch.setattr("src.data.common.hpc.client.HPCClient", _FakeClient)
+    root = str(tmp_path / "raw")
+    _write_file(os.path.join(root, "a.nc"), 2000)
+    ctx = SimpleNamespace(ssh_target="user@host:base", data_root=str(tmp_path), key_file=None)
+    source = _FakeSource(ctx, "auto")
+
+    listing, from_remote = manifest.resolve_fetch_listing(source, root, allow_remote=False)
+    assert from_remote is False
+    assert set(listing) == {"a.nc"}

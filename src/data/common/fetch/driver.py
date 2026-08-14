@@ -1,15 +1,22 @@
-"""The FETCH driver: purely local-disk, never touching HPC at all. `data
-transfer` (`src/cli/data/handlers.py`) is the only thing that talks to the
-HPC target; a source's `download:` config doesn't need `ledger_mode`/
-`ledger_push_every`/`tar_max_files`/`tar_max_size_mb` (silently ignored via
-`**_ignored_config` below, so a not-yet-cleaned-up config block doesn't
-error).
+"""The FETCH driver. `data transfer` (`src/cli/data/handlers.py`) is still
+the only thing that *pushes* to the HPC target; this only *reads* it, and
+only for a `transfer_mode=auto` source (`src.data.common.fetch
+.transfer_mode`) -- one whose local copy is disposable because it gets
+pushed to HPC right after FETCH, so "already fetched" has to be judged
+against the HPC target instead of local disk or a locally-pruned file looks
+outstanding forever. A `transfer_mode=manual` source (the default) stays
+exactly as before: purely local-disk, never touching HPC at all. A source's
+`download:` config doesn't need `ledger_mode`/`ledger_push_every`/
+`tar_max_files`/`tar_max_size_mb` (silently ignored via `**_ignored_config`
+below, so a not-yet-cleaned-up config block doesn't error).
 
 One pass: `catalog.required_files()` enumerates what a source needs (reusing
 its existing `RemoteFileCatalog` crawl surface unchanged -- see that
-module's docstring), diffed against one cached local directory listing
-(`manifest.snapshot_local_listing()`/`manifest.plan_fetch()`) into
-complete/outstanding/unavailable. Only `outstanding` gets downloaded.
+module's docstring), diffed against one cached listing
+(`manifest.resolve_fetch_listing()`/`manifest.plan_fetch()`, local or
+remote per `transfer_mode`) into complete/outstanding/unavailable. Only
+`outstanding` gets downloaded -- always to local disk, regardless of
+`transfer_mode`; only the completeness check's source of truth changes.
 `lockfile` guards against an accidental second invocation for the same
 source while one is already running -- this codebase only ever runs one
 FETCH worker per source at a time by design.
@@ -115,7 +122,12 @@ def run_fetch(
 
     try:
         required = catalog.required_files(source, raw_root, refresh_entrypoints=refresh_entrypoints)
-        listing = manifest.snapshot_local_listing(raw_root, max_depth=getattr(source, "RAW_LISTING_DEPTH", None))
+        listing, from_remote = manifest.resolve_fetch_listing(source, raw_root)
+        if from_remote:
+            logger.info(
+                "transfer_mode=auto for %s -- checking outstanding downloads against the HPC target instead of local disk",
+                source_id,
+            )
         plan = manifest.plan_fetch(required, listing, raw_root)
 
         if plan.unavailable:

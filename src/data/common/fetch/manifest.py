@@ -123,6 +123,57 @@ def snapshot_remote_listing(client: Any, remote_root: str) -> dict[str, ListingE
     return listing
 
 
+def remote_listing_for_local_root(ctx: Any, local_root: str) -> "dict[str, ListingEntry] | None":
+    """Remote counterpart of `snapshot_local_listing(local_root)`: one `find`
+    over the HPC path that mirrors *local_root*. `None` if no HPC target is
+    configured -- callers should fall back to the local listing in that
+    case, not treat it as "nothing there".
+
+    The remote tree always mirrors the local one relative to their
+    respective roots (`ctx.data_root` locally, `HPCClient.base_path`
+    remotely -- see `DataSource.transfer_units()`'s docstring), so the only
+    thing that needs computing is *local_root*'s relative offset from
+    `ctx.data_root`; the listing keys that come back are then directly
+    comparable to `snapshot_local_listing(local_root)`'s keys."""
+    if not ctx.ssh_target:
+        return None
+    from src.data.common.hpc.client import HPCClient
+    from src.data.common.hpc.push import _full_remote_path
+
+    client = HPCClient(target=ctx.ssh_target, key_file=ctx.key_file)
+    rel_root = os.path.relpath(local_root, ctx.data_root).replace(os.sep, "/")
+    remote_root = _full_remote_path(client, rel_root)
+    listing = snapshot_remote_listing(client, remote_root)
+    status_prefix = f"{statusfile.STATUS_SUBDIR}/"
+    return {rel: entry for rel, entry in listing.items() if not rel.startswith(status_prefix)}
+
+
+def resolve_fetch_listing(
+    source: Any, local_root: str, *, allow_remote: bool = True
+) -> "tuple[dict[str, ListingEntry], bool]":
+    """The directory listing a FETCH `_plan_fetch()`/`run_fetch()` should
+    treat as ground truth for *local_root*, and whether it came from the HPC
+    target (`True`) instead of local disk (`False`).
+
+    Remote is used only when *allow_remote* (the caller's own local-only
+    override, e.g. `data summary`'s deliberately network-free targets) and
+    this source's `transfer_mode` (`src.data.common.fetch.transfer_mode`)
+    resolves to `"auto"` -- a source pushing every fetched file to HPC right
+    after FETCH, whose local copy is disposable. Falls back to the local
+    listing whenever remote isn't applicable or isn't reachable (no
+    `remote.ssh_target` configured), so a source with no HPC target set up
+    yet still gets its normal local-disk behavior instead of silently
+    treating everything as missing."""
+    from src.data.common.fetch.transfer_mode import resolve_transfer_mode
+
+    if allow_remote and resolve_transfer_mode(source) == "auto":
+        remote = remote_listing_for_local_root(source.ctx, local_root)
+        if remote is not None:
+            return remote, True
+    local = snapshot_local_listing(local_root, max_depth=getattr(source, "RAW_LISTING_DEPTH", None))
+    return local, False
+
+
 def _is_present(entry: Optional[ListingEntry], required: RequiredFile) -> bool:
     if entry is None:
         return False
