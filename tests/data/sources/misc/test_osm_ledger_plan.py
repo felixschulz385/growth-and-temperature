@@ -1,16 +1,16 @@
-"""OsmSource.plan() reads a reconciled ledger instead of falling back to
-live discovery -- the static/singleton-target counterpart to
-tests/data/sources/misc/test_gadm_ledger_plan.py.
+"""OsmSource: ledger-free FETCH/PREPARE (docs/design successor to the
+ledger, Plan 2 PREPARE+GRID merge). plan() is a bare live `os.path.exists()`
+check against the raw fetched file -- see
+tests/data/sources/acag/test_acag_plan.py's non-tiled counterpart
+(commodity_prices) for the same shape.
 """
 
 import os
 
-from src.data.common.ledger.store import SourceLedger
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import registry
-from src.data.sources.reconcile import reconcile_step
-from src.data.sources.steps import PipelineStep, TargetSelection, mark_complete
+from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
 def _make(tmp_path):
@@ -29,47 +29,26 @@ def _write_fake_raw_zip(source):
     return raw_file
 
 
-def _write_fake_vector_file(source):
-    vector_path = os.path.join(source.output_root(PipelineStep.PREPARE), "land_polygons_simplified.gpkg")
-    os.makedirs(os.path.dirname(vector_path), exist_ok=True)
-    open(vector_path, "w").close()
-    return vector_path
+def test_steps_is_fetch_and_prepare_only():
+    from src.data.sources.misc.osm import OsmSource
+
+    assert OsmSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_plan_prepare_reads_from_reconciled_ledger(tmp_path):
-    source, ctx = _make(tmp_path)
+def test_prepare_plan_empty_when_raw_file_missing(tmp_path):
+    source, _ = _make(tmp_path)
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
+
+
+def test_prepare_plan_one_target_when_raw_file_present(tmp_path):
+    source, _ = _make(tmp_path)
     raw_file = _write_fake_raw_zip(source)
 
-    local_ledger_path = os.path.join(ctx.local_index_dir, "misc_osm.duckdb")
-    with SourceLedger.open(local_ledger_path, data_path="misc/osm") as ledger:
-        reconcile_step(source, PipelineStep.PREPARE, ledger)
-
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].key == "osm"
-    assert targets[0].inputs == (raw_file,)
-    assert targets[0].output_path == os.path.join(
-        source.output_root(PipelineStep.PREPARE), "land_polygons_simplified.gpkg"
-    )
-
-
-def test_plan_grid_reads_vector_path_from_ledger_meta(tmp_path):
-    source, ctx = _make(tmp_path)
-    vector_path = _write_fake_vector_file(source)
-
-    local_ledger_path = os.path.join(ctx.local_index_dir, "misc_osm.duckdb")
-    with SourceLedger.open(local_ledger_path, data_path="misc/osm") as ledger:
-        reconcile_step(source, PipelineStep.GRID, ledger)
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].inputs == (vector_path,)
-
-
-def test_plan_falls_back_to_discovery_when_ledger_unpopulated(tmp_path):
-    source, _ = _make(tmp_path)
-    _write_fake_raw_zip(source)
-    # local_index_dir is configured but nothing has been reconciled yet.
-    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].key == "osm"
+    target = targets[0]
+    assert target.key == "osm"
+    assert target.inputs == (raw_file,)
+    assert target.completion == Completion.MARKER
+    assert target.output_path == source._output_path()
+    assert target.output_path.endswith("land_mask.zarr")

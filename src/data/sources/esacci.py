@@ -1,14 +1,10 @@
-"""ESA CCI Land Cover annual composites: fetch + prepare + grid.
+"""ESA CCI Land Cover annual composites: fetch + prepare.
 
-docs/design/09-integrated-pipeline.md §5: same shape as `src/data/sources/acag.py`
-(the reference migration). Merges `src/data/download/sources/esacci.py::ESACCIDataSource`
-(CDS API fetch, virtual `cdsapi://` URIs) and
-`src/data/preprocess/sources/esacci.py::ESACCIPreprocessor` (`stage="annual"`
--> PREPARE, `stage="spatial"` -> GRID) into one class, unchanged in behaviour
--- checked against
-`tests/data/preprocess/sources/test_characterization_esacci.py`'s pinned
-values from the old code, and `tests/data/sources/esacci/test_plan.py`'s
-equivalent assertions for this class.
+docs/design successor to the ledger, Plan 2: PREPARE+GRID merge, applied
+here following `acag`/`ntl_harm` (module docstrings there). PREPARE
+reprojects straight from each year's raw (possibly zip-wrapped) NetCDF file
+to the tiled output; there is no intermediate annual zarr and no separate
+GRID step (`STEPS` no longer declares it).
 """
 
 from __future__ import annotations
@@ -20,12 +16,11 @@ import os
 import shutil
 import tempfile
 import zipfile
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import pandas as pd
 import xarray as xr
-from zarr.codecs import BloscCodec
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -33,9 +28,6 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +57,14 @@ class EsacciSource(DataSource):
     """ESA CCI Land Cover annual composites (categorical LCCS map).
 
     FETCH   -- one CDS API request per year (satellite-land-cover dataset).
-    PREPARE -- one annual zarr per year, extracting `lccs_class` (uint8)
-               from the raw zip-wrapped NetCDF.
-    GRID    -- reproject every annual zarr onto the canonical geobox
-               (categorical -> always nearest, dst_nodata=0).
+    PREPARE -- reproject every year's raw (zip-wrapped) NetCDF file directly
+               onto the canonical geobox, tile by tile (categorical -- always
+               nearest, dst_nodata=0, no scale/offset packaging).
     """
 
     ID = "esacci"
     ALIASES = ("esa_cci", "esacci_lc", "landcover")
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "esacci"
     has_entrypoints = True
@@ -81,6 +72,11 @@ class EsacciSource(DataSource):
     DATASET = "satellite-land-cover"
     DEFAULT_VERSIONS = ["v2_0_7cds", "v2_1_1"]
     DEFAULT_VARIABLES = ["lccs_class"]
+
+    #: Bumped whenever the raw-getter/reprojection logic here changes in a
+    #: way that must invalidate every already-`complete` tile's status and
+    #: force a full reprocess (`run_tiled_prepare`'s `processing_version`).
+    PROCESSING_VERSION = "2-tiled"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -91,6 +87,10 @@ class EsacciSource(DataSource):
         self.variables_to_keep: List[str] = cfg.raw.get("variables_to_keep") or self.DEFAULT_VARIABLES
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="esacci_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+
+        from src.data.common import tiling
+
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
 
     # ------------------------------------------------------------------
     # RemoteFileCatalog contract (ports ESACCIDataSource verbatim)
@@ -158,21 +158,6 @@ class EsacciSource(DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._plan_grid(selection)
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` (src/data/sources/base.py's
-        `discover()`): FETCH has no crawl to redo (`_plan_fetch` is already a
-        static, I/O-free target), so only PREPARE/GRID get a real live-crawl
-        counterpart distinct from their ledger-backed `_plan_*`."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._discover_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -180,8 +165,6 @@ class EsacciSource(DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     # -- FETCH ----------------------------------------------------------
@@ -205,94 +188,61 @@ class EsacciSource(DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- PREPARE ----------------------------------------------------------
+    # -- PREPARE (raw zip-wrapped NetCDF -> tiled, reprojected output) ----
 
     def _resolve_raw_path(self, relative_path: str) -> str:
         if os.path.isabs(relative_path):
             return relative_path
         return os.path.join(self.output_root(PipelineStep.FETCH), relative_path)
 
-    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: reads existing `artifacts` rows instead
-        of re-querying `completed_fetch_files()` and rebuilding the
-        year-grouping every call. Falls back to `_discover_prepare()` --
-        today's exact live logic -- if no ledger is configured yet, or
-        `data reconcile --step prepare` hasn't populated one yet."""
+    def _files_by_year(self) -> Dict[int, List[str]]:
+        """Live crawl of FETCH's raw output directory -- ledger-free ground
+        truth for which years have a fetched file."""
+        raw_root = self.output_root(PipelineStep.FETCH)
+        if not os.path.isdir(raw_root):
+            return {}
+        files_by_year: Dict[int, List[str]] = {}
+        for dirpath, _dirnames, filenames in os.walk(raw_root):
+            for fname in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, fname), raw_root)
+                year = self._extract_year(fname)
+                if year is not None:
+                    files_by_year.setdefault(year, []).append(rel)
+        return files_by_year
 
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            year = row.meta.get("year")
-            raw_relative_path = row.meta.get("raw_relative_path")
-            if year is None or raw_relative_path is None or row.local_path is None:
-                return None
-            if not selection.matches_year(year):
-                return None
-            return StepTarget(
+    @staticmethod
+    def _select_best_file_for_year(candidates: List[str]) -> str:
+        """Prefer .nc4 over .nc -- the order the old ledger-backed discovery used."""
+        return next(
+            (f for f in candidates if f.lower().endswith(".nc4")),
+            next((f for f in candidates if f.lower().endswith(".nc")), candidates[0]),
+        )
+
+    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        files_by_year = self._files_by_year()
+        years = sorted(
+            year for year in files_by_year if selection.matches_year(year) and selection.matches_key(str(year))
+        )
+        if not years:
+            return []
+        raw_files = {year: self._select_best_file_for_year(files_by_year[year]) for year in years}
+        return [
+            StepTarget(
                 source_id=self.ID,
                 step=PipelineStep.PREPARE,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=(raw_relative_path,),
+                key="all",
+                output_path=self._output_path(),
+                inputs=tuple(raw_files[year] for year in years),
                 completion=Completion.MARKER,
-                meta=row.meta,
+                meta={
+                    "years": years,
+                    "raw_files": raw_files,
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=("lccs_class",), value_range=(0, 220)
+                    ),
+                },
             )
-
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_prepare(selection)
-
-    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for PREPARE: queries the ledger's FETCH-crawl
-        catalog (`completed_fetch_files()`, not `artifacts`-for-PREPARE) and
-        groups by year. Called from `discover()` (via `data reconcile`,
-        which writes its result into `artifacts`) and as `_plan_prepare()`'s
-        fallback when that table isn't populated yet."""
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
-
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
-            logger.warning("Ledger not found: %s", local_ledger_path)
-            return []
-
-        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
-            relative_paths = ledger.completed_fetch_files()
-        if not relative_paths:
-            return []
-
-        files_by_year: Dict[int, List[str]] = {}
-        for rel_path in relative_paths:
-            year = self._extract_year(os.path.basename(rel_path))
-            if year is None or not selection.matches_year(year):
-                continue
-            files_by_year.setdefault(year, []).append(rel_path)
-
-        targets = []
-        for year in sorted(files_by_year):
-            if not selection.matches_key(str(year)):
-                continue
-            candidates = files_by_year[year]
-            selected = next(
-                (f for f in candidates if f.lower().endswith(".nc4")),
-                next((f for f in candidates if f.lower().endswith(".nc")), candidates[0]),
-            )
-            targets.append(
-                StepTarget(
-                    source_id=self.ID,
-                    step=PipelineStep.PREPARE,
-                    key=str(year),
-                    output_path=os.path.join(self.output_root(PipelineStep.PREPARE), f"{year}.zarr"),
-                    inputs=(selected,),
-                    completion=Completion.MARKER,
-                    meta={"year": year, "raw_candidates": len(candidates), "raw_relative_path": selected},
-                )
-            )
-        return targets
+        ]
 
     def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
         if not os.path.exists(file_path):
@@ -344,62 +294,15 @@ class EsacciSource(DataSource):
             ds = ds.rio.write_crs("EPSG:4326")
             ds.attrs["source_year"] = year
             ds.attrs["source_file"] = os.path.basename(file_path)
-            return ds
+            # Materialize now: `nc_path` may be a temp file this method's
+            # own logic doesn't clean up on the same schedule as a lazy
+            # dask read would need it to stay alive.
+            return ds.load()
         except Exception:
             logger.exception("Error loading %s.", file_path)
             return None
 
-    @staticmethod
-    def _write_annual_zarr(ds: xr.Dataset, output_path: str) -> bool:
-        try:
-            ds = ds.chunk({"time": 1, "band": 1, "latitude": 512, "longitude": 512})
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
-                var: {"compressors": (compressor,), "chunks": (1, 1, 512, 512), "dtype": str(ds[var].dtype)}
-                for var in ds.data_vars
-            }
-            ds.to_zarr(output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error writing annual zarr to %s.", output_path)
-            return False
-
-    def _execute_prepare(self, target: StepTarget) -> bool:
-        from src.data.sources.steps import is_complete, mark_complete
-
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping year %s -- already complete: %s", target.key, target.output_path)
-            return True
-
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        year = target.meta["year"]
-        raw_abs = self._resolve_raw_path(target.inputs[0])
-
-        ds = self._load_nc_as_dataset(raw_abs, year)
-        if ds is None:
-            return False
-        if not self._write_annual_zarr(ds, target.output_path):
-            return False
-        mark_complete(target.output_path)
-        return True
-
-    # -- GRID ----------------------------------------------------------
-
-    def _list_annual_zarrs(self) -> List[Dict[str, Any]]:
-        annual_dir = self.output_root(PipelineStep.PREPARE)
-        if not os.path.exists(annual_dir):
-            return []
-        results = []
-        for fname in os.listdir(annual_dir):
-            if fname.endswith(".zarr"):
-                try:
-                    year = int(os.path.splitext(fname)[0])
-                    results.append({"year": year, "zarr_path": os.path.join(annual_dir, fname)})
-                except ValueError:
-                    pass
-        return results
-
-    def _grid_output_path(self) -> str:
+    def _output_path(self) -> str:
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
@@ -410,85 +313,22 @@ class EsacciSource(DataSource):
             v2_family="land_cover",
         )
 
-    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for GRID: crawls the PREPARE output directory
-        for annual zarrs. Called from `discover()` (via `data reconcile`)
-        and as `_plan_grid()`'s fallback when the ledger has no GRID row yet."""
-        annual_files = [f for f in self._list_annual_zarrs() if selection.matches_year(f["year"])]
-        if not annual_files:
-            return []
-        return [
-            StepTarget(
-                source_id=self.ID,
-                step=PipelineStep.GRID,
-                key="all",
-                output_path=self._grid_output_path(),
-                inputs=tuple(f["zarr_path"] for f in annual_files),
-                completion=Completion.MARKER,
-                meta={
-                    "years_available": [f["year"] for f in annual_files],
-                    **verify.verification_meta(
-                        self.cfg.raw, expected_vars=("lccs_class",), value_range=(0, 220)
-                    ),
-                },
-            )
-        ]
-
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: the single GRID target's `inputs` are
-        re-derived live from PREPARE's `local_complete_units()` (a cheap
-        indexed ledger query) rather than persisted -- persisting a
-        filename-derived-year snapshot would go stale the moment a new
-        PREPARE year lands without a matching GRID reconcile. Falls back to
-        `_discover_grid()` if the ledger has no GRID row yet."""
-
-        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
-            if row.local_path is None:
-                return None
-            annual = [
-                (uid, path)
-                for uid, path in ledger.local_complete_units("prepare")
-                if uid.isdigit() and selection.matches_year(int(uid))
-            ]
-            if not annual:
-                return None
-            years = sorted(int(uid) for uid, _ in annual)
-            return StepTarget(
-                source_id=self.ID,
-                step=PipelineStep.GRID,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=tuple(path for _, path in annual),
-                completion=Completion.MARKER,
-                meta={
-                    "years_available": years,
-                    **verify.verification_meta(
-                        self.cfg.raw, expected_vars=("lccs_class",), value_range=(0, 220)
-                    ),
-                },
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid(selection)
-
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
-            logger.info("Skipping grid step -- already complete: %s", target.output_path)
+            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
             return True
 
+        years: List[int] = target.meta["years"]
+        raw_files: Dict[int, str] = target.meta["raw_files"]
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        years = target.meta["years_available"]
+
+        target_geobox = get_target_geobox(self.ctx)
+        dim_y, dim_x = target_geobox.dimensions
 
         with self._dask_client() as client:
             if client is None:
@@ -497,43 +337,38 @@ class EsacciSource(DataSource):
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
                 dask_client=client,
-                target_geobox=get_target_geobox(self.ctx),
+                target_geobox=target_geobox,
             )
             with processor.setup_dask_config():
+                cache: Dict[int, Optional[xr.Dataset]] = {}
 
-                def year_from_path(p: str) -> Optional[int]:
-                    try:
-                        return int(os.path.splitext(os.path.basename(p))[0])
-                    except ValueError:
-                        return None
+                def load_year(year: int) -> Optional[xr.Dataset]:
+                    if year not in cache:
+                        source_file = self._resolve_raw_path(raw_files[year])
+                        cache[year] = self._load_nc_as_dataset(source_file, year)
+                    return cache[year]
 
-                def preprocess(ds: xr.Dataset) -> xr.Dataset:
-                    if ds.rio.crs is None:
-                        ds = ds.rio.write_crs("EPSG:4326")
-                    return ds
+                sample_ds = load_year(years[0])
+                sample_attrs = dict(sample_ds.attrs) if sample_ds is not None else {}
 
-                def get_vars_and_attrs(file_path: str) -> Tuple[List[str], Dict]:
-                    sample = xr.open_zarr(file_path, mask_and_scale=False, chunks="auto", consolidated=False)
-                    variables = list(sample.data_vars.keys())
-                    attrs = sample.attrs.copy()
-                    sample.close()
-                    return variables, attrs
-
-                # ESA CCI LC is categorical -- always nearest (SpatialProcessor's
+                # ESA CCI LC is categorical -- always nearest (run_tiled_prepare's
                 # own default), 0 as nodata, no scale/offset packaging.
-                success = processor.process_spatial_standard(
-                    source_files=list(target.inputs),
+                return run_tiled_prepare(
                     output_path=target.output_path,
-                    years_to_process=years,
-                    year_pattern_func=year_from_path,
-                    preprocess_func=preprocess,
-                    get_variables_func=get_vars_and_attrs,
+                    years=years,
+                    variables=["lccs_class"],
+                    target_geobox=target_geobox,
+                    processor=processor,
+                    raw_getter=lambda tile, year: load_year(year),
+                    target_dims=(dim_y, dim_x),
+                    tile_size=self.tile_size,
                     dst_nodata=0,
                     packaging_attrs={},
+                    dtype="uint16",
+                    sample_attrs=sample_attrs,
+                    processing_version=self.PROCESSING_VERSION,
+                    override=self.cfg.override,
                 )
-                if success:
-                    mark_complete(target.output_path)
-                return success
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 

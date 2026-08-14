@@ -1,6 +1,7 @@
-"""GadmSource.plan() reads a reconciled ledger instead of falling back to
-live discovery -- the static/singleton-target counterpart to
-tests/data/sources/acag/test_acag_plan.py's per-year ledger-backed tests.
+"""GadmSource: ledger-free FETCH/PREPARE (docs/design successor to the
+ledger, Plan 2 PREPARE+GRID merge). plan() is a bare live `os.path.exists()`
+check against the raw fetched file -- see
+tests/data/sources/misc/test_osm_ledger_plan.py's identical shape.
 """
 
 import os
@@ -9,12 +10,10 @@ import zipfile
 import geopandas as gpd
 from shapely.geometry import Point
 
-from src.data.common.ledger.store import SourceLedger
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import registry
-from src.data.sources.reconcile import reconcile_step
-from src.data.sources.steps import PipelineStep, TargetSelection, mark_complete
+from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
 def _make(tmp_path):
@@ -38,50 +37,25 @@ def _write_fake_raw_zip(source, tmp_path):
     return raw_file
 
 
-def _write_fake_level_files(source):
-    vector_dir = source.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    level0 = os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg")
-    level1 = os.path.join(vector_dir, "gadm_levelADM_1_simplified.gpkg")
-    open(level0, "w").close()
-    open(level1, "w").close()
-    mark_complete(vector_dir)
-    return [level0, level1]
+def test_steps_is_fetch_and_prepare_only():
+    from src.data.sources.misc.gadm import GadmSource
+
+    assert GadmSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_plan_prepare_reads_from_reconciled_ledger(tmp_path):
-    source, ctx = _make(tmp_path)
+def test_prepare_plan_empty_when_raw_file_missing(tmp_path):
+    source, _ = _make(tmp_path)
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
+
+
+def test_prepare_plan_one_target_when_raw_file_present(tmp_path):
+    source, _ = _make(tmp_path)
     raw_file = _write_fake_raw_zip(source, tmp_path)
 
-    local_ledger_path = os.path.join(ctx.local_index_dir, "misc_gadm.duckdb")
-    with SourceLedger.open(local_ledger_path, data_path="misc/gadm") as ledger:
-        reconcile_step(source, PipelineStep.PREPARE, ledger)
-
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].key == "gadm"
-    assert targets[0].inputs == (raw_file,)
-    assert targets[0].output_path == source.output_root(PipelineStep.PREPARE)
-
-
-def test_plan_grid_reads_level_files_from_ledger_meta(tmp_path):
-    source, ctx = _make(tmp_path)
-    level_files = _write_fake_level_files(source)
-
-    local_ledger_path = os.path.join(ctx.local_index_dir, "misc_gadm.duckdb")
-    with SourceLedger.open(local_ledger_path, data_path="misc/gadm") as ledger:
-        reconcile_step(source, PipelineStep.GRID, ledger)
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert list(targets[0].inputs) == level_files
-    assert targets[0].output_path == source._grid_output_path()
-
-
-def test_plan_falls_back_to_discovery_when_ledger_unpopulated(tmp_path):
-    source, _ = _make(tmp_path)
-    _write_fake_raw_zip(source, tmp_path)
-    # local_index_dir is configured but nothing has been reconciled yet.
-    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].key == "gadm"
+    target = targets[0]
+    assert target.key == "gadm"
+    assert target.inputs == (raw_file,)
+    assert target.completion == Completion.MARKER
+    assert target.output_path == source._grid_output_path()

@@ -1,49 +1,45 @@
-"""`_check_requires()`'s ledger lookup for the misc-split sources
-(gadm/osm/country_classifications/ecoregions, all `cfg.data_path="misc"`,
-disambiguated via `cfg.namespace`) -- regression coverage for the bug where
-it read `requires_cfg.data_path` directly instead of mirroring the
-overridden `DataSource.data_path` property (src/data/sources/base.py),
-computing the wrong ledger filename ("misc.duckdb" instead of
-"misc_gadm.duckdb") and silently falling through to a local-disk-only check.
+"""`_check_requires()`: ledger-free (docs/design successor to the ledger) --
+builds the actual required source and checks `is_complete()` against its own
+`plan()`-ed targets, rather than guessing a path from
+`layout.output_root(data_path, step)`. Regression coverage for the bug that
+guess reintroduced: gadm's PREPARE now writes to what used to be GRID's
+path (Plan 2's PREPARE+GRID merge), so the generic per-step path guess
+silently pointed at the wrong (always-empty) directory.
 """
 
+import os
+
 from src.cli.data.handlers import _check_requires
-from src.data.common.ledger.paths import ledger_path
-from src.data.common.ledger.store import SourceLedger
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import registry
-from src.data.sources.steps import MissingPrerequisiteError, PipelineStep
+from src.data.sources.misc.gadm import GadmSource
+from src.data.sources.steps import MissingPrerequisiteError, PipelineStep, mark_complete
 
 
 def _config():
     return {"sources": {"gadm": {"data_path": "misc", "namespace": "gadm"}}}
 
 
-def _mark_step_complete(ledger_path_, data_path, step):
-    with SourceLedger.open(ledger_path_, data_path=data_path) as ledger:
-        ledger.ensure_artifact(step.value, "all")
-        ledger.set_local_state(step.value, "all", "complete")
-
-
-def test_check_requires_finds_misc_split_prerequisite_via_its_namespaced_ledger(tmp_path):
+def test_check_requires_finds_prerequisite_via_its_real_planned_output(tmp_path):
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     config = _config()
-    spec = registry.resolve("ecoregions")  # REQUIRES = gadm PREPARE + gadm GRID, both scoped to GRID
+    spec = registry.resolve("ecoregions")  # REQUIRES = gadm PREPARE, scoped to ecoregions' own PREPARE
 
-    gadm_data_path = "misc/gadm"  # what GadmSource.data_path actually resolves to
-    gadm_ledger_path = ledger_path(ctx.local_index_dir, gadm_data_path)
-    import os
+    from src.data.pipeline.config import get_source_config
 
-    os.makedirs(os.path.dirname(gadm_ledger_path), exist_ok=True)
-    _mark_step_complete(gadm_ledger_path, gadm_data_path, PipelineStep.PREPARE)
-    _mark_step_complete(gadm_ledger_path, gadm_data_path, PipelineStep.GRID)
+    source = GadmSource(ctx, get_source_config(config, "gadm"))
+    raw_file = source._raw_file_path()
+    os.makedirs(os.path.dirname(raw_file), exist_ok=True)
+    open(raw_file, "w").close()
 
-    # gadm's local output directories were never created -- only its ledger
-    # (the cross-machine case: gadm ran elsewhere and was pushed via
-    # `data transfer`). Before the fix, _check_requires computed
-    # ledger_path(..., "misc") -> a file that doesn't exist, silently skipped
-    # the ledger check, and raised on the local os.path.exists() fallback.
-    _check_requires(spec, ctx, config, PipelineStep.GRID)  # must not raise
+    # gadm's PREPARE target's real output is its final grid zarr (what used
+    # to be GRID's own output path) -- mark it complete directly, without
+    # running the actual vector-extraction/rasterization pipeline.
+    output_path = source._grid_output_path()
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    mark_complete(output_path)
+
+    _check_requires(spec, ctx, config, PipelineStep.PREPARE)  # must not raise
 
 
 def test_check_requires_still_raises_when_prerequisite_truly_incomplete(tmp_path):
@@ -52,20 +48,42 @@ def test_check_requires_still_raises_when_prerequisite_truly_incomplete(tmp_path
     spec = registry.resolve("ecoregions")
 
     try:
-        _check_requires(spec, ctx, config, PipelineStep.GRID)
+        _check_requires(spec, ctx, config, PipelineStep.PREPARE)
     except MissingPrerequisiteError as e:
         assert e.requires_id == "gadm"
     else:
         raise AssertionError("expected MissingPrerequisiteError")
 
 
-def test_check_requires_does_not_gate_steps_without_that_requirement(tmp_path):
-    # ecoregions' REQUIRES on gadm is scoped to its own GRID step only (only
-    # _plan_grid()'s gadm_gid3_dominant target touches gadm) -- FETCH/PREPARE
-    # must run unblocked even with no gadm output anywhere.
+def test_check_requires_raises_when_raw_file_exists_but_output_not_yet_complete(tmp_path):
+    # A planned-but-not-yet-complete target must still gate -- plan()
+    # returning something isn't enough on its own, is_complete() must agree.
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    config = _config()
+    spec = registry.resolve("ecoregions")
+
+    from src.data.pipeline.config import get_source_config
+
+    source = GadmSource(ctx, get_source_config(config, "gadm"))
+    raw_file = source._raw_file_path()
+    os.makedirs(os.path.dirname(raw_file), exist_ok=True)
+    open(raw_file, "w").close()
+    # No mark_complete() -- the target exists but isn't done yet.
+
+    try:
+        _check_requires(spec, ctx, config, PipelineStep.PREPARE)
+    except MissingPrerequisiteError as e:
+        assert e.requires_id == "gadm"
+    else:
+        raise AssertionError("expected MissingPrerequisiteError")
+
+
+def test_check_requires_does_not_gate_fetch(tmp_path):
+    # ecoregions' REQUIRES on gadm is scoped to its own (merged) PREPARE
+    # step only -- FETCH must run unblocked even with no gadm output
+    # anywhere.
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     config = _config()
     spec = registry.resolve("ecoregions")
 
     _check_requires(spec, ctx, config, PipelineStep.FETCH)  # must not raise
-    _check_requires(spec, ctx, config, PipelineStep.PREPARE)  # must not raise

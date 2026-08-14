@@ -1,6 +1,7 @@
-"""CountryClassificationsSource._execute_grid(): writes a small GID_0-keyed
-parquet table instead of rasterizing (classification values are constant
-within a country, never per-pixel -- see module docstring)."""
+"""CountryClassificationsSource._execute_prepare(): writes a small
+GID_0-keyed parquet table instead of rasterizing (classification values are
+constant within a country, never per-pixel -- see module docstring). Plan
+2's PREPARE+GRID merge: this used to be a separate `_execute_grid()`."""
 
 import json
 import os
@@ -25,9 +26,20 @@ def _make_source(tmp_path, grid_id="legacy_4326", layout="legacy"):
     return CountryClassificationsSource(ctx, cfg), ctx
 
 
-def test_execute_grid_writes_gid0_keyed_parquet(tmp_path):
-    source, ctx = _make_source(tmp_path)
+def _write_fake_raw_files(source):
+    hdi_file, wb_file = source._raw_file("hdi"), source._raw_file("worldbank")
+    os.makedirs(os.path.dirname(hdi_file), exist_ok=True)
+    open(hdi_file, "w").close()
+    open(wb_file, "w").close()
 
+
+def test_execute_prepare_writes_gid0_keyed_parquet(tmp_path):
+    source, ctx = _make_source(tmp_path)
+    _write_fake_raw_files(source)
+
+    # Phase 1 (joining HDI+WB) already done in a prior run -- pre-populate
+    # the real, externally-read classifications.parquet intermediate so
+    # _execute_prepare's resumability check skips straight to phase 2.
     vector_dir = source.output_root(PipelineStep.PREPARE)
     os.makedirs(vector_dir, exist_ok=True)
     classifications_parquet = os.path.join(vector_dir, "classifications.parquet")
@@ -39,15 +51,12 @@ def test_execute_grid_writes_gid0_keyed_parquet(tmp_path):
         ]
     ).to_parquet(classifications_parquet, index=False)
 
-    gadm_zarr = os.path.join(ctx.data_root, "misc", "processed", "stage_2", "gadm", "countries_grid.zarr")
-    os.makedirs(os.path.dirname(gadm_zarr), exist_ok=True)
-    os.makedirs(gadm_zarr)
-
     mapping_path = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_0")
+    os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
     with open(mapping_path, "w") as f:
         json.dump({"USA": 5, "FRA": 9}, f)
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     target = targets[0]
 
@@ -61,19 +70,16 @@ def test_execute_grid_writes_gid0_keyed_parquet(tmp_path):
     }
 
 
-def test_execute_grid_fails_clearly_when_mapping_missing(tmp_path):
+def test_execute_prepare_fails_clearly_when_mapping_missing(tmp_path):
     source, ctx = _make_source(tmp_path)
+    _write_fake_raw_files(source)
 
     vector_dir = source.output_root(PipelineStep.PREPARE)
     os.makedirs(vector_dir, exist_ok=True)
     classifications_parquet = os.path.join(vector_dir, "classifications.parquet")
     pd.DataFrame([{"iso3": "USA", "HDI_HI": True}]).to_parquet(classifications_parquet, index=False)
-
-    gadm_zarr = os.path.join(ctx.data_root, "misc", "processed", "stage_2", "gadm", "countries_grid.zarr")
-    os.makedirs(os.path.dirname(gadm_zarr), exist_ok=True)
-    os.makedirs(gadm_zarr)
     # No GID_0_code_mapping.json written.
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert source.execute(targets[0]) is False

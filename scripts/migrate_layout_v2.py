@@ -196,10 +196,17 @@ def migrate_grid(
     under a filename that must be renamed to the v2 family filename, not
     just relocated. Doesn't call .plan() (which can depend on PREPARE
     output already being wherever ctx.layout expects, not guaranteed true
-    mid-migration) -- uses the static (filename, family) mapping instead."""
-    if PipelineStep.GRID not in type(source_legacy).STEPS:
-        return
+    mid-migration) -- uses the static (filename, family) mapping instead.
 
+    Deliberately does *not* gate on `PipelineStep.GRID in type(source_legacy).STEPS`:
+    several sources that used to declare a separate GRID step (gadm, acag,
+    osm, ...) have since had PREPARE+GRID merged into one PREPARE step
+    (Plan 2, docs/design successor to the ledger) and no longer declare GRID
+    at all -- but pre-merge runs may still have real legacy-layout GRID
+    output on disk that needs migrating. `GRID_FILENAME_AND_FAMILY`/
+    `_grid_filename_and_family()` (a static, historical mapping, not derived
+    from the current class) is the authority on whether a source ever had a
+    GRID output worth migrating."""
     mapping = _grid_filename_and_family(source_key, source_legacy)
     if mapping is None:
         logger.warning("[%s/GRID] no known legacy_filename/v2_family mapping -- skipping", source_key)

@@ -1,16 +1,15 @@
-"""CountryClassificationsSource.plan() reads a reconciled ledger instead of
-falling back to live discovery -- the static/singleton-target counterpart to
-tests/data/sources/misc/test_gadm_ledger_plan.py.
+"""CountryClassificationsSource: ledger-free FETCH/PREPARE (docs/design
+successor to the ledger, Plan 2 PREPARE+GRID merge). plan() is a bare live
+`os.path.exists()` check against the raw fetched files -- see
+tests/data/sources/misc/test_gadm_ledger_plan.py's identical shape.
 """
 
 import os
 
-from src.data.common.ledger.store import SourceLedger
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import registry
-from src.data.sources.reconcile import reconcile_step
-from src.data.sources.steps import PipelineStep, TargetSelection
+from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
 def _make(tmp_path):
@@ -30,49 +29,43 @@ def _write_fake_hdi_and_wb(source):
     return hdi_file, wb_file
 
 
-def _write_fake_prepare_and_gadm(source, ctx):
-    classifications_parquet = os.path.join(
-        source.output_root(PipelineStep.PREPARE), "classifications.parquet"
-    )
-    os.makedirs(os.path.dirname(classifications_parquet), exist_ok=True)
-    open(classifications_parquet, "w").close()
+def test_steps_is_fetch_and_prepare_only():
+    from src.data.sources.misc.country_classifications import CountryClassificationsSource
 
-    gadm_zarr = os.path.join(ctx.data_root, "misc", "processed", "stage_2", "gadm", "countries_grid.zarr")
-    os.makedirs(gadm_zarr, exist_ok=True)
-    return classifications_parquet, gadm_zarr
+    assert CountryClassificationsSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_plan_prepare_reads_from_reconciled_ledger(tmp_path):
-    source, ctx = _make(tmp_path)
+def test_requires_gadm_prepare():
+    spec = registry.resolve("country_classifications")
+    assert spec.requires == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
+
+
+def test_prepare_plan_empty_when_no_raw_files(tmp_path):
+    source, _ = _make(tmp_path)
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
+
+
+def test_prepare_plan_one_target_when_raw_files_present(tmp_path):
+    source, _ = _make(tmp_path)
     hdi_file, wb_file = _write_fake_hdi_and_wb(source)
 
-    local_ledger_path = os.path.join(ctx.local_index_dir, "misc_country_classifications.duckdb")
-    with SourceLedger.open(local_ledger_path, data_path="misc/country_classifications") as ledger:
-        reconcile_step(source, PipelineStep.PREPARE, ledger)
-
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].key == "country_classifications"
-    assert set(targets[0].inputs) == {hdi_file, wb_file}
+    target = targets[0]
+    assert target.key == "country_classifications"
+    assert set(target.inputs) == {hdi_file, wb_file}
+    assert target.completion == Completion.PATH_EXISTS
+    assert target.output_path == source._output_path()
+    assert target.output_path.endswith("classifications_by_gid0.parquet")
 
 
-def test_plan_grid_reads_paths_from_ledger_meta(tmp_path):
-    source, ctx = _make(tmp_path)
-    classifications_parquet, gadm_zarr = _write_fake_prepare_and_gadm(source, ctx)
-
-    local_ledger_path = os.path.join(ctx.local_index_dir, "misc_country_classifications.duckdb")
-    with SourceLedger.open(local_ledger_path, data_path="misc/country_classifications") as ledger:
-        reconcile_step(source, PipelineStep.GRID, ledger)
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].inputs == (classifications_parquet, gadm_zarr)
-
-
-def test_plan_falls_back_to_discovery_when_ledger_unpopulated(tmp_path):
+def test_prepare_plan_tracks_which_of_hdi_worldbank_present(tmp_path):
     source, _ = _make(tmp_path)
-    _write_fake_hdi_and_wb(source)
-    # local_index_dir is configured but nothing has been reconciled yet.
+    hdi_file = source._raw_file("hdi")
+    os.makedirs(os.path.dirname(hdi_file), exist_ok=True)
+    open(hdi_file, "w").close()
+
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].key == "country_classifications"
+    assert targets[0].meta["has_hdi"] is True
+    assert targets[0].meta["has_wb"] is False

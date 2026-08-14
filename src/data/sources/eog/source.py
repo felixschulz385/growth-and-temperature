@@ -1,26 +1,25 @@
-"""EOG (DMSP/VIIRS/DVNL) nighttime lights: fetch + prepare + grid.
+"""EOG (DMSP/VIIRS/DVNL) nighttime lights: fetch + prepare.
 
-docs/design/09-integrated-pipeline.md §5: one registered id with three
-aliases (`eog_dmsp`, `eog_viirs`, `eog_dvnl`), matching today's `NAMES` tuple
-in `src/data/download/sources/eog/source.py`. Merges that module's
-`EOGDataSource` (Selenium-authenticated crawl/download, reused verbatim via
-`_CrawlerMixin`/`_SessionMixin`) and
-`src/data/preprocess/sources/eog.py::EOGPreprocessor` (`stage="annual"` ->
-PREPARE, `stage="spatial"` -> GRID).
+docs/design successor to the ledger, Plan 2: PREPARE+GRID merge, applied
+here following `acag`/`esacci`/`ntl_harm` (module docstrings there). PREPARE
+reprojects straight from each year's raw fetched file to the tiled output;
+there is no intermediate annual zarr and no separate GRID step (`STEPS` no
+longer declares it).
 
-**Real bug fixed here, not silently ported**: the old `EOGPreprocessor.
-_generate_annual_targets` calls `self._extract_year_from_path(...)` and
-`self._select_best_file_for_year(...)` -- neither method exists anywhere in
-that class (verified by direct execution, see
-tests/data/preprocess/sources/test_characterization_eog.py), so every call to
-`get_preprocessing_targets("annual", ...)` raises `AttributeError`, silently
-caught, always returning `[]`. **EOG's annual/PREPARE stage has never
-produced a target.** This migration implements both methods for real: year
-extraction uses the same generic 4-digit-year regex every other source in
-this codebase already uses (acag/esacci/ntl_harm's `_extract_year`); best-file
-selection prefers extensions in the order the source's own
-`file_extensions` config already declares (default `.tif > .tgz > .tar.gz >
-.gz`) rather than inventing an unrelated preference.
+**Real bug fixed here, not silently ported** (unchanged from the original
+migration): the old `EOGPreprocessor._generate_annual_targets` called
+`self._extract_year_from_path(...)` and `self._select_best_file_for_year(...)`
+-- neither method existed anywhere in that class (verified by direct
+execution, see tests/data/preprocess/sources/test_characterization_eog.py),
+so every call to `get_preprocessing_targets("annual", ...)` raised
+`AttributeError`, silently caught, always returning `[]`. **EOG's annual/
+PREPARE stage never produced a target.** This class implements both methods
+for real: year extraction uses the same generic 4-digit-year regex every
+other source in this codebase already uses (acag/esacci/ntl_harm's
+`_extract_year`), with a DMSP-specific fallback for its undelimited
+satellite+year filenames; best-file selection prefers extensions in the
+order the source's own `file_extensions` config already declares (default
+`.tif > .tgz > .tar.gz > .gz`).
 
 **Bug fixed later, not part of the original migration**: `_derive_source_type`
 used to guess the DMSP/VIIRS-annual/DVNL variant from substrings of
@@ -32,7 +31,7 @@ if nothing matched), rather than from `cfg.source_id` -- the literal
 every config committed in `orchestration/configs/data.yaml`, but the two were
 never actually pinned together -- editing `data_path`/`base_url` without
 touching the block key would have silently mis-set `source_type`, which
-drives PREPARE's output variable name and GRID's output filename/`v2_family`.
+drives PREPARE's output variable name and its output filename/`v2_family`.
 Now derived from `cfg.source_id` directly, the same authoritative signal
 `GlassSource.__init__` already uses for its own MODIS/AVHRR variant
 (`data_source_kind`).
@@ -45,11 +44,10 @@ import logging
 import os
 import re
 import tempfile
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import xarray as xr
-from zarr.codecs import BloscCodec
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -60,9 +58,6 @@ from src.data.sources.eog.session import _SessionMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
 
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
-
 logger = logging.getLogger(__name__)
 
 
@@ -71,21 +66,25 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
 
     FETCH   -- Selenium-authenticated crawl + download of the configured
                `base_url` archive (credentials via EOG_USERNAME/EOG_PASSWORD).
-    PREPARE -- one annual zarr per year.
-    GRID    -- reproject every annual zarr onto the canonical geobox; radiance
-               field, so resampling defaults to area-weighted "sum"
-               (docs/design/04-ingest.md §1), not SpatialProcessor's own
-               "nearest" default.
+    PREPARE -- reproject every year's raw fetched file directly onto the
+               canonical geobox, tile by tile; radiance field, so resampling
+               defaults to area-weighted "sum" (docs/design/04-ingest.md
+               §1), not `run_tiled_prepare`'s own "nearest" default.
     """
 
     ID = "eog"
     ALIASES = ("eog_dmsp", "eog_viirs", "eog_dvnl")
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "eog"  # matches old EOGDataSource: literally "eog", not per-alias
     has_entrypoints = False
 
     EOG_LOGIN_URL = "https://eogdata.mines.edu/nighttime_light/login/"
+
+    #: Bumped whenever the raw-getter/reprojection logic here changes in a
+    #: way that must invalidate every already-`complete` tile's status and
+    #: force a full reprocess (`run_tiled_prepare`'s `processing_version`).
+    PROCESSING_VERSION = "2-tiled"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -110,6 +109,10 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"eog_{self.source_type}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
 
+        from src.data.common import tiling
+
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
+
     def _derive_source_type(self) -> str:
         """Which variant: derived from `cfg.source_id` -- the literal
         `sources.<id>:` config-block key this instance was built from
@@ -118,7 +121,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         Raises rather than guessing from `data_path`/`base_url` content
         (the old behavior) if `source_id` doesn't name a known variant, so a
         misconfigured/renamed source_id fails loudly instead of silently
-        mislabeling PREPARE's output variable / GRID's output filename."""
+        mislabeling PREPARE's output variable/filename."""
         source_id = self.cfg.source_id.lower()
         if "dmsp" in source_id:
             return "dmsp"
@@ -250,21 +253,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._plan_grid(selection)
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` (src/data/sources/base.py's
-        `discover()`): FETCH has no crawl to redo (`_plan_fetch` is already a
-        static, I/O-free target), so only PREPARE/GRID get a real live-crawl
-        counterpart distinct from their ledger-backed `_plan_*`."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._discover_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -272,8 +260,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     # -- FETCH ----------------------------------------------------------
@@ -297,7 +283,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- PREPARE ("annual") -- the bug fix lives here --------------------
+    # -- PREPARE (raw fetched file -> tiled, reprojected output) ----------
+    # the AttributeError bug fix lives here (module docstring)
 
     @staticmethod
     def _extract_year_from_path(path: str) -> Optional[int]:
@@ -344,86 +331,53 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             return file_path
         return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
-    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: reads existing `artifacts` rows instead
-        of re-querying `completed_fetch_files()` and rebuilding the
-        year-grouping every call. Falls back to `_discover_prepare()` --
-        today's exact live logic -- if no ledger is configured yet, or
-        `data reconcile --step prepare` hasn't populated one yet."""
+    def _files_by_year(self) -> Dict[int, List[str]]:
+        """Live crawl of FETCH's raw output directory -- ledger-free ground
+        truth for which years have a fetched file."""
+        raw_root = self.output_root(PipelineStep.FETCH)
+        if not os.path.isdir(raw_root):
+            return {}
+        files_by_year: Dict[int, List[str]] = {}
+        for dirpath, _dirnames, filenames in os.walk(raw_root):
+            for fname in filenames:
+                rel = os.path.relpath(os.path.join(dirpath, fname), raw_root)
+                year = self._extract_year_from_path(fname)
+                if year is not None:
+                    files_by_year.setdefault(year, []).append(rel)
+        return files_by_year
 
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            year = row.meta.get("year")
-            raw_relative_path = row.meta.get("raw_relative_path")
-            if year is None or raw_relative_path is None or row.local_path is None:
-                return None
-            if not selection.matches_year(year):
-                return None
-            return StepTarget(
+    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        files_by_year = self._files_by_year()
+        years = sorted(
+            year for year in files_by_year if selection.matches_year(year) and selection.matches_key(str(year))
+        )
+        if not years:
+            return []
+        raw_files = {year: self._select_best_file_for_year(files_by_year[year]) for year in years}
+        return [
+            StepTarget(
                 source_id=self.cfg.source_id,
                 step=PipelineStep.PREPARE,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=(raw_relative_path,),
+                key="all",
+                output_path=self._output_path(),
+                inputs=tuple(raw_files[year] for year in years),
                 completion=Completion.MARKER,
-                meta=row.meta,
+                meta={
+                    "years": years,
+                    "raw_files": raw_files,
+                    **verify.verification_meta(
+                        self.cfg.raw,
+                        expected_vars=(self.source_type,),
+                        # DMSP is a classic 6-bit DN (0-63); VIIRS/DVNL
+                        # radiance is continuous and can spike much higher
+                        # over cities/flares.
+                        value_range=(0, 63) if self.source_type == "dmsp" else (0, 1000),
+                    ),
+                },
             )
+        ]
 
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.cfg.source_id, self.cfg.source_id,
-        )
-        return self._discover_prepare(selection)
-
-    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for PREPARE: queries the ledger's FETCH-crawl
-        catalog (`completed_fetch_files()`, not `artifacts`-for-PREPARE) and
-        groups by year. Called from `discover()` (via `data reconcile`,
-        which writes its result into `artifacts`) and as `_plan_prepare()`'s
-        fallback when that table isn't populated yet."""
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
-
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
-            logger.warning("Ledger not found: %s", local_ledger_path)
-            return []
-
-        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
-            relative_paths = ledger.completed_fetch_files()
-        if not relative_paths:
-            return []
-
-        files_by_year: Dict[int, List[str]] = {}
-        for rel_path in relative_paths:
-            year = self._extract_year_from_path(rel_path)
-            if year is None or not selection.matches_year(year):
-                continue
-            files_by_year.setdefault(year, []).append(rel_path)
-
-        targets = []
-        for year in sorted(files_by_year):  # sorted, unlike ntl_harm -- no insertion-order quirk to preserve here
-            if not selection.matches_key(str(year)):
-                continue
-            year_files = files_by_year[year]
-            selected = self._select_best_file_for_year(year_files)
-            targets.append(
-                StepTarget(
-                    source_id=self.cfg.source_id,
-                    step=PipelineStep.PREPARE,
-                    key=str(year),
-                    output_path=os.path.join(self.output_root(PipelineStep.PREPARE), f"{year}.zarr"),
-                    inputs=(selected,),
-                    completion=Completion.MARKER,
-                    meta={"year": year, "total_candidates": len(year_files), "raw_relative_path": selected},
-                )
-            )
-        return targets
-
-    def _process_data_files(self, file_path: str, year: int) -> Optional[xr.DataArray]:
+    def _load_year(self, file_path: str, year: int) -> Optional[xr.Dataset]:
         import rioxarray as rxr
 
         uncompressed_file_to_delete = None
@@ -443,78 +397,32 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 logger.error("File does not exist: %s", local_file)
                 return None
 
-            ds = rxr.open_rasterio(local_file, chunks="auto")
-            ds = ds.expand_dims(dim={"time": 1}).assign_coords({"time": [pd.Timestamp(f"{year}-12-31")]})
+            da = rxr.open_rasterio(local_file, chunks="auto")
+            da = da.expand_dims(dim={"time": 1}).assign_coords({"time": [pd.Timestamp(f"{year}-12-31")]})
 
+            attrs = {}
             if self.source_type == "dmsp":
                 filename = os.path.basename(file_path)
                 match = re.search(r"F(\d+)(\d{4})", filename)
                 if match:
-                    ds = ds.assign_attrs(satellite=f"F{match.group(1)}")
+                    attrs["satellite"] = f"F{match.group(1)}"
 
-            if uncompressed_file_to_delete:
-                ds.attrs["_cleanup_file"] = uncompressed_file_to_delete
-            return ds
+            ds = da.to_dataset(name=self.source_type)
+            ds = ds.assign_attrs(**attrs)
+            if ds.rio.crs is None:
+                ds = ds.rio.write_crs(4326)
+            # Materialize now (uncompressed_file_to_delete is a temp path
+            # removed right after this returns; a dask-lazy array
+            # referencing it would fail at reproject/compute time, not here).
+            return ds.load()
         except Exception:
             logger.exception("Error processing file %s.", file_path)
             return None
+        finally:
+            if uncompressed_file_to_delete and os.path.exists(uncompressed_file_to_delete):
+                os.remove(uncompressed_file_to_delete)
 
-    def _create_annual_zarr(self, data_array: xr.DataArray, output_path: str) -> bool:
-        cleanup_file = data_array.attrs.get("_cleanup_file")
-        try:
-            dataset = data_array.to_dataset(name=self.source_type)
-            dataset.attrs.pop("_cleanup_file", None)
-            dataset = dataset.chunk({"x": 1000, "y": 1000})
-
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {var: {"compressors": (compressor,)} for var in dataset.data_vars}
-            dataset.to_zarr(output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-
-            if cleanup_file and os.path.exists(cleanup_file):
-                os.remove(cleanup_file)
-            return True
-        except Exception:
-            logger.exception("Error creating zarr file at %s.", output_path)
-            if cleanup_file and os.path.exists(cleanup_file):
-                os.remove(cleanup_file)
-            return False
-
-    def _execute_prepare(self, target: StepTarget) -> bool:
-        from src.data.sources.steps import is_complete, mark_complete
-
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping year %s -- already complete: %s", target.key, target.output_path)
-            return True
-
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        year = target.meta["year"]
-        source_file = self._resolve_source_file_path(target.inputs[0])
-
-        data_array = self._process_data_files(source_file, year)
-        if data_array is None:
-            return False
-        if not self._create_annual_zarr(data_array, target.output_path):
-            return False
-        mark_complete(target.output_path)
-        return True
-
-    # -- GRID ("spatial") -------------------------------------------------
-
-    def _list_annual_zarrs(self) -> List[Dict[str, Any]]:
-        annual_dir = self.output_root(PipelineStep.PREPARE)
-        if not os.path.exists(annual_dir):
-            return []
-        results = []
-        for fname in os.listdir(annual_dir):
-            if fname.endswith(".zarr"):
-                try:
-                    year = int(os.path.splitext(fname)[0])
-                    results.append({"year": year, "zarr_path": os.path.join(annual_dir, fname)})
-                except ValueError:
-                    pass
-        return results
-
-    def _grid_output_path(self) -> str:
+    def _output_path(self) -> str:
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
@@ -525,88 +433,22 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             v2_family=f"eog_{self.source_type}",
         )
 
-    def _grid_meta(self, years_available: List[int]) -> Dict[str, Any]:
-        return {
-            "years_available": years_available,
-            **verify.verification_meta(
-                self.cfg.raw,
-                expected_vars=(self.source_type,),
-                # DMSP is a classic 6-bit DN (0-63); VIIRS/DVNL
-                # radiance is continuous and can spike much higher
-                # over cities/flares.
-                value_range=(0, 63) if self.source_type == "dmsp" else (0, 1000),
-            ),
-        }
-
-    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for GRID: crawls the PREPARE output directory
-        for annual zarrs. Called from `discover()` (via `data reconcile`)
-        and as `_plan_grid()`'s fallback when the ledger has no GRID row yet."""
-        annual_files = [f for f in self._list_annual_zarrs() if selection.matches_year(f["year"])]
-        if not annual_files:
-            return []
-        return [
-            StepTarget(
-                source_id=self.cfg.source_id,
-                step=PipelineStep.GRID,
-                key="all",
-                output_path=self._grid_output_path(),
-                inputs=tuple(f["zarr_path"] for f in annual_files),
-                completion=Completion.MARKER,
-                meta=self._grid_meta([f["year"] for f in annual_files]),
-            )
-        ]
-
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: the single GRID target's `inputs` are
-        re-derived live from PREPARE's `local_complete_units()` (a cheap
-        indexed ledger query) rather than persisted -- persisting a
-        filename-derived-year snapshot would go stale the moment a new
-        PREPARE year lands without a matching GRID reconcile. Falls back to
-        `_discover_grid()` if the ledger has no GRID row yet."""
-
-        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
-            if row.local_path is None:
-                return None
-            annual = [
-                (uid, path)
-                for uid, path in ledger.local_complete_units("prepare")
-                if uid.isdigit() and selection.matches_year(int(uid))
-            ]
-            if not annual:
-                return None
-            years = sorted(int(uid) for uid, _ in annual)
-            return StepTarget(
-                source_id=self.cfg.source_id,
-                step=PipelineStep.GRID,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=tuple(path for _, path in annual),
-                completion=Completion.MARKER,
-                meta=self._grid_meta(years),
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.cfg.source_id, self.cfg.source_id,
-        )
-        return self._discover_grid(selection)
-
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
-            logger.info("Skipping grid step -- already complete: %s", target.output_path)
+            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
             return True
 
+        years: List[int] = target.meta["years"]
+        raw_files: Dict[int, str] = target.meta["raw_files"]
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        years = target.meta["years_available"]
+
+        target_geobox = get_target_geobox(self.ctx)
+        dim_y, dim_x = target_geobox.dimensions
 
         with self._dask_client() as client:
             if client is None:
@@ -615,40 +457,35 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
                 dask_client=client,
-                target_geobox=get_target_geobox(self.ctx),
+                target_geobox=target_geobox,
             )
             with processor.setup_dask_config():
+                cache: Dict[int, Optional[xr.Dataset]] = {}
 
-                def year_from_path(p: str) -> Optional[int]:
-                    try:
-                        return int(os.path.splitext(os.path.basename(p))[0])
-                    except ValueError:
-                        return None
+                def load_year(year: int) -> Optional[xr.Dataset]:
+                    if year not in cache:
+                        source_file = self._resolve_source_file_path(raw_files[year])
+                        cache[year] = self._load_year(source_file, year)
+                    return cache[year]
 
-                def preprocess(ds: xr.Dataset) -> xr.Dataset:
-                    if ds.rio.crs is None:
-                        ds = ds.rio.write_crs(4326)
-                    return ds
+                sample_ds = load_year(years[0])
+                sample_attrs = dict(sample_ds.attrs) if sample_ds is not None else {}
 
-                def get_vars_and_attrs(file_path: str) -> Tuple[List[str], Dict]:
-                    sample = xr.open_zarr(file_path, mask_and_scale=False, chunks="auto", consolidated=False)
-                    variables = list(sample.data_vars.keys())
-                    attrs = sample.attrs.copy()
-                    sample.close()
-                    return variables, attrs
-
-                success = processor.process_spatial_standard(
-                    source_files=list(target.inputs),
+                return run_tiled_prepare(
                     output_path=target.output_path,
-                    years_to_process=years,
-                    year_pattern_func=year_from_path,
-                    preprocess_func=preprocess,
-                    get_variables_func=get_vars_and_attrs,
+                    years=years,
+                    variables=[self.source_type],
+                    target_geobox=target_geobox,
+                    processor=processor,
+                    raw_getter=lambda tile, year: load_year(year),
+                    target_dims=(dim_y, dim_x),
+                    tile_size=self.tile_size,
                     resampling=self.resampling,
+                    dtype="uint16",
+                    sample_attrs=sample_attrs,
+                    processing_version=self.PROCESSING_VERSION,
+                    override=self.cfg.override,
                 )
-                if success:
-                    mark_complete(target.output_path)
-                return success
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 

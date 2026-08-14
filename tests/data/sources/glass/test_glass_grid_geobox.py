@@ -56,7 +56,7 @@ def test_create_empty_target_zarr_uses_y_x_dims_for_ease_geobox(tmp_path):
     assert set(ds["lst"].dims) == {"time", "band", "y", "x"}
 
 
-def test_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypatch):
+def test_execute_prepare_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path, grid_id="ease6933")
 
     import src.data.common.geobox as geobox_module
@@ -69,20 +69,24 @@ def test_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypat
         return fake_geobox
 
     monkeypatch.setattr(geobox_module, "get_target_geobox", fake_get_target_geobox)
+    monkeypatch.setattr(
+        source, "_group_daily_files", lambda selection: [{"year": 2019, "grid_cell": "h25v06", "key": "2019/h25v06", "files": []}]
+    )
+    monkeypatch.setattr(source, "_ensure_annual_zarr", lambda group: "dummy.zarr")
     monkeypatch.setattr(source, "_create_empty_target_zarr", lambda *a, **k: True)
     monkeypatch.setattr(source, "_process_years_chunked", lambda *a, **k: True)
     monkeypatch.setattr(type(source), "_dask_client", lambda self: contextlib.nullcontext(_FakeClient()))
 
     target = StepTarget(
         source_id=source.ID,
-        step=PipelineStep.GRID,
-        key="global",
+        step=PipelineStep.PREPARE,
+        key="all",
         output_path=str(tmp_path / "out" / "modis_timeseries_reprojected.zarr"),
-        inputs=("dummy.zarr",),
+        inputs=(),
         completion=Completion.MARKER,
         meta={"years_available": [2019]},
     )
-    assert source._execute_grid(target) is True
+    assert source._execute_prepare(target) is True
     assert captured["ctx"] is ctx
 
 

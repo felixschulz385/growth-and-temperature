@@ -1,17 +1,26 @@
-"""Harmonized DMSP-VIIRS nighttime lights (Figshare): fetch + prepare + grid.
+"""Harmonized DMSP-VIIRS nighttime lights (Figshare): fetch + prepare.
 
-docs/design/09-integrated-pipeline.md §5: same shape as `src/data/sources/acag.py`.
-Merges `src/data/download/sources/ntl_harm.py::NTLHarmDataSource` (Figshare API
-fetch) and `src/data/preprocess/sources/ntl_harm.py::NTLHarmPreprocessor`
-(`stage="annual"` -> PREPARE, `stage="spatial"` -> GRID) into one class.
+Pilot source for the ledger-removal PREPARE+GRID merge (Plan 2 successor to
+docs/design/09-integrated-pipeline.md §5): PREPARE now goes straight from a
+year's raw fetched file to the reprojected output, tile by tile
+(`src.data.common.prepare.driver.run_tiled_prepare`), instead of writing an
+intermediate whole-extent-per-year "annual" zarr and then a separate GRID
+step reprojecting the whole extent again. `STEPS` no longer declares GRID.
 
-Two behavioural quirks are deliberately preserved unchanged (pinned by
-tests/data/preprocess/sources/test_characterization_ntl_harm.py against the
-old code, and tests/data/sources/ntl_harm/test_ntl_harm_plan.py against this
-class): (1) PREPARE targets are emitted in file-insertion order, not sorted by
-year; (2) the best-file-for-year preference is `.tif > .zip > .tar.gz > .gz`
-(the opposite direction from acag/esacci's nc4-over-nc). A migration ports
-behaviour; it does not silently improve it.
+Two behavioural quirks the ledger-based version preserved are now
+superseded, not silently kept:
+
+1. "PREPARE targets in file-insertion order, not sorted by year" no longer
+   applies -- PREPARE is planned by a live crawl of FETCH's raw output
+   directory (`_files_by_year()`, sorted filenames), not a replay of the
+   Figshare listing's discovery order. There is exactly one PREPARE target
+   now (`key="all"`, one tiled output), so there is no longer a per-year
+   target order to preserve either way.
+2. The `.tif > .zip > .tar.gz > .gz` best-file-for-year preference
+   (`_select_best_file_for_year`) is unchanged -- still the opposite
+   direction from acag/esacci's nc4-over-nc, still intentional (module's
+   prior docstring), just now applied during PREPARE planning instead of
+   during the old annual-zarr step.
 """
 
 from __future__ import annotations
@@ -24,13 +33,12 @@ import os
 import re
 import tempfile
 import time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
 import pandas as pd
 import requests
 import xarray as xr
-from zarr.codecs import BloscCodec
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -39,9 +47,6 @@ from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
 
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
-
 logger = logging.getLogger(__name__)
 
 
@@ -49,16 +54,15 @@ class NtlHarmSource(DataSource):
     """Harmonized DMSP-VIIRS nighttime lights, Figshare dataset 9828827.
 
     FETCH   -- one Figshare file per year (cached article listing, 1h TTL).
-    PREPARE -- one annual zarr per year (handles .gz/.zip decompression).
-    GRID    -- reproject every annual zarr onto the canonical geobox; radiance
-               field, so resampling defaults to area-weighted "sum"
-               (docs/design/04-ingest.md §1), not SpatialProcessor's own
-               "nearest" default.
+    PREPARE -- reproject every year's raw file directly onto the canonical
+               geobox, tile by tile; radiance field, so resampling defaults
+               to area-weighted "sum" (docs/design/04-ingest.md §1), not
+               SpatialProcessor's own "nearest" default.
     """
 
     ID = "ntl_harm"
     ALIASES = ("ntlharm", "harmonized_ntl")
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "ntl_harm"
     has_entrypoints = True
@@ -67,6 +71,11 @@ class NtlHarmSource(DataSource):
     FIGSHARE_API_BASE = "https://api.figshare.com/v2"
     DATASET_ID = "9828827"
 
+    #: Bumped whenever the raw-getter/reprojection logic here changes in a
+    #: way that must invalidate every already-`complete` tile's status and
+    #: force a full reprocess (`run_tiled_prepare`'s `processing_version`).
+    PROCESSING_VERSION = "2-tiled"
+
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
             cfg = dataclasses.replace(cfg, data_path="ntl_harm/harmonized")  # old NTLHarmPreprocessor default
@@ -74,6 +83,9 @@ class NtlHarmSource(DataSource):
         self.base_url = cfg.raw.get("base_url") or f"{self.FIGSHARE_API_BASE}/articles/{self.DATASET_ID}"
         self.file_extensions = cfg.raw.get("file_extensions") or [".tif", ".zip", ".tar.gz", ".gz"]
         self.resampling = cfg.raw.get("resampling", "sum")
+        from src.data.common import tiling
+
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="ntl_harm_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
         self._files_cache: Optional[List[Dict[str, Any]]] = None
@@ -162,21 +174,6 @@ class NtlHarmSource(DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._plan_grid(selection)
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` (src/data/sources/base.py's
-        `discover()`): FETCH has no crawl to redo (`_plan_fetch` is already a
-        static, I/O-free target), so only PREPARE/GRID get a real live-crawl
-        counterpart distinct from their ledger-backed `_plan_*`."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._discover_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -184,8 +181,6 @@ class NtlHarmSource(DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     # -- FETCH ----------------------------------------------------------
@@ -209,7 +204,7 @@ class NtlHarmSource(DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- PREPARE ("annual") ---------------------------------------------
+    # -- PREPARE (raw fetched file -> tiled, reprojected output) ----------
 
     def _resolve_source_file_path(self, file_path: str) -> str:
         if os.path.isabs(file_path) or (self.ctx.data_root and file_path.startswith(self.ctx.data_root)):
@@ -227,97 +222,69 @@ class NtlHarmSource(DataSource):
                     return file_path
         return year_files[0]
 
+    def _files_by_year(self) -> Dict[int, List[str]]:
+        """Live crawl of FETCH's raw output directory -- ledger-free ground
+        truth for which years have a fetched file (see module docstring)."""
+        raw_root = self.output_root(PipelineStep.FETCH)
+        if not os.path.isdir(raw_root):
+            return {}
+        files_by_year: Dict[int, List[str]] = {}
+        for fname in sorted(os.listdir(raw_root)):
+            if not os.path.isfile(os.path.join(raw_root, fname)):
+                continue
+            year = self._extract_year_from_filename(fname)
+            if year is not None:
+                files_by_year.setdefault(year, []).append(fname)
+        return files_by_year
+
+    def _output_path(self) -> str:
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            "ntl_harm_timeseries_reprojected.zarr",
+            namespace=self.cfg.namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            v2_family="ntl_harm",
+        )
+
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: reads existing `artifacts` rows instead
-        of re-querying `completed_fetch_files()` and rebuilding the
-        year-grouping every call. Falls back to `_discover_prepare()` --
-        today's exact live logic -- if no ledger is configured yet, or
-        `data reconcile --step prepare` hasn't populated one yet.
-
-        Note this fast path does NOT reproduce the insertion-order quirk
-        `_discover_prepare()` preserves (module docstring): `artifacts_for_step`
-        (`DataSource._plan_from_ledger`) orders rows by `unit_id`, i.e. by
-        year, for every source that uses it -- there is no ledger-level
-        concept of "figshare listing order" to replay. That quirk only
-        applies to the live-crawl path (and to `plan()` when it falls back
-        to it), which is exactly what every existing test here exercises
-        (no `data reconcile` has been run against those fixtures).
-        """
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            year = row.meta.get("year")
-            raw_relative_path = row.meta.get("raw_relative_path")
-            if year is None or raw_relative_path is None or row.local_path is None:
-                return None
-            if not selection.matches_year(year):
-                return None
-            return StepTarget(
+        files_by_year = self._files_by_year()
+        years = sorted(
+            year
+            for year in files_by_year
+            if selection.matches_year(year) and selection.matches_key(str(year))
+        )
+        if not years:
+            return []
+        raw_files = {year: self._select_best_file_for_year(files_by_year[year]) for year in years}
+        return [
+            StepTarget(
                 source_id=self.ID,
                 step=PipelineStep.PREPARE,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=(raw_relative_path,),
+                key="all",
+                output_path=self._output_path(),
+                inputs=tuple(raw_files[year] for year in years),
                 completion=Completion.MARKER,
-                meta=row.meta,
+                meta={
+                    "years": years,
+                    "raw_files": raw_files,
+                    **verify.verification_meta(
+                        self.cfg.raw, expected_vars=(self.VARIABLE_NAME,), value_range=(0, 2000)
+                    ),
+                },
             )
+        ]
 
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_prepare(selection)
-
-    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for PREPARE: queries the ledger's FETCH-crawl
-        catalog (`completed_fetch_files()`, not `artifacts`-for-PREPARE) and
-        groups by year. Called from `discover()` (via `data reconcile`,
-        which writes its result into `artifacts`) and as `_plan_prepare()`'s
-        fallback when that table isn't populated yet."""
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
-
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
-            logger.warning("Ledger not found: %s", local_ledger_path)
-            return []
-
-        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
-            relative_paths = ledger.completed_fetch_files()
-        if not relative_paths:
-            return []
-
-        # Quirk: preserve discovery-insertion order, not sorted-by-year
-        # (ported from the old Parquet-row-order behavior).
-        files_by_year: Dict[int, List[str]] = {}
-        for rel_path in relative_paths:
-            year = self._extract_year_from_filename(os.path.basename(rel_path))
-            if year is None or not selection.matches_year(year):
-                continue
-            files_by_year.setdefault(year, []).append(rel_path)
-
-        targets = []
-        for year, year_files in files_by_year.items():
-            if not selection.matches_key(str(year)):
-                continue
-            selected = self._select_best_file_for_year(year_files)
-            targets.append(
-                StepTarget(
-                    source_id=self.ID,
-                    step=PipelineStep.PREPARE,
-                    key=str(year),
-                    output_path=os.path.join(self.output_root(PipelineStep.PREPARE), f"{year}.zarr"),
-                    inputs=(selected,),
-                    completion=Completion.MARKER,
-                    meta={"year": year, "total_candidates": len(year_files), "raw_relative_path": selected},
-                )
-            )
-        return targets
-
-    def _process_data_files(self, file_path: str, year: int) -> Optional[xr.DataArray]:
+    def _load_year(self, file_path: str, year: int) -> Optional[xr.Dataset]:
+        """Open (decompressing if needed) one year's raw file, expanded with
+        a `time` dim -- unchanged from the old annual-PREPARE step's own
+        `_process_data_files`, just no longer written to an intermediate
+        zarr. Handed to every tile's `raw_getter` call for this year
+        (cached by the caller, see `_execute_prepare`) -- `xr_reproject`
+        crops/warps onto each tile's own geobox internally, so passing the
+        same whole-year array to every tile is correct, just not the most
+        I/O-efficient possible (acceptable for this source's raster size)."""
         import rioxarray as rxr
 
         uncompressed_file_to_delete = None
@@ -349,173 +316,45 @@ class NtlHarmSource(DataSource):
                 logger.error("File does not exist: %s", local_file)
                 return None
 
-            ds = rxr.open_rasterio(local_file, chunks="auto")
-            ds = ds.expand_dims(dim={"time": 1}).assign_coords({"time": [pd.Timestamp(f"{year}-12-31")]})
-            if uncompressed_file_to_delete:
-                ds.attrs["_cleanup_file"] = uncompressed_file_to_delete
+            da = rxr.open_rasterio(local_file, chunks="auto")
+            da = da.expand_dims(dim={"time": 1}).assign_coords({"time": [pd.Timestamp(f"{year}-12-31")]})
+            ds = da.to_dataset(name=self.VARIABLE_NAME)
+            if ds.rio.crs is None:
+                ds = ds.rio.write_crs(4326)
+            # Materialize now (uncompressed_file_to_delete is a temp path
+            # this method's caller cleans up right after this returns);
+            # a dask-lazy array referencing a since-deleted temp file would
+            # fail at reproject/compute time, not here.
+            ds = ds.load()
             return ds
         except Exception:
-            logger.exception("Error processing file %s.", file_path)
+            logger.exception("Error loading raw file %s for year %d.", file_path, year)
             return None
+        finally:
+            if uncompressed_file_to_delete and os.path.exists(uncompressed_file_to_delete):
+                import shutil
 
-    @staticmethod
-    def _create_annual_zarr(data_array: xr.DataArray, output_path: str) -> bool:
-        import shutil
-
-        cleanup_file = data_array.attrs.get("_cleanup_file")
-        try:
-            dataset = data_array.to_dataset(name=NtlHarmSource.VARIABLE_NAME)
-            dataset.attrs.pop("_cleanup_file", None)
-            dataset = dataset.chunk({"x": 512, "y": 512})
-            dataset = dataset.assign_attrs(_FillValue=65535, scale_factor=1, add_offset=0.0)
-
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {var: {"compressors": (compressor,)} for var in dataset.data_vars}
-            dataset.to_zarr(output_path, mode="w", encoding=encoding)
-
-            if cleanup_file and os.path.exists(cleanup_file):
-                if os.path.isdir(cleanup_file):
-                    shutil.rmtree(cleanup_file)
+                if os.path.isdir(uncompressed_file_to_delete):
+                    shutil.rmtree(uncompressed_file_to_delete)
                 else:
-                    os.remove(cleanup_file)
-            return True
-        except Exception:
-            logger.exception("Error creating zarr file at %s.", output_path)
-            if cleanup_file and os.path.exists(cleanup_file):
-                try:
-                    if os.path.isdir(cleanup_file):
-                        shutil.rmtree(cleanup_file)
-                    else:
-                        os.remove(cleanup_file)
-                except OSError:
-                    pass
-            return False
+                    os.remove(uncompressed_file_to_delete)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
-        from src.data.sources.steps import is_complete, mark_complete
-
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping year %s -- already complete: %s", target.key, target.output_path)
-            return True
-
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        year = target.meta["year"]
-        source_file = self._resolve_source_file_path(target.inputs[0])
-
-        data_array = self._process_data_files(source_file, year)
-        if data_array is None:
-            return False
-        if not self._create_annual_zarr(data_array, target.output_path):
-            return False
-        mark_complete(target.output_path)
-        return True
-
-    # -- GRID ("spatial") -------------------------------------------------
-
-    def _list_annual_zarrs(self) -> List[Dict[str, Any]]:
-        annual_dir = self.output_root(PipelineStep.PREPARE)
-        if not os.path.exists(annual_dir):
-            return []
-        results = []
-        for fname in os.listdir(annual_dir):
-            if fname.endswith(".zarr"):
-                try:
-                    year = int(os.path.splitext(fname)[0])
-                    results.append({"year": year, "zarr_path": os.path.join(annual_dir, fname)})
-                except ValueError:
-                    pass
-        return results
-
-    def _grid_output_path(self) -> str:
-        return layout.grid_store_path(
-            self.ctx.data_root,
-            self.cfg.data_path,
-            "ntl_harm_timeseries_reprojected.zarr",
-            namespace=self.cfg.namespace,
-            grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="ntl_harm",
-        )
-
-    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for GRID: crawls the PREPARE output directory
-        for annual zarrs. Called from `discover()` (via `data reconcile`)
-        and as `_plan_grid()`'s fallback when the ledger has no GRID row yet."""
-        annual_files = [f for f in self._list_annual_zarrs() if selection.matches_year(f["year"])]
-        if not annual_files:
-            return []
-        return [
-            StepTarget(
-                source_id=self.ID,
-                step=PipelineStep.GRID,
-                key="all",
-                output_path=self._grid_output_path(),
-                inputs=tuple(f["zarr_path"] for f in annual_files),
-                completion=Completion.MARKER,
-                meta={
-                    "years_available": [f["year"] for f in annual_files],
-                    **verify.verification_meta(
-                        self.cfg.raw, expected_vars=(self.VARIABLE_NAME,), value_range=(0, 2000)
-                    ),
-                },
-            )
-        ]
-
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: the single GRID target's `inputs` are
-        re-derived live from PREPARE's `local_complete_units()` (a cheap
-        indexed ledger query) rather than persisted -- persisting a
-        filename-derived-year snapshot would go stale the moment a new
-        PREPARE year lands without a matching GRID reconcile. Falls back to
-        `_discover_grid()` if the ledger has no GRID row yet."""
-
-        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
-            if row.local_path is None:
-                return None
-            annual = [
-                (uid, path)
-                for uid, path in ledger.local_complete_units("prepare")
-                if uid.isdigit() and selection.matches_year(int(uid))
-            ]
-            if not annual:
-                return None
-            years = sorted(int(uid) for uid, _ in annual)
-            return StepTarget(
-                source_id=self.ID,
-                step=PipelineStep.GRID,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=tuple(path for _, path in annual),
-                completion=Completion.MARKER,
-                meta={
-                    "years_available": years,
-                    **verify.verification_meta(
-                        self.cfg.raw, expected_vars=(self.VARIABLE_NAME,), value_range=(0, 2000)
-                    ),
-                },
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid(selection)
-
-    def _execute_grid(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
-            logger.info("Skipping grid step -- already complete: %s", target.output_path)
+            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
             return True
 
+        years: List[int] = target.meta["years"]
+        raw_files: Dict[int, str] = target.meta["raw_files"]
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        years = target.meta["years_available"]
+
+        target_geobox = get_target_geobox(self.ctx)
+        dim_y, dim_x = target_geobox.dimensions
 
         with self._dask_client() as client:
             if client is None:
@@ -524,40 +363,35 @@ class NtlHarmSource(DataSource):
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
                 dask_client=client,
-                target_geobox=get_target_geobox(self.ctx),
+                target_geobox=target_geobox,
             )
             with processor.setup_dask_config():
+                cache: Dict[int, Optional[xr.Dataset]] = {}
 
-                def year_from_path(p: str) -> Optional[int]:
-                    try:
-                        return int(os.path.splitext(os.path.basename(p))[0])
-                    except ValueError:
-                        return None
+                def load_year(year: int) -> Optional[xr.Dataset]:
+                    if year not in cache:
+                        source_file = self._resolve_source_file_path(raw_files[year])
+                        cache[year] = self._load_year(source_file, year)
+                    return cache[year]
 
-                def preprocess(ds: xr.Dataset) -> xr.Dataset:
-                    if ds.rio.crs is None:
-                        ds = ds.rio.write_crs(4326)
-                    return ds
+                sample_ds = load_year(years[0])
+                sample_attrs = dict(sample_ds.attrs) if sample_ds is not None else {}
 
-                def get_vars_and_attrs(file_path: str) -> Tuple[List[str], Dict]:
-                    sample = xr.open_zarr(file_path, mask_and_scale=False, chunks="auto", consolidated=False)
-                    variables = list(sample.data_vars.keys())
-                    attrs = sample.attrs.copy()
-                    sample.close()
-                    return variables, attrs
-
-                success = processor.process_spatial_standard(
-                    source_files=list(target.inputs),
+                return run_tiled_prepare(
                     output_path=target.output_path,
-                    years_to_process=years,
-                    year_pattern_func=year_from_path,
-                    preprocess_func=preprocess,
-                    get_variables_func=get_vars_and_attrs,
+                    years=years,
+                    variables=[self.VARIABLE_NAME],
+                    target_geobox=target_geobox,
+                    processor=processor,
+                    raw_getter=lambda tile, year: load_year(year),
+                    target_dims=(dim_y, dim_x),
+                    tile_size=self.tile_size,
                     resampling=self.resampling,
+                    dtype="uint16",
+                    sample_attrs=sample_attrs,
+                    processing_version=self.PROCESSING_VERSION,
+                    override=self.cfg.override,
                 )
-                if success:
-                    mark_complete(target.output_path)
-                return success
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 

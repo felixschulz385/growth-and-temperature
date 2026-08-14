@@ -1,5 +1,7 @@
 """SnlMiningSource.plan() must reproduce the relevant slice of the old
-SnlMiningPreprocessor's behaviour, plus the new PREPARE/GRID split.
+SnlMiningPreprocessor's behaviour. Its DuckDB feature-build and tiled
+rasterization are two internal phases of one merged PREPARE step now (Plan
+2's PREPARE+GRID merge, docs/design successor to the ledger).
 Oracle: tests/data/preprocess/sources/test_characterization_snl_mining.py.
 """
 
@@ -24,24 +26,25 @@ def _make_source(tmp_path, *, grid_id="legacy_4326", layout="legacy", **raw):
     return SnlMiningSource(ctx, cfg), ctx
 
 
-def test_no_fetch_step():
-    assert SnlMiningSource.STEPS == (PipelineStep.PREPARE, PipelineStep.GRID)
+def test_steps_is_prepare_only():
+    assert SnlMiningSource.STEPS == (PipelineStep.PREPARE,)
 
 
-def test_requires_gadm_prepare_and_grid():
-    # PREPARE for GADM's polygon geometries (admin-count spatial join), GRID
-    # for GID_N_code_mapping.json (translating admin-count tables into
-    # gadm's integer ids for the join_on merge -- see module docstring) --
-    # each scoped to snl_mining's own matching step (PREPARE needs gadm's
-    # PREPARE, GRID needs gadm's GRID). PREPARE also needs commodity_prices'
-    # normalized (commodity, year) price table, joined against the
-    # user-owned commodity_shares table to build mine_priceshock_*.
+def test_requires_gadm_prepare():
+    # GADM's polygon geometries (admin-count spatial join) AND
+    # GID_N_code_mapping.json (translating admin-count tables into gadm's
+    # integer ids for the join_on merge -- see module docstring) are both
+    # produced by gadm's PREPARE directly now (Plan 2's PREPARE+GRID merge)
+    # -- PipelineStep.GRID no longer exists for gadm to require, and both of
+    # this source's own former uses of gadm now live inside one merged
+    # PREPARE step, so one gadm entry covers both. PREPARE also needs
+    # commodity_prices' normalized (commodity, year) price table, joined
+    # against the user-owned commodity_shares table to build mine_priceshock_*.
     from src.data.sources import registry
 
     assert registry.resolve("snl_mining").requires == (
         (PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),
         (PipelineStep.PREPARE, "commodity_prices", PipelineStep.PREPARE),
-        (PipelineStep.GRID, "gadm", PipelineStep.GRID),
     )
 
 
@@ -157,6 +160,11 @@ def test_prepare_plan_empty_when_commodity_prices_missing(tmp_path):
 
 
 def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
+    # Plan 2's PREPARE+GRID merge: the merged PREPARE target's own output is
+    # what used to be GRID's (the final rasterized zarr), not the internal
+    # prepared_db_path intermediate -- planning it no longer needs
+    # prepared_db_path to exist yet (that's phase 1, built inside
+    # _execute_prepare on demand).
     source, _ = _make_source(tmp_path)
     os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
     open(source.duckdb_path, "w").close()
@@ -165,13 +173,10 @@ def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == source.prepared_db_path
+    assert targets[0].output_path == os.path.join(
+        source.output_root(PipelineStep.GRID), source.output_filename
+    )
     assert targets[0].inputs == (source.duckdb_path, source.commodity_prices_path)
-
-
-def test_grid_plan_empty_when_prepared_db_missing(tmp_path):
-    source, _ = _make_source(tmp_path)
-    assert source.plan(PipelineStep.GRID, TargetSelection()) == []
 
 
 def test_output_root_grid_matches_old_get_hpc_output_path(tmp_path):
@@ -188,24 +193,18 @@ def test_output_root_grid_honors_ease6933(tmp_path):
     )
 
 
-def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path, monkeypatch):
+def test_prepare_target_uses_v2_family_path_under_layout_v2(tmp_path):
+    # Plan 2's PREPARE+GRID merge: the merged target's output path no longer
+    # depends on prepared_db_path existing (that's phase 1, built inside
+    # _execute_prepare on demand) -- planning only needs the stage-0 DuckDB
+    # and commodity_prices' PREPARE output.
     source, ctx = _make_source(tmp_path, layout="v2")
-    os.makedirs(os.path.dirname(source.prepared_db_path), exist_ok=True)
-    open(source.prepared_db_path, "w").close()
+    os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
+    open(source.duckdb_path, "w").close()
+    os.makedirs(os.path.dirname(source.commodity_prices_path), exist_ok=True)
+    open(source.commodity_prices_path, "w").close()
 
-    class _FakeConnection:
-        def execute(self, *args, **kwargs):
-            return self
-
-        def fetchall(self):
-            return [(2020,)]
-
-        def close(self):
-            pass
-
-    monkeypatch.setattr(source, "_connect_duckdb", lambda path: _FakeConnection())
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "snl_mining.zarr")
 

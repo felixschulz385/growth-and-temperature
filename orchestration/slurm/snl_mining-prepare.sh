@@ -3,8 +3,8 @@
 #SBATCH --output=./log/preprocess/snl_mining/%x-%j.out
 #SBATCH --error=./log/preprocess/snl_mining/%x-%j.err
 #SBATCH --partition=scicore
-#SBATCH --time=06:00:00
-#SBATCH --qos=6hours
+#SBATCH --time=1-00:00:00
+#SBATCH --qos=1day
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
 
@@ -39,6 +39,7 @@ MEMORY_LIMIT_GB=$(echo "scale=0; $SLURM_MEM_PER_NODE * 0.6 / 1024" | bc)
     --source snl_mining \
     --step prepare \
     $OVERRIDE_FLAG \
+    --override \
     --dask-threads $SLURM_CPUS_PER_TASK \
     --dask-memory-limit "${MEMORY_LIMIT_GB}GiB" \
     --temp-dir "/scratch/schulz0022/snl_mining_${SLURM_JOB_ID}" \

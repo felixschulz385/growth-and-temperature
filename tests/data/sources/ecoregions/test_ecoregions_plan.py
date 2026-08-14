@@ -1,8 +1,10 @@
-"""EcoregionsSource.plan() shape: FETCH/PREPARE targets follow the
-ConfiguredFilesFetchMixin/PATH_EXISTS pattern shared with gadm/osm/
-country_classifications; GRID conditionally emits a second
-`gadm_gid3_dominant` target only once GADM's own PREPARE+GRID artifacts
-(REQUIRES) are actually present on disk."""
+"""EcoregionsSource.plan() shape: FETCH follows the
+ConfiguredFilesFetchMixin/NEVER pattern shared with gadm/osm/
+country_classifications; PREPARE always emits an `ecoregions_grid` target
+once the raw file exists (Plan 2's PREPARE+GRID merge, docs/design successor
+to the ledger) and conditionally emits a second `gadm_gid3_dominant` target
+only once GADM's own PREPARE artifacts (REQUIRES) are actually present on
+disk."""
 
 import json
 import os
@@ -24,15 +26,11 @@ def _make(tmp_path, layout_mode="legacy"):
     return cls(ctx, cfg), ctx
 
 
-def _write_vector_file(source):
-    vector_file = os.path.join(source.output_root(PipelineStep.PREPARE), "ecoregions_simplified.gpkg")
-    os.makedirs(os.path.dirname(vector_file), exist_ok=True)
-    gpd.GeoDataFrame(
-        {"REALM": ["Nearctic"], "BIOME_NUM": [1], "BIOME_NAME": ["B"], "ECO_ID": [101], "ECO_NAME": ["E"]},
-        geometry=[Point(0, 0)],
-        crs="EPSG:4326",
-    ).to_file(vector_file, driver="GPKG")
-    return vector_file
+def _write_raw_file(source):
+    raw_file = source._raw_file_path()
+    os.makedirs(os.path.dirname(raw_file), exist_ok=True)
+    open(raw_file, "w").close()
+    return raw_file
 
 
 def _write_gadm_gid3_artifacts(ctx):
@@ -63,25 +61,21 @@ def test_plan_prepare_empty_without_raw_file(tmp_path):
     assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
 
 
-def test_plan_grid_empty_without_prepare_output(tmp_path):
+def test_plan_prepare_only_ecoregions_grid_target_without_gadm_artifacts(tmp_path):
     source, _ = _make(tmp_path)
-    assert source.plan(PipelineStep.GRID, TargetSelection()) == []
+    _write_raw_file(source)
 
-
-def test_plan_grid_only_ecoregions_target_without_gadm_artifacts(tmp_path):
-    source, _ = _make(tmp_path)
-    _write_vector_file(source)
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert [t.key for t in targets] == ["ecoregions_grid"]
+    assert targets[0].completion == Completion.MARKER
 
 
-def test_plan_grid_adds_gid3_dominant_target_once_gadm_artifacts_exist(tmp_path):
+def test_plan_prepare_adds_gid3_dominant_target_once_gadm_artifacts_exist(tmp_path):
     source, ctx = _make(tmp_path)
-    _write_vector_file(source)
+    _write_raw_file(source)
     _write_gadm_gid3_artifacts(ctx)
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert [t.key for t in targets] == ["ecoregions_grid", "gadm_gid3_dominant"]
 
     dominant_target = targets[1]
@@ -90,11 +84,12 @@ def test_plan_grid_adds_gid3_dominant_target_once_gadm_artifacts_exist(tmp_path)
     assert len(dominant_target.inputs) == 3
 
 
-def test_registry_requires_gadm_prepare_and_grid():
+def test_registry_requires_gadm_prepare():
+    # gadm's PREPARE now does what used to be its separate GRID step
+    # directly (Plan 2's PREPARE+GRID merge) -- PipelineStep.GRID no longer
+    # exists anywhere. Scoped to ecoregions' own (merged) PREPARE step --
+    # only _plan_prepare()'s gadm_gid3_dominant target touches gadm.
     spec = registry.resolve("ecoregions")
-    # Both scoped to ecoregions' own GRID step -- only _plan_grid()'s
-    # gadm_gid3_dominant target touches gadm.
-    assert (PipelineStep.GRID, "gadm", PipelineStep.PREPARE) in spec.requires
-    assert (PipelineStep.GRID, "gadm", PipelineStep.GRID) in spec.requires
+    assert spec.requires == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
     assert spec.requires_for(PipelineStep.FETCH) == ()
-    assert spec.requires_for(PipelineStep.PREPARE) == ()
+    assert spec.requires_for(PipelineStep.PREPARE) == (("gadm", PipelineStep.PREPARE),)

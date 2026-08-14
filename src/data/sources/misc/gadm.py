@@ -18,6 +18,14 @@ names. Each variable holds uint32 integer ids (0 = no unit at that level), with 
 integer id. `country_code_mapping.json`/`subdivision_code_mapping.json` are gone --
 `src/analysis/subsets/registry.py` and `country_classifications.py` were updated to
 read `GID_0_code_mapping.json` and the `GID_0` variable instead.
+
+docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. GADM's
+rasterization was already tiled (`GeoboxTiles`, `_process_gadm_tiles`, region
+writes) -- unlike OSM's single whole-extent `rasterize()` call -- but still
+has no time dimension needing per-year resumability, so this stays its own
+bespoke two-phase `_execute_prepare` (vector extraction, then rasterization)
+rather than routing through `src.data.common.prepare.driver.run_tiled_prepare`.
+`STEPS` no longer declares GRID.
 """
 
 from __future__ import annotations
@@ -31,7 +39,7 @@ import tempfile
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Dict, List, Optional
 
 from zarr.codecs import BloscCodec
 
@@ -42,10 +50,6 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
-from src.data.sources import verify
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +91,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
     rasterized per-level GID id grid (GID_0, GID_1, ...)."""
 
     ID = "gadm"
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "gadm"
 
@@ -123,24 +127,6 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
-        if step is PipelineStep.GRID:
-            return self._plan_grid()
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` (src/data/sources/base.py's
-        `discover()`): FETCH has no crawl to redo (a static, I/O-free
-        target), so only PREPARE/GRID get a real live-crawl counterpart
-        distinct from their ledger-backed `_plan_*`. GADM's targets are
-        singletons with no year/key selection to apply, unlike acag's
-        per-year ones -- `selection` is accepted for interface symmetry with
-        every other source's `_discover()` but unused."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare()
-        if step is PipelineStep.GRID:
-            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -148,8 +134,6 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     def _execute_fetch(self, target: StepTarget) -> bool:
@@ -160,104 +144,13 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- PREPARE ("vector") -- produces one .gpkg per ADM level -------------
+    # -- PREPARE (raw zip -> per-ADM-level vectors -> tiled rasterization) --
 
     def _raw_file_path(self) -> str:
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
-    def _plan_prepare(self) -> List[StepTarget]:
-        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
-        today's exact live logic -- if no ledger is configured yet, or
-        `data reconcile --step prepare` hasn't populated one yet."""
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            raw_file = row.meta.get("raw_file")
-            if raw_file is None or row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
-                output_path=row.local_path, inputs=(raw_file,),
-                completion=Completion.MARKER, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_prepare()
-
-    def _discover_prepare(self) -> List[StepTarget]:
-        raw_file = self._raw_file_path()
-        if not os.path.exists(raw_file):
-            index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-            if not index_file or not os.path.exists(index_file):
-                return []
-        return [
-            StepTarget(
-                source_id=self.ID, step=PipelineStep.PREPARE, key="gadm",
-                output_path=self.output_root(PipelineStep.PREPARE),
-                inputs=(raw_file,),
-                # Directory output (variable number of per-level .gpkg files) --
-                # same MARKER policy _execute_grid already uses for its own
-                # directory (zarr) output, so `data plan`/is_complete() can
-                # actually see completion instead of always reporting pending.
-                completion=Completion.MARKER,
-                meta={"raw_file": raw_file},
-            )
-        ]
-
-    def _execute_prepare(self, target: StepTarget) -> bool:
-        import geopandas as gpd
-
-        from src.data.sources.steps import is_complete, mark_complete
-
-        output_base = target.output_path
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping GADM processing, outputs already exist in: %s", output_base)
-            return True
-        if not self.cfg.override and os.path.exists(output_base):
-            # Pre-existing runs from before the MARKER policy was added: the
-            # marker won't exist yet even though the level files do. Fall
-            # back to the old glob check so completed output isn't silently
-            # redone, and write the marker now so future runs see it via
-            # is_complete() above.
-            existing = [f for f in os.listdir(output_base) if f.startswith("gadm_level") and f.endswith("_simplified.gpkg")]
-            if existing:
-                logger.info("Skipping GADM processing, outputs already exist in: %s", output_base)
-                mark_complete(output_base)
-                return True
-
-        os.makedirs(output_base, exist_ok=True)
-        extract_dir = os.path.join(self.temp_dir, "gadm_extracted")
-        os.makedirs(extract_dir, exist_ok=True)
-
-        with zipfile.ZipFile(target.inputs[0], "r") as zip_ref:
-            zip_ref.extractall(extract_dir)
-
-        geopackages = list(Path(extract_dir).glob("*.gpkg"))
-        if not geopackages:
-            logger.error("No geopackage found in GADM extract")
-            return False
-
-        geopackage_path = str(geopackages[0])
-        layers = gpd.list_layers(geopackage_path)
-        for level in layers.name.tolist():
-            gdf = gpd.read_file(geopackage_path, engine="pyogrio", layer=level)
-            gdf_simplified = gdf.copy()
-            gdf_simplified["geometry"] = gdf_simplified.geometry.simplify(
-                tolerance=self.simplify_tolerance, preserve_topology=True
-            )
-            out_path = f"{output_base}/gadm_level{level}_simplified.gpkg"
-            gdf_simplified.to_file(out_path, driver="GPKG")
-            logger.info("GADM level %s processing complete: %s", level, out_path)
-        mark_complete(output_base)
-        return True
-
-    # -- GRID ("spatial") -- tiled rasterization -----------------------------
+    def _vector_dir(self) -> str:
+        return self.output_root(PipelineStep.PREPARE)
 
     def _grid_output_path(self) -> str:
         return layout.grid_store_path(
@@ -270,88 +163,77 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             v2_family="country_id",
         )
 
-    def _plan_grid(self) -> List[StepTarget]:
-        """Ledger-backed fast path. Unlike acag's per-year GRID target,
-        GADM's `inputs` (the per-ADM-level .gpkg paths) aren't re-derivable
-        from a `local_complete_units()` query -- PREPARE tracks its whole
-        output directory as one ledger unit, not one row per level file --
-        so they're persisted directly in `meta` at discovery time instead
-        (small: at most a handful of ADM levels, well within the "meta is
-        always small" invariant every source's `StepTarget.meta` already
-        follows). Falls back to `_discover_grid()` if the ledger has no
-        GRID row yet."""
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            level_files = row.meta.get("level_files")
-            if not level_files or row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
-                output_path=row.local_path, inputs=tuple(level_files),
-                completion=Completion.MARKER, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid()
-
-    def _discover_grid(self) -> List[StepTarget]:
-        vector_dir = self.output_root(PipelineStep.PREPARE)
-        adm0_file = os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg")
-        if not os.path.exists(adm0_file):
+    def _plan_prepare(self) -> List[StepTarget]:
+        raw_file = self._raw_file_path()
+        if not os.path.exists(raw_file):
             return []
-        level_files = sorted(
-            Path(vector_dir).glob("gadm_level*_simplified.gpkg"),
-            key=lambda p: int(_level_from_path(str(p)).split("_")[1]),
-        )
-        inputs = tuple(str(p) for p in level_files)
-        gid_cols = tuple(_gid_column_for_level(_level_from_path(str(p))) for p in level_files)
         return [
             StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key="gadm",
+                source_id=self.ID, step=PipelineStep.PREPARE, key="gadm",
                 output_path=self._grid_output_path(),
-                inputs=inputs, completion=Completion.MARKER,
-                # No value_range by default: 0 = "no unit at this level",
-                # else a sequential id -- there's no fixed upper bound
-                # (depends on how many polygons the level has), so
-                # verification only checks these variables are present and
-                # not all-nodata unless a source `verification:` config
-                # block adds one. verify.verification_meta() lets that
-                # config block (orchestration/configs/data.yaml) override
-                # any of these without a code change.
-                meta={
-                    **verify.verification_meta(self.cfg.raw, expected_vars=gid_cols),
-                    "level_files": list(inputs),
-                },
+                inputs=(raw_file,),
+                completion=Completion.MARKER,
+                meta={"raw_file": raw_file},
             )
         ]
 
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _existing_level_files(self, vector_dir: str) -> List[str]:
+        return sorted(
+            (str(p) for p in Path(vector_dir).glob("gadm_level*_simplified.gpkg")),
+            key=lambda p: int(_level_from_path(p).split("_")[1]),
+        )
+
+    def _simplify_vector_levels(self, raw_file: str, vector_dir: str) -> Optional[List[str]]:
+        """Phase 1: extract every ADM level from the raw zip and write a
+        simplified .gpkg per level. Returns the written level file paths, or
+        `None` on failure."""
+        import geopandas as gpd
+
+        os.makedirs(vector_dir, exist_ok=True)
+        extract_dir = os.path.join(self.temp_dir, "gadm_extracted")
+        os.makedirs(extract_dir, exist_ok=True)
+
+        with zipfile.ZipFile(raw_file, "r") as zip_ref:
+            zip_ref.extractall(extract_dir)
+
+        geopackages = list(Path(extract_dir).glob("*.gpkg"))
+        if not geopackages:
+            logger.error("No geopackage found in GADM extract")
+            return None
+
+        geopackage_path = str(geopackages[0])
+        layers = gpd.list_layers(geopackage_path)
+        level_files = []
+        for level in layers.name.tolist():
+            gdf = gpd.read_file(geopackage_path, engine="pyogrio", layer=level)
+            gdf_simplified = gdf.copy()
+            gdf_simplified["geometry"] = gdf_simplified.geometry.simplify(
+                tolerance=self.simplify_tolerance, preserve_topology=True
+            )
+            out_path = f"{vector_dir}/gadm_level{level}_simplified.gpkg"
+            gdf_simplified.to_file(out_path, driver="GPKG")
+            level_files.append(out_path)
+            logger.info("GADM level %s processing complete: %s", level, out_path)
+        return level_files
+
+    def _rasterize_levels(self, level_files: List[str], output_path: str) -> bool:
+        """Phase 2: tiled rasterization -- ported verbatim from the old
+        `_execute_grid` (module docstring: GADM already tiled its own
+        rasterization, unlike OSM's single whole-extent call)."""
         from odc.geo import GeoboxTiles
 
         from src.data.common.geobox import get_target_geobox
-        from src.data.sources.steps import is_complete, mark_complete
-
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping GADM rasterization, output already exists: %s", target.output_path)
-            return True
 
         import geopandas as gpd
 
-        output_dir = os.path.dirname(target.output_path)
+        output_dir = os.path.dirname(output_path)
         os.makedirs(output_dir, exist_ok=True)
 
-        # One GeoDataFrame + id mapping per ADM level present in PREPARE's output,
-        # keyed by that level's own GID column ("ADM_2" file -> "GID_2" column).
+        # One GeoDataFrame + id mapping per ADM level, keyed by that level's
+        # own GID column ("ADM_2" file -> "GID_2" column).
         level_gdfs: Dict[str, "gpd.GeoDataFrame"] = {}
         level_code_to_id: Dict[str, Dict[str, int]] = {}
-        for level_file in target.inputs:
+        for level_file in level_files:
             level = _level_from_path(level_file)
             if level is None:
                 logger.warning("Skipping unrecognized GADM level file: %s", level_file)
@@ -389,15 +271,32 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             # exception (the bug this line fixes, commit f653033).
             level_gdfs = {gid_col: reproject_for_tile_overlap(gdf, geobox.crs) for gid_col, gdf in level_gdfs.items()}
 
-            if not self._create_empty_gadm_zarr(target.output_path, geobox, list(level_gdfs.keys())):
+            if not self._create_empty_gadm_zarr(output_path, geobox, list(level_gdfs.keys())):
                 return False
-            if not self._process_gadm_tiles(tiles, target.output_path, level_gdfs, level_code_to_id):
+            if not self._process_gadm_tiles(tiles, output_path, level_gdfs, level_code_to_id):
                 return False
 
         for gid_col, code_to_id in level_code_to_id.items():
             with open(os.path.join(output_dir, f"{gid_col}_code_mapping.json"), "w") as f:
                 json.dump(code_to_id, f, indent=2)
+        return True
 
+    def _execute_prepare(self, target: StepTarget) -> bool:
+        from src.data.sources.steps import is_complete, mark_complete
+
+        if not self.cfg.override and is_complete(target):
+            logger.info("Skipping GADM processing -- already complete: %s", target.output_path)
+            return True
+
+        vector_dir = self._vector_dir()
+        level_files = [] if self.cfg.override else self._existing_level_files(vector_dir)
+        if not level_files:
+            level_files = self._simplify_vector_levels(target.inputs[0], vector_dir)
+            if not level_files:
+                return False
+
+        if not self._rasterize_levels(level_files, target.output_path):
+            return False
         mark_complete(target.output_path)
         return True
 

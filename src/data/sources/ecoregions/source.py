@@ -24,12 +24,21 @@ only support raster-cell reducers, no polygon overlay). Written as a tiny
 `GID_3`-keyed parquet sidecar for `TileProcessor`'s `join_on` mechanism to
 merge at assembly time, same pattern as `snl_mining`'s admin-count tables and
 `country_classifications`'s `classifications_by_gid0.parquet`. `REQUIRES` on
-gadm's PREPARE (level-3 simplified polygons) and GRID (`GID_3_code_mapping.json`),
-both scoped to this source's own GRID step -- only `_plan_grid()`'s
-`gadm_gid3_dominant` target touches gadm at all, so FETCH/PREPARE run
-unblocked even before gadm exists -- resolved via
+gadm's PREPARE (level-3 simplified polygons AND `GID_3_code_mapping.json`,
+both produced by gadm's PREPARE now -- see module docstring in
+`src/data/sources/misc/gadm.py`), resolved via
 `layout.output_root()`/`gadm.gid_mapping_path()` directly, never a class
 import (docs/design/09-integrated-pipeline.md §2).
+
+docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. `STEPS` no
+longer declares GRID -- both of this source's GRID targets
+(`ecoregions_grid`, `gadm_gid3_dominant`) are now PREPARE targets, each
+independently resumable/executable (`_execute_prepare` dispatches on
+`target.key`, mirroring the old `_execute_grid`). `REQUIRES` is scoped to
+this source's own (merged) PREPARE step now, not GRID; `gadm_gid3_dominant`
+still only appears once gadm's level-3 output actually exists, same
+"appears once its prerequisite is real" behavior as before -- the
+`ecoregions_grid` target alone runs unblocked before gadm exists.
 
 FETCH pulls straight from RESOLVE's own ArcGIS REST Feature Service --
 `.../FeatureServer/0/query` -- rather than any static file: the Esri Hub
@@ -70,7 +79,7 @@ import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from zarr.codecs import BloscCodec
 
@@ -82,9 +91,6 @@ from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -135,11 +141,13 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
     realm/biome/ecoregion id grid, plus a GADM-GID_3 dominant-biome table."""
 
     ID = "ecoregions"
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
-    REQUIRES = (
-        (PipelineStep.GRID, "gadm", PipelineStep.PREPARE),
-        (PipelineStep.GRID, "gadm", PipelineStep.GRID),
-    )
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    # gadm's PREPARE now does what used to be its separate GRID step
+    # (simplified level-3 vectors AND GID_3_code_mapping.json) directly
+    # (docs/design successor to the ledger, Plan 2's PREPARE+GRID merge) --
+    # PipelineStep.GRID no longer exists anywhere, scoped to this source's
+    # own (merged) PREPARE step.
+    REQUIRES = ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
     DATA_SOURCE_NAME = "ecoregions"
 
@@ -177,8 +185,6 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
-        if step is PipelineStep.GRID:
-            return self._plan_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
@@ -190,8 +196,6 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._discover_prepare()
-        if step is PipelineStep.GRID:
-            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -199,8 +203,6 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     def _execute_fetch(self, target: StepTarget) -> bool:
@@ -311,170 +313,70 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, self.download, file_url, output_path, None)
 
-    # -- PREPARE ("vector") -- one simplified .gpkg (single flat layer) -----
+    # -- PREPARE -- phase 1 (shared): simplified .gpkg (single flat layer).
+    # Phase 2: tiled rasterization (`ecoregions_grid`) and, once GADM's
+    # level-3 output exists, the GID_3 dominant-biome table
+    # (`gadm_gid3_dominant`) -- two independently resumable/executable
+    # targets, exposed as one merged PREPARE step (Plan 2's PREPARE+GRID
+    # merge, docs/design successor to the ledger).
 
     def _raw_file_path(self) -> str:
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
-    def _plan_prepare(self) -> List[StepTarget]:
-        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
-        today's exact live logic -- if no ledger is configured yet, or
-        `data reconcile --step prepare` hasn't populated one yet."""
+    def _vector_path(self) -> str:
+        return os.path.join(self.output_root(PipelineStep.PREPARE), "ecoregions_simplified.gpkg")
 
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            raw_file = row.meta.get("raw_file")
-            if raw_file is None or row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
-                output_path=row.local_path, inputs=(raw_file,),
-                completion=Completion.PATH_EXISTS, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.ID, self.ID,
+    def _ecoregions_grid_path(self) -> str:
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            "ecoregions_grid.zarr",
+            namespace=self.cfg.namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            v2_family="ecoregions",
         )
-        return self._discover_prepare()
 
-    def _discover_prepare(self) -> List[StepTarget]:
+    def _gadm_gid3_file(self) -> str:
+        return os.path.join(
+            layout.output_root(self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout),
+            f"gadm_level{self.gadm_gid3_level}_simplified.gpkg",
+        )
+
+    def _dominant_biome_path(self) -> str:
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            "dominant_biome_by_gid3.parquet",
+            namespace=self.cfg.namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            # v2_family intentionally omitted -- a small per-GID parquet
+            # table, not a pixel-grid store, same rationale as
+            # country_classifications.py's _output_path().
+        )
+
+    def _plan_prepare(self) -> List[StepTarget]:
         raw_file = self._raw_file_path()
         if not os.path.exists(raw_file):
-            index_file = layout.index_path(self.ctx.local_index_dir, self.data_path)
-            if not index_file or not os.path.exists(index_file):
-                return []
-        return [
-            StepTarget(
-                source_id=self.ID, step=PipelineStep.PREPARE, key="ecoregions",
-                output_path=os.path.join(self.output_root(PipelineStep.PREPARE), "ecoregions_simplified.gpkg"),
-                inputs=(raw_file,), completion=Completion.PATH_EXISTS,
-                meta={"raw_file": raw_file},
-            )
-        ]
-
-    def _execute_prepare(self, target: StepTarget) -> bool:
-        import geopandas as gpd
-
-        if not self.cfg.override and os.path.exists(target.output_path):
-            logger.info("Skipping ecoregions processing, output already exists: %s", target.output_path)
-            return True
-
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        raw_path = target.inputs[0]
-
-        if zipfile.is_zipfile(raw_path):
-            extract_dir = os.path.join(self.temp_dir, "ecoregions_extracted")
-            os.makedirs(extract_dir, exist_ok=True)
-            with zipfile.ZipFile(raw_path) as zf:
-                zf.extractall(extract_dir)
-            candidates = sorted(Path(extract_dir).glob("*.shp")) + sorted(Path(extract_dir).glob("*.gpkg"))
-            if not candidates:
-                logger.error("No .shp/.gpkg found inside ecoregions archive: %s", raw_path)
-                return False
-            source_path = str(candidates[0])
-        else:
-            source_path = raw_path
-
-        gdf = gpd.read_file(source_path, engine="pyogrio")
-        missing = [c for c in _REQUIRED_COLUMNS if c not in gdf.columns]
-        if missing:
-            logger.error(
-                "Ecoregions source missing expected column(s) %s -- field names may differ from the "
-                "RESOLVE 2017 schema this source assumes. Available columns: %s",
-                missing, sorted(gdf.columns),
-            )
-            return False
-
-        gdf_simplified = gdf.copy()
-        gdf_simplified["geometry"] = gdf_simplified.geometry.simplify(
-            tolerance=self.simplify_tolerance, preserve_topology=True
-        )
-        gdf_simplified.to_file(target.output_path, driver="GPKG")
-        logger.info("Ecoregions processing complete: %d polygons -> %s", len(gdf_simplified), target.output_path)
-        return True
-
-    # -- GRID ("spatial") -- tiled rasterization + GID_3 dominant table -----
-
-    def _plan_grid(self) -> List[StepTarget]:
-        """Ledger-backed fast path. Both possible GRID targets
-        (`ecoregions_grid`, `gadm_gid3_dominant`) are handled by one
-        `build_target` closure keyed on `row.unit_id`, mirroring
-        `_discover_grid()`'s own two-target shape below. Each target's
-        `inputs` (deterministic paths, no live crawl involved) is persisted
-        directly in `meta` at discovery time, same pattern as gadm's PREPARE
-        `raw_file` -- see gadm.py's `_plan_prepare()`."""
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            if row.local_path is None:
-                return None
-            if row.unit_id == "ecoregions_grid":
-                vector_file = row.meta.get("vector_file")
-                if vector_file is None:
-                    return None
-                return StepTarget(
-                    source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
-                    output_path=row.local_path, inputs=(vector_file,),
-                    completion=Completion.MARKER, meta=row.meta,
-                )
-            if row.unit_id == "gadm_gid3_dominant":
-                vector_file = row.meta.get("vector_file")
-                gadm_gid3_file = row.meta.get("gadm_gid3_file")
-                gadm_gid3_mapping = row.meta.get("gadm_gid3_mapping")
-                if vector_file is None or gadm_gid3_file is None or gadm_gid3_mapping is None:
-                    return None
-                return StepTarget(
-                    source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
-                    output_path=row.local_path, inputs=(vector_file, gadm_gid3_file, gadm_gid3_mapping),
-                    completion=Completion.PATH_EXISTS, meta=row.meta,
-                )
-            return None
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid()
-
-    def _discover_grid(self) -> List[StepTarget]:
-        vector_file = os.path.join(self.output_root(PipelineStep.PREPARE), "ecoregions_simplified.gpkg")
-        if not os.path.exists(vector_file):
             return []
 
         targets = [
             StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key="ecoregions_grid",
-                output_path=layout.grid_store_path(
-                    self.ctx.data_root,
-                    self.cfg.data_path,
-                    "ecoregions_grid.zarr",
-                    namespace=self.cfg.namespace,
-                    grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                    v2_family="ecoregions",
-                ),
-                inputs=(vector_file,), completion=Completion.MARKER,
+                source_id=self.ID, step=PipelineStep.PREPARE, key="ecoregions_grid",
+                output_path=self._ecoregions_grid_path(),
+                inputs=(raw_file,), completion=Completion.MARKER,
                 # No value_range: 0 = "no polygon at this pixel" (coastal/ocean
                 # gaps), else a sequential id -- same rationale as gadm's own
                 # GID_N variables (gadm.py:238-245).
                 meta={
-                    "vector_file": vector_file,
+                    "raw_file": raw_file,
                     **verify.verification_meta(self.cfg.raw, expected_vars=tuple(CLASS_COLUMNS.values())),
                 },
             )
         ]
 
-        gadm_gid3_file = os.path.join(
-            layout.output_root(self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout),
-            f"gadm_level{self.gadm_gid3_level}_simplified.gpkg",
-        )
+        gadm_gid3_file = self._gadm_gid3_file()
         if os.path.exists(gadm_gid3_file):
             from src.data.sources.misc.gadm import gid_mapping_path
 
@@ -482,21 +384,11 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             if os.path.exists(gadm_gid3_mapping):
                 targets.append(
                     StepTarget(
-                        source_id=self.ID, step=PipelineStep.GRID, key="gadm_gid3_dominant",
-                        output_path=layout.grid_store_path(
-                            self.ctx.data_root,
-                            self.cfg.data_path,
-                            "dominant_biome_by_gid3.parquet",
-                            namespace=self.cfg.namespace,
-                            grid_id=self.ctx.grid_id,
-                            layout=self.ctx.layout,
-                            # v2_family intentionally omitted -- a small per-GID
-                            # parquet table, not a pixel-grid store, same
-                            # rationale as country_classifications.py:198-202.
-                        ),
-                        inputs=(vector_file, gadm_gid3_file, gadm_gid3_mapping), completion=Completion.PATH_EXISTS,
+                        source_id=self.ID, step=PipelineStep.PREPARE, key="gadm_gid3_dominant",
+                        output_path=self._dominant_biome_path(),
+                        inputs=(raw_file, gadm_gid3_file, gadm_gid3_mapping), completion=Completion.PATH_EXISTS,
                         meta={
-                            "vector_file": vector_file,
+                            "raw_file": raw_file,
                             "gadm_gid3_file": gadm_gid3_file,
                             "gadm_gid3_mapping": gadm_gid3_mapping,
                             **verify.verification_meta(
@@ -508,7 +400,7 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             else:
                 logger.info(
                     "GADM GID_3 mapping not found at %s -- skipping dominant-biome table "
-                    "until `data run --source gadm --step grid` has completed.",
+                    "until `data run --source gadm --step prepare` has completed.",
                     gadm_gid3_mapping,
                 )
         else:
@@ -519,7 +411,53 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             )
         return targets
 
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _discover_prepare(self) -> List[StepTarget]:
+        return self._plan_prepare()
+
+    def _ensure_vector_file(self, raw_file: str) -> Optional[str]:
+        """Phase 1, shared by both PREPARE targets -- whichever target runs
+        first builds it; resumable via plain existence check since it's a
+        whole-file output, not a zarr region."""
+        import geopandas as gpd
+
+        vector_path = self._vector_path()
+        if not self.cfg.override and os.path.exists(vector_path):
+            return vector_path
+
+        os.makedirs(os.path.dirname(vector_path), exist_ok=True)
+
+        if zipfile.is_zipfile(raw_file):
+            extract_dir = os.path.join(self.temp_dir, "ecoregions_extracted")
+            os.makedirs(extract_dir, exist_ok=True)
+            with zipfile.ZipFile(raw_file) as zf:
+                zf.extractall(extract_dir)
+            candidates = sorted(Path(extract_dir).glob("*.shp")) + sorted(Path(extract_dir).glob("*.gpkg"))
+            if not candidates:
+                logger.error("No .shp/.gpkg found inside ecoregions archive: %s", raw_file)
+                return None
+            source_path = str(candidates[0])
+        else:
+            source_path = raw_file
+
+        gdf = gpd.read_file(source_path, engine="pyogrio")
+        missing = [c for c in _REQUIRED_COLUMNS if c not in gdf.columns]
+        if missing:
+            logger.error(
+                "Ecoregions source missing expected column(s) %s -- field names may differ from the "
+                "RESOLVE 2017 schema this source assumes. Available columns: %s",
+                missing, sorted(gdf.columns),
+            )
+            return None
+
+        gdf_simplified = gdf.copy()
+        gdf_simplified["geometry"] = gdf_simplified.geometry.simplify(
+            tolerance=self.simplify_tolerance, preserve_topology=True
+        )
+        gdf_simplified.to_file(vector_path, driver="GPKG")
+        logger.info("Ecoregions processing complete: %d polygons -> %s", len(gdf_simplified), vector_path)
+        return vector_path
+
+    def _execute_prepare(self, target: StepTarget) -> bool:
         if target.key == "gadm_gid3_dominant":
             return self._execute_gid3_dominant(target)
         return self._execute_ecoregions_grid(target)
@@ -536,13 +474,17 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
         import geopandas as gpd
 
+        vector_path = self._ensure_vector_file(target.inputs[0])
+        if vector_path is None:
+            return False
+
         output_dir = os.path.dirname(target.output_path)
         os.makedirs(output_dir, exist_ok=True)
 
-        gdf = gpd.read_file(target.inputs[0], engine="pyogrio")
+        gdf = gpd.read_file(vector_path, engine="pyogrio")
         missing = [c for c in CLASS_COLUMNS if c not in gdf.columns]
         if missing:
-            logger.error("Prepared ecoregions file missing column(s) %s: %s", missing, target.inputs[0])
+            logger.error("Prepared ecoregions file missing column(s) %s: %s", missing, vector_path)
             return False
 
         code_to_id: Dict[str, Dict] = {
@@ -708,7 +650,11 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             return True
 
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        ecoregions_file, gadm_gid3_file, gadm_gid3_mapping_file = target.inputs
+        raw_file, gadm_gid3_file, gadm_gid3_mapping_file = target.inputs
+
+        ecoregions_file = self._ensure_vector_file(raw_file)
+        if ecoregions_file is None:
+            return False
 
         with open(gadm_gid3_mapping_file) as f:
             code_to_id: Dict[str, int] = json.load(f)

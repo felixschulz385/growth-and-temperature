@@ -28,11 +28,15 @@ configured `data_path` override would not change where output lands. Modeled
 here via an `output_root()` override, mirroring the identical pattern already
 used for GLASS's `path_prefix`.
 
-`REQUIRES` on gadm's **GRID** (not PREPARE) -- changed from PREPARE now that
-rasterization (and the polygon geometries it needed) is gone; only the
-integer-id mapping sidecar (`GID_N_code_mapping.json`, produced by gadm's
-GRID step) is still needed. Scoped to this source's own GRID step (only
-`_plan_grid()` touches gadm), so FETCH runs unblocked before gadm exists.
+`REQUIRES` on gadm's **PREPARE** step -- only the integer-id mapping sidecar
+(`GID_N_code_mapping.json`) is needed, not gadm's polygon geometries.
+Gadm's PREPARE now does what used to be its separate GRID step (rasterize +
+write the mapping sidecar) directly (docs/design successor to the ledger,
+Plan 2's PREPARE+GRID merge) -- `PipelineStep.GRID` no longer exists
+anywhere. This source's own former GRID step is renamed PREPARE too (no
+merge needed -- PLAD never had a separate PREPARE step of its own), scoped
+to this source's own PREPARE step (only `_plan_prepare()` touches gadm), so
+FETCH runs unblocked before gadm exists.
 """
 
 from __future__ import annotations
@@ -42,7 +46,7 @@ import json
 import logging
 import os
 import tempfile
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -50,9 +54,6 @@ from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -64,8 +65,8 @@ class PlaDSource(DataSource):
 
     ID = "plad"
     ALIASES = ("harvard_plad", "harvard")
-    STEPS = (PipelineStep.FETCH, PipelineStep.GRID)
-    REQUIRES = ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    REQUIRES = ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
     DATA_SOURCE_NAME = "harvard"
     has_entrypoints = False
@@ -94,11 +95,18 @@ class PlaDSource(DataSource):
         return f"GID_{self.admin_level}"
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
-        if step is PipelineStep.GRID:
+        if step is PipelineStep.PREPARE:
+            # This source's PREPARE step is a rename of its former GRID step
+            # (Plan 2's PREPARE+GRID merge, docs/design successor to the
+            # ledger) -- output stays at the same on-disk location that step
+            # always wrote to (`stage_2`, via layout's own PipelineStep.GRID
+            # convention), not the generic `stage_1` a plain PREPARE would map
+            # to. Same rationale as gadm/osm/country_classifications: PREPARE
+            # writes to what used to be GRID's path.
             return layout.output_root(
                 self.ctx.data_root,
                 self.OUTPUT_PREFIX,
-                step,
+                PipelineStep.GRID,
                 namespace=namespace,
                 grid_id=self.ctx.grid_id,
                 layout=self.ctx.layout,
@@ -175,8 +183,8 @@ class PlaDSource(DataSource):
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.FETCH:
             return self._plan_fetch()
-        if step is PipelineStep.GRID:
-            return self._plan_grid()
+        if step is PipelineStep.PREPARE:
+            return self._plan_prepare()
         raise AssertionError(f"unreachable: {step}")
 
     def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
@@ -186,44 +194,22 @@ class PlaDSource(DataSource):
         interface symmetry only."""
         if step is PipelineStep.FETCH:
             return self._plan_fetch()
-        if step is PipelineStep.GRID:
-            return self._discover_grid()
+        if step is PipelineStep.PREPARE:
+            return self._discover_prepare()
         raise AssertionError(f"unreachable: {step}")
 
-    def _plan_grid(self) -> List[StepTarget]:
-        """Ledger-backed fast path. `inputs` (a single deterministic mapping-
-        file path) is persisted directly in `meta` at discovery time, same
-        pattern as gadm's PREPARE `raw_file` -- see gadm.py's `_plan_prepare()`."""
+    def _plan_prepare(self) -> List[StepTarget]:
+        return self._discover_prepare()
 
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            mapping_file = row.meta.get("mapping_file")
-            if mapping_file is None or row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
-                output_path=row.local_path, inputs=(mapping_file,),
-                completion=Completion.PATH_EXISTS, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid()
-
-    def _discover_grid(self) -> List[StepTarget]:
+    def _discover_prepare(self) -> List[StepTarget]:
         mapping_file = self._gid_mapping_file()
         if not os.path.exists(mapping_file):
             return []
         return [
             StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key=f"adm{self.admin_level}",
+                source_id=self.ID, step=PipelineStep.PREPARE, key=f"adm{self.admin_level}",
                 output_path=os.path.join(
-                    self.output_root(PipelineStep.GRID),
+                    self.output_root(PipelineStep.PREPARE),
                     f"plad_adm{self.admin_level}_reg_fav.parquet",
                 ),
                 inputs=(mapping_file,),
@@ -242,8 +228,8 @@ class PlaDSource(DataSource):
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
+        if target.step is PipelineStep.PREPARE:
+            return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     def _execute_fetch(self, target: StepTarget) -> bool:
@@ -254,7 +240,7 @@ class PlaDSource(DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- GRID: build the (GID_N, year) favored-unit table --------------------
+    # -- PREPARE: build the (GID_N, year) favored-unit table -----------------
 
     def _gid_mapping_file(self) -> str:
         from src.data.sources.misc.gadm import gid_mapping_path
@@ -262,19 +248,13 @@ class PlaDSource(DataSource):
         return gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, self._gid_column)
 
     def _resolve_plad_data_file(self) -> Optional[str]:
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
-
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
+        raw_root = self.output_root(PipelineStep.FETCH)
+        if not os.path.isdir(raw_root):
             return None
-        with SourceLedger.open(local_ledger_path, data_path=self.data_path, read_only=True) as ledger:
-            relative_paths = ledger.completed_fetch_files()
-        for rel_path in relative_paths:
-            filename = os.path.basename(rel_path).lower()
+        for name in sorted(os.listdir(raw_root)):
+            filename = name.lower()
             if "plad" in filename and filename.endswith(".dta"):
-                raw = rel_path if os.path.isabs(rel_path) else os.path.join(self.output_root(PipelineStep.FETCH), rel_path)
-                return raw
+                return os.path.join(raw_root, name)
         return None
 
     def _build_reg_fav_table(self, mapping_file: str):
@@ -318,7 +298,7 @@ class PlaDSource(DataSource):
             subset=[self._gid_column, "year"]
         )
 
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):

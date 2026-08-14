@@ -51,52 +51,10 @@ def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees_
     )
 
 
-def test_osm_prepare_target(tmp_path):
-    osm, ctx = _make(tmp_path, "osm")
-    raw_dir = osm.output_root(PipelineStep.FETCH)
-    os.makedirs(raw_dir, exist_ok=True)
-    open(os.path.join(raw_dir, osm.CONFIGURED_FILES[0].name), "w").close()
-
-    targets = osm.plan(PipelineStep.PREPARE, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(
-        ctx.data_root, "misc", "processed", "stage_1", "osm", "land_polygons_simplified.gpkg"
-    )
-
-
-def test_osm_grid_target_depends_on_prepare_output(tmp_path):
-    osm, _ = _make(tmp_path, "osm")
-    assert osm.plan(PipelineStep.GRID, TargetSelection()) == []
-
-    vector_dir = osm.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "land_polygons_simplified.gpkg"), "w").close()
-
-    targets = osm.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(osm.output_root(PipelineStep.GRID), "land_mask.zarr")
-
-
-def test_gadm_grid_target_includes_all_present_levels(tmp_path):
-    gadm, _ = _make(tmp_path, "gadm")
-    vector_dir = gadm.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg"), "w").close()
-
-    targets = gadm.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert len(targets[0].inputs) == 1  # only ADM_0 present so far
-
-    open(os.path.join(vector_dir, "gadm_levelADM_1_simplified.gpkg"), "w").close()
-    open(os.path.join(vector_dir, "gadm_levelADM_2_simplified.gpkg"), "w").close()
-    targets = gadm.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets[0].inputs) == 3
-    # Sorted by level number, not filesystem/glob order.
-    assert [os.path.basename(p) for p in targets[0].inputs] == [
-        "gadm_levelADM_0_simplified.gpkg",
-        "gadm_levelADM_1_simplified.gpkg",
-        "gadm_levelADM_2_simplified.gpkg",
-    ]
+# osm/gadm's own PREPARE-target tests now live in
+# tests/data/sources/misc/test_osm_ledger_plan.py / test_gadm_ledger_plan.py --
+# both sources no longer declare a separate GRID step (Plan 2's PREPARE+GRID
+# merge, docs/design successor to the ledger).
 
 
 def test_country_classifications_prepare_target_tracks_which_sources_present(tmp_path):
@@ -109,87 +67,58 @@ def test_country_classifications_prepare_target_tracks_which_sources_present(tmp
 
     targets = cc.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].meta == {"has_hdi": True, "has_wb": False}
+    assert targets[0].meta["has_hdi"] is True
+    assert targets[0].meta["has_wb"] is False
 
 
-def test_country_classifications_grid_requires_gadm_output_via_shared_layout(tmp_path):
-    cc, ctx = _make(tmp_path, "country_classifications")
-    vector_dir = cc.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "classifications.parquet"), "w").close()
+def test_country_classifications_prepare_target_output_path(tmp_path):
+    # Plan 2's PREPARE+GRID merge (docs/design successor to the ledger):
+    # country_classifications' PREPARE target's own output is what used to
+    # be GRID's -- planning it no longer needs to probe gadm's output at
+    # all (that's the runner's REQUIRES enforcement's job,
+    # src/cli/data/handlers.py::_check_requires, gated before PREPARE runs).
+    cc, _ = _make(tmp_path, "country_classifications")
+    raw_dir = cc.output_root(PipelineStep.FETCH)
+    os.makedirs(raw_dir, exist_ok=True)
+    open(cc._raw_file("hdi"), "w").close()
 
-    # GADM's grid output not yet present -> no target (this is the plan()-level
-    # check; the runner's REQUIRES enforcement, via MissingPrerequisiteError,
-    # is a separate, earlier gate -- see src/cli/data/handlers.py::_check_requires).
-    assert cc.plan(PipelineStep.GRID, TargetSelection()) == []
-
-    gadm_grid_dir = os.path.join(ctx.data_root, "misc", "processed", "stage_2", "gadm")
-    os.makedirs(gadm_grid_dir, exist_ok=True)
-    os.makedirs(os.path.join(gadm_grid_dir, "countries_grid.zarr"))
-
-    targets = cc.plan(PipelineStep.GRID, TargetSelection())
+    targets = cc.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(
         cc.output_root(PipelineStep.GRID), "classifications_by_gid0.parquet"
     )
 
 
-def test_country_classifications_requires_gadm_grid():
+def test_country_classifications_requires_gadm_prepare():
+    # gadm's PREPARE now does what used to be its separate GRID step
+    # directly (Plan 2's PREPARE+GRID merge) -- PipelineStep.GRID no longer
+    # exists for gadm to require, and country_classifications' own
+    # dependency on it is scoped to its own (now merged) PREPARE step.
     spec = registry.resolve("country_classifications")
-    assert spec.requires == ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
+    assert spec.requires == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
     assert spec.requires_for(PipelineStep.FETCH) == ()
-    assert spec.requires_for(PipelineStep.PREPARE) == ()
-    assert spec.requires_for(PipelineStep.GRID) == (("gadm", PipelineStep.GRID),)
+    assert spec.requires_for(PipelineStep.PREPARE) == (("gadm", PipelineStep.PREPARE),)
 
 
-def test_osm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+def test_osm_output_path_uses_v2_family_under_layout_v2(tmp_path):
     osm, ctx = _make(tmp_path, "osm", layout="v2")
-    vector_dir = osm.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "land_polygons_simplified.gpkg"), "w").close()
-
-    targets = osm.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_mask.zarr")
+    assert osm._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_mask.zarr")
 
 
-def test_gadm_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
+def test_gadm_output_path_uses_v2_family_under_layout_v2(tmp_path):
     gadm, ctx = _make(tmp_path, "gadm", layout="v2")
-    vector_dir = gadm.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg"), "w").close()
-
-    targets = gadm.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "country_id.zarr")
+    assert gadm._grid_output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "country_id.zarr")
 
 
-def test_country_classifications_grid_finds_gadm_v2_output_under_layout_v2(tmp_path):
-    # country_classifications' own GRID output is a small per-GID_0 parquet
-    # table now, not a `<family>.zarr` pixel-grid store, so it doesn't
-    # participate in layout:v2's shared grid/<grid_id>/ directory -- it falls
-    # back to the legacy per-source path shape regardless of ctx.layout (see
-    # module docstring / gadm.grid_store_path()'s v2_family=None fallback).
-    # GADM's own dependency lookup (which *is* a v2 zarr family) is unaffected.
+def test_country_classifications_output_path_ignores_layout_v2_shared_grid_dir(tmp_path):
+    # country_classifications' own output is a small per-GID_0 parquet table
+    # now, not a `<family>.zarr` pixel-grid store, so it doesn't participate
+    # in layout:v2's shared grid/<grid_id>/ directory -- it falls back to the
+    # legacy per-source path shape regardless of ctx.layout (see module
+    # docstring / gadm.grid_store_path()'s v2_family=None fallback). GADM's
+    # own output path (which *is* a v2 zarr family) is unaffected.
     cc, ctx = _make(tmp_path, "country_classifications", layout="v2")
-    vector_dir = cc.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "classifications.parquet"), "w").close()
-
-    # GADM's v2 output not yet present -> no target.
-    assert cc.plan(PipelineStep.GRID, TargetSelection()) == []
-
-    grid_dir = os.path.join(ctx.data_root, "grid", "legacy_4326")
-    os.makedirs(grid_dir, exist_ok=True)
-    os.makedirs(os.path.join(grid_dir, "country_id.zarr"))
-
-    targets = cc.plan(PipelineStep.GRID, TargetSelection())
-    assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(
+    assert cc._output_path() == os.path.join(
         ctx.data_root, "misc", "processed", "stage_2", "country_classifications",
         "classifications_by_gid0.parquet",
-    )
-    assert targets[0].inputs == (
-        os.path.join(vector_dir, "classifications.parquet"),
-        os.path.join(grid_dir, "country_id.zarr"),
     )

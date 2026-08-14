@@ -126,6 +126,35 @@ def _summarize_fetch(source, *, detailed: bool) -> str:
     return f"{base} (outstanding: {never_attempted} never attempted, {retrying} retrying)"
 
 
+def _summarize_by_tile(source, target) -> "str | None":
+    """Per-(tile, year) unit status breakdown for one `run_tiled_prepare()`-
+    shaped PREPARE target -- `None` for anything else (a non-tiled PREPARE
+    output, e.g. gadm's own vector-simplify-then-rasterize target doesn't
+    look like this), so callers fall back to the normal collapsed summary.
+
+    Recognized shape: `Completion.MARKER` (a tiled zarr, not a whole-file
+    output) plus `target.meta["years"]` (every tiled source's `_plan_prepare()`
+    persists this the same way -- see e.g. acag.py) and a `tile_size`
+    instance attribute (every tiled source sets one, `cfg.raw.get("tile_size",
+    tiling.DEFAULT_TILE_SIZE)`). Reads `src.data.common.prepare.driver
+    .prepare_status()`'s per-unit status sidecars directly -- no run
+    triggered."""
+    if target.completion is not Completion.MARKER:
+        return None
+    years = target.meta.get("years")
+    tile_size = getattr(source, "tile_size", None)
+    if not years or tile_size is None:
+        return None
+
+    from src.data.common.geobox import get_target_geobox
+    from src.data.common.prepare.driver import prepare_status
+
+    geobox = get_target_geobox(source.ctx)
+    counts = prepare_status(target.output_path, years, geobox, tile_size=tile_size)
+    total = sum(counts.values())
+    return f"{counts['complete']}/{total} complete, {counts['outstanding']} outstanding, {counts['unavailable']} unavailable"
+
+
 def handle_summary(args: argparse.Namespace) -> None:
     """``data summary`` -- concise per-source, per-step data-availability
     overview. Builds each source directly (bypassing `_check_requires`, unlike
@@ -156,8 +185,21 @@ def handle_summary(args: argparse.Namespace) -> None:
             rows[name] = {**{step.value: f"error: {exc}" for step in STEP_ORDER}, "verified": "error"}
             continue
 
+        # Which of this source's own steps produces its final, verifiable
+        # output: GRID if declared (a handful of still-unconverted sources,
+        # e.g. MODIS), else PREPARE -- Plan 2's PREPARE+GRID merge
+        # (docs/design successor to the ledger) means PREPARE now does
+        # GRID's old job for every migrated source, so verification must
+        # follow it there instead of hardcoding GRID.
+        if PipelineStep.GRID in spec.steps:
+            final_step = PipelineStep.GRID
+        elif PipelineStep.PREPARE in spec.steps:
+            final_step = PipelineStep.PREPARE
+        else:
+            final_step = None
+
         had_error = False
-        grid_targets: list = []
+        final_step_targets: list = []
         for step in STEP_ORDER:
             if step not in spec.steps:
                 continue
@@ -176,22 +218,37 @@ def handle_summary(args: argparse.Namespace) -> None:
                     row[step.value] = _summarize_fetch(source, detailed=getattr(args, "detailed", False))
                     continue
                 targets = source.plan(step, TargetSelection())
-                summary, _complete = _summarize_targets(targets)
-                row[step.value] = summary
-                if step is PipelineStep.GRID:
-                    grid_targets = targets
+                if step is PipelineStep.PREPARE and getattr(args, "by_tile", False):
+                    # Per-target tile breakdown for whichever targets are
+                    # tile-shaped (run_tiled_prepare()'s Completion.MARKER +
+                    # meta["years"] + tile_size, see _summarize_by_tile()) --
+                    # any non-tiled target in the same list (e.g. ecoregions'
+                    # gadm_gid3_dominant sidecar) falls back to its own
+                    # collapsed complete/total summary instead.
+                    by_tile_parts = []
+                    for t in targets:
+                        detail = _summarize_by_tile(source, t)
+                        if detail is None:
+                            detail, _complete = _summarize_targets([t])
+                        by_tile_parts.append(f"{t.key}: {detail}")
+                    row[step.value] = "; ".join(by_tile_parts) if by_tile_parts else "no targets"
+                else:
+                    summary, _complete = _summarize_targets(targets)
+                    row[step.value] = summary
+                if step is final_step:
+                    final_step_targets = targets
             except Exception as exc:
                 row[step.value] = f"error: {exc}"
                 had_error = True
 
         if had_error:
             row["verified"] = "error"
-        elif PipelineStep.GRID not in spec.steps:
+        elif final_step is None:
             row["verified"] = "-"
-        elif not grid_targets:
+        elif not final_step_targets:
             row["verified"] = "-"
         else:
-            complete_targets = [t for t in grid_targets if is_complete(t)]
+            complete_targets = [t for t in final_step_targets if is_complete(t)]
             if not complete_targets:
                 row["verified"] = "pending"
             else:
@@ -208,54 +265,27 @@ def _check_requires(spec: registry.SourceSpec, ctx, config, step: PipelineStep) 
     """Gates only the `REQUIRES` entries scoped to *step* (`spec.requires_for`)
     -- e.g. ecoregions' FETCH runs unblocked even though its GRID entry needs
     gadm, since each `REQUIRES` triple now names which of *this* source's own
-    steps it applies to."""
-    import os
+    steps it applies to.
 
-    from src.data.common.ledger.paths import ledger_path
-    from src.data.common.ledger.store import SourceLedger
-    from src.data.sources import layout
-
+    Ledger-free (docs/design successor to the ledger): a required step's
+    *actual* output location is whatever its own `plan()` says, not a bare
+    `layout.output_root(data_path, step)` guess -- the two used to always
+    agree, but the PREPARE+GRID merge (Plan 2) means a source like gadm now
+    writes its PREPARE target's output to what used to be GRID's path. Build
+    the required source for real and check `is_complete()` against its own
+    planned targets, the same ground truth `data summary`/the runner itself
+    use, instead of re-deriving a path that can now be wrong."""
     for requires_id, requires_step in spec.requires_for(step):
         requires_cfg = get_source_config(config, requires_id)
-        expected = layout.output_root(
-            ctx.data_root,
-            requires_cfg.data_path,
-            requires_step,
-            namespace=requires_cfg.namespace,
-            grid_id=ctx.grid_id,
-            layout=ctx.layout,
-        )
-
-        # Prefer the prerequisite's own ledger when one exists
-        # (docs/design/10-fetch-ledger.md §6): `step_complete()` knows about
-        # HPC-verified state a bare local os.path.exists() can't see (e.g. a
-        # prerequisite whose step ran on a different machine and was pushed,
-        # not produced locally here). Falls back to the local-disk check
-        # below when the prerequisite hasn't been through the ledger yet
-        # (e.g. adopted from pre-ledger local output) -- same proxy as
-        # always: "the directory has something in it," since the runner
-        # itself checks the source's own StepTarget.completion when it plans.
-        #
-        # `requires_cfg` is a bare `SourceConfig`, never instantiated as a
-        # `DataSource` here, so the misc-split sources' overridden
-        # `data_path` property (gadm/osm/country_classifications/ecoregions,
-        # all sharing `cfg.data_path="misc"` and disambiguating via
-        # `cfg.namespace` -- see `DataSource.data_path`'s docstring,
-        # src/data/sources/base.py) never applies to the raw config field.
-        # Reconstruct the same combined string by hand -- mirrors `expected`
-        # above, which already passes `namespace=requires_cfg.namespace` to
-        # `layout.output_root()` for exactly this disambiguation.
-        requires_data_path = (
-            f"{requires_cfg.data_path}/{requires_cfg.namespace}" if requires_cfg.namespace else requires_cfg.data_path
-        )
-        requires_ledger_path = ledger_path(ctx.local_index_dir, requires_data_path)
-        if requires_ledger_path and os.path.exists(requires_ledger_path):
-            with SourceLedger.open(requires_ledger_path, data_path=requires_data_path, read_only=True) as ledger:
-                if ledger.step_complete(requires_step.value):
-                    continue
-
-        if not os.path.exists(expected):
+        requires_source = registry.create(requires_id, ctx, requires_cfg)
+        try:
+            targets = requires_source.plan(requires_step, TargetSelection())
+            if targets and all(is_complete(t) for t in targets):
+                continue
+            expected = targets[0].output_path if targets else requires_source.output_root(requires_step)
             raise MissingPrerequisiteError(spec.id, requires_id, requires_step, expected)
+        finally:
+            requires_source.close()
 
 
 def _selection_from_args(args: argparse.Namespace) -> TargetSelection:

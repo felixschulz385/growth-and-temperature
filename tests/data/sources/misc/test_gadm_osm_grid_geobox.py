@@ -157,7 +157,12 @@ def test_gadm_create_empty_zarr_uses_lat_lon_dims_for_legacy_geobox(tmp_path, mo
     assert set(ds["GID_0"].dims) == {"latitude", "longitude"}
 
 
-def test_gadm_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypatch):
+def test_gadm_rasterize_levels_threads_ctx_grid_id_into_target_geobox(tmp_path, monkeypatch):
+    # Plan 2's PREPARE+GRID merge (src/data/sources/misc/gadm.py module
+    # docstring): the old _execute_grid body is now `_rasterize_levels()`,
+    # called directly by `_execute_prepare` -- exercised directly here
+    # rather than through a StepTarget, since there's no separate GRID
+    # target anymore.
     gadm, ctx = _make(tmp_path, "gadm", grid_id="ease6933")
 
     import src.data.common.geobox as geobox_module
@@ -188,17 +193,8 @@ def test_gadm_execute_grid_threads_ctx_grid_id_into_target_geobox(tmp_path, monk
 
     monkeypatch.setattr(gpd, "read_file", lambda path, engine=None: gdf_adm0)
 
-    from src.data.sources.steps import Completion, PipelineStep, StepTarget
-
-    target = StepTarget(
-        source_id=gadm.ID,
-        step=PipelineStep.GRID,
-        key="gadm",
-        output_path=str(tmp_path / "out" / "countries_grid.zarr"),
-        inputs=(adm0_path,),
-        completion=Completion.MARKER,
-    )
-    assert gadm._execute_grid(target) is True
+    output_path = str(tmp_path / "out" / "countries_grid.zarr")
+    assert gadm._rasterize_levels([adm0_path], output_path) is True
     assert captured["ctx"] is ctx
 
 
@@ -214,7 +210,11 @@ class _FakeClient:
     dashboard_link = None
 
 
-def test_osm_execute_grid_uses_y_x_dims_for_ease_geobox(tmp_path, monkeypatch):
+def test_osm_rasterize_uses_y_x_dims_for_ease_geobox(tmp_path, monkeypatch):
+    # Plan 2's PREPARE+GRID merge (src/data/sources/misc/osm.py module
+    # docstring): the old _execute_grid body is now `_rasterize()`, called
+    # directly by `_execute_prepare` -- exercised directly here rather than
+    # through a StepTarget, since there's no separate GRID target anymore.
     osm, ctx = _make(tmp_path, "osm", grid_id="ease6933")
 
     import src.data.common.geobox as geobox_module
@@ -229,25 +229,16 @@ def test_osm_execute_grid_uses_y_x_dims_for_ease_geobox(tmp_path, monkeypatch):
     input_path = str(tmp_path / "land_polygons.gpkg")
     gdf.to_file(input_path, driver="GPKG")
 
-    from src.data.sources.steps import Completion, PipelineStep, StepTarget
-
-    target = StepTarget(
-        source_id=osm.ID,
-        step=PipelineStep.GRID,
-        key="osm",
-        output_path=str(tmp_path / "out" / "land_mask.zarr"),
-        inputs=(input_path,),
-        completion=Completion.MARKER,
-    )
-    assert osm._execute_grid(target) is True
+    output_path = str(tmp_path / "out" / "land_mask.zarr")
+    assert osm._rasterize(input_path, output_path) is True
 
     import xarray as xr
 
-    ds = xr.open_zarr(target.output_path, consolidated=False)
+    ds = xr.open_zarr(output_path, consolidated=False)
     assert set(ds["land_mask"].dims) == {"y", "x"}
 
 
-def test_osm_execute_grid_crs_is_readable_after_round_trip(tmp_path, monkeypatch):
+def test_osm_rasterize_crs_is_readable_after_round_trip(tmp_path, monkeypatch):
     """Regression test: unlike every other GRID step, OSM's writer relied
     solely on rasterize()'s own georeferencing instead of an explicit
     .rio.write_crs() + "grid_mapping" encoding entry -- see
@@ -271,19 +262,10 @@ def test_osm_execute_grid_crs_is_readable_after_round_trip(tmp_path, monkeypatch
     input_path = str(tmp_path / "land_polygons.gpkg")
     gdf.to_file(input_path, driver="GPKG")
 
-    from src.data.sources.steps import Completion, PipelineStep, StepTarget
+    output_path = str(tmp_path / "out" / "land_mask.zarr")
+    assert osm._rasterize(input_path, output_path) is True
 
-    target = StepTarget(
-        source_id=osm.ID,
-        step=PipelineStep.GRID,
-        key="osm",
-        output_path=str(tmp_path / "out" / "land_mask.zarr"),
-        inputs=(input_path,),
-        completion=Completion.MARKER,
-    )
-    assert osm._execute_grid(target) is True
-
-    ds = xr.open_zarr(target.output_path, consolidated=False, decode_coords="all")
+    ds = xr.open_zarr(output_path, consolidated=False, decode_coords="all")
     assert ds["land_mask"].encoding.get("grid_mapping") == "spatial_ref"
     assert ds.rio.crs is not None
     assert ds.attrs.get("crs")  # redundant plain-string fallback

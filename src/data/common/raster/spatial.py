@@ -134,6 +134,7 @@ class SpatialProcessor:
         dst_nodata: Optional[float] = None,
         packaging_attrs: Optional[Dict[str, Any]] = None,
         dtype: str = "uint16",
+        chunk_size: Tuple[int, int] = (512, 512),
     ) -> bool:
         """
         Create empty zarr file with target dimensions and metadata.
@@ -154,6 +155,13 @@ class SpatialProcessor:
                 for sources writing already-physical (unpacked) values --
                 forcing those through a uint16 store would silently
                 truncate precision on the later region write.
+            chunk_size: ``(y, x)`` zarr chunk shape. Defaults to ``(512, 512)``
+                (unchanged prior behaviour). A caller writing per-output-tile
+                regions (`process_tile_region`) must pass the same tile size
+                used to build that tile grid (`src.data.common.tiling`) here
+                -- a region write's slice must land on a chunk boundary, or
+                zarr silently rewrites (and can corrupt, under concurrent
+                writers) the neighboring tile's already-written chunk.
 
         Returns:
             bool: Success status
@@ -210,7 +218,7 @@ class SpatialProcessor:
                     var_attrs.update(packaging_attrs)
                     
                 data_vars[var] = xr.DataArray(
-                    da.zeros((len(time_coords), 1, ny, nx), dtype=np_dtype, chunks=(1, 1, 512, 512)),
+                    da.zeros((len(time_coords), 1, ny, nx), dtype=np_dtype, chunks=(1, 1, chunk_size[0], chunk_size[1])),
                     dims=['time', 'band', dim_y, dim_x],
                     coords={
                         'time': time_coords,
@@ -236,7 +244,7 @@ class SpatialProcessor:
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle='bitshuffle', blocksize=0)
             encoding = {
                 var: {
-                    "chunks": (1, 1, 512, 512),
+                    "chunks": (1, 1, chunk_size[0], chunk_size[1]),
                     "compressors": (compressor,),
                     "dtype": dtype,
                     # `.rio.write_crs()` above records the CRS link as each
@@ -383,6 +391,78 @@ class SpatialProcessor:
             logger.exception(f"Error writing year {year} to zarr: {e}")
             return False
     
+    def process_tile_region(
+        self,
+        source_ds: xr.Dataset,
+        output_path: str,
+        tile,
+        target_dims: Tuple[str, str],
+        preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None,
+        dst_nodata: Optional[float] = None,
+        resampling: str = "nearest",
+    ) -> bool:
+        """
+        Reproject `source_ds` onto one output tile's own geobox
+        (`tile.geobox`, a crop of the shared target geobox -- see
+        `src.data.common.tiling`) and region-write it into the pre-created,
+        chunk-aligned empty output zarr at `output_path`.
+
+        Unlike `write_year_to_zarr` (which reprojects onto the *whole*
+        target geobox and writes a full-extent region per year), this writes
+        only the (row, col) slice `tile.y_slice`/`tile.x_slice` covers --
+        the empty zarr's chunk boundaries must equal the tile grid's own
+        boundaries (`create_empty_target_zarr(..., chunk_size=tile_size)`)
+        or this region write silently touches a neighboring tile's chunk.
+
+        `source_ds` should already cover `tile.geobox`'s extent plus
+        whatever halo the caller's raw-getter reads for edge-effect-free
+        resampling (docs/design successor to the ledger: halo handling is
+        owned by each source's raw-getter, not this method) -- reprojecting
+        a too-small `source_ds` just leaves nodata at the tile's edges,
+        it does not raise.
+
+        `region=` mixes an explicit slice per spatial dim with `"auto"` for
+        every other dim (typically `time`/`band`) -- `"auto"` resolves by
+        matching `source_ds`'s own coordinate labels (e.g. one year's
+        timestamp) against the on-disk zarr's coords, the same mechanism
+        `write_year_to_zarr`'s `region='auto'` already relies on for its
+        non-spatial dims.
+        """
+        try:
+            if preprocess_func:
+                source_ds = preprocess_func(source_ds)
+
+            reproj_kwargs = {"resampling": resampling}
+            effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
+            if effective_nodata is not None:
+                reproj_kwargs["dst_nodata"] = effective_nodata
+            reprojected_ds = xr_reproject(source_ds, tile.geobox, **reproj_kwargs)
+
+            reprojected_ds = reprojected_ds.drop_vars(['spatial_ref'], errors='ignore').drop_attrs()
+
+            dim_y, dim_x = target_dims
+            reprojected_ds.coords[dim_x] = reprojected_ds.coords[dim_x].round(5)
+            reprojected_ds.coords[dim_y] = reprojected_ds.coords[dim_y].round(5)
+
+            region: Dict[str, Any] = {dim_y: tile.y_slice, dim_x: tile.x_slice}
+            for dim in reprojected_ds.dims:
+                if dim not in region:
+                    region[dim] = "auto"
+
+            reprojected_ds.to_zarr(
+                output_path,
+                region=region,
+                zarr_format=3,
+                consolidated=False,
+            )
+
+            logger.info("Successfully wrote tile %s to zarr", getattr(tile, "id", f"({tile.row},{tile.col})"))
+            return True
+
+        except Exception as e:
+            logger.exception(f"Error writing tile {getattr(tile, 'id', '?')} to zarr: {e}")
+            return False
+
     def process_spatial_standard(
         self,
         source_files: List[str],

@@ -1,33 +1,39 @@
-"""UNDP HDI + World Bank income-group country classifications: fetch +
-prepare + grid.
+"""UNDP HDI + World Bank income-group country classifications: fetch + prepare.
 
 docs/design/09-integrated-pipeline.md §7 (the misc split): the third of the
 three sources `misc.py` used to bundle. Two independently-fetched origins
-(HDI csv, World Bank xlsx) sharing one joined prepare+grid step -- kept
-together deliberately (not a 4-way split) because they're joined into one
+(HDI csv, World Bank xlsx) sharing one joined prepare step -- kept together
+deliberately (not a 4-way split) because they're joined into one
 `iso3`-keyed table; see the design doc for the full reasoning and the
-recorded escape hatch to split further later. `REQUIRES` on gadm's GRID
-output is the first real use of that mechanism in this codebase -- it needs
-`GID_0_code_mapping.json` to translate `iso3` into gadm's integer `GID_0` ids.
-Scoped to this source's own GRID step (`_plan_prepare()` never touches gadm),
-so FETCH/PREPARE run unblocked before gadm exists.
+recorded escape hatch to split further later.
+
+docs/design successor to the ledger, Plan 2: PREPARE+GRID merge. `STEPS` no
+longer declares GRID -- `_execute_prepare` now builds the joined
+`classifications.parquet` (still written as a real, standalone artifact:
+`src/analysis/subsets/resolve.py` reads it directly by its own iso3 key, not
+just as this source's internal intermediate) and then maps it onto gadm's
+`GID_0` ids in the same call. `REQUIRES` on gadm's **PREPARE** output --
+gadm's PREPARE now produces `GID_0_code_mapping.json` directly (gadm's own
+module docstring) -- is scoped to this source's own (now merged) PREPARE
+step, so FETCH runs unblocked before gadm exists, but PREPARE itself must
+wait for it.
 
 **No longer rasterized.** Every classification value (HDI tier, World Bank
 income group) is constant across all of a country's pixels -- it varies only
-by `GID_0`, never by pixel location -- so GRID now writes a tiny
-`GID_0`-keyed parquet table instead of a full pixel-grid zarr. Assembly
-merges it directly onto rows via `src.data.assemble.processors.TileProcessor`'s
-`join_on` mechanism (matching an existing `GID_0` column contributed by a
-gadm dataset entry in the same assemble config), rather than every pixel in
-a country carrying an identical rasterized boolean.
+by `GID_0`, never by pixel location -- so this writes a tiny `GID_0`-keyed
+parquet table instead of a full pixel-grid zarr. Assembly merges it directly
+onto rows via `src.data.assemble.processors.TileProcessor`'s `join_on`
+mechanism (matching an existing `GID_0` column contributed by a gadm dataset
+entry in the same assemble config), rather than every pixel in a country
+carrying an identical rasterized boolean.
 
 Ports `src/data/download/sources/misc.py::MiscDataSource` (hdi + worldbank_
 income_classes configured files) and `src/data/preprocess/sources/misc.py::
-MiscPreprocessor`'s `_process_country_classifications_target` (`stage="vector"`
--> PREPARE). Output paths: `misc/processed/stage_1/country_classifications/
-classifications.parquet` (unchanged), `misc/processed/stage_2/
-country_classifications/classifications_by_gid0.parquet` (was
-`classifications_grid.zarr`).
+MiscPreprocessor`'s `_process_country_classifications_target`. Output paths:
+`misc/processed/stage_1/country_classifications/classifications.parquet`
+(unchanged -- the real, externally-read intermediate), `misc/processed/
+stage_2/country_classifications/classifications_by_gid0.parquet` (was
+`classifications_grid.zarr`, this PREPARE target's own output).
 """
 
 from __future__ import annotations
@@ -37,7 +43,7 @@ import logging
 import os
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, List, Optional
+from typing import List, Optional
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -48,9 +54,6 @@ from src.data.sources.misc.hdi import read_hdi
 from src.data.sources.misc.worldbank import read_worldbank
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +68,8 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
     and keyed by GADM's `GID_0` id for a direct merge during assembly."""
 
     ID = "country_classifications"
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
-    REQUIRES = ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    REQUIRES = ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
     DATA_SOURCE_NAME = "country_classifications"
 
@@ -106,21 +109,6 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
-        if step is PipelineStep.GRID:
-            return self._plan_grid()
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` -- see gadm.py's identical
-        `_discover()` for the full rationale. This source's targets are
-        singletons with no year/key selection to apply; `selection` is
-        accepted for interface symmetry only."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare()
-        if step is PipelineStep.GRID:
-            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -128,8 +116,6 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     def _execute_fetch(self, target: StepTarget) -> bool:
@@ -140,41 +126,35 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- PREPARE ("vector") --------------------------------------------------
+    # -- PREPARE (raw HDI/World Bank files -> joined table -> GID_0 table) --
 
     def _raw_file(self, key: str) -> str:
         name = next(f.name for f in self.CONFIGURED_FILES if f.key == key)
         return os.path.join(self.output_root(PipelineStep.FETCH), name)
 
-    def _plan_prepare(self) -> List[StepTarget]:
-        """Ledger-backed fast path. Falls back to `_discover_prepare()` --
-        today's exact live logic -- if no ledger is configured yet, or
-        `data reconcile --step prepare` hasn't populated one yet."""
+    def _classifications_path(self) -> str:
+        """The joined-but-not-yet-GID_0-mapped intermediate -- a real,
+        externally-read artefact (module docstring), not internal
+        bookkeeping, so it keeps this exact stage_1 path regardless of the
+        PREPARE+GRID merge."""
+        return os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet")
 
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            has_hdi = row.meta.get("has_hdi", False)
-            has_wb = row.meta.get("has_wb", False)
-            if (not has_hdi and not has_wb) or row.local_path is None:
-                return None
-            hdi_file, wb_file = self._raw_file("hdi"), self._raw_file("worldbank")
-            inputs = tuple(f for f, present in ((hdi_file, has_hdi), (wb_file, has_wb)) if present)
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
-                output_path=row.local_path, inputs=inputs,
-                completion=Completion.PATH_EXISTS, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.ID, self.ID,
+    def _output_path(self) -> str:
+        # v2_family intentionally omitted: this is a small per-GID parquet
+        # table, not a `<family>.zarr` pixel-grid store, so it doesn't
+        # participate in layout:v2's "one store per family" zarr directory --
+        # grid_store_path() falls back to the legacy per-source path shape
+        # regardless of ctx.layout.
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            "classifications_by_gid0.parquet",
+            namespace=self.cfg.namespace,
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
         )
-        return self._discover_prepare()
 
-    def _discover_prepare(self) -> List[StepTarget]:
+    def _plan_prepare(self) -> List[StepTarget]:
         hdi_file, wb_file = self._raw_file("hdi"), self._raw_file("worldbank")
         has_hdi, has_wb = os.path.exists(hdi_file), os.path.exists(wb_file)
         if not has_hdi and not has_wb:
@@ -183,19 +163,27 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.PREPARE, key="country_classifications",
-                output_path=os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet"),
+                output_path=self._output_path(),
                 inputs=inputs, completion=Completion.PATH_EXISTS,
-                meta={"has_hdi": has_hdi, "has_wb": has_wb},
+                # value_cols vary by which of hdi/worldbank were available,
+                # so only the always-present join key is checked.
+                meta={
+                    "has_hdi": has_hdi, "has_wb": has_wb,
+                    **verify.verification_meta(self.cfg.raw, expected_vars=("GID_0",)),
+                },
             )
         ]
 
-    def _execute_prepare(self, target: StepTarget) -> bool:
-        if not self.cfg.override and os.path.exists(target.output_path):
-            logger.info("Skipping country classifications processing, output already exists: %s", target.output_path)
-            return True
+    def _build_classifications_table(self, target: StepTarget):
+        """Phase 1: join HDI + World Bank into `classifications.parquet`,
+        the real externally-read intermediate (module docstring) -- reused
+        as-is if it already exists (resumable, same idea as every other
+        merged source's phase-1 skip)."""
+        classifications_path = self._classifications_path()
+        if not self.cfg.override and os.path.exists(classifications_path):
+            return classifications_path
 
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-
+        os.makedirs(os.path.dirname(classifications_path), exist_ok=True)
         hdi_wide = read_hdi(self._raw_file("hdi")) if target.meta.get("has_hdi") else None
         wb_wide = read_worldbank(self._raw_file("worldbank")) if target.meta.get("has_wb") else None
 
@@ -209,107 +197,24 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
             result_df = wb_wide
         else:
             logger.error("No data to process")
-            return False
+            return None
 
-        result_df.to_parquet(target.output_path, index=False)
+        result_df.to_parquet(classifications_path, index=False)
         logger.info("Country classifications processing complete: %d countries", len(result_df))
-        return True
+        return classifications_path
 
-    # -- GRID ("spatial") -----------------------------------------------------
-
-    def _plan_grid(self) -> List[StepTarget]:
-        """Ledger-backed fast path. `inputs` (both deterministic, cheaply
-        recomputable paths -- no live crawl involved) is persisted directly
-        in `meta` at discovery time, same pattern as gadm's PREPARE
-        `raw_file` -- see gadm.py's `_plan_prepare()`. The ledger-backed path
-        only needs `row.local_path` for this source's own output; it doesn't
-        re-check the gadm dependency (that's `_check_requires`'s job
-        elsewhere in the CLI, not `plan()`'s)."""
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            classifications_parquet = row.meta.get("classifications_parquet")
-            gadm_zarr = row.meta.get("gadm_zarr")
-            if classifications_parquet is None or gadm_zarr is None or row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
-                output_path=row.local_path, inputs=(classifications_parquet, gadm_zarr),
-                completion=Completion.PATH_EXISTS, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid()
-
-    def _discover_grid(self) -> List[StepTarget]:
-        classifications_parquet = os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet")
-        if not os.path.exists(classifications_parquet):
-            return []
-
-        # REQUIRES=((GRID, "gadm", GRID),) -- resolve gadm's own layout directly
-        # rather than importing gadm's class (docs/design/09-integrated-pipeline.md
-        # §2: cross-source coupling is on artefact paths, never a class import).
-        # Must mirror GadmSource._plan_grid()'s own grid_store_path() call
-        # (same v2_family="country_id") so this keeps finding gadm's output
-        # under layout=v2 too, not just the legacy layout.
-        gadm_zarr = layout.grid_store_path(
-            self.ctx.data_root,
-            "misc",
-            "countries_grid.zarr",
-            namespace="gadm",
-            grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="country_id",
-        )
-        if not os.path.exists(gadm_zarr):
-            return []
-
-        return [
-            StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key="country_classifications",
-                # v2_family intentionally omitted: this is a small per-GID
-                # parquet table, not a `<family>.zarr` pixel-grid store, so it
-                # doesn't participate in layout:v2's "one store per family"
-                # zarr directory -- grid_store_path() falls back to the
-                # legacy per-source path shape regardless of ctx.layout.
-                output_path=layout.grid_store_path(
-                    self.ctx.data_root,
-                    self.cfg.data_path,
-                    "classifications_by_gid0.parquet",
-                    namespace=self.cfg.namespace,
-                    grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                ),
-                inputs=(classifications_parquet, gadm_zarr), completion=Completion.PATH_EXISTS,
-                # value_cols vary by which of hdi/worldbank were available at
-                # PREPARE time, so only the always-present join key is checked.
-                meta={
-                    "classifications_parquet": classifications_parquet,
-                    "gadm_zarr": gadm_zarr,
-                    **verify.verification_meta(self.cfg.raw, expected_vars=("GID_0",)),
-                },
-            )
-        ]
-
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         import pandas as pd
 
         if not self.cfg.override and os.path.exists(target.output_path):
-            logger.info("Skipping country classifications GID_0 table, output already exists: %s", target.output_path)
+            logger.info("Skipping country classifications GID_0 table -- already exists: %s", target.output_path)
             return True
 
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
+        classifications_path = self._build_classifications_table(target)
+        if classifications_path is None:
+            return False
 
         from src.data.sources.misc.gadm import gid_mapping_path
-
-        classifications_parquet, gadm_zarr = target.inputs
-        classifications_df = pd.read_parquet(classifications_parquet)
 
         country_mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, "GID_0")
         if not os.path.exists(country_mapping_file):
@@ -318,6 +223,8 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
 
         from src.analysis.subsets.registry import load_country_registry
 
+        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
+        classifications_df = pd.read_parquet(classifications_path)
         country_code_to_id = load_country_registry(Path(country_mapping_file)).country_to_id
         classifications_df["GID_0"] = classifications_df["iso3"].map(lambda x: country_code_to_id.get(x, 0))
         classifications_df = classifications_df[classifications_df["GID_0"] != 0]

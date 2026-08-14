@@ -1,7 +1,15 @@
-"""PREPARE produces one fixed-name file (`ecoregions_simplified.gpkg`) --
-unlike GADM's variable-count-of-per-level-files directory, this uses
-`Completion.PATH_EXISTS` (matching `country_classifications`'s single
-`classifications.parquet` PREPARE output), not `Completion.MARKER`."""
+"""PREPARE's phase 1 (`_ensure_vector_file`) produces one fixed-name
+simplified vector file (`ecoregions_simplified.gpkg`), shared by both PREPARE
+targets (Plan 2's PREPARE+GRID merge, docs/design successor to the ledger).
+The `ecoregions_grid` PREPARE target itself uses `Completion.MARKER` (a
+tiled zarr store) -- unlike `country_classifications`'s single-file
+`Completion.PATH_EXISTS` PREPARE output, this source's PREPARE produces a
+tiled raster, same rationale as gadm's own rasterized `Completion.MARKER`
+GID_N grids. Full rasterization needs a real geobox/dask -- exercised
+separately in test_ecoregions_grid_geobox.py -- so this file stubs at the
+`_ensure_vector_file` phase-1 boundary, mirroring
+tests/data/sources/misc/test_gadm_prepare_completion.py's identical
+approach for gadm."""
 
 import os
 import zipfile
@@ -51,40 +59,39 @@ def test_constructor_config_overrides_default_url_and_name(tmp_path):
     assert source.CONFIGURED_FILES[0].name == "override.zip"
 
 
-def test_plan_prepare_target_uses_path_exists_completion(tmp_path):
+def test_plan_prepare_target_uses_marker_completion(tmp_path):
     source, _ = _make(tmp_path)
     _write_fake_raw_zip(source, tmp_path)
 
     target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
-    assert target.completion == Completion.PATH_EXISTS
+    assert target.key == "ecoregions_grid"
+    assert target.completion == Completion.MARKER
 
 
-def test_execute_prepare_writes_simplified_gpkg_with_expected_columns(tmp_path):
+def test_ensure_vector_file_writes_simplified_gpkg_with_expected_columns(tmp_path):
     source, _ = _make(tmp_path)
-    _write_fake_raw_zip(source, tmp_path)
+    raw_file = _write_fake_raw_zip(source, tmp_path)
 
-    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
-    assert source.execute(target) is True
-    assert os.path.exists(target.output_path)
+    vector_path = source._ensure_vector_file(raw_file)
+    assert vector_path is not None
+    assert os.path.exists(vector_path)
 
-    gdf = gpd.read_file(target.output_path, engine="pyogrio")
+    gdf = gpd.read_file(vector_path, engine="pyogrio")
     for col in ("REALM", "BIOME_NUM", "BIOME_NAME", "ECO_ID", "ECO_NAME"):
         assert col in gdf.columns
 
 
-def test_execute_prepare_is_idempotent(tmp_path):
+def test_ensure_vector_file_is_idempotent(tmp_path):
     source, _ = _make(tmp_path)
-    _write_fake_raw_zip(source, tmp_path)
+    raw_file = _write_fake_raw_zip(source, tmp_path)
 
-    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
-    assert source.execute(target) is True
-    assert source.execute(target) is True
+    assert source._ensure_vector_file(raw_file) is not None
+    assert source._ensure_vector_file(raw_file) is not None
 
 
-def test_execute_prepare_fails_loudly_on_missing_columns(tmp_path):
+def test_ensure_vector_file_fails_loudly_on_missing_columns(tmp_path):
     source, _ = _make(tmp_path)
-    _write_fake_raw_zip(source, tmp_path, columns={"NOT_REALM": ["x"]})
+    raw_file = _write_fake_raw_zip(source, tmp_path, columns={"NOT_REALM": ["x"]})
 
-    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
-    assert source.execute(target) is False
-    assert not os.path.exists(target.output_path)
+    assert source._ensure_vector_file(raw_file) is None
+    assert not os.path.exists(source._vector_path())

@@ -75,32 +75,19 @@ def test_prices_url_config_override(tmp_path):
     assert source.CONFIGURED_FILES[0].name == "prices.xlsx"
 
 
-def test_prepare_plan_ignores_ledger_row_written_by_a_different_host(tmp_path):
-    # Reproduces a real cross-host ledger merge: `merge_from_remote()` (run
-    # by the FETCH driver/`data reconcile`/`data transfer`) merges PREPARE
-    # rows across hosts by design, so a row another machine wrote -- with
-    # that machine's own absolute `raw_file`/`local_path` -- can land in
-    # this host's ledger. Trusting it verbatim used to hand a foreign path
-    # straight to `os.makedirs()` in `_execute_prepare()`
-    # (`PermissionError: '/Users'` on scicore, from a row a Mac wrote).
-    # `plan()` must instead notice the row's `raw_file` doesn't exist here
-    # and fall back to live discovery of this host's own raw file.
-    from src.data.common.ledger.paths import ledger_path
-    from src.data.common.ledger.store import SourceLedger
 
-    source, ctx = _make_source(tmp_path)
+def test_prepare_plan_always_reflects_this_hosts_own_raw_file(tmp_path):
+    # The cross-host ledger merge bug this test used to reproduce
+    # (`PermissionError: '/Users'` on scicore from a Mac-written ledger row)
+    # cannot recur now that PREPARE has no ledger fast path at all -- plan()
+    # is a bare live `os.path.exists()` check against this host's own raw
+    # file every call (see module docstring), so there is no foreign-host
+    # row to trust. This test is the direct replacement: with no ledger
+    # involved, plan() reflects only what's actually on this host's disk.
+    source, _ = _make_source(tmp_path)
     fetch_file = source._raw_prices_file()
     os.makedirs(os.path.dirname(fetch_file), exist_ok=True)
     open(fetch_file, "w").close()
-
-    foreign_raw_file = "/Users/other/OneDrive/data/raw/commodity_prices/CMO-Historical-Data-Annual.xlsx"
-    foreign_output_path = "/Users/other/OneDrive/data/prepared/commodity_prices/commodity_prices.parquet"
-    local_ledger_path = ledger_path(ctx.local_index_dir, source.data_path)
-    with SourceLedger.open(local_ledger_path, data_path=source.data_path) as ledger:
-        ledger.ensure_artifact(
-            "prepare", "commodity_prices",
-            local_path=foreign_output_path, meta={"raw_file": foreign_raw_file},
-        )
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1

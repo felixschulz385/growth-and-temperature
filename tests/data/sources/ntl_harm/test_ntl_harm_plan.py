@@ -1,56 +1,44 @@
-"""NtlHarmSource.plan() must reproduce the old NTLHarmPreprocessor's targets,
-including its two deliberately-preserved quirks (see src/data/sources/ntl_harm.py
-module docstring). Oracle: tests/data/preprocess/sources/test_characterization_ntl_harm.py.
+"""NtlHarmSource: ledger-free FETCH/PREPARE.
+
+PREPARE is planned by a live crawl of FETCH's raw output directory (no
+ledger fast path -- see src/data/sources/ntl_harm.py's module docstring) and
+executed as one tiled `run_tiled_prepare()` call per source (no separate
+GRID step, no intermediate annual zarr). The old insertion-order/GRID-target
+tests this file used to have are gone with the ledger they depended on;
+`test_execute_prepare_writes_a_real_reprojected_tiled_output` is the new
+end-to-end replacement, exercising the full raw-file -> tiled zarr path
+against a real (synthetic) raster instead of mocks.
 """
 
+import contextlib
 import os
 
-from src.data.common.ledger.store import PushResult, SourceLedger
+import numpy as np
+import rasterio
+from odc.geo.geobox import GeoBox
+from rasterio.transform import from_origin
+
+import src.data.common.geobox as geobox_module
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.ntl_harm import NtlHarmSource
-from src.data.sources.steps import PipelineStep, TargetSelection
+from src.data.sources.steps import Completion, PipelineStep, TargetSelection, marker_path
 
 
-def _write_index(local_index_dir, data_path, rows):
-    """Build a ledger with the given (relative_path, status_category) rows,
-    inserted in list order -- `completed_fetch_files()` orders by
-    `discovered_at`, so this preserves the insertion-order quirk this test
-    file exercises. "completed" means HPC-verified
-    (docs/design/10-fetch-ledger.md), matching what `_plan_prepare` reads.
-    """
-    safe = data_path.replace("/", "_").replace("\\", "_")
-    os.makedirs(local_index_dir, exist_ok=True)
-    path = os.path.join(local_index_dir, f"{safe}.duckdb")
-    with SourceLedger.open(path, data_path=data_path) as ledger:
-        for row in rows:
-            ledger.add_remote_files([(row["relative_path"], row["relative_path"])], get_file_hash=lambda url: url)
-            if row["status_category"] == "completed":
-                ledger.record_push_batch("fetch", [PushResult(unit_id=row["relative_path"], ok=True)])
-
-
-def _make_source(tmp_path, year_range=(2019, 2021), rows=None, layout="legacy"):
-    data_root = str(tmp_path / "data_root")
-    local_index_dir = str(tmp_path / "index")
-    data_path = "ntl_harm/harmonized"
-    if rows is None:
-        rows = [
-            {"relative_path": "harmonized_2021.tif", "status_category": "completed"},
-            {"relative_path": "harmonized_2019.tif", "status_category": "completed"},
-            {"relative_path": "harmonized_2020.zip", "status_category": "completed"},
-            {"relative_path": "harmonized_2020.tif", "status_category": "completed"},
-            {"relative_path": "harmonized_2022.tif", "status_category": "pending"},
-        ]
-    _write_index(local_index_dir, data_path, rows)
-    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout=layout)
-    cfg = SourceConfig.from_dict("ntl_harm", {"data_path": data_path, "year_range": list(year_range)})
+def _make_source(tmp_path, **raw):
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
+    cfg = SourceConfig.from_dict("ntl_harm", {"data_path": "ntl_harm/harmonized", **raw})
     return NtlHarmSource(ctx, cfg), ctx
 
 
-def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
-    assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "ntl_harm/harmonized")
-    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "ntl_harm/harmonized")
+def _write_raw_file(source, filename):
+    raw_root = source.output_root(PipelineStep.FETCH)
+    os.makedirs(raw_root, exist_ok=True)
+    open(os.path.join(raw_root, filename), "w").close()
+
+
+def test_steps_is_fetch_and_prepare_only():
+    assert NtlHarmSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
 def test_default_resampling_is_sum(tmp_path):
@@ -59,47 +47,82 @@ def test_default_resampling_is_sum(tmp_path):
 
 
 def test_resampling_overridable(tmp_path):
-    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
-    cfg = SourceConfig.from_dict("ntl_harm", {"data_path": "ntl_harm/harmonized", "resampling": "nearest"})
-    source = NtlHarmSource(ctx, cfg)
+    source, _ = _make_source(tmp_path, resampling="nearest")
     assert source.resampling == "nearest"
 
 
-def test_prepare_targets_preserve_file_insertion_order_not_sorted(tmp_path):
+def test_prepare_plan_empty_when_no_raw_files(tmp_path):
     source, _ = _make_source(tmp_path)
-    targets = source.plan(PipelineStep.PREPARE, TargetSelection(year_range=(2019, 2021)))
-    assert [t.key for t in targets] == ["2021", "2019", "2020"]
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
 
 
-def test_prepare_target_prefers_tif_over_zip(tmp_path):
+def test_prepare_plan_one_target_covering_every_available_year(tmp_path):
     source, _ = _make_source(tmp_path)
-    targets = source.plan(PipelineStep.PREPARE, TargetSelection(year_range=(2019, 2021)))
-    by_key = {t.key: t for t in targets}
-    assert by_key["2020"].inputs == ("harmonized_2020.tif",)
-    assert by_key["2020"].meta["total_candidates"] == 2
+    for fname in ("harmonized_2019.tif", "harmonized_2020.tif", "harmonized_2021.tif"):
+        _write_raw_file(source, fname)
 
-
-def test_grid_target_lists_available_annual_zarrs(tmp_path):
-    source, _ = _make_source(tmp_path, year_range=(2019, 2022))
-    annual_dir = source.output_root(PipelineStep.PREPARE)
-    os.makedirs(annual_dir, exist_ok=True)
-    for year in (2019, 2020):
-        os.makedirs(os.path.join(annual_dir, f"{year}.zarr"))
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2022)))
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert sorted(targets[0].meta["years_available"]) == [2019, 2020]
-    assert targets[0].output_path == os.path.join(
-        source.output_root(PipelineStep.GRID), "ntl_harm_timeseries_reprojected.zarr"
+    target = targets[0]
+    assert target.key == "all"
+    assert target.meta["years"] == [2019, 2020, 2021]
+    assert target.completion == Completion.MARKER
+    assert target.output_path.endswith("ntl_harm_timeseries_reprojected.zarr")
+
+
+def test_prepare_plan_prefers_tif_over_zip_per_year(tmp_path):
+    source, _ = _make_source(tmp_path)
+    _write_raw_file(source, "harmonized_2020.zip")
+    _write_raw_file(source, "harmonized_2020.tif")
+
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
+    assert targets[0].meta["raw_files"][2020] == "harmonized_2020.tif"
+
+
+def test_prepare_plan_respects_year_selection(tmp_path):
+    source, _ = _make_source(tmp_path)
+    for fname in ("harmonized_2019.tif", "harmonized_2020.tif", "harmonized_2021.tif"):
+        _write_raw_file(source, fname)
+
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection(year_range=(2020, 2021)))
+    assert targets[0].meta["years"] == [2020, 2021]
+
+
+def _write_sample_geotiff(path, size=8, value=1234.0):
+    transform = from_origin(-1.0, 1.0, 2.0 / size, 2.0 / size)
+    data = np.full((1, size, size), value, dtype="float32")
+    with rasterio.open(
+        str(path), "w", driver="GTiff", height=size, width=size, count=1, dtype="float32",
+        crs="EPSG:4326", transform=transform,
+    ) as dst:
+        dst.write(data)
+
+
+def test_execute_prepare_writes_a_real_reprojected_tiled_output(tmp_path, monkeypatch):
+    source, ctx = _make_source(tmp_path, tile_size=4)
+    os.makedirs(source.output_root(PipelineStep.FETCH), exist_ok=True)
+    _write_sample_geotiff(
+        os.path.join(source.output_root(PipelineStep.FETCH), "harmonized_2020.tif"), size=8, value=1234.0
     )
 
+    target_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.25)  # 8x8, 2x2 tiles @ size 4
+    monkeypatch.setattr(geobox_module, "get_target_geobox", lambda passed_ctx: target_geobox)
+    monkeypatch.setattr(type(source), "_dask_client", lambda self: contextlib.nullcontext("fake-client"))
 
-def test_grid_target_uses_v2_family_path_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, year_range=(2019, 2022), layout="v2")
-    annual_dir = source.output_root(PipelineStep.PREPARE)
-    os.makedirs(annual_dir, exist_ok=True)
-    os.makedirs(os.path.join(annual_dir, "2019.zarr"))
-
-    targets = source.plan(PipelineStep.GRID, TargetSelection(year_range=(2019, 2022)))
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "ntl_harm.zarr")
+    target = targets[0]
+
+    ok = source._execute_prepare(target)
+    assert ok is True
+    assert os.path.exists(marker_path(target.output_path))
+
+    import xarray as xr
+
+    ds = xr.open_zarr(target.output_path, consolidated=False, decode_coords="all")
+    try:
+        values = ds[source.VARIABLE_NAME].isel(time=0, band=0).values
+        assert np.all(np.isfinite(values))
+        assert values.shape == (8, 8)
+    finally:
+        ds.close()

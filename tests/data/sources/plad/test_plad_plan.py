@@ -1,10 +1,12 @@
 """PlaDSource.plan()/execute() tests.
 
-PLAD's GRID step no longer rasterizes -- regional favoritism is constant
-within a GID_1/GID_2 admin unit for a given year, so GRID now writes a small
-(GID_N, year)-keyed parquet table merged directly during assembly
-(src.data.assemble.processors.TileProcessor's join_on mechanism) instead of
-a pixel-grid zarr.
+PLAD's former GRID step -- renamed PREPARE (Plan 2's PREPARE+GRID merge,
+docs/design successor to the ledger; PLAD never had a separate PREPARE step
+of its own, so this is a pure rename, no merge logic) -- no longer
+rasterizes: regional favoritism is constant within a GID_1/GID_2 admin unit
+for a given year, so it writes a small (GID_N, year)-keyed parquet table
+merged directly during assembly (src.data.assemble.processors.TileProcessor's
+join_on mechanism) instead of a pixel-grid zarr.
 """
 
 import json
@@ -40,23 +42,24 @@ def _write_gadm_mapping(ctx, gid_col, mapping):
     return path
 
 
-def test_no_prepare_step():
-    assert PipelineStep.PREPARE not in PlaDSource.STEPS
-    assert PlaDSource.STEPS == (PipelineStep.FETCH, PipelineStep.GRID)
+def test_steps_is_fetch_and_prepare_only():
+    assert PlaDSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_requires_gadm_grid_not_prepare():
+def test_requires_gadm_prepare():
     # Rasterization (and the GADM polygon geometries it needed) is gone --
-    # only gadm's integer-id mapping sidecar (from GRID) is still needed.
-    # Scoped to plad's own GRID step (its only step besides FETCH).
-    assert PlaDSource.REQUIRES == ((PipelineStep.GRID, "gadm", PipelineStep.GRID),)
+    # only gadm's integer-id mapping sidecar is still needed, now produced
+    # by gadm's PREPARE step directly (Plan 2's PREPARE+GRID merge --
+    # PipelineStep.GRID no longer exists anywhere). Scoped to plad's own
+    # (renamed) PREPARE step (its only step besides FETCH).
+    assert PlaDSource.REQUIRES == ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
 
 def test_output_root_hardcodes_plad_prefix_ignoring_data_path(tmp_path):
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     cfg = SourceConfig.from_dict("plad", {"data_path": "something/else"})
     source = PlaDSource(ctx, cfg)
-    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "plad", "processed", "stage_2")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "plad", "processed", "stage_2")
 
 
 def test_output_root_fetch_uses_top_level_tree_under_layout_v2(tmp_path):
@@ -71,21 +74,21 @@ def test_admin_level_must_be_1_or_2(tmp_path):
         PlaDSource(ctx, cfg)
 
 
-def test_plan_grid_empty_without_gadm_mapping_file(tmp_path):
+def test_plan_prepare_empty_without_gadm_mapping_file(tmp_path):
     source, ctx = _make_source(tmp_path, admin_level=1)
-    assert source.plan(PipelineStep.GRID, TargetSelection()) == []
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
 
 
-def test_plan_grid_target_output_path_includes_admin_level(tmp_path):
+def test_plan_prepare_target_output_path_includes_admin_level(tmp_path):
     s1, ctx1 = _make_source(tmp_path, admin_level=1)
     s2, ctx2 = _make_source(tmp_path, admin_level=2)
     _write_gadm_mapping(ctx1, "GID_1", {"USA.1_1": 1})
     _write_gadm_mapping(ctx2, "GID_2", {"USA.1.1_1": 1})
 
-    t1 = s1.plan(PipelineStep.GRID, TargetSelection())[0]
-    t2 = s2.plan(PipelineStep.GRID, TargetSelection())[0]
-    assert t1.output_path == os.path.join(s1.output_root(PipelineStep.GRID), "plad_adm1_reg_fav.parquet")
-    assert t2.output_path == os.path.join(s2.output_root(PipelineStep.GRID), "plad_adm2_reg_fav.parquet")
+    t1 = s1.plan(PipelineStep.PREPARE, TargetSelection())[0]
+    t2 = s2.plan(PipelineStep.PREPARE, TargetSelection())[0]
+    assert t1.output_path == os.path.join(s1.output_root(PipelineStep.PREPARE), "plad_adm1_reg_fav.parquet")
+    assert t2.output_path == os.path.join(s2.output_root(PipelineStep.PREPARE), "plad_adm2_reg_fav.parquet")
     assert t1.meta["admin_level"] == 1
 
 
@@ -144,7 +147,7 @@ def test_build_reg_fav_table_drops_codes_missing_from_gadm_mapping(tmp_path, mon
     assert table.empty
 
 
-def test_execute_grid_writes_reg_fav_parquet(tmp_path, monkeypatch):
+def test_execute_prepare_writes_reg_fav_parquet(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path, admin_level=1, year_range=(1990, 1991))
 
     plad_path = tmp_path / "plad_sample.dta"
@@ -161,7 +164,7 @@ def test_execute_grid_writes_reg_fav_parquet(tmp_path, monkeypatch):
 
     _write_gadm_mapping(ctx, "GID_1", {"USA.1_1": 5})
 
-    targets = source.plan(PipelineStep.GRID, TargetSelection())
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     target = targets[0]
 

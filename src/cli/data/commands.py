@@ -94,6 +94,14 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         "--detailed", action="store_true",
         help="For FETCH rows, break the outstanding count down into never-attempted vs. retrying",
     )
+    summary_p.add_argument(
+        "--by-tile", action="store_true",
+        help=(
+            "For PREPARE rows, replace the collapsed complete/total count with a "
+            "per-(tile, year) status breakdown (complete/outstanding/unavailable), "
+            "for targets that are tiled zarr outputs (run_tiled_prepare()-shaped)"
+        ),
+    )
     # Per-target INFO/WARNING chatter from individual sources' plan() (e.g.
     # MODIS logging one line per missing stage-1 year) defeats the point of a
     # *concise* overview across every source -- default this subcommand's

@@ -1,12 +1,15 @@
-"""Berman et al. mining conflict data: fetch (manual) + grid, no prepare.
+"""Berman et al. mining conflict data: fetch (manual) + prepare, single stage.
 
 docs/design/09-integrated-pipeline.md §5. Merges
 `src/data/download/sources/manual.py::BermanMiningDataSource` (a manual
 fetch -- prompts the user for a local file path, since ICPSR requires
 authenticated manual download) and
 `src/data/preprocess/sources/berman_mining.py::BermanMiningPreprocessor`
-(`stage="spatial"` -> GRID). **No PREPARE step**: like PLAD, mining-point
-gridding happens directly from the raw `.dta` file in one stage.
+(`stage="spatial"` -> what's now PREPARE). Mining-point gridding happens
+directly from the raw `.dta` file in one stage -- there was never a separate
+PREPARE step to merge GRID into (docs/design successor to the ledger, Plan
+2: `PipelineStep.GRID` is renamed to `PipelineStep.PREPARE` here since GRID
+no longer exists as a step name).
 
 **No `REQUIRES` on gadm** -- correcting an earlier, unverified planning
 assumption: this source only shares the VIIRS-derived geobox *cache location*
@@ -48,7 +51,7 @@ class BermanMiningSource(DataSource):
 
     ID = "berman_mining"
     ALIASES = ("berman", "mining_conflict")
-    STEPS = (PipelineStep.FETCH, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "berman_mining"
     has_entrypoints = False
@@ -147,10 +150,10 @@ class BermanMiningSource(DataSource):
                     output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
                 )
             ]
-        if step is PipelineStep.GRID:
+        if step is PipelineStep.PREPARE:
             return [
                 StepTarget(
-                    source_id=self.ID, step=PipelineStep.GRID, key="all",
+                    source_id=self.ID, step=PipelineStep.PREPARE, key="all",
                     output_path=layout.grid_store_path(
                         self.ctx.data_root,
                         self.cfg.data_path,
@@ -174,8 +177,8 @@ class BermanMiningSource(DataSource):
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.FETCH:
             return self._execute_fetch(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
+        if target.step is PipelineStep.PREPARE:
+            return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     def _execute_fetch(self, target: StepTarget) -> bool:
@@ -186,7 +189,7 @@ class BermanMiningSource(DataSource):
 
         return run_fetch(self, **self.cfg.raw.get("download", {}))
 
-    # -- GRID ("spatial") -------------------------------------------------
+    # -- PREPARE ("spatial") -----------------------------------------------
 
     def _get_or_create_geobox(self):
         from src.data.common.geobox import get_target_geobox
@@ -205,7 +208,7 @@ class BermanMiningSource(DataSource):
             mines_ds = mines_ds.sel(year=slice(year_range[0], year_range[1]))
         return mines_ds
 
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         import numpy as np
         import pandas as pd
         from odc.geo.xr import xr_reproject

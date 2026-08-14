@@ -15,23 +15,26 @@ the same reason -- login/browser-session fragility means it still needs a
 human at the keyboard, not the unattended per-file resumability `FETCH`
 promises.
 
-**The one place this migration genuinely improves a source's resumability,
-not just relocates its code**: the old `SnlMiningPreprocessor.process_target`
-does DuckDB feature-building (`_prepare_duckdb_features` -- buffer tables,
-ADM count tables, R-tree indexes) and tiled rasterization together inside one
-`stage="spatial"` call. Here they are split into an explicit, independently
-resumable PREPARE step (writes `prepared_db_path`) and GRID step (reads it),
-matching the PREPARE/GRID vocabulary used everywhere else and letting a
-retried rasterization skip the expensive DuckDB rebuild.
+**Two internal phases, one PREPARE step** (docs/design successor to the
+ledger, Plan 2's PREPARE+GRID merge): the old `SnlMiningPreprocessor.
+process_target` did DuckDB feature-building (`_prepare_duckdb_features` --
+buffer tables, ADM count tables, R-tree indexes) and tiled rasterization
+together inside one `stage="spatial"` call; an earlier revision of this
+module split them into separate PREPARE (writes `prepared_db_path`) and GRID
+(reads it) *steps*. They're a single `PREPARE` step again now, but the
+internal split is preserved as two phases inside one `_execute_prepare()`
+(`_build_prepared_db()`, resumable via a plain `os.path.exists()` check on
+`prepared_db_path`, then rasterization) -- a retried rasterization still
+skips the expensive DuckDB rebuild.
 
 Ports `src/data/preprocess/sources/snl_mining.py::SnlMiningPreprocessor`.
-`REQUIRES` on gadm's PREPARE (reads `misc/processed/stage_1/gadm/
-gadm_levelADM_{1,2}_simplified.gpkg`, the same GADM artefact PLAD depends on),
-scoped to this source's own PREPARE step (`_execute_prepare()`'s admin-polygon
-join) **and** gadm's GRID (reads `GID_1`/`GID_2_code_mapping.json`, to
+`REQUIRES` on gadm's PREPARE -- both for the admin-polygon join (reads
+`misc/processed/stage_1/gadm/gadm_levelADM_{1,2}_simplified.gpkg`, the same
+GADM artefact PLAD depends on) and for `GID_1`/`GID_2_code_mapping.json` (to
 translate this source's own admin-count tables into gadm's integer ids --
-see below), scoped to this source's own GRID step (`_export_admin_count_
-tables()`) -- so PREPARE isn't blocked on gadm's GRID output, and vice versa.
+see below) -- both now produced by gadm's PREPARE directly (Plan 2's
+PREPARE+GRID merge) -- `PipelineStep.GRID` no longer exists for gadm to
+require. Scoped to this source's own (merged) PREPARE step.
 
 **Admin-polygon mine counts are no longer rasterized.** `mine_count_adm1`/
 `mine_count_adm2` are constant across every pixel of their containing ADM
@@ -72,7 +75,7 @@ import dataclasses
 import logging
 import os
 import tempfile
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Dict, List, Tuple
 
 from src.data.common.geobox import get_target_geobox
 from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
@@ -83,9 +86,6 @@ from src.data.sources import commodities, layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
-
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
 
 logger = logging.getLogger(__name__)
 
@@ -134,11 +134,16 @@ class SnlMiningSource(DataSource):
     directly during assembly rather than rasterized)."""
 
     ID = "snl_mining"
-    STEPS = (PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.PREPARE,)
+    # gadm's PREPARE now does what used to be its separate GRID step
+    # directly (docs/design successor to the ledger, Plan 2's PREPARE+GRID
+    # merge) -- PipelineStep.GRID no longer exists for gadm to require. Both
+    # of this source's own former uses of gadm (admin-polygon join, GID_N
+    # mapping sidecars) now live inside one merged PREPARE step, so one
+    # gadm entry covers both.
     REQUIRES = (
         (PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),
         (PipelineStep.PREPARE, "commodity_prices", PipelineStep.PREPARE),
-        (PipelineStep.GRID, "gadm", PipelineStep.GRID),
     )
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
@@ -253,7 +258,7 @@ class SnlMiningSource(DataSource):
         `layout.output_root()` -- not hardcoded to the legacy `misc/processed/
         stage_1/gadm` shape -- so this keeps finding gadm's simplified vector
         files under `ctx.layout="v2"` too, matching how
-        `CountryClassificationsSource._plan_grid()` resolves its own
+        `CountryClassificationsSource._plan_prepare()` resolves its own
         cross-source gadm reference (src/data/sources/misc/country_classifications.py)."""
         gadm_prepare_dir = layout.output_root(
             self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout
@@ -278,8 +283,6 @@ class SnlMiningSource(DataSource):
     def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
         if step is PipelineStep.PREPARE:
             return self._plan_prepare()
-        if step is PipelineStep.GRID:
-            return self._plan_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
@@ -289,49 +292,18 @@ class SnlMiningSource(DataSource):
         accepted for interface symmetry only."""
         if step is PipelineStep.PREPARE:
             return self._discover_prepare()
-        if step is PipelineStep.GRID:
-            return self._discover_grid()
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
-    # -- PREPARE: DuckDB feature build (newly split out of the old single
-    # "spatial" stage -- see module docstring) ------------------------------
+    # -- PREPARE: DuckDB feature build (phase 1, `_build_prepared_db()`) +
+    # tiled rasterization from it (phase 2) -- one merged step, docs/design
+    # successor to the ledger, Plan 2's PREPARE+GRID merge. -----------------
 
     def _plan_prepare(self) -> List[StepTarget]:
-        """Ledger-backed fast path. `inputs` (`self.duckdb_path`,
-        `self.commodity_prices_path`) are plain config-derived instance
-        attributes, not values discovered by a live crawl -- no need to
-        persist them in `meta`, `build_target` just reads them off `self`
-        directly. Falls back to `_discover_prepare()` -- today's exact live
-        logic -- if no ledger is configured yet, or `data reconcile
-        --step prepare` hasn't populated one yet."""
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            if row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.PREPARE, key=row.unit_id,
-                output_path=row.local_path, inputs=(self.duckdb_path, self.commodity_prices_path),
-                completion=Completion.PATH_EXISTS, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.PREPARE, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='prepare' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step prepare` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_prepare()
-
-    def _discover_prepare(self) -> List[StepTarget]:
         if not os.path.exists(self.duckdb_path):
             logger.warning(
                 "SNL mining stage-0 DuckDB not found at %s -- run "
@@ -350,10 +322,34 @@ class SnlMiningSource(DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.PREPARE, key="all",
-                output_path=self.prepared_db_path, inputs=(self.duckdb_path, self.commodity_prices_path),
+                output_path=layout.grid_store_path(
+                    self.ctx.data_root,
+                    self.cfg.data_path,
+                    self.output_filename,
+                    grid_id=self.ctx.grid_id,
+                    layout=self.ctx.layout,
+                    v2_family="snl_mining",
+                ),
+                inputs=(self.duckdb_path, self.commodity_prices_path),
                 completion=Completion.PATH_EXISTS,
+                meta=verify.verification_meta(
+                    self.cfg.raw,
+                    expected_vars=tuple(self.output_variables),
+                    value_range=(0, 200),
+                    # value_range=(0, 200) only makes sense for the uint16
+                    # count family -- the float32 price-shock family is on a
+                    # different physical scale (a sum of ln-prices, not a
+                    # count). verify.py supports one value_range per target,
+                    # so scope it by dtype here; the excluded (float32)
+                    # variables still get the unconditional "sample isn't
+                    # entirely NaN" check.
+                    range_vars=tuple(v for v in self.output_variables if self.buffer_tables[v][3] == "uint16"),
+                ),
             )
         ]
+
+    def _discover_prepare(self) -> List[StepTarget]:
+        return self._plan_prepare()
 
     def _connect_duckdb(self, path: str):
         import duckdb
@@ -373,19 +369,19 @@ class SnlMiningSource(DataSource):
     def _get_or_create_geobox(self):
         return get_target_geobox(self.ctx)
 
-    def _execute_prepare(self, target: StepTarget) -> bool:
-        from src.data.sources.steps import is_complete
-
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping SNL mining DuckDB preparation, already exists: %s", target.output_path)
-            return True
+    def _build_prepared_db(self) -> bool:
+        """Phase 1 of PREPARE -- resumable via a plain `os.path.exists()`
+        check on `prepared_db_path` (see `_execute_prepare()`), not the
+        `StepTarget`/`is_complete()` machinery, since that machinery gates
+        the *merged* PREPARE target's own (rasterization) output, a
+        genuinely different, later artifact."""
         if not os.path.exists(self.duckdb_path):
             raise FileNotFoundError(f"SNL mining DuckDB not found: {self.duckdb_path}")
         for variable, table_spec in self.admin_tables.items():
             if not os.path.exists(table_spec["geometry_path"]):
                 raise FileNotFoundError(f"Admin geometry for {variable} not found: {table_spec['geometry_path']}")
 
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
+        os.makedirs(os.path.dirname(self.prepared_db_path), exist_ok=True)
         geobox = self._get_or_create_geobox()
         raster_crs = str(geobox.crs)
 
@@ -867,39 +863,9 @@ class SnlMiningSource(DataSource):
         except Exception:
             logger.debug("Skipping DuckDB R-tree plan verification (EXPLAIN not stable on this build).")
 
-    # -- GRID: tiled rasterization from the prepared DuckDB ------------------
+    # -- Phase 2 of PREPARE: tiled rasterization from the prepared DuckDB ----
 
-    def _plan_grid(self) -> List[StepTarget]:
-        """Ledger-backed fast path. `meta["years"]` (persisted by
-        `_discover_grid()` below, exactly like gadm's GRID persists
-        `level_files` -- see gadm.py's `_plan_grid()`) is read straight back
-        instead of re-opening `prepared_db_path` and re-running `SELECT
-        DISTINCT year FROM active_mines` -- this is the one source whose
-        live discovery queries a source-specific DuckDB rather than crawling
-        the filesystem, so avoiding that on the fast path is the whole point
-        of this migration for this source."""
-
-        def build_target(row: "ArtifactRow", _ledger: Any) -> Optional[StepTarget]:
-            years = row.meta.get("years")
-            if not years or row.local_path is None:
-                return None
-            return StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key=row.unit_id,
-                output_path=row.local_path, inputs=(self.prepared_db_path,),
-                completion=Completion.PATH_EXISTS, meta=row.meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, TargetSelection(), build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.ID, self.ID,
-        )
-        return self._discover_grid()
-
-    def _discover_grid(self) -> List[StepTarget]:
+    def _active_mine_years(self) -> List[int]:
         if not os.path.exists(self.prepared_db_path):
             return []
         con = self._connect_duckdb(self.prepared_db_path)
@@ -909,39 +875,7 @@ class SnlMiningSource(DataSource):
             return []
         finally:
             con.close()
-        years = [int(r[0]) for r in rows]
-        if not years:
-            return []
-        return [
-            StepTarget(
-                source_id=self.ID, step=PipelineStep.GRID, key="all",
-                output_path=layout.grid_store_path(
-                    self.ctx.data_root,
-                    self.cfg.data_path,
-                    self.output_filename,
-                    grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                    v2_family="snl_mining",
-                ),
-                inputs=(self.prepared_db_path,), completion=Completion.PATH_EXISTS,
-                meta={
-                    "years": years,
-                    **verify.verification_meta(
-                        self.cfg.raw,
-                        expected_vars=tuple(self.output_variables),
-                        value_range=(0, 200),
-                        # value_range=(0, 200) only makes sense for the uint16
-                        # count family -- the float32 price-shock family is on a
-                        # different physical scale (a sum of ln-prices, not a
-                        # count). verify.py supports one value_range per target,
-                        # so scope it by dtype here; the excluded (float32)
-                        # variables still get the unconditional "sample isn't
-                        # entirely NaN" check.
-                        range_vars=tuple(v for v in self.output_variables if self.buffer_tables[v][3] == "uint16"),
-                    ),
-                },
-            )
-        ]
+        return [int(r[0]) for r in rows]
 
     def _output_root(self) -> str:
         # Unlike every other source, this used to hardcode "stage_2" and
@@ -1114,24 +1048,35 @@ class SnlMiningSource(DataSource):
         finally:
             con.close()
 
-    def _execute_grid(self, target: StepTarget) -> bool:
+    def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping existing output: %s", target.output_path)
             return True
 
+        # Phase 1: build/reuse the prepared DuckDB (buffer tables, admin-count
+        # tables, R-tree indexes) -- resumable independently of phase 2, see
+        # _build_prepared_db()'s docstring.
+        if self.cfg.override or not os.path.exists(self.prepared_db_path):
+            if not self._build_prepared_db():
+                return False
+
+        years = self._active_mine_years()
+        if not years:
+            logger.error("No active mine years found in prepared DB %s", self.prepared_db_path)
+            return False
+
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
         try:
             geobox = self._get_or_create_geobox()
-            years = target.meta["years"]
             if not self._create_empty_target_zarr(target.output_path, geobox, years):
                 return False
             if not self._rasterize_tiles_to_zarr(target.output_path, geobox, years):
                 return False
             return self._export_admin_count_tables(os.path.dirname(target.output_path))
         except Exception:
-            logger.exception("Error processing SNL mining GRID target")
+            logger.exception("Error processing SNL mining PREPARE target")
             return False
 
     def _export_admin_count_tables(self, output_dir: str) -> bool:

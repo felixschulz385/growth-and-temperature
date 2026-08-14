@@ -97,9 +97,9 @@ def _fake_config(tmp_path):
 
 
 def test_handle_summary_reports_verified_dash_when_grid_has_no_targets(tmp_path, monkeypatch, capsys):
-    # No raw fetch file -> PREPARE plans no targets; no prepared levels ->
-    # GRID plans no targets either. "verified" is only meaningful once GRID
-    # has at least one target.
+    # No raw fetch file -> PREPARE (gadm's own final, verifiable step now --
+    # Plan 2's PREPARE+GRID merge) plans no targets. "verified" is only
+    # meaningful once it has at least one target.
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
@@ -109,10 +109,10 @@ def test_handle_summary_reports_verified_dash_when_grid_has_no_targets(tmp_path,
     assert row.split()[-1] == "-"
 
 
-def test_handle_summary_reports_verified_dash_when_prepare_is_pending(tmp_path, monkeypatch, capsys):
-    # A raw fetch file exists -> PREPARE plans a real target, but its output
-    # doesn't exist yet -> GRID (which needs PREPARE's ADM_0 file) still
-    # plans no targets either, so "verified" stays "-".
+def test_handle_summary_reports_verified_pending_when_prepare_target_exists_but_incomplete(tmp_path, monkeypatch, capsys):
+    # A raw fetch file exists -> PREPARE (gadm's own single remaining step,
+    # Plan 2's PREPARE+GRID merge) plans a real target immediately, but its
+    # output doesn't exist yet -> "verified" is "pending", not "-".
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
@@ -123,7 +123,7 @@ def test_handle_summary_reports_verified_dash_when_prepare_is_pending(tmp_path, 
     handlers.handle_summary(args)
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if line.startswith("gadm"))
-    assert row.split()[-1] == "-"
+    assert row.split()[-1] == "pending"
 
 
 def test_handle_summary_fetch_column_reports_mismatched_filename_not_generic_count(tmp_path, monkeypatch, capsys):
@@ -147,10 +147,12 @@ def test_handle_summary_fetch_column_reports_mismatched_filename_not_generic_cou
 
 
 def _complete_gadm_grid_target(tmp_path, monkeypatch):
-    """Plans a real GRID target for gadm (needs PREPARE's ADM_0 vector file
-    to exist) and marks its output complete, without writing an actual zarr
-    store -- `source.verify_grid()` is monkeypatched separately per-test, so
-    nothing ever tries to open the (nonexistent) store's contents."""
+    """Plans a real (merged) PREPARE target for gadm -- its own final,
+    verifiable output, now that PREPARE does what used to be GRID's job
+    (Plan 2's PREPARE+GRID merge, docs/design successor to the ledger) --
+    and marks its output complete, without writing an actual zarr store --
+    `source.verify_grid()` is monkeypatched separately per-test, so nothing
+    ever tries to open the (nonexistent) store's contents."""
     from src.data.sources.steps import mark_complete
 
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
@@ -165,11 +167,8 @@ def _complete_gadm_grid_target(tmp_path, monkeypatch):
 
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     gadm = GadmSource(ctx, SourceConfig.from_dict("gadm", {}))
-    vector_dir = gadm.output_root(PipelineStep.PREPARE)
-    os.makedirs(vector_dir, exist_ok=True)
-    open(os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg"), "w").close()
 
-    target = gadm.plan(PipelineStep.GRID, TargetSelection())[0]
+    target = gadm.plan(PipelineStep.PREPARE, TargetSelection())[0]
     os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
     mark_complete(target.output_path)
 
@@ -200,6 +199,92 @@ def test_handle_summary_reports_verified_failed_when_grid_verification_fails(tmp
     out = capsys.readouterr().out
     row = next(line for line in out.splitlines() if line.startswith("gadm"))
     assert "FAILED (0/1)" in row
+
+
+# --- _summarize_by_tile / --by-tile -------------------------------------
+
+
+class _FakeTiledSource:
+    """Just enough of a `DataSource` for `_summarize_by_tile()`: a `tile_size`
+    attribute and a `ctx` `get_target_geobox()` reads (patched out below, so
+    its actual value never matters)."""
+
+    tile_size = 2048
+
+    def __init__(self):
+        self.ctx = object()
+
+
+def test_summarize_by_tile_none_for_non_marker_target(tmp_path):
+    target = _path_exists_target(tmp_path, "a", PipelineStep.PREPARE, exists=True)
+    assert handlers._summarize_by_tile(_FakeTiledSource(), target) is None
+
+
+def test_summarize_by_tile_none_when_years_meta_missing(tmp_path):
+    target = StepTarget(
+        source_id="x", step=PipelineStep.PREPARE, key="a",
+        output_path=str(tmp_path / "a.zarr"), completion=Completion.MARKER, meta={},
+    )
+    assert handlers._summarize_by_tile(_FakeTiledSource(), target) is None
+
+
+def test_summarize_by_tile_none_when_source_has_no_tile_size(tmp_path):
+    target = StepTarget(
+        source_id="x", step=PipelineStep.PREPARE, key="a",
+        output_path=str(tmp_path / "a.zarr"), completion=Completion.MARKER, meta={"years": [2020]},
+    )
+
+    class _NoTileSize:
+        ctx = object()
+
+    assert handlers._summarize_by_tile(_NoTileSize(), target) is None
+
+
+def test_summarize_by_tile_reports_per_unit_counts(tmp_path, monkeypatch):
+    target = StepTarget(
+        source_id="x", step=PipelineStep.PREPARE, key="a",
+        output_path=str(tmp_path / "a.zarr"), completion=Completion.MARKER, meta={"years": [2020, 2021]},
+    )
+    source = _FakeTiledSource()
+
+    monkeypatch.setattr("src.data.common.geobox.get_target_geobox", lambda ctx: "fake-geobox")
+    monkeypatch.setattr(
+        "src.data.common.prepare.driver.prepare_status",
+        lambda output_path, years, geobox, tile_size: {"complete": 3, "outstanding": 1, "unavailable": 0},
+    )
+
+    detail = handlers._summarize_by_tile(source, target)
+    assert detail == "3/4 complete, 1 outstanding, 0 unavailable"
+
+
+def test_handle_summary_by_tile_shows_per_target_breakdown(tmp_path, monkeypatch, capsys):
+    # acag is a real tiled PREPARE source (run_tiled_prepare()-shaped) --
+    # with --by-tile, its PREPARE column reports the per-unit breakdown
+    # instead of the collapsed complete/total summary.
+    config = {
+        "paths": {"data_root": str(tmp_path / "data_root"), "local_index_dir": str(tmp_path / "index")},
+        "sources": {"acag": {}},
+    }
+    monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: config)
+    monkeypatch.setattr(
+        handlers, "_summarize_by_tile", lambda source, target: "2/4 complete, 2 outstanding, 0 unavailable"
+    )
+
+    from src.data.sources.steps import Completion as _Completion, StepTarget as _StepTarget
+
+    fake_target = _StepTarget(
+        source_id="acag", step=PipelineStep.PREPARE, key="pm25",
+        output_path=str(tmp_path / "acag.zarr"), completion=_Completion.MARKER, meta={"years": [2020]},
+    )
+    from src.data.sources.acag import AcagSource
+
+    monkeypatch.setattr(AcagSource, "plan", lambda self, step, selection: [fake_target] if step.value == "prepare" else [])
+
+    args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="acag", by_tile=True)
+    handlers.handle_summary(args)
+    out = capsys.readouterr().out
+    row = next(line for line in out.splitlines() if line.startswith("acag"))
+    assert "pm25: 2/4 complete, 2 outstanding, 0 unavailable" in row
 
 
 def test_handle_summary_unknown_source_raises(tmp_path, monkeypatch):

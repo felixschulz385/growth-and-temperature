@@ -31,21 +31,15 @@
 # finding) and removed in migration step 10's cutover, not generated here.
 
 jobs:
+  # acag's PREPARE now does the tiled reprojection work directly (the
+  # PREPARE+GRID merge, docs/design successor to the ledger) -- there is no
+  # separate GRID step or job anymore. Resources below keep the old GRID
+  # job's larger cpu/mem/time envelope, since this one job now does that
+  # work plus what PREPARE used to.
   - name: acag-prepare
     log_key: acag
     source: acag
     step: prepare
-    time: "0-06:00:00"
-    qos: 6hours
-    cpus: 4
-    mem: 128G
-    mem_fraction: 0.6
-    temp_dir_prefix: acag
-
-  - name: acag-grid
-    log_key: acag
-    source: acag
-    step: grid
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
@@ -55,10 +49,13 @@ jobs:
 
   # berman_mining disabled as a source (orchestration/configs/data.yaml) --
   # job left commented rather than deleted so it can be re-enabled together.
-  # - name: berman_mining-grid
+  # Step renamed grid -> prepare: berman_mining never had a separate PREPARE
+  # step, so its one stage is now called PREPARE (Plan 2, docs/design
+  # successor to the ledger -- PipelineStep.GRID no longer exists).
+  # - name: berman_mining-prepare
   #   log_key: berman_mining
   #   source: berman_mining
-  #   step: grid
+  #   step: prepare
   #   partition: bigmem
   #   time: "00:30:00"
   #   qos: 30min
@@ -67,133 +64,62 @@ jobs:
   #   mem_fraction: 0.6
   #   temp_dir_prefix: berman_mining
 
-  - name: eog-viirs-grid
-    log_key: eog_viirs
-    source: eog_viirs
-    step: grid
-    partition: scicore
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 8
-    mem: 256G
-    mem_fraction: 0.9
-    temp_dir_prefix: eog_viirs
-
-  # eog_dmsp/eog_dvnl (docs/design/09-integrated-pipeline.md §5's three
-  # equally-registered eog_dmsp/eog_viirs/eog_dvnl ids) never had PREPARE/GRID
-  # jobs -- only eog_viirs did, since its first commit. Resources below are
-  # NOT transcribed from a prior committed script (none ever existed for
-  # these two); they're a starting point copied from the closest sibling
-  # (eog_viirs) and should be re-tuned against real DMSP/DVNL run behavior,
-  # unlike every other resource value in this file.
-  - name: eog-dmsp-grid
-    log_key: eog_dmsp
-    source: eog_dmsp
-    step: grid
-    partition: scicore
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 8
-    mem: 256G
-    mem_fraction: 0.9
-    temp_dir_prefix: eog_dmsp
-
-  - name: eog-dvnl-grid
-    log_key: eog_dvnl
-    source: eog_dvnl
-    step: grid
-    partition: scicore
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 8
-    mem: 256G
-    mem_fraction: 0.9
-    temp_dir_prefix: eog_dvnl
-
+  # esacci's PREPARE now does the tiled reprojection work directly (the
+  # PREPARE+GRID merge, docs/design successor to the ledger) -- there is no
+  # separate GRID step or job anymore. Resources below keep the old GRID
+  # job's larger cpu/mem envelope, since this one job now does that work
+  # plus what PREPARE used to.
   - name: esacci-prepare
     log_key: esacci
     source: esacci
     step: prepare
     time: "1-00:00:00"
     qos: 1day
-    cpus: 4
-    mem: 128G
-    mem_fraction: 0.6
-    temp_dir_prefix: esacci
-
-  - name: esacci-grid
-    log_key: esacci
-    source: esacci
-    step: grid
-    time: "1-00:00:00"
-    qos: 1day
     cpus: 8
     mem: 256G
     mem_fraction: 0.6
     temp_dir_prefix: esacci
 
+  # glass's PREPARE now builds each (year[, grid_cell])'s daily->annual
+  # stats zarr AND reprojects it into the final output in one job (the
+  # PREPARE+GRID merge, docs/design successor to the ledger) -- there is no
+  # separate GRID step or job anymore. Time budgets below are the sum of the
+  # old prepare+grid jobs' budgets (both phases now run sequentially in one
+  # job); mem/cpus keep the larger of the two. Needs re-tuning against a
+  # real run, same caveat as this file's other never-actually-profiled
+  # glass/eog resource values.
   - name: glass-avhrr-prepare
     log_key: glass_avhrr
     source: glass_avhrr
     step: prepare
-    time: "3-00:00:00"
+    time: "4-00:00:00"
     qos: 1week
     cpus: 8
-    mem: 128G
-    mem_fraction: 0.9
-    temp_dir_prefix: glass_avhrr
-
-  - name: glass-avhrr-grid
-    log_key: glass_avhrr
-    source: glass_avhrr
-    step: grid
-    time: "1-00:00:00"
-    qos: 1day
-    cpus: 8
     mem: 256G
-    mem_fraction: 0.6
+    mem_fraction: 0.9
     temp_dir_prefix: glass_avhrr
 
   - name: glass-modis-prepare
     log_key: glass_modis
     source: glass_modis
     step: prepare
-    time: "7-00:00:00"
+    partition: scicore
+    time: "10-00:00:00"
     qos: 1week
     cpus: 8
     mem: 128G
     mem_fraction: 0.9
     temp_dir_prefix: glass_modis
 
-  - name: glass-modis-grid
-    log_key: glass_modis
-    source: glass_modis
-    step: grid
-    partition: scicore
-    time: "3-00:00:00"
-    qos: 1week
-    cpus: 8
-    mem: 128G
-    mem_fraction: 0.6
-    temp_dir_prefix: glass_modis
-
+  # gadm's PREPARE now extracts the vectors AND rasterizes them in one job
+  # (the PREPARE+GRID merge, docs/design successor to the ledger) -- there
+  # is no separate GRID step or job anymore. Resources below keep the old
+  # GRID job's larger cpu/mem/time envelope.
   - name: gadm-prepare
     log_key: gadm
     source: gadm
     step: prepare
     partition: scicore
-    time: "00:30:00"
-    qos: 30min
-    cpus: 4
-    mem: 32G
-    mem_fraction: 0.9
-    temp_dir_prefix: gadm
-
-  - name: gadm-grid
-    log_key: gadm
-    source: gadm
-    step: grid
-    partition: scicore
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
@@ -201,25 +127,17 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: gadm
 
-  # ecoregions REQUIRES gadm's PREPARE+GRID (src/data/sources/ecoregions/source.py)
-  # -- must be scheduled after both gadm-prepare and gadm-grid.
+  # ecoregions REQUIRES gadm's PREPARE (src/data/sources/ecoregions/source.py)
+  # -- must be scheduled after gadm-prepare. PREPARE now simplifies the
+  # vector, rasterizes it, AND builds the GID_3 dominant-biome table in one
+  # job (the PREPARE+GRID merge, docs/design successor to the ledger) --
+  # there is no separate GRID step or job anymore. Resources below keep the
+  # old GRID job's larger cpu/mem envelope.
   - name: ecoregions-prepare
     log_key: ecoregions
     source: ecoregions
     step: prepare
     partition: scicore
-    time: "00:30:00"
-    qos: 30min
-    cpus: 4
-    mem: 32G
-    mem_fraction: 0.9
-    temp_dir_prefix: ecoregions
-
-  - name: ecoregions-grid
-    log_key: ecoregions
-    source: ecoregions
-    step: grid
-    partition: scicore
     time: "1-00:00:00"
     qos: 1day
     cpus: 8
@@ -227,6 +145,10 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: ecoregions
 
+  # osm's PREPARE now simplifies the vector AND rasterizes it in one job
+  # (the PREPARE+GRID merge, docs/design successor to the ledger) -- there
+  # is no separate GRID step or job anymore. Resources below keep the old
+  # GRID job's larger cpu/mem envelope.
   - name: osm-prepare
     log_key: osm
     source: osm
@@ -234,39 +156,19 @@ jobs:
     partition: scicore
     time: "00:30:00"
     qos: 30min
-    cpus: 4
-    mem: 32G
-    mem_fraction: 0.9
-    temp_dir_prefix: osm
-
-  - name: osm-grid
-    log_key: osm
-    source: osm
-    step: grid
-    partition: scicore
-    time: "00:30:00"
-    qos: 30min
     cpus: 8
     mem: 64G
     mem_fraction: 0.9
     temp_dir_prefix: osm
 
+  # country_classifications' PREPARE now joins HDI+World Bank AND maps onto
+  # gadm's GID_0 ids in one job (the PREPARE+GRID merge, docs/design
+  # successor to the ledger) -- there is no separate GRID step or job
+  # anymore. Resources below keep the old GRID job's larger cpu/mem envelope.
   - name: country_classifications-prepare
     log_key: country_classifications
     source: country_classifications
     step: prepare
-    partition: scicore
-    time: "00:30:00"
-    qos: 30min
-    cpus: 2
-    mem: 16G
-    mem_fraction: 0.9
-    temp_dir_prefix: country_classifications
-
-  - name: country_classifications-grid
-    log_key: country_classifications
-    source: country_classifications
-    step: grid
     partition: scicore
     time: "00:30:00"
     qos: 30min
@@ -290,27 +192,15 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: commodity_prices
 
-  # ntl_harm declares PREPARE (STEPS = FETCH, PREPARE, GRID) but only ever
-  # had a GRID job. Resources below are NOT transcribed from a prior
-  # committed script (none ever existed for this step); modeled on the
-  # repo-wide PREPARE-uses-roughly-half-of-GRID's-cpu/mem pattern
-  # (acag/esacci's own prepare-vs-grid split) rather than guessed outright,
-  # but should still be re-tuned against a real run.
+  # ntl_harm's PREPARE now does the tiled reprojection work directly (the
+  # PREPARE+GRID merge, docs/design successor to the ledger) -- there is no
+  # separate GRID step or job anymore. Resources below keep the old GRID
+  # job's cpu/mem envelope (the heavier of the two former jobs), since this
+  # one job now does that work plus what PREPARE used to.
   - name: ntl_harm-prepare
     log_key: ntl_harm
     source: ntl_harm
     step: prepare
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 4
-    mem: 128G
-    mem_fraction: 0.6
-    temp_dir_prefix: ntl_harm
-
-  - name: ntl_harm-grid
-    log_key: ntl_harm
-    source: ntl_harm
-    step: grid
     time: "06:00:00"
     qos: 6hours
     cpus: 8
@@ -318,22 +208,14 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: ntl_harm
 
+  # snl_mining's DuckDB feature build and tiled rasterization are now one
+  # merged PREPARE job (Plan 2's PREPARE+GRID merge, docs/design successor
+  # to the ledger) -- there is no separate GRID job anymore. Resources below
+  # keep the old GRID job's larger cpu/mem/time envelope.
   - name: snl_mining-prepare
     log_key: snl_mining
     source: snl_mining
     step: prepare
-    partition: scicore
-    time: "06:00:00"
-    qos: 6hours
-    cpus: 8
-    mem: 128G
-    mem_fraction: 0.6
-    temp_dir_prefix: snl_mining
-
-  - name: snl_mining-grid
-    log_key: snl_mining
-    source: snl_mining
-    step: grid
     partition: scicore
     time: "1-00:00:00"
     qos: 1day
@@ -382,48 +264,62 @@ jobs:
     mem_fraction: 0.6
     temp_dir_prefix: modis_robustness_11a1
 
-  # "simple" jobs: no dask-threads/memory-limit/temp-dir/dashboard-port,
-  # matching their prior (lighter-weight) invocation exactly.
-  # Renamed from "eog-prepare" -- that name was ambiguous (looked like it
-  # covered all eog_* variants; it only ever ran eog_viirs), which is
-  # exactly the confusion that surfaced the eog_dmsp/eog_dvnl gap below.
+  # eog's PREPARE now does the tiled reprojection work directly (the
+  # PREPARE+GRID merge, docs/design successor to the ledger) -- there is no
+  # separate GRID step or job anymore, so these three jobs absorb their old
+  # eog-*-grid siblings' resource envelope (no longer "simple": PREPARE now
+  # does that dask-based reprojection work itself). Renamed from
+  # "eog-prepare" earlier -- that name was ambiguous (looked like it covered
+  # all eog_* variants; it only ever ran eog_viirs).
   - name: eog-viirs-prepare
     log_key: eog_viirs
     source: eog_viirs
     step: prepare
+    partition: scicore
     time: "06:00:00"
     qos: 6hours
     cpus: 8
-    mem: 128G
-    simple: true
+    mem: 256G
+    mem_fraction: 0.9
+    temp_dir_prefix: eog_viirs
 
-  # eog_dmsp/eog_dvnl PREPARE -- see the eog-dmsp-grid/eog-dvnl-grid comment
-  # above; same "never had a job, resources copied from the eog_viirs
-  # sibling, needs real-run re-tuning" caveat applies here.
+  # eog_dmsp/eog_dvnl -- never had their own PREPARE/GRID jobs before either
+  # merge (docs/design/09-integrated-pipeline.md §5's three equally-
+  # registered eog_dmsp/eog_viirs/eog_dvnl ids; only eog_viirs did, since its
+  # first commit). Resources below are a starting point copied from the
+  # eog_viirs sibling and should be re-tuned against real DMSP/DVNL run
+  # behavior, unlike every other resource value in this file.
   - name: eog-dmsp-prepare
     log_key: eog_dmsp
     source: eog_dmsp
     step: prepare
+    partition: scicore
     time: "06:00:00"
     qos: 6hours
     cpus: 8
-    mem: 128G
-    simple: true
+    mem: 256G
+    mem_fraction: 0.9
+    temp_dir_prefix: eog_dmsp
 
   - name: eog-dvnl-prepare
     log_key: eog_dvnl
     source: eog_dvnl
     step: prepare
+    partition: scicore
     time: "06:00:00"
     qos: 6hours
     cpus: 8
-    mem: 128G
-    simple: true
+    mem: 256G
+    mem_fraction: 0.9
+    temp_dir_prefix: eog_dvnl
 
-  - name: plad-grid
+  # plad's GRID step is renamed PREPARE (Plan 2's PREPARE+GRID merge,
+  # docs/design successor to the ledger) -- PLAD never had a separate
+  # PREPARE step of its own, so this is a pure rename, no merge.
+  - name: plad-prepare
     log_key: plad
     source: plad
-    step: grid
+    step: prepare
     time: "06:00:00"
     qos: 6hours
     cpus: 8

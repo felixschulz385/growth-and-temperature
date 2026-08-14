@@ -27,6 +27,7 @@ from src.data.pipeline.context import PipelineContext  # noqa: E402
 from src.data.sources.acag import AcagSource  # noqa: E402
 from src.data.sources.misc.gadm import GadmSource  # noqa: E402
 from src.data.sources.snl_mining.source import SnlMiningSource  # noqa: E402
+from src.data.sources.steps import PipelineStep  # noqa: E402
 
 
 def _acag_pair(tmp_path, grid_id="legacy_4326"):
@@ -140,22 +141,29 @@ def test_do_move_execute_records_failure_without_raising(tmp_path, monkeypatch):
 
 
 def test_migrate_source_moves_fetch_prepare_grid(tmp_path):
-    legacy, v2 = _acag_pair(tmp_path)
+    # gadm's current code no longer declares a separate GRID step (Plan 2's
+    # PREPARE+GRID merge) -- but pre-merge runs may still have real
+    # legacy-layout GRID output on disk, and migrate_grid() migrates it
+    # regardless of what the *current* class's STEPS says (it's keyed off
+    # the static GRID_FILENAME_AND_FAMILY mapping instead -- see
+    # migrate_grid()'s docstring). PipelineStep.GRID is used explicitly here
+    # rather than legacy.STEPS[2], which no longer includes it.
+    legacy, v2 = _gadm_pair(tmp_path)
 
     raw_dir = legacy.output_root(legacy.STEPS[0])  # FETCH
     prepare_dir = legacy.output_root(legacy.STEPS[1])  # PREPARE
-    grid_dir = legacy.output_root(legacy.STEPS[2])  # GRID
+    grid_dir = legacy.output_root(PipelineStep.GRID)  # legacy GRID output, pre-merge
     os.makedirs(raw_dir)
     os.makedirs(prepare_dir)
-    legacy_filename, v2_family = GRID_FILENAME_AND_FAMILY["acag"]
+    legacy_filename, v2_family = GRID_FILENAME_AND_FAMILY["gadm"]
     os.makedirs(os.path.join(grid_dir, legacy_filename))
 
     tally = MigrationTally()
-    migrate_source("acag", legacy, v2, execute=True, tally=tally)
+    migrate_source("gadm", legacy, v2, execute=True, tally=tally)
 
     assert v2.output_root(v2.STEPS[0]) and os.path.isdir(v2.output_root(v2.STEPS[0]))
     assert os.path.isdir(v2.output_root(v2.STEPS[1]))
-    assert os.path.isdir(os.path.join(v2.output_root(v2.STEPS[2]), f"{v2_family}.zarr"))
+    assert os.path.isdir(os.path.join(v2.output_root(PipelineStep.GRID), f"{v2_family}.zarr"))
     assert not os.path.exists(raw_dir)
     assert not os.path.exists(prepare_dir)
     assert not os.path.exists(os.path.join(grid_dir, legacy_filename))
@@ -175,19 +183,31 @@ def test_migrate_source_dry_run_leaves_everything_in_place(tmp_path):
 
 
 def test_migrate_source_skips_source_with_nothing_to_migrate(tmp_path):
-    legacy, v2 = _acag_pair(tmp_path)
+    # gadm is used here (not acag) because GRID_FILENAME_AND_FAMILY still
+    # knows about its historical GRID output and gadm-specific sidecars,
+    # even though its current class no longer declares GRID (Plan 2's
+    # PREPARE+GRID merge) -- migrate_grid() migrates by that static mapping,
+    # not the current class's STEPS (see its docstring).
+    legacy, v2 = _gadm_pair(tmp_path)
     tally = MigrationTally()
-    migrate_source("acag", legacy, v2, execute=True, tally=tally)
+    migrate_source("gadm", legacy, v2, execute=True, tally=tally)
     assert tally.moved == []
-    assert len(tally.skipped_nothing_to_migrate) == 3  # FETCH, PREPARE, GRID
+    # FETCH, PREPARE, GRID, plus gadm's two GRID sidecars (country/subdivision
+    # code mapping JSON).
+    assert len(tally.skipped_nothing_to_migrate) == 5
 
 
 # -- gadm sidecar handling ---------------------------------------------------
 
 
 def test_migrate_grid_moves_gadm_sidecars_alongside_the_zarr(tmp_path):
+    # migrate_grid() migrates a source's legacy GRID output regardless of
+    # whether its current class still declares GRID (gadm's PREPARE+GRID
+    # merge dropped it, but pre-merge on-disk data still needs migrating) --
+    # see migrate_grid()'s docstring. PipelineStep.GRID is used explicitly
+    # here rather than legacy.STEPS[-1], which is now PREPARE for gadm.
     legacy, v2 = _gadm_pair(tmp_path)
-    grid_dir = legacy.output_root(legacy.STEPS[-1])
+    grid_dir = legacy.output_root(PipelineStep.GRID)
     legacy_filename, v2_family = GRID_FILENAME_AND_FAMILY["gadm"]
     os.makedirs(os.path.join(grid_dir, legacy_filename))
     Path(grid_dir, "country_code_mapping.json").write_text("{}")
@@ -196,7 +216,7 @@ def test_migrate_grid_moves_gadm_sidecars_alongside_the_zarr(tmp_path):
     tally = MigrationTally()
     migrate_grid("gadm", legacy, v2, execute=True, tally=tally)
 
-    new_grid_dir = v2.output_root(v2.STEPS[-1])
+    new_grid_dir = v2.output_root(PipelineStep.GRID)
     assert os.path.isdir(os.path.join(new_grid_dir, f"{v2_family}.zarr"))
     assert os.path.exists(os.path.join(new_grid_dir, "country_code_mapping.json"))
     assert os.path.exists(os.path.join(new_grid_dir, "subdivision_code_mapping.json"))
@@ -207,7 +227,7 @@ def test_migrate_grid_skips_sidecar_that_does_not_exist(tmp_path):
     # Only country_code_mapping.json present (no ADM1 -> no subdivision file)
     # -- must not fail trying to move a sidecar that was never written.
     legacy, v2 = _gadm_pair(tmp_path)
-    grid_dir = legacy.output_root(legacy.STEPS[-1])
+    grid_dir = legacy.output_root(PipelineStep.GRID)
     legacy_filename, _ = GRID_FILENAME_AND_FAMILY["gadm"]
     os.makedirs(os.path.join(grid_dir, legacy_filename))
     Path(grid_dir, "country_code_mapping.json").write_text("{}")

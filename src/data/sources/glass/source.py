@@ -24,6 +24,20 @@ data rather than from its own `monthly_stats`
 compositing). Fixing it here is explicitly deferred to a separate,
 labelled follow-on change (docs/design/09-integrated-pipeline.md §5/§14),
 not silently folded into this mechanical migration.
+
+**Plan 2 (docs/design successor to the ledger) update**: `STEPS` no longer
+declares GRID -- `_execute_prepare` now runs what used to be `_execute_grid`
+right after building/reusing each (year[, grid_cell])'s daily->annual stats
+zarr, as one step. Unlike `acag`/`esacci`/`eog`/`ntl_harm`, GLASS keeps its
+own bespoke per-tile reprojection path (`_process_years_chunked` /
+`_process_year_tiles`, with a 32px halo pad and "mode" resampling) rather
+than routing through `src.data.common.prepare.driver.run_tiled_prepare` --
+that machinery predates the shared driver (module docstring above) and
+already does exactly what the driver would, just shaped around this
+source's own daily-to-annual aggregation step first. The annual stats zarr
+is still a real, expensive-to-recompute intermediate (not ledger bloat);
+only the *step boundary* between it and the final reprojected output is
+gone, along with the ledger-backed fast paths for planning both.
 """
 
 from __future__ import annotations
@@ -33,7 +47,7 @@ import logging
 import os
 import re
 import tempfile
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import dask.array as da
 import numpy as np
@@ -53,9 +67,6 @@ from src.data.sources.glass.crawler import _CrawlerMixin
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
 from src.data.sources import verify
 
-if TYPE_CHECKING:
-    from src.data.common.ledger.store import ArtifactRow
-
 logger = logging.getLogger(__name__)
 
 
@@ -74,7 +85,7 @@ class GlassSource(_CrawlerMixin, DataSource):
     """
 
     ID = "glass"  # not directly registered -- see the two registry.register() calls below
-    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE, PipelineStep.GRID)
+    STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     BUCKET_NAME = "growthandheat"
     MODIS_PATH_PREFIX = "glass/LST/MODIS/Daily/1KM/"
@@ -189,22 +200,6 @@ class GlassSource(_CrawlerMixin, DataSource):
             return self._plan_fetch()
         if step is PipelineStep.PREPARE:
             return self._plan_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._plan_grid(selection)
-        raise AssertionError(f"unreachable: {step}")
-
-    def _discover(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        """Ground truth for `data reconcile` (src/data/sources/base.py's
-        `discover()`): FETCH has no crawl to redo (`_plan_fetch` is already a
-        static, I/O-free target). PREPARE has no ledger-backed fast path
-        (`_plan_prepare()`'s docstring) -- it's already exactly this live
-        crawl -- so only GRID gets a real distinct discovery."""
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._discover_prepare(selection)
-        if step is PipelineStep.GRID:
-            return self._discover_grid(selection)
         raise AssertionError(f"unreachable: {step}")
 
     def _execute(self, target: StepTarget) -> bool:
@@ -212,8 +207,6 @@ class GlassSource(_CrawlerMixin, DataSource):
             return self._execute_fetch(target)
         if target.step is PipelineStep.PREPARE:
             return self._execute_prepare(target)
-        if target.step is PipelineStep.GRID:
-            return self._execute_grid(target)
         raise AssertionError(f"unreachable: {target.step}")
 
     # -- FETCH ----------------------------------------------------------
@@ -294,38 +287,22 @@ class GlassSource(_CrawlerMixin, DataSource):
             return self._parse_modis_filenames(filenames)
         return self._parse_avhrr_filenames(filenames)
 
-    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """No ledger-backed fast path here, unlike PREPARE on every other
-        migrated source (acag/esacci/ntl_harm/eog): a GLASS PREPARE target's
-        `inputs` can be hundreds of daily `.hdf` paths per (year[, grid_cell])
-        group (module docstring), too large to persist in `artifacts.meta`
-        (the same "meta must stay small" reasoning acag/gadm follow) --
-        and `_execute_prepare()` genuinely reads `target.inputs` (unlike
-        GRID's `inputs`, which GRID's own ledger fast path below re-derives
-        live from PREPARE's `local_complete_units()`), so there is no cheap
-        further-upstream ledger query that could stand in for it either.
-        `_discover_prepare()` below -- today's exact live logic -- is simply
-        called directly; GRID is the higher-value ledger fast path for this
-        source."""
-        return self._discover_prepare(selection)
+    def _group_daily_files(self, selection: TargetSelection) -> List[Dict[str, Any]]:
+        """Live ground truth for which daily files exist per (year[,
+        grid_cell]) group -- ledger-free crawl of FETCH's raw output
+        directory (`snapshot_local_listing`, the same primitive FETCH's own
+        driver uses), replacing the old `completed_fetch_files()` ledger
+        query. Called both to plan PREPARE (`_plan_prepare`) and, again, to
+        execute it (`_execute_prepare` re-derives rather than trusting a
+        StepTarget snapshot, since a group's daily file list can be large
+        and there's no longer a ledger to persist it in between calls)."""
+        from src.data.common.fetch.manifest import snapshot_local_listing
+        from src.data.common.statusfile import STATUS_SUBDIR
 
-    def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for PREPARE, and PREPARE's only enumeration
-        path (see `_plan_prepare()`'s docstring): queries the ledger's
-        FETCH-crawl catalog (`completed_fetch_files()`, not
-        `artifacts`-for-PREPARE) and groups by (year[, grid_cell])."""
-        from src.data.common.ledger.paths import ledger_path
-        from src.data.common.ledger.store import SourceLedger
-
-        local_ledger_path = ledger_path(self.ctx.local_index_dir, self.data_path)
-        if not local_ledger_path or not os.path.exists(local_ledger_path):
-            logger.warning("Ledger not found: %s", local_ledger_path)
-            return []
-
-        with SourceLedger.open_for_read(local_ledger_path, data_path=self.data_path) as ledger:
-            relative_paths = ledger.completed_fetch_files()
-        if not relative_paths:
-            return []
+        raw_root = self.output_root(PipelineStep.FETCH)
+        listing = snapshot_local_listing(raw_root)
+        status_prefix = f"{STATUS_SUBDIR}/"
+        relative_paths = [rel for rel in listing if not rel.startswith(status_prefix)]
 
         files_df = self._parse_filenames(relative_paths)
         if files_df.empty:
@@ -335,7 +312,7 @@ class GlassSource(_CrawlerMixin, DataSource):
         elif selection.years:
             files_df = files_df[files_df["year"].isin(selection.years)]
 
-        targets = []
+        groups: List[Dict[str, Any]] = []
         if self.data_source_kind == "MODIS":
             if self.grid_cells:
                 grid_filter = files_df.apply(lambda row: f"h{row['h']:02d}v{row['v']:02d}" in self.grid_cells, axis=1)
@@ -345,34 +322,47 @@ class GlassSource(_CrawlerMixin, DataSource):
                 key = f"{year}/{grid_cell}"
                 if not selection.matches_key(key):
                     continue
-                targets.append(
-                    StepTarget(
-                        source_id=self.cfg.source_id,
-                        step=PipelineStep.PREPARE,
-                        key=key,
-                        output_path=os.path.join(self.output_root(PipelineStep.PREPARE), str(year), f"{grid_cell}.zarr"),
-                        inputs=tuple(group["path"].tolist()),
-                        completion=Completion.MARKER,
-                        meta={"year": int(year), "grid_cell": grid_cell, "total_files": len(group)},
-                    )
-                )
+                groups.append({"year": int(year), "grid_cell": grid_cell, "key": key, "files": group["path"].tolist()})
         else:
             for year, group in files_df.groupby("year"):
                 key = str(year)
                 if not selection.matches_key(key):
                     continue
-                targets.append(
-                    StepTarget(
-                        source_id=self.cfg.source_id,
-                        step=PipelineStep.PREPARE,
-                        key=key,
-                        output_path=os.path.join(self.output_root(PipelineStep.PREPARE), f"{year}.zarr"),
-                        inputs=tuple(group["path"].tolist()),
-                        completion=Completion.MARKER,
-                        meta={"year": int(year), "grid_cell": "global", "total_files": len(group)},
-                    )
-                )
-        return targets
+                groups.append({"year": int(year), "grid_cell": "global", "key": key, "files": group["path"].tolist()})
+        return groups
+
+    def _annual_zarr_path(self, group: Dict[str, Any]) -> str:
+        if self.data_source_kind == "MODIS":
+            return os.path.join(self.output_root(PipelineStep.PREPARE), str(group["year"]), f"{group['grid_cell']}.zarr")
+        return os.path.join(self.output_root(PipelineStep.PREPARE), f"{group['year']}.zarr")
+
+    def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """One PREPARE target per source ("all") -- `_execute_prepare`
+        builds/reuses each (year[, grid_cell])'s daily->annual stats zarr
+        internally, then reprojects them all into the final output in the
+        same call (module docstring: the PREPARE+GRID merge)."""
+        groups = self._group_daily_files(selection)
+        if not groups:
+            return []
+        years = sorted({g["year"] for g in groups})
+        return [
+            StepTarget(
+                source_id=self.cfg.source_id,
+                step=PipelineStep.PREPARE,
+                key="all",
+                output_path=self._grid_output_path(),
+                completion=Completion.MARKER,
+                meta={
+                    "years_available": years,
+                    **verify.verification_meta(
+                        self.cfg.raw,
+                        expected_vars=self._STAT_VARS,
+                        value_range=self._LST_VALUE_RANGE,
+                        range_vars=self._RANGE_VARS,
+                    ),
+                },
+            )
+        ]
 
     def _dask_client(self):
         """Overrides `DataSource._dask_client`: GLASS supports a per-source
@@ -527,203 +517,79 @@ class GlassSource(_CrawlerMixin, DataSource):
             logger.exception("Error creating zarr file at %s.", output_path)
             return False
 
+    def _grid_output_path(self) -> str:
+        if self.data_source_kind == "MODIS":
+            return layout.grid_store_path(
+                self.ctx.data_root,
+                self.path_prefix,
+                "modis_timeseries_reprojected.zarr",
+                grid_id=self.ctx.grid_id,
+                layout=self.ctx.layout,
+                v2_family="glass_modis_lst",
+            )
+        return layout.grid_store_path(
+            self.ctx.data_root,
+            self.path_prefix,
+            "avhrr_timeseries_reprojected.zarr",
+            grid_id=self.ctx.grid_id,
+            layout=self.ctx.layout,
+            v2_family="glass_avhrr_lst",
+        )
+
+    def _ensure_annual_zarr(self, group: Dict[str, Any]) -> Optional[str]:
+        """Build (or reuse) one (year[, grid_cell]) group's daily->annual
+        stats zarr -- what used to be a whole separate PREPARE StepTarget's
+        `_execute_prepare()` call, now the first phase of the single merged
+        PREPARE target's execution. Resumable the same way every other
+        MARKER-completion output is: a sibling `.complete` file, checked
+        directly rather than via a StepTarget (there isn't one per group
+        anymore)."""
+        from src.data.sources.steps import marker_path
+
+        annual_path = self._annual_zarr_path(group)
+        if not self.cfg.override and os.path.exists(marker_path(annual_path)):
+            return annual_path
+
+        os.makedirs(os.path.dirname(annual_path), exist_ok=True)
+        resolved_files = [self._resolve_source_file_path(f) for f in group["files"]]
+        if not self._process_file_group_hpc(resolved_files, group["year"], annual_path, group["grid_cell"]):
+            return None
+
+        from src.data.sources.steps import mark_complete
+
+        mark_complete(annual_path)
+        return annual_path
+
     def _execute_prepare(self, target: StepTarget) -> bool:
-        from src.data.sources.steps import is_complete, mark_complete
-
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping %s -- already complete: %s", target.key, target.output_path)
-            return True
-
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-        resolved_files = [self._resolve_source_file_path(f) for f in target.inputs]
-        ok = self._process_file_group_hpc(
-            resolved_files, target.meta["year"], target.output_path, target.meta.get("grid_cell")
-        )
-        if ok:
-            mark_complete(target.output_path)
-        return ok
-
-    # -- GRID ("spatial") ---------------------------------------------------
-
-    def _get_all_annual_files(self) -> List[Dict[str, Any]]:
-        annual_dir = self.output_root(PipelineStep.PREPARE)
-        if not os.path.exists(annual_dir):
-            return []
-        files = []
-        if self.data_source_kind == "MODIS":
-            for year_dir in os.listdir(annual_dir):
-                year_path = os.path.join(annual_dir, year_dir)
-                if not os.path.isdir(year_path):
-                    continue
-                try:
-                    year = int(year_dir)
-                except ValueError:
-                    continue
-                for fname in os.listdir(year_path):
-                    if fname.endswith(".zarr") and not fname.endswith("_monthly.zarr"):
-                        files.append(
-                            {"year": year, "grid_cell": os.path.splitext(fname)[0], "zarr_path": os.path.join(year_path, fname)}
-                        )
-        else:
-            for fname in os.listdir(annual_dir):
-                if fname.endswith(".zarr") and not fname.endswith("_monthly.zarr"):
-                    try:
-                        year = int(os.path.splitext(fname)[0])
-                        files.append({"year": year, "grid_cell": "global", "zarr_path": os.path.join(annual_dir, fname)})
-                    except ValueError:
-                        continue
-        return files
-
-    def _discover_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Live ground truth for GRID: crawls the PREPARE output directory
-        for annual (year[, grid_cell]) zarrs. Called from `discover()` (via
-        `data reconcile`) and as `_plan_grid()`'s fallback when the
-        ledger has no GRID row yet."""
-        annual_files = [f for f in self._get_all_annual_files() if selection.matches_year(f["year"])]
-        if not annual_files:
-            return []
-
-        years_requested = (
-            list(range(selection.year_range[0], selection.year_range[1] + 1)) if selection.year_range else None
-        )
-        missing = sorted(set(years_requested or []) - {f["year"] for f in annual_files})
-
-        if self.data_source_kind == "MODIS":
-            return [
-                StepTarget(
-                    source_id=self.cfg.source_id,
-                    step=PipelineStep.GRID,
-                    key="all_cells",
-                    output_path=layout.grid_store_path(
-                        self.ctx.data_root,
-                        self.path_prefix,
-                        "modis_timeseries_reprojected.zarr",
-                        grid_id=self.ctx.grid_id,
-                        layout=self.ctx.layout,
-                        v2_family="glass_modis_lst",
-                    ),
-                    inputs=tuple(f["zarr_path"] for f in annual_files),
-                    completion=Completion.MARKER,
-                    meta={
-                        "years_available": [f["year"] for f in annual_files],
-                        "missing_years": missing,
-                        "grid_cells": sorted({f["grid_cell"] for f in annual_files}),
-                        **verify.verification_meta(
-                            self.cfg.raw,
-                            expected_vars=self._STAT_VARS,
-                            value_range=self._LST_VALUE_RANGE,
-                            range_vars=self._RANGE_VARS,
-                        ),
-                    },
-                )
-            ]
-        return [
-            StepTarget(
-                source_id=self.cfg.source_id,
-                step=PipelineStep.GRID,
-                key="global",
-                output_path=layout.grid_store_path(
-                    self.ctx.data_root,
-                    self.path_prefix,
-                    "avhrr_timeseries_reprojected.zarr",
-                    grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                    v2_family="glass_avhrr_lst",
-                ),
-                inputs=tuple(f["zarr_path"] for f in annual_files),
-                completion=Completion.MARKER,
-                meta={
-                    "years_available": [f["year"] for f in annual_files],
-                    "missing_years": missing,
-                    **verify.verification_meta(
-                        self.cfg.raw,
-                        expected_vars=self._STAT_VARS,
-                        value_range=self._LST_VALUE_RANGE,
-                        range_vars=self._RANGE_VARS,
-                    ),
-                },
-            )
-        ]
-
-    def _plan_grid(self, selection: TargetSelection) -> List[StepTarget]:
-        """Ledger-backed fast path: the single GRID target's `inputs` (and
-        its `years_available`/`missing_years`/`grid_cells` meta, for MODIS)
-        are re-derived live from PREPARE's `local_complete_units()` (a cheap
-        indexed ledger query) rather than persisted -- persisting a
-        filename-derived snapshot would go stale the moment a new PREPARE
-        (year[, grid_cell]) lands without a matching GRID reconcile.
-        PREPARE's own keys are `f"{year}/{grid_cell}"` for MODIS or plain
-        `str(year)` for AVHRR (`_plan_prepare`/`_discover_prepare` above),
-        so parsing `unit_id.partition("/")` recovers year (and, for MODIS,
-        grid_cell) without re-deriving anything from disk. Falls back to
-        `_discover_grid()` if the ledger has no GRID row yet."""
-
-        years_requested = (
-            list(range(selection.year_range[0], selection.year_range[1] + 1)) if selection.year_range else None
-        )
-
-        def build_target(row: "ArtifactRow", ledger: Any) -> Optional[StepTarget]:
-            if row.local_path is None:
-                return None
-            parsed: List[Tuple[int, str, str]] = []
-            for uid, path in ledger.local_complete_units("prepare"):
-                year_str, _, cell = uid.partition("/")
-                if not year_str.isdigit():
-                    continue
-                year = int(year_str)
-                if not selection.matches_year(year):
-                    continue
-                parsed.append((year, cell or "global", path))
-            if not parsed:
-                return None
-
-            years_available = sorted({year for year, _, _ in parsed})
-            missing = sorted(set(years_requested or []) - set(years_available))
-            meta: Dict[str, Any] = {
-                "years_available": years_available,
-                "missing_years": missing,
-                **verify.verification_meta(
-                    self.cfg.raw,
-                    expected_vars=self._STAT_VARS,
-                    value_range=self._LST_VALUE_RANGE,
-                    range_vars=self._RANGE_VARS,
-                ),
-            }
-            if self.data_source_kind == "MODIS":
-                meta["grid_cells"] = sorted({cell for _, cell, _ in parsed})
-
-            return StepTarget(
-                source_id=self.cfg.source_id,
-                step=PipelineStep.GRID,
-                key=row.unit_id,
-                output_path=row.local_path,
-                inputs=tuple(path for _, _, path in parsed),
-                completion=Completion.MARKER,
-                meta=meta,
-            )
-
-        targets = self._plan_from_ledger(PipelineStep.GRID, selection, build_target)
-        if targets is not None:
-            return targets
-        logger.warning(
-            "No ledger for source='%s' step='grid' -- falling back to live discovery; "
-            "run `data reconcile --source %s --step grid` for faster planning.",
-            self.cfg.source_id, self.cfg.source_id,
-        )
-        return self._discover_grid(selection)
-
-    def _execute_grid(self, target: StepTarget) -> bool:
-        """Ported verbatim from GlassPreprocessor._process_spatial_target and
-        its chunked-tile helpers -- GLASS's own bespoke tiled reprojection,
-        not the shared SpatialProcessor (see module docstring)."""
+        """Merges what used to be two separate steps (module docstring):
+        first ensure every requested (year[, grid_cell])'s daily->annual
+        stats zarr exists, then reproject them all into the final output,
+        tile by tile, using GLASS's own bespoke reprojection path
+        (`_process_years_chunked`/`_process_year_tiles`, ported verbatim
+        from `GlassPreprocessor._process_spatial_target` and its chunked-tile
+        helpers -- not the shared SpatialProcessor, see module docstring)."""
         from src.data.common.geobox import get_target_geobox
         from src.data.sources.steps import is_complete, mark_complete
 
         if not self.cfg.override and is_complete(target):
-            logger.info("Skipping grid step -- already complete: %s", target.output_path)
+            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
             return True
 
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
+
+        years_available = set(target.meta["years_available"])
+        groups = [g for g in self._group_daily_files(TargetSelection()) if g["year"] in years_available]
+        if not groups:
+            logger.error("No daily file groups found for PREPARE (source=%s)", self.cfg.source_id)
+            return False
+
+        annual_paths = []
+        for group in groups:
+            annual_path = self._ensure_annual_zarr(group)
+            if annual_path is None:
+                logger.error("Failed to build annual stats zarr for %s/%s", group["year"], group["grid_cell"])
+                return False
+            annual_paths.append(annual_path)
 
         try:
             with self._dask_client() as client:
@@ -748,11 +614,12 @@ class GlassSource(_CrawlerMixin, DataSource):
                         return False
 
                     if not os.path.exists(target.output_path):
-                        if not self._create_empty_target_zarr(target.output_path, target_geobox, target.inputs):
+                        if not self._create_empty_target_zarr(target.output_path, target_geobox, tuple(annual_paths)):
                             return False
 
-                    years_to_process = target.meta["years_available"]
-                    ok = self._process_years_chunked(list(target.inputs), target.output_path, target_geobox, years_to_process)
+                    ok = self._process_years_chunked(
+                        annual_paths, target.output_path, target_geobox, sorted(years_available)
+                    )
                     if ok:
                         mark_complete(target.output_path)
                     return ok

@@ -58,7 +58,7 @@ def test_execute_gid3_dominant_writes_gid3_keyed_parquet(tmp_path, monkeypatch):
 
     target = StepTarget(
         source_id=source.ID,
-        step=PipelineStep.GRID,
+        step=PipelineStep.PREPARE,
         key="gadm_gid3_dominant",
         output_path=str(tmp_path / "out" / "dominant_biome_by_gid3.parquet"),
         inputs=(ecoregions_file, gadm_gid3_file, mapping_file),
@@ -97,7 +97,7 @@ def test_execute_gid3_dominant_is_idempotent(tmp_path, monkeypatch):
 
     target = StepTarget(
         source_id=source.ID,
-        step=PipelineStep.GRID,
+        step=PipelineStep.PREPARE,
         key="gadm_gid3_dominant",
         output_path=str(tmp_path / "out" / "dominant_biome_by_gid3.parquet"),
         inputs=(ecoregions_file, gadm_gid3_file, mapping_file),

@@ -4,8 +4,15 @@ StepTarget used `completion=Completion.NEVER` (which `is_complete()` always
 reports False for) while the real skip-check lived only inside
 `_execute_prepare`'s custom `os.listdir` logic, invisible to `is_complete()`/
 `data plan`. PREPARE now uses `Completion.MARKER` (a `.complete` sibling
-file next to the output directory), matching how GRID already reports its
-own completion in this same file."""
+file next to the final output zarr -- what used to be GRID's own output,
+Plan 2's PREPARE+GRID merge, docs/design successor to the ledger).
+
+`_rasterize_levels` (phase 2: tiled rasterization, needs a real target
+geobox/dask client) is stubbed out in every test here -- these tests are
+about resumability/marker semantics around the merged PREPARE step, not
+rasterization correctness (covered by
+tests/data/sources/misc/test_gadm_osm_grid_geobox.py instead).
+"""
 
 import os
 import zipfile
@@ -28,6 +35,11 @@ def _make(tmp_path, layout="legacy"):
     return cls(ctx, cfg), ctx
 
 
+def _fake_rasterize_levels(level_files, output_path):
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    return True
+
+
 def _write_fake_raw_zip(source, tmp_path):
     raw_file = source._raw_file_path()
     os.makedirs(os.path.dirname(raw_file), exist_ok=True)
@@ -48,9 +60,10 @@ def test_plan_prepare_target_uses_marker_completion(tmp_path):
     assert target.completion == Completion.MARKER
 
 
-def test_plan_prepare_is_pending_before_execute_and_complete_after(tmp_path):
+def test_plan_prepare_is_pending_before_execute_and_complete_after(tmp_path, monkeypatch):
     source, _ = _make(tmp_path)
     _write_fake_raw_zip(source, tmp_path)
+    monkeypatch.setattr(source, "_rasterize_levels", _fake_rasterize_levels)
 
     target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
     assert is_complete(target) is False
@@ -64,33 +77,43 @@ def test_plan_prepare_is_pending_before_execute_and_complete_after(tmp_path):
     assert is_complete(target_again) is True
 
 
-def test_execute_prepare_is_idempotent_via_marker(tmp_path):
+def test_execute_prepare_is_idempotent_via_marker(tmp_path, monkeypatch):
     source, _ = _make(tmp_path)
     _write_fake_raw_zip(source, tmp_path)
 
+    calls = []
+
+    def fake_rasterize(level_files, output_path):
+        calls.append(1)
+        return _fake_rasterize_levels(level_files, output_path)
+
+    monkeypatch.setattr(source, "_rasterize_levels", fake_rasterize)
+
     target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
     assert source.execute(target) is True
-    # Second execute hits the MARKER-based skip path, not a re-extraction.
+    # Second execute hits the MARKER-based skip path, not a re-run.
     assert source.execute(target) is True
+    assert len(calls) == 1
 
 
-def test_execute_prepare_legacy_fallback_when_marker_missing_but_files_exist(tmp_path):
-    # Pre-existing runs from before the MARKER policy was added: level files
-    # exist on disk but no .complete marker yet.
+def test_execute_prepare_reuses_existing_level_files_without_reextracting(tmp_path, monkeypatch):
+    # Level files already on disk (from a prior partial run) -- phase 1
+    # (vector extraction) must be skipped, not redone, even though the
+    # overall target isn't marked complete yet (phase 2 never ran).
     source, _ = _make(tmp_path)
     raw_file = _write_fake_raw_zip(source, tmp_path)
 
-    output_base = source.output_root(PipelineStep.PREPARE)
-    os.makedirs(output_base, exist_ok=True)
-    open(os.path.join(output_base, "gadm_levelADM_0_simplified.gpkg"), "w").close()
-
-    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
-    assert is_complete(target) is False  # no marker yet
+    vector_dir = source._vector_dir()
+    os.makedirs(vector_dir, exist_ok=True)
+    open(os.path.join(vector_dir, "gadm_levelADM_0_simplified.gpkg"), "w").close()
 
     # Corrupt the raw zip so a real re-extraction would fail loudly --
-    # proves the legacy fallback path is what actually skipped the work.
+    # proves phase 1 was actually skipped, not silently re-run.
     os.remove(raw_file)
     open(raw_file, "w").close()
 
+    monkeypatch.setattr(source, "_rasterize_levels", _fake_rasterize_levels)
+
+    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
     assert source.execute(target) is True
     assert is_complete(target) is True

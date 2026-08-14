@@ -2,7 +2,8 @@
 #SBATCH --job-name=glass-modis-prepare
 #SBATCH --output=./log/preprocess/glass_modis/%x-%j.out
 #SBATCH --error=./log/preprocess/glass_modis/%x-%j.err
-#SBATCH --time=7-00:00:00
+#SBATCH --partition=scicore
+#SBATCH --time=10-00:00:00
 #SBATCH --qos=1week
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
