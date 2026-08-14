@@ -379,6 +379,7 @@ class SnlMiningSource(DataSource):
         raster_crs = str(geobox.crs)
 
         con = self._connect_duckdb(self.prepared_db_path)
+        built = False
         try:
             con.execute(f"ATTACH '{self.duckdb_path}' AS raw_db (READ_ONLY)")
             llm_years_available = self._raw_table_exists(con, self.llm_years_table)
@@ -413,13 +414,15 @@ class SnlMiningSource(DataSource):
             self._create_rtree_indexes(con, {**radius_tables, **dict.fromkeys(polygon_table_names)})
             self._verify_rtree_queries(con)
             con.execute("DETACH raw_db")
-            self._write_back_shared_tables()
+            built = True
             return True
         except Exception:
             logger.exception("Error preparing SNL mining DuckDB features")
             return False
         finally:
             con.close()
+            if built:
+                self._write_back_shared_tables()
 
     def _raw_table_exists(self, con, table_name: str) -> bool:
         row = con.execute(
