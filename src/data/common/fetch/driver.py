@@ -118,8 +118,9 @@ def run_fetch(
     """Drive one full FETCH pass for *source*.
 
     `source` only needs to satisfy `RemoteFileCatalog`
-    (`src.data.sources.base`) plus expose `.ctx`/`.cfg`/`.data_path` -- every
-    FETCH-capable `DataSource` already does. Callers pass this straight
+    (`src.data.sources.base`) plus expose `.ctx`/`.cfg`/`.data_path`/
+    `.output_root()` -- every FETCH-capable `DataSource` already does.
+    Callers pass this straight
     through from `sources.<id>.download` config
     (`run_fetch(self, **self.cfg.raw.get("download", {}))`).
 
@@ -128,10 +129,10 @@ def run_fetch(
     `manifest.record_failure`) don't count against this; an operator needs
     to fix the source config for those, not re-run fetch.
     """
-    from src.data.sources import layout
+    from src.data.sources.steps import PipelineStep
 
     ctx = source.ctx
-    raw_root = layout.raw_root(ctx.data_root, source.cfg.data_path, namespace=source.cfg.namespace, layout=ctx.layout)
+    raw_root = source.output_root(PipelineStep.FETCH)
     os.makedirs(raw_root, exist_ok=True)
     source_id = getattr(source, "ID", "?")
 

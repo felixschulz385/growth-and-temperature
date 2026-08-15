@@ -34,6 +34,47 @@ class FakeConfig:
     def get_model_runtime_seconds_for_spec(self, spec: dict[str, str]) -> int:
         return self._runtimes[tuple(spec["variant_path"])]
 
+    @property
+    def df_models_in_tables(self):
+        import pandas as pd
+
+        return pd.DataFrame(
+            [
+                {
+                    "table_name": "table1",
+                    "model_name": spec["model_name"],
+                    "Fixed Effects": spec["fixed_effects_label"],
+                    "Resolution": spec["resolution"],
+                    "Temporal Extent": spec["temporal_extent"],
+                    "Spatial Extent": spec["spatial_extent"],
+                    "Clustering": spec["clustering"],
+                }
+                for spec in self._specs
+            ]
+        )
+
+    def get_model_spec(
+        self,
+        model_name: str,
+        *,
+        fixed_effects=None,
+        resolution=None,
+        clustering=None,
+        temporal_extent=None,
+        spatial_extent=None,
+    ) -> dict[str, str]:
+        for spec in self._specs:
+            if (
+                spec["model_name"] == model_name
+                and spec["fixed_effects_label"] == fixed_effects
+                and spec["resolution"] == resolution
+                and spec["clustering"] == clustering
+                and spec["temporal_extent"] == temporal_extent
+                and spec["spatial_extent"] == spatial_extent
+            ):
+                return spec
+        raise AssertionError(f"no matching spec for {model_name!r}")
+
 
 def _spec(
     model_name: str,

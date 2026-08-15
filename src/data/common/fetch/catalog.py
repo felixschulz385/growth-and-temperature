@@ -53,8 +53,9 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
 
     if not getattr(source, "has_entrypoints", False):
         pairs = list(source.list_remote_files())
-        cache_path = statusfile.status_path(status_dir, _FLAT_CACHE_KEY, subdir=ENTRYPOINT_CACHE_SUBDIR)
-        statusfile.write(cache_path, {"files": pairs})
+        if pairs:
+            cache_path = statusfile.status_path(status_dir, _FLAT_CACHE_KEY, subdir=ENTRYPOINT_CACHE_SUBDIR)
+            statusfile.write(cache_path, {"files": pairs})
         return [RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url) for rel, url in pairs]
 
     required: list[RequiredFile] = []

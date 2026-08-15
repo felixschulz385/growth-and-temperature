@@ -28,6 +28,16 @@ class _FakeSource:
     def data_path(self):
         return self.cfg.data_path
 
+    def output_root(self, step, *, namespace=None):
+        from src.data.sources import layout
+
+        return layout.raw_root(
+            self.ctx.data_root,
+            self.cfg.data_path,
+            namespace=namespace if namespace is not None else self.cfg.namespace,
+            layout=self.ctx.layout,
+        )
+
     def list_remote_files(self, entrypoint=None):
         return self._files
 

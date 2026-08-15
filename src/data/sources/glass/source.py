@@ -537,6 +537,7 @@ class GlassSource(DataSource):
                 completion=Completion.MARKER,
                 meta={
                     "years_available": years,
+                    "group_keys": [g["key"] for g in groups],
                     **verify.verification_meta(
                         self.cfg.raw,
                         expected_vars=self._STAT_VARS,
@@ -758,7 +759,8 @@ class GlassSource(DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         years_available = set(target.meta["years_available"])
-        groups = [g for g in self._group_daily_files(TargetSelection()) if g["year"] in years_available]
+        group_keys = tuple(target.meta["group_keys"])
+        groups = self._group_daily_files(TargetSelection(keys=group_keys))
         if not groups:
             logger.error("No daily file groups found for PREPARE (source=%s)", self.cfg.source_id)
             return False

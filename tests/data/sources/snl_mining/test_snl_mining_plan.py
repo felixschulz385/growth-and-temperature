@@ -423,6 +423,7 @@ def test_create_mine_priceshock_table_fully_priced_mine(tmp_path):
     con = _attach_raw_db_with_shares(tmp_path, [("m1", "gold", 1.0)])
     con.execute("CREATE TABLE active_mines AS SELECT 'm1' AS property_id, 2020 AS year")
 
+    source._create_commodity_shares_table(con)
     source._create_mine_priceshock_table(con)
 
     row = con.execute("SELECT property_id, year, value FROM mine_priceshock").fetchone()
@@ -438,6 +439,7 @@ def test_create_mine_priceshock_table_partially_unpriced_ignores_unmatched_share
     con = _attach_raw_db_with_shares(tmp_path, [("m2", "gold", 0.5), ("m2", "uranium", 0.5)])
     con.execute("CREATE TABLE active_mines AS SELECT 'm2' AS property_id, 2020 AS year")
 
+    source._create_commodity_shares_table(con)
     source._create_mine_priceshock_table(con)
 
     row = con.execute("SELECT property_id, year, value FROM mine_priceshock").fetchone()
@@ -453,6 +455,7 @@ def test_create_mine_priceshock_table_fully_unpriced_mine_is_null_not_zero(tmp_p
     con = _attach_raw_db_with_shares(tmp_path, [("m3", "uranium", 1.0)])
     con.execute("CREATE TABLE active_mines AS SELECT 'm3' AS property_id, 2020 AS year")
 
+    source._create_commodity_shares_table(con)
     source._create_mine_priceshock_table(con)
 
     row = con.execute("SELECT property_id, year, value FROM mine_priceshock").fetchone()
@@ -495,6 +498,7 @@ def test_create_buffer_table_carries_value_and_value_priceshock(tmp_path):
         ) AS t(property_id, year, point_metric)
         """
     )
+    source._create_commodity_shares_table(con)
     source._create_mine_priceshock_table(con)
 
     source._create_buffer_table(con, "mine_buffers_test", 10000, "EPSG:3857")

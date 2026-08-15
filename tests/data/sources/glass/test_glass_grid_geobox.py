@@ -90,7 +90,7 @@ def test_execute_prepare_threads_ctx_grid_id_into_target_geobox(tmp_path, monkey
         output_path=str(tmp_path / "out" / "modis_timeseries_reprojected.zarr"),
         inputs=(),
         completion=Completion.MARKER,
-        meta={"years_available": [2019]},
+        meta={"years_available": [2019], "group_keys": ["2019/h25v06"]},
     )
     assert source._execute_prepare(target) is True
     assert captured["ctx"] is ctx
