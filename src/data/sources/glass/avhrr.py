@@ -132,13 +132,13 @@ class GlassAvhrrSource(DataSource):
         # as one FETCH run needs.
         self._listing_cache: Dict[Any, List[Tuple[str, str]]] = {}
 
-    def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
+    def output_root(self, step: PipelineStep, *, namespace: str | None = None, agg: str | None = None) -> str:
         """Overrides the base default: GLASS's output root is keyed by the
         fixed AVHRR `path_prefix` constant, not `cfg.data_path` (which
         exists only for index-file naming, matching old
         `GlassPreprocessor.get_hpc_output_path` using `self.path_prefix`).
 
-        `agg=CRS_AGG` for PREPARE specifically: `layout.output_root()`
+        `agg` defaults to CRS_AGG for PREPARE specifically: `layout.output_root()`
         requires an explicit `agg` for PREPARE (`src/data/sources/layout.py`'s
         CRS_AGG/ADM_AGG/MISC_AGG physical-layout split, added independently
         of this rebuild). GLASS-AVHRR's PREPARE output (`_annual_zarr_path()`'s
@@ -147,14 +147,18 @@ class GlassAvhrrSource(DataSource):
         final `_grid_output_path()` (routed through GRID, not PREPARE, so it
         never needs `agg`) does -- so CRS_AGG is the locally-consistent
         bucket, unambiguous here since AVHRR has no non-pixel-grid PREPARE
-        output that would need ADM_AGG/MISC_AGG instead."""
+        output that would need ADM_AGG/MISC_AGG instead. Accepts an explicit
+        `agg` from callers (e.g. `scripts/migrate_legacy_layout.py`) rather
+        than silently ignoring it, falling back to the same default."""
+        if agg is None and step is PipelineStep.PREPARE:
+            agg = layout.CRS_AGG
         return layout.output_root(
             self.ctx.data_root,
             self.path_prefix,
             step,
             namespace=namespace,
             grid_id=self.ctx.grid_id,
-            agg=layout.CRS_AGG if step is PipelineStep.PREPARE else None,
+            agg=agg,
         )
 
     def download(self, file_url: str, output_path: str, session: Any = None) -> None:

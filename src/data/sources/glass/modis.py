@@ -337,7 +337,7 @@ class GlassModisSource(DataSource):
         # GlassSource/new GlassAvhrrSource (docs/design/11-glass-static-fetch.md §4.3).
         self._listing_cache: Dict[Tuple[int, int], List[Tuple[str, str]]] = {}
 
-    def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
+    def output_root(self, step: PipelineStep, *, namespace: str | None = None, agg: str | None = None) -> str:
         """Same shape as `ModisSource.output_root` (`modis/source.py:193-
         222`): FETCH uses the base-class default; PREPARE/GRID both route
         through the physical GRID tier (there's no separate "annual stats
@@ -345,6 +345,11 @@ class GlassModisSource(DataSource):
         FETCH's per-tile-year GeoTIFFs, like `ModisSource`), keyed off
         `self.path_prefix` rather than `cfg.data_path` -- matching today's
         `GlassSource.output_root`.
+
+        `agg` is accepted (so callers like `scripts/migrate_legacy_layout.py`
+        that pass `agg=` for every PREPARE call don't blow up) but unused:
+        since PREPARE is routed to the GRID tier here, `layout.output_root()`
+        never reaches the branch that requires `agg`.
 
         Unlike `ModisSource`, this does NOT hardcode `grid_id=EASE_GRID_ID`:
         the old `GlassSource` always honored `ctx.grid_id` (a pinned

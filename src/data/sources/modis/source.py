@@ -192,7 +192,7 @@ class ModisSource(DataSource):
 
         self._stac_client = None
 
-    def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
+    def output_root(self, step: PipelineStep, *, namespace: str | None = None, agg: str | None = None) -> str:
         """Overrides the base default for PREPARE/GRID only -- MODIS's own
         PREPARE step (mosaic + reproject onto the canonical grid; was GRID
         before the FETCH/PREPARE rename) hardcodes `grid_id="ease6933"`
@@ -204,6 +204,11 @@ class ModisSource(DataSource):
         `scripts/migrate_legacy_layout.py` calls `output_root(PipelineStep.GRID)`
         on every source regardless of whether GRID is still in that source's
         own `STEPS`.
+
+        `agg` is accepted (so callers that pass `agg=` for every PREPARE call,
+        e.g. `scripts/migrate_legacy_layout.py`, don't blow up) but unused:
+        PREPARE is routed to the GRID tier here, so `layout.output_root()`
+        never reaches the branch that requires `agg`.
 
         FETCH now uses the base class's default (`raw/<data_path>` --
         `layout.raw_root()`), same as every other FETCH-capable source; no
@@ -220,7 +225,7 @@ class ModisSource(DataSource):
                 namespace=namespace,
                 grid_id=EASE_GRID_ID,
             )
-        return super().output_root(step, namespace=namespace)
+        return super().output_root(step, namespace=namespace, agg=agg)
 
     # ------------------------------------------------------------------
     # transfer_units -- per-(year, tile) files for FETCH, default for PREPARE
