@@ -40,6 +40,7 @@ which are still illustrative defaults (same posture as `modis:`'s own
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
@@ -57,7 +58,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.glass.avhrr import daterange_doy
-from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection, TransferUnit
+from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection, TransferUnit, is_complete
 from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
@@ -313,6 +314,20 @@ class GlassModisSource(DataSource):
         self.heat_stress_k = float(cfg.raw.get("heat_stress_k", 308.15))
         self.cold_stress_k = float(cfg.raw.get("cold_stress_k", 273.15))
 
+        # One tile-year FETCH target downloads up to ~365 daily HDFs; doing
+        # that sequentially (one `requests.get` at a time) was the pre-
+        # rebuild `GlassSource`'s actual bottleneck -- the pre-integrated-
+        # pipeline `GlassLSTDataSource.download_async` concurrent-download
+        # behaviour the user remembers from "the old fetch suite" predates
+        # even that, and got factored into `src.data.common.fetch.http
+        # .download_with_retries` (its own docstring: "was duplicated...
+        # across ... glass/source.py"), just never wired back up after the
+        # StepTarget rebuild. Reusing it here, same conservative
+        # `limit_per_host=2`/300s timeout that module's docstring documents
+        # as glass's own historical tuning (a shared multi-user archive,
+        # not a CDN). Default of 5 matches `driver.run_fetch`'s own default.
+        self.max_concurrent_downloads = int(cfg.raw.get("max_concurrent_downloads", 5))
+
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"glass_modis_{self.variant}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
 
@@ -509,55 +524,114 @@ class GlassModisSource(DataSource):
                 return href, url
         return None
 
-    def _execute_fetch(self, target: StepTarget) -> bool:
-        """For the target's `(tile, year)`: iterate the day range clipped to
-        that year, fetch each day's listing (memoized), download each
-        matching `.hdf` into `self.temp_dir` (scratch, not the permanent raw
-        tree), combine into the 8 annual stat bands, and write one LERC_ZSTD
-        GeoTIFF. A day genuinely absent from the remote (sensor gap, or a
-        404'd day directory) is a normal gap, not a target failure -- only a
-        transient listing/download error fails (and can be retried)."""
+    def _resolve_day_urls(self, target: StepTarget, status_dir: str) -> Optional[List[Tuple[int, str, str]]]:
+        """Sequential first pass: resolve every day in the target's year to
+        a `(day, url, dest_path)` triple via `_listing_for`'s memoized
+        listing (shared across every sibling tile target for that day, so
+        keeping this sequential doesn't cost extra real GETs beyond the
+        first tile processed for each day this run). Returns `None` on a
+        transient listing error (already recorded); a day genuinely absent
+        from the remote (sensor gap, 404'd day directory) is silently
+        skipped, not a failure."""
         import requests
 
-        from src.data.sources.steps import is_complete
+        year, tile = target.meta["year"], target.meta["tile"]
+        resolved: List[Tuple[int, str, str]] = []
+        for y, day in daterange_doy(self.day_range_start, self.day_range_end):
+            if y != year:
+                continue
+            try:
+                listing = self._listing_for(y, day)
+            except requests.HTTPError as exc:
+                if exc.response is not None and exc.response.status_code == 404:
+                    continue  # day directory doesn't exist -- real gap
+                manifest.record_failure(status_dir, target.key, f"listing fetch failed for {y}/{day:03d}: {exc}")
+                return None
+            except requests.RequestException as exc:
+                manifest.record_failure(status_dir, target.key, f"listing fetch failed for {y}/{day:03d}: {exc}")
+                return None
 
+            match = self._match_in_listing(listing, y, day, tile)
+            if match is None:
+                continue  # genuinely absent for this tile/day -- gap
+
+            href, url = match
+            dest = os.path.join(self.temp_dir, f"{tile}_{y}{day:03d}_{href}")
+            resolved.append((day, url, dest))
+        return resolved
+
+    async def download_async(self, url: str, dest: str, session: Any) -> None:
+        """The async counterpart to `self.download()` -- a separate,
+        overridable/mockable method (rather than inlining
+        `download_with_retries` into `_download_days_async` directly) so
+        tests can monkeypatch the network boundary the same way they
+        already monkeypatch the sync `download()`."""
+        from src.data.common.fetch.http import download_with_retries
+
+        await download_with_retries(session, url, dest)
+
+    async def _download_days_async(
+        self, items: List[Tuple[int, str, str]]
+    ) -> List[Tuple[int, str, Optional[str]]]:
+        """Concurrent download of every resolved `(day, url, dest)` triple,
+        bounded by `self.max_concurrent_downloads` -- same conservative
+        connector tuning the pre-rebuild `GlassLSTDataSource.download_async`
+        used (module docstring). Returns `(day, dest, error_or_None)` per
+        item; a failed item doesn't cancel the others, so one flaky day
+        doesn't waste every other already-in-flight download for this
+        target."""
+        import aiohttp
+
+        semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
+
+        async def _one(day: int, url: str, dest: str, session: aiohttp.ClientSession) -> Tuple[int, str, Optional[str]]:
+            async with semaphore:
+                try:
+                    await self.download_async(url, dest, session)
+                    return day, dest, None
+                except Exception as exc:
+                    return day, dest, str(exc)
+
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=2)
+        timeout = aiohttp.ClientTimeout(total=300, connect=30)
+        async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
+            tasks = [_one(day, url, dest, session) for day, url, dest in items]
+            return list(await asyncio.gather(*tasks))
+
+    def _execute_fetch(self, target: StepTarget) -> bool:
+        """For the target's `(tile, year)`: resolve every day's remote URL
+        (sequential, memoized listing), download all resolved days
+        concurrently (`_download_days_async`), combine into the 8 annual
+        stat bands, and write one LERC_ZSTD GeoTIFF."""
         status_dir = self.output_root(PipelineStep.FETCH)
         if not self.cfg.override and is_complete(target):
             return True
 
-        year, tile = target.meta["year"], target.meta["tile"]
-        daily_files: List[Tuple[int, str]] = []
+        year = target.meta["year"]
+        resolved = self._resolve_day_urls(target, status_dir)
+        if resolved is None:
+            return False  # transient listing error, already recorded
+
+        if not resolved:
+            manifest.record_failure(status_dir, target.key, "no daily files found for this tile/year", permanent=True)
+            return False
+
+        # All `resolved` dest paths, not just successful ones, must be
+        # cleaned up below -- a partially-failed batch still leaves whatever
+        # concurrent downloads DID succeed sitting in scratch otherwise.
+        all_dest_paths = [dest for _, _, dest in resolved]
         try:
-            for y, day in daterange_doy(self.day_range_start, self.day_range_end):
-                if y != year:
-                    continue
-                try:
-                    listing = self._listing_for(y, day)
-                except requests.HTTPError as exc:
-                    if exc.response is not None and exc.response.status_code == 404:
-                        continue  # day directory doesn't exist -- real gap
-                    manifest.record_failure(status_dir, target.key, f"listing fetch failed for {y}/{day:03d}: {exc}")
-                    return False
-                except requests.RequestException as exc:
-                    manifest.record_failure(status_dir, target.key, f"listing fetch failed for {y}/{day:03d}: {exc}")
-                    return False
-
-                match = self._match_in_listing(listing, y, day, tile)
-                if match is None:
-                    continue  # genuinely absent for this tile/day -- gap
-
-                href, url = match
-                dest = os.path.join(self.temp_dir, f"{tile}_{y}{day:03d}_{href}")
-                try:
-                    self.download(url, dest)
-                except Exception as exc:
-                    manifest.record_failure(status_dir, target.key, f"download failed for {y}/{day:03d}: {exc}")
-                    return False
-                daily_files.append((day, dest))
-
-            if not daily_files:
-                manifest.record_failure(status_dir, target.key, "no daily files found for this tile/year", permanent=True)
+            results = asyncio.run(self._download_days_async(resolved))
+            failed = [(day, error) for day, _, error in results if error is not None]
+            if failed:
+                day, error = failed[0]
+                manifest.record_failure(
+                    status_dir, target.key,
+                    f"download failed for {year}/{day:03d}: {error}"
+                    + (f" (+{len(failed) - 1} more)" if len(failed) > 1 else ""),
+                )
                 return False
+            daily_files = [(day, dest) for day, dest, _ in results]
 
             ok = self._build_annual_geotiff(daily_files, year, target.output_path)
             if ok:
@@ -569,7 +643,7 @@ class GlassModisSource(DataSource):
             # Scratch daily downloads, not the FETCH deliverable -- delete
             # once the tile-year tiff is written (or the attempt failed and
             # will be retried from scratch anyway).
-            for _, path in daily_files:
+            for path in all_dest_paths:
                 try:
                     os.remove(path)
                 except OSError:

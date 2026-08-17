@@ -76,6 +76,10 @@ def test_match_in_listing_requires_tile():
     assert GlassModisSource._match_in_listing(listing, 2020, 55, "h02v02") is None
 
 
+async def _fake_download_async(url, path, session=None):
+    open(path, "wb").close()
+
+
 def _fake_band(value: float) -> xr.DataArray:
     arr = xr.DataArray(
         np.full((2, 2), value, dtype="float64"),
@@ -138,7 +142,7 @@ def test_execute_fetch_writes_annual_geotiff_with_eight_bands_lst(tmp_path, monk
         return [(href, f"https://x/{href}")]
 
     monkeypatch.setattr(source, "_listing_for", fake_listing_for)
-    monkeypatch.setattr(source, "download", lambda url, path, session=None: open(path, "wb").close())
+    monkeypatch.setattr(source, "download_async", _fake_download_async)
     monkeypatch.setattr(
         glass_modis_module, "_open_hdf_bands", lambda path, band_names: {"LST": _fake_band(290.0)}
     )
@@ -160,7 +164,7 @@ def test_execute_fetch_writes_annual_geotiff_with_eight_bands_ta(tmp_path, monke
         return [(href, f"https://x/{href}")]
 
     monkeypatch.setattr(source, "_listing_for", fake_listing_for)
-    monkeypatch.setattr(source, "download", lambda url, path, session=None: open(path, "wb").close())
+    monkeypatch.setattr(source, "download_async", _fake_download_async)
     monkeypatch.setattr(
         glass_modis_module,
         "_open_hdf_bands",
@@ -186,7 +190,7 @@ def test_execute_fetch_treats_missing_day_as_a_gap_not_a_failure(tmp_path, monke
         return [(href, f"https://x/{href}")]
 
     monkeypatch.setattr(source, "_listing_for", fake_listing_for)
-    monkeypatch.setattr(source, "download", lambda url, path, session=None: open(path, "wb").close())
+    monkeypatch.setattr(source, "download_async", _fake_download_async)
     monkeypatch.setattr(
         glass_modis_module, "_open_hdf_bands", lambda path, band_names: {"LST": _fake_band(290.0)}
     )

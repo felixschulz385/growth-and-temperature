@@ -128,7 +128,13 @@ class DataSource(abc.ABC):
         if step not in self.STEPS:
             raise UnsupportedStepError(self.ID, step, self.STEPS)
 
-    def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
+    def output_root(self, step: PipelineStep, *, namespace: str | None = None, agg: str | None = None) -> str:
+        """`agg` (CRS_AGG/ADM_AGG/MISC_AGG, `src/data/sources/layout.py`) is
+        only consulted for `step=PREPARE` under `layout="v2"` -- required
+        there (`layout.output_root()` raises without it), ignored everywhere
+        else (FETCH, GRID, or any `layout="legacy"` call), so callers that
+        only ever hit those paths (e.g. every `output_root(PipelineStep.
+        FETCH)` call) don't need to pass it."""
         return layout.output_root(
             self.ctx.data_root,
             self.cfg.data_path,
@@ -136,6 +142,7 @@ class DataSource(abc.ABC):
             namespace=namespace if namespace is not None else self.cfg.namespace,
             grid_id=self.ctx.grid_id,
             layout=self.ctx.layout,
+            agg=agg,
         )
 
     def transfer_units(self, step: PipelineStep) -> list[TransferUnit]:

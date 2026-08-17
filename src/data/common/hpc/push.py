@@ -30,11 +30,12 @@ import os
 import shutil
 import tarfile
 import tempfile
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +110,34 @@ def _cleanup_local(path: str) -> None:
 
 
 class HPCPusher:
-    def __init__(self, client: Any, *, sample_verify_n: int = 5):
+    def __init__(self, client: Any, *, sample_verify_n: int = 5, max_retries: int = 3, retry_backoff: float = 5.0):
         self.client = client
         self.sample_verify_n = sample_verify_n
+        self.max_retries = max_retries
+        self.retry_backoff = retry_backoff
+
+    def _rsync_transfer_with_retry(self, local_path: str, remote_path: str, **kwargs) -> Tuple[bool, str]:
+        """`client.rsync_transfer()`, retried with exponential backoff.
+
+        A flaky HPC connection (e.g. a transfer node bouncing SSH mid-run --
+        observed as a 255 exit followed by the scp fallback hanging on a
+        password prompt for over a day, see client.py's `transfer_timeout`
+        fix) previously failed the push permanently on the first hiccup.
+        `rsync_transfer` already returns `(False, summary)` rather than
+        raising on failure, so retrying is just re-calling it."""
+        success, summary = False, ""
+        for attempt in range(1, self.max_retries + 1):
+            success, summary = self.client.rsync_transfer(local_path, remote_path, **kwargs)
+            if success:
+                return success, summary
+            if attempt < self.max_retries:
+                delay = self.retry_backoff * (2 ** (attempt - 1))
+                logger.warning(
+                    "Transfer attempt %d/%d failed (%s -> %s): %s -- retrying in %.0fs",
+                    attempt, self.max_retries, local_path, remote_path, summary, delay,
+                )
+                time.sleep(delay)
+        return success, summary
 
     # ------------------------------------------------------------------
     # FETCH: many-small-files, tar-batched
@@ -189,7 +215,7 @@ class HPCPusher:
             self.client.ensure_directory(remote_tar_dir)
             self.client.ensure_directory(remote_base_dir)
 
-            success, summary = self.client.rsync_transfer(
+            success, summary = self._rsync_transfer_with_retry(
                 tar_path, remote_tar_path, source_is_local=True, options=_RSYNC_OPTIONS, show_progress=False,
             )
             if not success:
@@ -261,7 +287,7 @@ class HPCPusher:
         if remote_parent:
             self.client.ensure_directory(remote_parent)
 
-        success, summary = self.client.rsync_transfer(
+        success, summary = self._rsync_transfer_with_retry(
             unit.local_path, unit.remote_path, source_is_local=True, options=_RSYNC_OPTIONS, show_progress=False,
         )
         if not success:
@@ -295,7 +321,7 @@ class HPCPusher:
             if remote_parent:
                 self.client.ensure_directory(remote_parent)
 
-            success, summary = self.client.rsync_transfer(
+            success, summary = self._rsync_transfer_with_retry(
                 tar_path, remote_tar_path, source_is_local=True, options=_RSYNC_OPTIONS, show_progress=False,
             )
             if not success:
