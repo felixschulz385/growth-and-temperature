@@ -187,8 +187,8 @@ ported as-is"). Steps, per variant-independent code path:
 
 | variant | `family` | path |
 |---|---|---|
-| `glass_modis` | `glass_modis_lst` | `<data_root>/grid/<grid_id>/glass_modis_lst.zarr` |
-| `glass_avhrr` | `glass_avhrr_lst` | `<data_root>/grid/<grid_id>/glass_avhrr_lst.zarr` |
+| `glass_modis` | `glass_modis_lst` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_modis_lst.zarr` |
+| `glass_avhrr` | `glass_avhrr_lst` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_avhrr_lst.zarr` |
 
 **Completion**: `Completion.MARKER`.
 

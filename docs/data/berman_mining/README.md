@@ -54,7 +54,7 @@ Not implemented — not in `STEPS`.
 `_execute_grid()`: casts both variables to `uint8` (`fillna(255)` before the cast), reprojects onto the pipeline's canonical target geobox (`get_target_geobox(ctx)`, **not** GADM-derived — see `REQUIRES` note above) via `odc.geo.xr.xr_reproject(..., resampling="nearest", dst_nodata=255)`, renames the `year` dim to `time` (coordinate `f"{year}-12-31"` per year), adds a constant `band=[1]` dimension, and writes a fresh CRS/grid-mapping encoding before writing to zarr (`zarr_format=3`, `consolidated=False`).
 
 - **Output path** (`layout.grid_store_path(..., family="berman_mining")`; `<grid_id>` depends on `pipeline.grid`, currently `ease6933`)
-  - `<data_root>/grid/<grid_id>/berman_mining.zarr` (flat)
+  - `<data_root>/prepared/berman_mining/crs/<grid_id>/berman_mining.zarr`
 - **Format:** single multi-year zarr store, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's own dimension names), `uint8` dtype, chunks `(1, 512, 512, 1)` (as declared in the encoding — dimension order not independently re-derived here), Blosc-zstd (level 3, bitshuffle) compression, `fill_value=255`, `Completion.PATH_EXISTS`.
 
 - **Variables**

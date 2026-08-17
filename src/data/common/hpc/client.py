@@ -28,7 +28,10 @@ class HPCClient:
         """
         self.target = target
         self.key_file = key_file
-        
+        # Ceiling for the PowerShell/scp fallback transfer subprocess -- a second
+        # line of defense behind BatchMode=yes (see _scp_non_interactive_opts()).
+        self.transfer_timeout = 600
+
         # Parse target to extract host and path
         if ":" in target:
             self.ssh_target, self.base_path = target.split(":", 1)
@@ -546,35 +549,41 @@ class HPCClient:
             
             # Build PowerShell command using scp
             ps_cmd = ["powershell", "-Command"]
-            
+
             # Construct the SCP command
-            scp_cmd = f"scp"
-            
+            scp_cmd = f"scp {self._scp_non_interactive_opts()}"
+
             # Add key file if specified
             if self.key_file:
                 expanded_key_file = os.path.expanduser(self.key_file)
                 if os.path.isfile(expanded_key_file):
                     scp_cmd += f" -i '{expanded_key_file}'"
-            
+
             # Add source and destination using the full remote path
             # Handle paths with spaces by quoting them
             quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
             scp_cmd += f" {quoted_local_path} {self.ssh_target}:{full_remote_path}"
-            
+
             # Complete the PowerShell command
             ps_cmd.append(scp_cmd)
-            
+
             start_time = time.time()
             logger.debug(f"Executing PowerShell command: {ps_cmd}")
-            
-            # Execute the command
-            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True)
-            
+
+            # Execute the command. BatchMode (via _scp_non_interactive_opts)
+            # makes a broken connection fail immediately instead of dropping
+            # to an interactive password prompt; the subprocess timeout is a
+            # second line of defense against the process hanging regardless.
+            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True, timeout=self.transfer_timeout)
+
             elapsed = time.time() - start_time
             logger.info(f"PowerShell transfer completed in {elapsed:.1f} seconds")
-            
+
             return True, "Transfer completed successfully"
-            
+
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"PowerShell transfer timed out after {self.transfer_timeout}s: {e}")
+            return False, f"transfer timed out after {self.transfer_timeout}s"
         except subprocess.SubprocessError as e:
             logger.error(f"PowerShell transfer failed: {e}")
             if isinstance(e, subprocess.CalledProcessError):
@@ -614,41 +623,55 @@ class HPCClient:
             
             # Build PowerShell command using scp
             ps_cmd = ["powershell", "-Command"]
-            
+
             # Construct the SCP command
-            scp_cmd = f"scp"
-            
+            scp_cmd = f"scp {self._scp_non_interactive_opts()}"
+
             # Add key file if specified
             if self.key_file:
                 expanded_key_file = os.path.expanduser(self.key_file)
                 if os.path.isfile(expanded_key_file):
                     scp_cmd += f" -i '{expanded_key_file}'"
-            
+
             # Add source and destination using the full remote path
             # Handle paths with spaces by quoting them
             quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
             scp_cmd += f" {self.ssh_target}:{full_remote_path} {quoted_local_path}"
-            
+
             # Complete the PowerShell command
             ps_cmd.append(scp_cmd)
-            
+
             start_time = time.time()
             logger.debug(f"Executing PowerShell command: {ps_cmd}")
-            
-            # Execute the command
-            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True)
-            
+
+            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True, timeout=self.transfer_timeout)
+
             elapsed = time.time() - start_time
             logger.info(f"PowerShell transfer completed in {elapsed:.1f} seconds")
-            
+
             return True, "Transfer completed successfully"
-            
+
+        except subprocess.TimeoutExpired as e:
+            logger.error(f"PowerShell transfer timed out after {self.transfer_timeout}s: {e}")
+            return False, f"transfer timed out after {self.transfer_timeout}s"
         except subprocess.SubprocessError as e:
             logger.error(f"PowerShell transfer failed: {e}")
             if isinstance(e, subprocess.CalledProcessError):
                 return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
             return False, str(e)
-    
+
+    def _scp_non_interactive_opts(self) -> str:
+        """`-o` flags for the ad hoc `scp` fallback command, mirroring
+        `_get_ssh_command_base()`'s options -- without `BatchMode=yes` a
+        broken key/connection makes `scp` silently drop to an interactive
+        password prompt, which hangs the whole pipeline (observed: a stuck
+        upload blocked for over a day) instead of failing so retry logic can
+        take over."""
+        return (
+            "-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null "
+            "-o LogLevel=ERROR -o ConnectTimeout=30 -o PasswordAuthentication=no"
+        )
+
     def _parse_rsync_progress(self, line):
         """Parse rsync progress output line for status information."""
         line = line.strip()

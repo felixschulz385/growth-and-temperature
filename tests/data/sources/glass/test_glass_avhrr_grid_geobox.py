@@ -1,9 +1,15 @@
-"""Regression tests for the ease6933 grid-switch correctness fix in
-GlassSource: before this fix, `_execute_grid` called `get_or_create_geobox()`
-directly (ignoring `ctx.grid_id`), and `_create_empty_target_zarr`/
-`_process_year_tiles` both hardcoded `latitude`/`longitude` dim names --
-a projected canonical geobox (`y`/`x` dims) would have raised a `KeyError`
-in either method.
+"""Regression tests for the ease6933 grid-switch correctness fix in GLASS's
+bespoke tiled-reprojection PREPARE path: before this fix, `_execute_prepare`
+called `get_or_create_geobox()` directly (ignoring `ctx.grid_id`), and
+`_create_empty_target_zarr`/`_process_year_tiles` both hardcoded
+`latitude`/`longitude` dim names -- a projected canonical geobox (`y`/`x`
+dims) would have raised a `KeyError` in either method.
+
+docs/design/12-glass-modis-rebuild.md §6: this bespoke path (32px-halo,
+"mode"-resampling reprojection) moved to `GlassAvhrrSource` only -- GLASS-
+MODIS's rebuilt PREPARE now uses the shared `SpatialProcessor` instead (see
+test_glass_modis_prepare.py), so these regression cases are re-pointed at
+`glass_avhrr`/`GlassAvhrrSource`, unchanged in behavior otherwise.
 """
 
 import contextlib
@@ -15,7 +21,7 @@ import xarray as xr
 from src.data.common.geobox.canonical import canonical_ease_geobox
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources.glass.source import GlassSource
+from src.data.sources.glass.avhrr import GlassAvhrrSource
 from src.data.sources.steps import Completion, PipelineStep, StepTarget
 
 
@@ -30,13 +36,13 @@ def _make_source(tmp_path, grid_id="legacy_4326"):
         grid_id=grid_id,
     )
     cfg = SourceConfig.from_dict(
-        "glass_modis",
+        "glass_avhrr",
         {
-            "base_url": "https://glass.hku.hk/archive/LST/MODIS/Daily/1KM/",
-            "day_range": {"start": [2000, 55], "end": [2020, 365]},
+            "base_url": "https://glass.hku.hk/archive/LST/AVHRR/0.05D/",
+            "day_range": {"start": [1992, 1], "end": [2020, 365]},
         },
     )
-    return GlassSource(ctx, cfg), ctx
+    return GlassAvhrrSource(ctx, cfg), ctx
 
 
 def _write_sample_zarr(path):
@@ -52,7 +58,7 @@ def test_create_empty_target_zarr_uses_y_x_dims_for_ease_geobox(tmp_path):
     sample_path = str(tmp_path / "2019.zarr")
     _write_sample_zarr(sample_path)
 
-    output_path = str(tmp_path / "out" / "modis_timeseries_reprojected.zarr")
+    output_path = str(tmp_path / "out" / "avhrr_timeseries_reprojected.zarr")
     geobox = _coarse_ease_geobox()
 
     assert source._create_empty_target_zarr(output_path, geobox, (sample_path,))
@@ -75,7 +81,7 @@ def test_execute_prepare_threads_ctx_grid_id_into_target_geobox(tmp_path, monkey
 
     monkeypatch.setattr(geobox_module, "get_target_geobox", fake_get_target_geobox)
     monkeypatch.setattr(
-        source, "_group_daily_files", lambda selection: [{"year": 2019, "grid_cell": "h25v06", "key": "2019/h25v06", "files": []}]
+        source, "_group_daily_files", lambda selection: [{"year": 2019, "grid_cell": "global", "key": "2019", "files": []}]
     )
     monkeypatch.setattr(source, "_ensure_annual_zarr", lambda group: "dummy.zarr")
     monkeypatch.setattr(source, "_create_empty_target_zarr", lambda *a, **k: True)
@@ -86,7 +92,7 @@ def test_execute_prepare_threads_ctx_grid_id_into_target_geobox(tmp_path, monkey
         source_id=source.ID,
         step=PipelineStep.PREPARE,
         key="all",
-        output_path=str(tmp_path / "out" / "modis_timeseries_reprojected.zarr"),
+        output_path=str(tmp_path / "out" / "avhrr_timeseries_reprojected.zarr"),
         inputs=(),
         completion=Completion.MARKER,
         meta={"years_available": [2019], "group_keys": ["2019/h25v06"]},
@@ -104,7 +110,7 @@ def test_multi_file_year_temp_path_uses_layout_output_root_not_string_split(tmp_
     # stage temp path by string-splitting the GRID output_path on the
     # literal substring "stage_2" -- a hack that silently breaks once GRID
     # output no longer contains that substring at all (the current
-    # grid/<grid_id>/ paths never do).
+    # prepared/<data_path>/crs/<grid_id>/ paths never do).
     import os
 
     import src.data.sources.layout as layout_module
@@ -116,14 +122,17 @@ def test_multi_file_year_temp_path_uses_layout_output_root_not_string_split(tmp_
         captured["annual_temp_path"] = annual_temp_path
         return True
 
-    monkeypatch.setattr(GlassSource, "_aggregate_year_files", fake_aggregate)
+    monkeypatch.setattr(GlassAvhrrSource, "_aggregate_year_files", fake_aggregate)
     monkeypatch.setattr(source, "_process_year_tiles", lambda *a, **k: True)
 
     geobox = _coarse_ease_geobox()
-    # data_source_kind="MODIS" (default for glass_modis) extracts the
-    # year from a "/YYYY/" path segment, not the filename.
-    year_files = ["/2019/h18v04.zarr", "/2019/h20v08.zarr"]
+    # _group_files_by_year() extracts the year from a "<year>.zarr"
+    # filename suffix -- two synthetic same-year files exercise the
+    # `len(year_files) > 1` aggregation branch this regression covers.
+    year_files = ["/part1_2019.zarr", "/part2_2019.zarr"]
     source._process_years_chunked(year_files, "unused_output_path", geobox, [2019])
 
-    prepare_root = layout_module.output_root(ctx.data_root, source.path_prefix, PipelineStep.PREPARE)
+    prepare_root = layout_module.output_root(
+        ctx.data_root, source.path_prefix, PipelineStep.PREPARE, agg=layout_module.CRS_AGG,
+    )
     assert captured["annual_temp_path"] == os.path.join(prepare_root, "2019", "temp_combined.tzarr")

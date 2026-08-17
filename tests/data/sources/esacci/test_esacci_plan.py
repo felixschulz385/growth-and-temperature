@@ -78,4 +78,4 @@ def test_prepare_plan_respects_year_selection(tmp_path):
 
 def test_output_path_uses_family(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_cover.zarr")
+    assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), "land_cover.zarr")

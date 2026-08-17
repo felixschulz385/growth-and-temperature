@@ -30,7 +30,7 @@ def test_output_root_uses_ease6933_suffix_for_prepare(tmp_path):
     # (no more MODIS-only special case -- output_root()'s own docstring).
     source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "modis/21A2")
-    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "grid", "ease6933")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "modis/21A2", "crs", "ease6933")
 
 
 def test_output_root_grid_literal_still_works_for_migrate_legacy_layout(tmp_path):
@@ -40,7 +40,7 @@ def test_output_root_grid_literal_still_works_for_migrate_legacy_layout(tmp_path
     # path the renamed PREPARE branch does.
     source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.GRID) == source.output_root(PipelineStep.PREPARE)
-    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "grid", "ease6933")
+    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "prepared", "modis/21A2", "crs", "ease6933")
 
 
 def test_data_path_defaults_to_product_specific(tmp_path):
@@ -93,7 +93,7 @@ def test_prepare_target_uses_family_zarr_path(tmp_path):
         assert len(targets) == 1
         # MODIS forces grid_id=ease6933 unconditionally (see output_root()),
         # independent of ctx.grid_id.
-        assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "ease6933", f"{family}.zarr")
+        assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), f"{family}.zarr")
 
 
 def test_prepare_target_uses_marker_completion(tmp_path):

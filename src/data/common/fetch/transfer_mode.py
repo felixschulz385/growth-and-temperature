@@ -30,6 +30,7 @@ AUTO_TRANSFER_DEFAULT_SOURCES = frozenset(
         "modis_robustness_11a1",
         "modis_extended",
         "glass_modis",
+        "glass_ta_modis",
         "glass_avhrr",
         "acag",
         "esacci",

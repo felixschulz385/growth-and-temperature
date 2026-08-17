@@ -33,7 +33,9 @@ def _write_raw_file(source):
 
 
 def _write_gadm_gid3_artifacts(ctx):
-    gadm_prepare_dir = layout.output_root(ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm")
+    gadm_prepare_dir = layout.output_root(
+        ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", agg=layout.ADM_AGG
+    )
     os.makedirs(gadm_prepare_dir, exist_ok=True)
     gadm_gid3_file = os.path.join(gadm_prepare_dir, "gadm_levelADM_3_simplified.gpkg")
     gpd.GeoDataFrame({"GID_3": ["AAA.1.1_1"]}, geometry=[Point(0, 0)], crs="EPSG:4326").to_file(

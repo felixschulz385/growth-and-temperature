@@ -20,12 +20,11 @@ remote:
 # switch, finally implemented generically rather than MODIS-only ad hoc).
 pipeline:
   grid: ease6933  # or "legacy_4326"
-  # docs/design/09-integrated-pipeline.md §14's "layout: v2" physical rename:
-  # raw/<data_path>, prepared/<data_path>, grid/<grid_id>/<family>.zarr,
-  # replacing the legacy <data_path>/{raw,processed/stage_1,processed/stage_2}
-  # nesting -- see src/data/sources/layout.py. Every registered source
-  # supports it; still opt-in, "legacy" stays the default everywhere.
-  layout: v2 # or "legacy"
+  # docs/design/09-integrated-pipeline.md §14's physical layout: raw/<data_path>,
+  # prepared/<data_path>/<agg>/..., grid stores under
+  # prepared/<data_path>/crs/<grid_id>/<family>.zarr -- see
+  # src/data/sources/layout.py. The only layout every source now builds; no
+  # config switch left here (the old opt-in "legacy" layout was removed).
 
 # Data source configurations
 sources:
@@ -41,10 +40,23 @@ sources:
     day_range:
       start: [2000, 55]
       end: [2020, 365]
+    # Fill/QC-free validity range (docs/design/12-glass-modis-rebuild.md §1):
+    # a pixel counts as valid iff not-fill (per the HDF's own _FillValue/
+    # scale_factor, auto-applied by rxr.open_rasterio(masked=True)) AND
+    # within this physically-plausible Kelvin range -- mirrors `modis:`'s
+    # own lst_min_k/lst_max_k.
+    value_min: 150.0
+    value_max: 350.0
+    # count_above/count_below thresholds (§2): GLASS LST is a daytime/
+    # blended product (unlike ModisSource's night-only LST_Night_1KM), so
+    # night defaults don't apply -- daytime placeholders, not verified
+    # figures yet (35C / 0C).
+    heat_stress_k: 308.15
+    cold_stress_k: 273.15
     # Same 282-tile land allowlist as the `modis:` block above (identical
     # sinusoidal grid, `scripts/compute_modis_land_tiles.py`'s output) --
     # keep the two lists in sync if either is ever regenerated.
-    land_tiles: [
+    land_tiles: &glass_modis_land_tiles [
       "h00v08", "h00v09", "h00v10", "h01v07", "h01v08", "h01v09", "h01v10", "h01v11", "h02v06", "h02v08",
       "h02v09", "h02v10", "h02v11", "h02v12", "h03v06", "h03v07", "h03v09", "h03v10", "h03v11", "h04v09",
       "h04v10", "h04v11", "h05v10", "h05v11", "h05v13", "h06v03", "h06v11", "h07v03", "h07v05", "h07v06",
@@ -77,14 +89,46 @@ sources:
     ]
 
     # GRID-output verification (src/data/sources/verify.py): overrides the
-    # Python-side defaults GlassSource passes in -- edit here rather than in
-    # code to loosen/tighten a check per deployment. "std" is excluded from
-    # the Kelvin range_vars check since it's a spread, not an absolute
-    # temperature.
+    # Python-side defaults GlassModisSource passes in -- edit here rather
+    # than in code to loosen/tighten a check per deployment. 8-band shape
+    # per docs/design/12-glass-modis-rebuild.md §2/§5 (dropped median/
+    # rollmax3/rollmin3 -- no longer computed). "std"/the two count vars are
+    # excluded from the Kelvin range_vars check: std is a spread, not an
+    # absolute temperature, and the counts are day-counts, not Kelvin.
     verification:
-      expected_vars: ["mean", "median", "std", "max", "min", "rollmax3", "rollmin3"]
+      expected_vars: ["mean", "std", "max", "min", "count_above", "count_below", "valid_period_count", "valid_month_count"]
       value_range: [150, 350]
-      range_vars: ["mean", "median", "max", "min", "rollmax3", "rollmin3"]
+      range_vars: ["mean", "max", "min"]
+
+  # GLASS Land Air Temperature (MODIS) -- docs/design/12-glass-modis-rebuild.md
+  # §0/§3: shares glass_modis's rebuilt (tile, year) FETCH/PREPARE pipeline
+  # as a second variant (GlassModisSource, variant="ta"), same day_range and
+  # land tile grid, three daily bands (Ta_min/Ta_mean/Ta_max) instead of one.
+  #
+  # Ta's physical unit is confirmed Kelvin (checked against a real
+  # downloaded GLASS18A01 granule via pyhdf, 2026-08-17: units='K',
+  # scale_factor=0.01, valid_range=[16000, 37000] raw -> 160-370 K
+  # physical). value_min/value_max below reflect that confirmed range.
+  # heat_stress_k/cold_stress_k (35C/0C) remain illustrative tuning
+  # defaults, not verified figures -- the unit was the open question, not
+  # these thresholds.
+  glass_ta_modis:
+    type: "glass_ta_modis"
+    base_url: "https://glass.hku.hk/archive/Ta/MODIS/"
+    day_range:
+      start: [2000, 55]
+      end: [2020, 365]
+    value_min: 160.0
+    value_max: 370.0
+    heat_stress_k: 308.15
+    cold_stress_k: 273.15
+    # Same sinusoidal grid as glass_modis/modis -- reuse the precomputed list.
+    land_tiles: *glass_modis_land_tiles
+
+    verification:
+      expected_vars: ["mean", "std", "max", "min", "count_above", "count_below", "valid_period_count", "valid_month_count"]
+      value_range: [160, 370]
+      range_vars: ["mean", "max", "min"]
 
   # MODIS LST (Planetary Computer STAC) -- MYD21A2 primary, MYD11A1 bounded
   # robustness arm. docs/design/07-modis-ingest.md / 07a-modis-band-reference.md
@@ -442,7 +486,7 @@ sources:
     # ^ points PREPARE at the already-staged manual copy instead of requiring
     #   a fresh FETCH; remove this key to require FETCH's own output instead.
     #   Path is relative to data_root and must include the "raw/" prefix
-    #   that pipeline.layout: v2 (above) puts every source's raw files under.
+    #   that every source's raw files live under (src/data/sources/layout.py).
 
     download:
       batch_size: 1
@@ -454,8 +498,7 @@ sources:
     type: "snl_mining"
     data_path: "snl_mining"  # fixed: was "snf_mining", inconsistent with the debug config (docs/design/09-integrated-pipeline.md §5)
     # duckdb_path left unset: like every other source, snl_mining computes it
-    # from output_root(FETCH), which follows ctx.layout (pipeline.layout
-    # above, currently "v2") -- <data_root>/raw/snl_mining/database.duckdb.
+    # from output_root(FETCH) -- <data_root>/raw/snl_mining/database.duckdb.
     # Shared with the scraper (src/data/sources/snl_mining/scraper/config.py's
     # DEFAULT_DB_PATH points at the same file): one merged database for both
     # the manual-import notebook's tables and the scraper's own detail_* tables.
@@ -477,9 +520,8 @@ sources:
     commodity_shares_table: "commodity_shares"
     aggregation:
       # prepared_db_path / admin_variables[*].geometry_path: no longer pinned
-      # here -- both used to hardcode the legacy processed/stage_1 shape,
-      # which silently ignored `pipeline.layout: v2` above. Left unset, the
-      # source computes them via layout.output_root(..., layout=ctx.layout)
+      # here -- both used to hardcode the legacy processed/stage_1 shape.
+      # Left unset, the source computes them via layout.output_root(...)
       # (src/data/sources/snl_mining/source.py), matching every other source.
       output_filename: "snl_mining_timeseries_reprojected.zarr"
       metric_crs: "ESRI:54009"

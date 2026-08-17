@@ -64,7 +64,9 @@ def test_default_duckdb_and_prepared_db_paths(tmp_path):
     assert source.duckdb_path == os.path.join(
         ctx.data_root, "raw", "snl_mining", "database.duckdb"
     )
-    assert source.prepared_db_path == os.path.join(ctx.data_root, "prepared", "snl_mining", "snl_mining_prepared.duckdb")
+    assert source.prepared_db_path == os.path.join(
+        ctx.data_root, "prepared", "snl_mining", "misc", "snl_mining_prepared.duckdb"
+    )
 
 
 def test_verify_fetch_reports_missing_manual_export(tmp_path):
@@ -106,17 +108,17 @@ def test_default_radius_and_admin_variables(tmp_path):
         "mine_polygon_count": ("mine_polygons", None, "value", "uint16"),
     }
     assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
-        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_1_simplified.gpkg"
+        ctx.data_root, "prepared", "misc", "adm", "gadm", "gadm_levelADM_1_simplified.gpkg"
     )
     assert source.admin_tables["mine_count_adm2"]["geometry_path"] == os.path.join(
-        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_2_simplified.gpkg"
+        ctx.data_root, "prepared", "misc", "adm", "gadm", "gadm_levelADM_2_simplified.gpkg"
     )
 
 
 def test_commodity_prices_path_resolution(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.commodity_prices_path == os.path.join(
-        ctx.data_root, "prepared", "commodity_prices", "commodity_prices.parquet"
+        ctx.data_root, "prepared", "commodity_prices", "misc", "commodity_prices.parquet"
     )
 
 
@@ -161,14 +163,14 @@ def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
 
 def test_output_root_grid_matches_old_get_hpc_output_path(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "grid", "legacy_4326")
+    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "prepared", "snl_mining", "crs", "legacy_4326")
 
 
 def test_output_root_grid_honors_ease6933(tmp_path):
     # Regression test: _output_root() used to hardcode "stage_2" and ignore
     # ctx.grid_id entirely, unlike every other source's output_root().
     source, ctx = _make_source(tmp_path, grid_id="ease6933")
-    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "grid", "ease6933")
+    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "prepared", "snl_mining", "crs", "ease6933")
 
 
 def test_prepare_target_uses_family_zarr_path(tmp_path):
@@ -184,7 +186,7 @@ def test_prepare_target_uses_family_zarr_path(tmp_path):
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "snl_mining.zarr")
+    assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "snl_mining.zarr")
 
 
 def test_export_admin_count_tables_writes_gid_keyed_parquet(tmp_path):

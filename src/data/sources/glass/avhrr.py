@@ -1,45 +1,28 @@
-"""GLASS (Global LAnd Surface Satellite) LST: fetch + prepare.
+"""GLASS AVHRR LST (Daily 0.05D): fetch + prepare.
 
-docs/design/09-integrated-pipeline.md §5: registered as TWO separate ids,
-`glass_modis` and `glass_avhrr` (not one id with two aliases) -- unlike EOG's
-three aliases, which share identical behaviour derived from config, GLASS's
-MODIS/AVHRR variants have genuinely different filename formats, output
-layouts, and CRS handling, matching how `orchestration/configs/data.yaml`
-already treats them as two distinct top-level `sources:` entries. Both ids
-point at this one class, which derives which variant it is from its own
-registered id (mirroring the old `GlassPreprocessor`'s `type` kwarg, which was
-always exactly "glass_modis"/"glass_avhrr" in practice).
+docs/design/12-glass-modis-rebuild.md §0/§4: split out of the former single
+`GlassSource` (which branched internally on `data_source_kind` between MODIS
+and AVHRR). This module is a **mechanical extraction** of the AVHRR-only
+code paths -- behavior is unchanged from before the split; only the MODIS
+branches/attributes have been deleted. See `src/data/sources/glass/modis.py`
+for GLASS-MODIS's rebuilt (raw-MODIS-shaped) pipeline, which this module has
+nothing to do with anymore.
 
-Merges `src/data/download/sources/glass/source.py::GlassLSTDataSource` (crawl
-+ download, reused via `_CrawlerMixin`) and
-`src/data/preprocess/sources/glass.py::GlassPreprocessor` (`stage="annual"`
--> PREPARE, `stage="spatial"` -> GRID) into one class. The heavy raster
-compute (`_process_file_group_hpc`, `_calculate_statistics`,
-`_process_years_chunked`, `_aggregate_year_files`, `_process_year_tiles`) is
-ported mechanically, unchanged in behaviour -- including
-`_calculate_statistics`'s naive `resample(time="1YE").mean()` from raw daily
-data rather than from its own `monthly_stats`
-([`docs/design/07-modis-ingest.md`](../../../../docs/design/07-modis-ingest.md)
-§4 already flags this as "do not copy this pattern" for MODIS's own
-compositing). Fixing it here is explicitly deferred to a separate,
-labelled follow-on change (docs/design/09-integrated-pipeline.md §5/§14),
-not silently folded into this mechanical migration.
-
-There is no separate GRID step -- `_execute_prepare` reprojects each
-(year[, grid_cell])'s daily->annual stats zarr right after building/reusing
-it, as one step. Unlike `acag`/`esacci`/`eog`/`ntl_harm`, GLASS keeps its
-own bespoke per-tile reprojection path (`_process_years_chunked` /
-`_process_year_tiles`, with a 32px halo pad and "mode" resampling) rather
-than routing through `src.data.common.prepare.driver.run_tiled_prepare` --
-that machinery already does exactly what the driver would, just shaped
-around this source's own daily-to-annual aggregation step first. The annual
-stats zarr is still a real, expensive-to-recompute intermediate.
+FETCH   -- static per-(year, day) target list, attempt-and-log, no crawl/
+           entrypoint cache (docs/design/11-glass-static-fetch.md). One
+           global file per day, no tile dimension.
+PREPARE -- one annual zarr per year with annual+monthly LST statistics
+           (mean/median/std/max/min/rolling/threshold counts/valid-count),
+           then GLASS's own bespoke tiled reprojection onto the canonical
+           EPSG:4326 geobox (32px-halo pad, "mode" resampling), region-
+           written into one shared multi-year zarr. Does not use the shared
+           `SpatialProcessor` -- this bespoke path predates it and is kept
+           as-is (unlike GLASS-MODIS, which now does use it).
 """
 
 from __future__ import annotations
 
 import calendar
-import dataclasses
 import logging
 import os
 import re
@@ -80,25 +63,21 @@ def daterange_doy(start: Tuple[int, int], end: Tuple[int, int]):
             yield year, day
 
 
-class GlassSource(DataSource):
-    """GLASS LST, MODIS (multiple tiles/day) or AVHRR (one global file/day).
+class GlassAvhrrSource(DataSource):
+    """GLASS LST, AVHRR (one global file/day).
 
     FETCH   -- crawl + download the configured `base_url` directory tree.
-    PREPARE -- one annual zarr per (year[, grid_cell]) with annual+monthly
-               LST statistics (mean/median/std/max/min/rolling/threshold
-               counts/valid-count).
-    GRID    -- chunked tile-by-tile reprojection onto the canonical geobox
-               (MODIS: native sinusoidal; AVHRR: EPSG:4326), region-written
-               into one shared multi-year zarr. Does not use the shared
-               `SpatialProcessor` -- GLASS's own bespoke tiled-reprojection
-               path predates it and is ported as-is.
+    PREPARE -- one annual zarr per year with annual+monthly LST statistics
+               (mean/median/std/max/min/rolling/threshold counts/valid-
+               count). GRID -- chunked tile-by-tile reprojection onto the
+               canonical EPSG:4326 geobox, region-written into one shared
+               multi-year zarr. Does not use the shared `SpatialProcessor`.
     """
 
-    ID = "glass"  # not directly registered -- see the two registry.register() calls below
+    ID = "glass_avhrr"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     BUCKET_NAME = "growthandheat"
-    MODIS_PATH_PREFIX = "glass/LST/MODIS/Daily/1KM/"
     AVHRR_PATH_PREFIX = "glass/LST/AVHRR/0.05D/"
     VARIABLE_NAME = "LST"
 
@@ -115,14 +94,11 @@ class GlassSource(DataSource):
     DATA_SOURCE_NAME = "glass"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
-        # Which variant: derived from the registered id ("glass_modis" /
-        # "glass_avhrr"), mirroring the old `type` kwarg -- always one of
-        # exactly these two strings in every real config, so no third branch
-        # is needed (docs/design/09-integrated-pipeline.md §5).
-        self.data_source_kind = "AVHRR" if "avhrr" in cfg.source_id.lower() else "MODIS"
-        self.path_prefix = self.MODIS_PATH_PREFIX if self.data_source_kind == "MODIS" else self.AVHRR_PATH_PREFIX
+        self.path_prefix = self.AVHRR_PATH_PREFIX
 
         if cfg.data_path is None:
+            import dataclasses
+
             cfg = dataclasses.replace(cfg, data_path=self.path_prefix.rstrip("/"))  # old GlassPreprocessor default
         super().__init__(ctx, cfg)
 
@@ -140,49 +116,45 @@ class GlassSource(DataSource):
         self.day_range_start: Tuple[int, int] = tuple(day_range["start"])
         self.day_range_end: Tuple[int, int] = tuple(day_range["end"])
 
-        # MODIS variant only: land tiles, same sinusoidal grid `modis:`'s own
-        # config resolves (docs/design/11-glass-static-fetch.md §4.1) -- reuse
-        # its precomputed `land_tiles` list via config rather than
-        # recomputing a second allowlist.
-        self.tiles: List[str] = []
-        if self.data_source_kind == "MODIS":
-            from src.data.sources.modis import tiles as modis_util
-
-            lat_clip_deg = float(cfg.raw.get("lat_clip_deg", 60.0))
-            land_tiles = cfg.raw.get("land_tiles")
-            land_tiles_set = set(land_tiles) if land_tiles else None
-            self.tiles = cfg.raw.get("tiles") or modis_util.get_modis_sinusoidal_tiles(
-                lat_clip_deg, land_tiles=land_tiles_set
-            )
-
         self.version = cfg.raw.get("version", "v1")
-        self.grid_cells: Optional[List[str]] = cfg.raw.get("grid_cells")
         self.chunk_size = cfg.raw.get("chunk_size") or {"band": 1, "x": 500, "y": 500}
         self.dashboard_port = cfg.raw.get("dashboard_port", ctx.dashboard_port)
 
-        self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"glass_{self.data_source_kind}_processor_")
+        self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="glass_AVHRR_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
 
-        # In-run-only memoization of one (year,day)/(year) directory listing
-        # across many sibling targets (every land tile sharing a MODIS day,
-        # every day sharing an AVHRR year) -- never persisted to disk
-        # (docs/design/11-glass-static-fetch.md §4.3): `source.execute()` is
-        # called once per target from the same long-lived instance
-        # (src/cli/data/handlers.py::handle_run's `for target in targets`
-        # loop), so this dict lives exactly as long as one FETCH run needs.
+        # In-run-only memoization of one (year) directory listing across many
+        # sibling targets (every day sharing an AVHRR year) -- never
+        # persisted to disk (docs/design/11-glass-static-fetch.md §4.3):
+        # `source.execute()` is called once per target from the same
+        # long-lived instance (src/cli/data/handlers.py::handle_run's
+        # `for target in targets` loop), so this dict lives exactly as long
+        # as one FETCH run needs.
         self._listing_cache: Dict[Any, List[Tuple[str, str]]] = {}
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         """Overrides the base default: GLASS's output root is keyed by the
-        fixed MODIS/AVHRR `path_prefix` constant, not `cfg.data_path` (which
+        fixed AVHRR `path_prefix` constant, not `cfg.data_path` (which
         exists only for index-file naming, matching old
-        `GlassPreprocessor.get_hpc_output_path` using `self.path_prefix`)."""
+        `GlassPreprocessor.get_hpc_output_path` using `self.path_prefix`).
+
+        `agg=CRS_AGG` for PREPARE specifically: `layout.output_root()`
+        requires an explicit `agg` for PREPARE (`src/data/sources/layout.py`'s
+        CRS_AGG/ADM_AGG/MISC_AGG physical-layout split, added independently
+        of this rebuild). GLASS-AVHRR's PREPARE output (`_annual_zarr_path()`'s
+        per-year daily->annual stats zarr) is a pixel-grid raster store --
+        just not yet reprojected onto the canonical grid, which is what the
+        final `_grid_output_path()` (routed through GRID, not PREPARE, so it
+        never needs `agg`) does -- so CRS_AGG is the locally-consistent
+        bucket, unambiguous here since AVHRR has no non-pixel-grid PREPARE
+        output that would need ADM_AGG/MISC_AGG instead."""
         return layout.output_root(
             self.ctx.data_root,
             self.path_prefix,
             step,
             namespace=namespace,
             grid_id=self.ctx.grid_id,
+            agg=layout.CRS_AGG if step is PipelineStep.PREPARE else None,
         )
 
     def download(self, file_url: str, output_path: str, session: Any = None) -> None:
@@ -214,37 +186,29 @@ class GlassSource(DataSource):
             return self._execute_prepare(target)
         raise AssertionError(f"unreachable: {target.step}")
 
-    # -- FETCH: static per-(year, day[, tile]) target list, attempt-and-log,
+    # -- FETCH: static per-(year, day) target list, attempt-and-log,
     # no crawl/entrypoint cache (docs/design/11-glass-static-fetch.md) -------
 
     def _index_existing_fetch_files(self, relative_paths: List[str]) -> Dict[tuple, str]:
-        """Already-downloaded files on disk, keyed by the same `(year, day[,
-        tile])` tuple `_plan_fetch()` generates targets for -- reuses
-        `_parse_modis_filenames`/`_parse_avhrr_filenames` (already needed by
-        PREPARE's `_group_daily_files`), just re-keyed here for a plan-time
-        completion lookup instead of a year-keyed grouping. One bulk parse
-        up front rather than a per-target existence check -- necessary at
-        this target count (up to ~2M for glass_modis's full tile x day
-        cross-product)."""
+        """Already-downloaded files on disk, keyed by the same `(year, day)`
+        tuple `_plan_fetch()` generates targets for -- reuses
+        `_parse_avhrr_filenames` (already needed by PREPARE's
+        `_group_daily_files`), just re-keyed here for a plan-time completion
+        lookup instead of a year-keyed grouping. One bulk parse up front
+        rather than a per-target existence check."""
         df = self._parse_filenames(relative_paths)
         if df.empty:
             return {}
-        if self.data_source_kind == "MODIS":
-            tile_strs = "h" + df["h"].astype(str).str.zfill(2) + "v" + df["v"].astype(str).str.zfill(2)
-            keys = zip(df["year"], df["day"], tile_strs)
-        else:
-            keys = zip(df["year"], df["day"])
+        keys = zip(df["year"], df["day"])
         return dict(zip(keys, df["path"]))
 
-    def _pending_path(self, raw_root: str, year: int, day: int, tile: Optional[str]) -> str:
+    def _pending_path(self, raw_root: str, year: int, day: int) -> str:
         """Deterministic placeholder for a not-yet-downloaded target's
         `StepTarget.output_path` -- only used for the `Completion.PATH_EXISTS`
         check (guaranteed not to exist yet, real filenames always start with
         "GLASS..."), never as an actual download destination
         (`_execute_fetch()` computes the real path itself once the remote
         listing resolves the true, unpredictable filename)."""
-        if tile:
-            return os.path.join(raw_root, str(year), f"{day:03d}", f"pending.{tile}.hdf")
         return os.path.join(raw_root, str(year), f"pending.{year}{day:03d}.hdf")
 
     def _plan_fetch(self, selection: TargetSelection) -> List[StepTarget]:
@@ -252,57 +216,52 @@ class GlassSource(DataSource):
         from src.data.common.statusfile import STATUS_SUBDIR
 
         raw_root = self.output_root(PipelineStep.FETCH)
-        # `transfer_mode=auto` (default for glass_modis/glass_avhrr) pushes
-        # each fetched file to HPC right after FETCH and doesn't keep it
-        # locally indefinitely -- same reasoning as MODIS's own
-        # `_plan_fetch()`, see its comment. `selection.local_only` (`data
-        # summary`'s deliberately network-free targets) forces the local
-        # listing regardless of transfer_mode.
+        # `transfer_mode=auto` (default for glass_avhrr) pushes each fetched
+        # file to HPC right after FETCH and doesn't keep it locally
+        # indefinitely -- same reasoning as MODIS's own `_plan_fetch()`, see
+        # its comment. `selection.local_only` (`data summary`'s deliberately
+        # network-free targets) forces the local listing regardless of
+        # transfer_mode.
         listing, from_remote = resolve_fetch_listing(self, raw_root, allow_remote=not selection.local_only)
         status_prefix = f"{STATUS_SUBDIR}/"
         relative_paths = [rel for rel in listing if not rel.startswith(status_prefix)]
         found = self._index_existing_fetch_files(relative_paths)
 
         targets = []
-        units = self.tiles if self.data_source_kind == "MODIS" else [None]
         for year, day in daterange_doy(self.day_range_start, self.day_range_end):
             if not selection.matches_year(year):
                 continue
-            for tile in units:
-                key = f"{year}/{day:03d}/{tile}" if tile else f"{year}/{day:03d}"
-                if not selection.matches_key(key):
-                    continue
-                found_key = (year, day, tile) if tile else (year, day)
-                existing_rel = found.get(found_key)
-                output_path = (
-                    os.path.join(raw_root, existing_rel)
-                    if existing_rel is not None
-                    else self._pending_path(raw_root, year, day, tile)
+            key = f"{year}/{day:03d}"
+            if not selection.matches_key(key):
+                continue
+            found_key = (year, day)
+            existing_rel = found.get(found_key)
+            output_path = (
+                os.path.join(raw_root, existing_rel)
+                if existing_rel is not None
+                else self._pending_path(raw_root, year, day)
+            )
+            if from_remote:
+                completion = Completion.PRECOMPUTED
+                meta = {"year": year, "day": day, "tile": None, "complete": existing_rel is not None}
+            else:
+                completion = Completion.PATH_EXISTS
+                meta = {"year": year, "day": day, "tile": None}
+            targets.append(
+                StepTarget(
+                    source_id=self.cfg.source_id,
+                    step=PipelineStep.FETCH,
+                    key=key,
+                    output_path=output_path,
+                    completion=completion,
+                    meta=meta,
                 )
-                if from_remote:
-                    completion = Completion.PRECOMPUTED
-                    meta = {"year": year, "day": day, "tile": tile, "complete": existing_rel is not None}
-                else:
-                    completion = Completion.PATH_EXISTS
-                    meta = {"year": year, "day": day, "tile": tile}
-                targets.append(
-                    StepTarget(
-                        source_id=self.cfg.source_id,
-                        step=PipelineStep.FETCH,
-                        key=key,
-                        output_path=output_path,
-                        completion=completion,
-                        meta=meta,
-                    )
-                )
+            )
         return targets
 
     def _listing_url(self, year: int, day: int) -> str:
-        """Day directory (MODIS: `<year>/<day>/`) or year directory (AVHRR:
-        `<year>/`, no day subdirectory -- confirmed against the real site,
-        docs/design/11-glass-static-fetch.md §3)."""
-        if self.data_source_kind == "MODIS":
-            return f"{self.base_url}{year}/{day:03d}/"
+        """Year directory (`<year>/`, no day subdirectory -- confirmed
+        against the real site, docs/design/11-glass-static-fetch.md §3)."""
         return f"{self.base_url}{year}/"
 
     @staticmethod
@@ -328,33 +287,31 @@ class GlassSource(DataSource):
         return results
 
     def _listing_for(self, year: int, day: int) -> List[Tuple[str, str]]:
-        """Memoized per §4.3 -- one real GET per (year,day) [MODIS] or per
-        year [AVHRR], shared across every sibling target that scope
-        resolves, for the lifetime of this source instance (one FETCH run)."""
-        cache_key = (year, day) if self.data_source_kind == "MODIS" else year
+        """Memoized per §4.3 -- one real GET per year, shared across every
+        sibling target that scope resolves, for the lifetime of this source
+        instance (one FETCH run)."""
+        cache_key = year
         if cache_key not in self._listing_cache:
             self._listing_cache[cache_key] = self._list_single_directory(self._listing_url(year, day))
         return self._listing_cache[cache_key]
 
     @staticmethod
     def _match_in_listing(
-        listing: List[Tuple[str, str]], year: int, day: int, tile: Optional[str]
+        listing: List[Tuple[str, str]], year: int, day: int, tile: Optional[str] = None
     ) -> Optional[Tuple[str, str]]:
-        """The one listing entry matching this target's `(year, day[, tile])`
-        -- filenames always embed `A{year}{day:03d}` (and, for MODIS,
-        `.{tile}.`) verbatim, e.g. `GLASS06A01.V01.A2000055.h00v10.
-        2022021.hdf` -- the trailing processing-date segment is the only
-        unpredictable part, which this doesn't need to know."""
+        """The one listing entry matching this target's `(year, day)` --
+        filenames always embed `A{year}{day:03d}` verbatim, e.g.
+        `GLASS08B31.V40.A1982001.2021259.hdf` -- the trailing processing-date
+        segment is the only unpredictable part, which this doesn't need to
+        know."""
         token = f"A{year}{day:03d}"
-        needle = f".{token}.{tile}." if tile else f".{token}."
+        needle = f".{token}."
         for href, url in listing:
             if needle in href:
                 return href, url
         return None
 
     def _downloaded_path(self, raw_root: str, year: int, day: int, href: str) -> str:
-        if self.data_source_kind == "MODIS":
-            return os.path.join(raw_root, str(year), f"{day:03d}", href)
         return os.path.join(raw_root, str(year), href)
 
     def _execute_fetch(self, target: StepTarget) -> bool:
@@ -378,7 +335,7 @@ class GlassSource(DataSource):
             self._last_fetch_output_path = target.output_path
             return True
 
-        year, day, tile = target.meta["year"], target.meta["day"], target.meta["tile"]
+        year, day = target.meta["year"], target.meta["day"]
         try:
             listing = self._listing_for(year, day)
         except requests.HTTPError as exc:
@@ -393,12 +350,11 @@ class GlassSource(DataSource):
             manifest.record_failure(status_dir, target.key, f"listing fetch failed: {exc}")
             return False
 
-        match = self._match_in_listing(listing, year, day, tile)
+        match = self._match_in_listing(listing, year, day)
         if match is None:
-            # Listing loaded fine but this tile/day genuinely isn't in it --
-            # a real absence (sensor gap, non-land tile that slipped through
-            # the filter), not a transient error. No point retrying against
-            # a directory that will never populate.
+            # Listing loaded fine but this day genuinely isn't in it -- a
+            # real absence (sensor gap), not a transient error. No point
+            # retrying against a directory that will never populate.
             manifest.record_failure(status_dir, target.key, "not present in remote listing", permanent=True)
             return False
 
@@ -424,30 +380,7 @@ class GlassSource(DataSource):
         # "raw/<data_path>/..." (src/data/sources/layout.py).
         return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
-    def _parse_modis_filenames(self, filenames: List[str]) -> pd.DataFrame:
-        """Expected format: GLASS06A01.V01.A2000055.h00v10.2022021.hdf"""
-        result = []
-        for filename in filenames:
-            try:
-                basename = os.path.basename(filename)
-                if not basename.endswith(".hdf"):
-                    continue
-                year_day_match = basename.split(".")[2]
-                if not (year_day_match.startswith("A") and len(year_day_match) == 8):
-                    continue
-                year = int(year_day_match[1:5])
-                day = int(year_day_match[5:8])
-                grid_match = basename.split(".")[3]
-                if not (grid_match.startswith("h") and "v" in grid_match):
-                    continue
-                h = int(grid_match[1:].split("v")[0])
-                v = int(grid_match.split("v")[1])
-                result.append({"path": filename, "year": year, "day": day, "h": h, "v": v})
-            except (IndexError, ValueError) as exc:
-                logger.warning("Could not parse filename %s: %s", filename, exc)
-        return pd.DataFrame(result)
-
-    def _parse_avhrr_filenames(self, filenames: List[str]) -> pd.DataFrame:
+    def _parse_filenames(self, filenames: List[str]) -> pd.DataFrame:
         """Expected format: GLASS08B31.V40.A1982001.2021259.hdf"""
         result = []
         for filename in filenames:
@@ -465,18 +398,13 @@ class GlassSource(DataSource):
                 logger.warning("Could not parse filename %s: %s", filename, exc)
         return pd.DataFrame(result)
 
-    def _parse_filenames(self, filenames: List[str]) -> pd.DataFrame:
-        if self.data_source_kind == "MODIS":
-            return self._parse_modis_filenames(filenames)
-        return self._parse_avhrr_filenames(filenames)
-
     def _group_daily_files(self, selection: TargetSelection) -> List[Dict[str, Any]]:
-        """Live ground truth for which daily files exist per (year[,
-        grid_cell]) group: a crawl of FETCH's raw output directory
-        (`snapshot_local_listing`, the same primitive FETCH's own driver
-        uses). Called both to plan PREPARE (`_plan_prepare`) and, again, to
-        execute it (`_execute_prepare` re-derives rather than trusting a
-        StepTarget snapshot, since a group's daily file list can be large)."""
+        """Live ground truth for which daily files exist per year: a crawl of
+        FETCH's raw output directory (`snapshot_local_listing`, the same
+        primitive FETCH's own driver uses). Called both to plan PREPARE
+        (`_plan_prepare`) and, again, to execute it (`_execute_prepare`
+        re-derives rather than trusting a StepTarget snapshot, since a
+        group's daily file list can be large)."""
         from src.data.common.fetch.manifest import snapshot_local_listing
         from src.data.common.statusfile import STATUS_SUBDIR
 
@@ -494,22 +422,11 @@ class GlassSource(DataSource):
             files_df = files_df[files_df["year"].isin(selection.years)]
 
         groups: List[Dict[str, Any]] = []
-        if self.data_source_kind == "MODIS":
-            if self.grid_cells:
-                grid_filter = files_df.apply(lambda row: f"h{row['h']:02d}v{row['v']:02d}" in self.grid_cells, axis=1)
-                files_df = files_df[grid_filter]
-            for (year, h, v), group in files_df.groupby(["year", "h", "v"]):
-                grid_cell = f"h{h:02d}v{v:02d}"
-                key = f"{year}/{grid_cell}"
-                if not selection.matches_key(key):
-                    continue
-                groups.append({"year": int(year), "grid_cell": grid_cell, "key": key, "files": group["path"].tolist()})
-        else:
-            for year, group in files_df.groupby("year"):
-                key = str(year)
-                if not selection.matches_key(key):
-                    continue
-                groups.append({"year": int(year), "grid_cell": "global", "key": key, "files": group["path"].tolist()})
+        for year, group in files_df.groupby("year"):
+            key = str(year)
+            if not selection.matches_key(key):
+                continue
+            groups.append({"year": int(year), "grid_cell": "global", "key": key, "files": group["path"].tolist()})
         return groups
 
     def _annual_zarr_path(self, group: Dict[str, Any]) -> str:
@@ -520,15 +437,13 @@ class GlassSource(DataSource):
         # policy -- deferred for now because they double as a resumability
         # marker across process restarts (`marker_path` in
         # `_ensure_annual_zarr`).
-        if self.data_source_kind == "MODIS":
-            return os.path.join(self.output_root(PipelineStep.PREPARE), str(group["year"]), f"{group['grid_cell']}.zarr")
         return os.path.join(self.output_root(PipelineStep.PREPARE), f"{group['year']}.zarr")
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
         """One PREPARE target per source ("all") -- `_execute_prepare`
-        builds/reuses each (year[, grid_cell])'s daily->annual stats zarr
-        internally, then reprojects them all into the final output in the
-        same call (module docstring)."""
+        builds/reuses each year's daily->annual stats zarr internally, then
+        reprojects them all into the final output in the same call (module
+        docstring)."""
         groups = self._group_daily_files(selection)
         if not groups:
             return []
@@ -601,16 +516,13 @@ class GlassSource(DataSource):
 
                     chunks = {k: self.chunk_size[k] for k in ("band", "y", "x") if k in self.chunk_size}
                     ds = rxr.open_rasterio(file_path, decode_coords="all", chunks=chunks)
-                    if self.data_source_kind == "MODIS":
-                        lst_data = ds
+                    if hasattr(ds, "data_vars") and self.VARIABLE_NAME in ds.data_vars:
+                        lst_data = ds[self.VARIABLE_NAME]
+                    elif hasattr(ds, self.VARIABLE_NAME):
+                        lst_data = getattr(ds, self.VARIABLE_NAME)
                     else:
-                        if hasattr(ds, "data_vars") and self.VARIABLE_NAME in ds.data_vars:
-                            lst_data = ds[self.VARIABLE_NAME]
-                        elif hasattr(ds, self.VARIABLE_NAME):
-                            lst_data = getattr(ds, self.VARIABLE_NAME)
-                        else:
-                            logger.error("Could not find %s variable in %s", self.VARIABLE_NAME, file_path)
-                            continue
+                        logger.error("Could not find %s variable in %s", self.VARIABLE_NAME, file_path)
+                        continue
                     array_list.append(lst_data)
 
                 if not array_list:
@@ -633,8 +545,9 @@ class GlassSource(DataSource):
     def _calculate_statistics(self, data: xr.Dataset) -> Tuple[xr.Dataset, xr.Dataset]:
         """Ported verbatim from GlassPreprocessor._calculate_statistics --
         INCLUDING its naive `resample(time="1YE").mean()` from raw daily
-        data rather than from monthly_stats (see module docstring: a known
-        bug, fixed in a separate follow-on change, not here)."""
+        data rather than from monthly_stats. GLASS-AVHRR keeps this
+        behavior unchanged (docs/design/12-glass-modis-rebuild.md §0: only
+        GLASS-MODIS's compositing was rebuilt, AVHRR's is untouched)."""
         mask = da.logical_and(data[self.VARIABLE_NAME] >= 20000, data[self.VARIABLE_NAME] <= 35000)
         masked = data.where(mask)
         rechunked = masked.chunk(
@@ -707,13 +620,6 @@ class GlassSource(DataSource):
             return False
 
     def _grid_output_path(self) -> str:
-        if self.data_source_kind == "MODIS":
-            return layout.grid_store_path(
-                self.ctx.data_root,
-                self.path_prefix,
-                grid_id=self.ctx.grid_id,
-                family="glass_modis_lst",
-            )
         return layout.grid_store_path(
             self.ctx.data_root,
             self.path_prefix,
@@ -722,11 +628,11 @@ class GlassSource(DataSource):
         )
 
     def _ensure_annual_zarr(self, group: Dict[str, Any]) -> Optional[str]:
-        """Build (or reuse) one (year[, grid_cell]) group's daily->annual
-        stats zarr -- the first phase of the PREPARE target's execution.
-        Resumable the same way every other MARKER-completion output is: a
-        sibling `.complete` file, checked directly rather than via a
-        StepTarget (there isn't one per group)."""
+        """Build (or reuse) one year's daily->annual stats zarr -- the first
+        phase of the PREPARE target's execution. Resumable the same way
+        every other MARKER-completion output is: a sibling `.complete` file,
+        checked directly rather than via a StepTarget (there isn't one per
+        group)."""
         from src.data.sources.steps import marker_path
 
         annual_path = self._annual_zarr_path(group)
@@ -744,9 +650,9 @@ class GlassSource(DataSource):
         return annual_path
 
     def _execute_prepare(self, target: StepTarget) -> bool:
-        """First ensure every requested (year[, grid_cell])'s daily->annual
-        stats zarr exists, then reproject them all into the final output,
-        tile by tile, using GLASS's own bespoke reprojection path
+        """First ensure every requested year's daily->annual stats zarr
+        exists, then reproject them all into the final output, tile by
+        tile, using GLASS's own bespoke reprojection path
         (`_process_years_chunked`/`_process_year_tiles`, ported verbatim
         from `GlassPreprocessor._process_spatial_target` and its chunked-tile
         helpers -- not the shared SpatialProcessor, see module docstring)."""
@@ -871,10 +777,7 @@ class GlassSource(DataSource):
     def _group_files_by_year(self, source_files: List[str]) -> Dict[int, List[str]]:
         files_by_year: Dict[int, List[str]] = {}
         for file_path in source_files:
-            if self.data_source_kind == "MODIS":
-                m = re.search(r"/(\d{4})/", file_path)
-            else:
-                m = re.search(r"(\d{4})\.zarr", os.path.basename(file_path))
+            m = re.search(r"(\d{4})\.zarr", os.path.basename(file_path))
             if m:
                 files_by_year.setdefault(int(m.group(1)), []).append(file_path)
         return files_by_year
@@ -895,7 +798,8 @@ class GlassSource(DataSource):
 
                 if len(year_files) > 1:
                     prepare_root = layout.output_root(
-                        self.ctx.data_root, self.path_prefix, PipelineStep.PREPARE
+                        self.ctx.data_root, self.path_prefix, PipelineStep.PREPARE,
+                        agg=layout.CRS_AGG,
                     )
                     annual_temp_path = os.path.join(prepare_root, str(year), "temp_combined.tzarr")
                     if not self._aggregate_year_files(year_files, annual_temp_path, year):
@@ -949,11 +853,7 @@ class GlassSource(DataSource):
                 )
             combined_ds = xr.Dataset(data_vars)
 
-            crs = (
-                "+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs"
-                if self.data_source_kind == "MODIS"
-                else 4326
-            )
+            crs = 4326
             combined_ds = combined_ds.rio.write_crs(crs)
 
             compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
@@ -988,11 +888,8 @@ class GlassSource(DataSource):
         try:
             year_ds = xr.open_zarr(year_source, consolidated=False, decode_coords="all")
 
-            if self.data_source_kind == "AVHRR":
-                year_ds = year_ds.rio.write_crs(4326)
-                year_ds = year_ds.sel(y=slice(None, None, -1))
-            elif self.data_source_kind == "MODIS":
-                year_ds = year_ds.rio.write_crs("+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +a=6371007.181 +b=6371007.181 +units=m +no_defs")
+            year_ds = year_ds.rio.write_crs(4326)
+            year_ds = year_ds.sel(y=slice(None, None, -1))
 
             if year_ds.rio.crs is None:
                 try:
@@ -1039,14 +936,8 @@ class GlassSource(DataSource):
 
 
 registry.register(
-    "glass_modis",
-    __name__,
-    GlassSource.__name__,
-    GlassSource.STEPS,
-)
-registry.register(
     "glass_avhrr",
     __name__,
-    GlassSource.__name__,
-    GlassSource.STEPS,
+    GlassAvhrrSource.__name__,
+    GlassAvhrrSource.STEPS,
 )

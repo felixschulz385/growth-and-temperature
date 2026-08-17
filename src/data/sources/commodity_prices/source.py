@@ -36,7 +36,7 @@ from typing import List
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources import registry
+from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.commodity_prices.prices import read_and_normalize_prices
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
@@ -148,7 +148,11 @@ class CommodityPricesSource(ConfiguredFilesFetchMixin, DataSource):
         return [
             StepTarget(
                 source_id=self.ID, step=PipelineStep.PREPARE, key="commodity_prices",
-                output_path=os.path.join(self.output_root(PipelineStep.PREPARE), "commodity_prices.parquet"),
+                # MISC_AGG: a non-spatial lookup table (src/data/sources/
+                # layout.py's crs/adm/misc split's own worked example).
+                output_path=os.path.join(
+                    self.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "commodity_prices.parquet"
+                ),
                 inputs=(raw_file,), completion=Completion.PATH_EXISTS,
                 meta={"raw_file": raw_file},
             )

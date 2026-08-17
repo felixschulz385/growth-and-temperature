@@ -162,8 +162,15 @@ class SnlMiningSource(DataSource):
             self._resolve_path(prepared_db_override)
             if prepared_db_override
             # PREPARE's own output -- route through output_root() like every
-            # other source, instead of hardcoding the path.
-            else os.path.join(self.output_root(PipelineStep.PREPARE), "snl_mining_prepared.duckdb")
+            # other source, instead of hardcoding the path. MISC_AGG: this
+            # prepared duckdb is neither a pixel-grid store nor a GID_N-keyed
+            # table (src/data/sources/layout.py's crs/adm/misc split) -- the
+            # source's actual per-pixel/per-GID outputs are the separate
+            # grid_store_path()/admin-parquet targets built later in
+            # `_execute_prepare`.
+            else os.path.join(
+                self.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "snl_mining_prepared.duckdb"
+            )
         )
 
         self.properties_table = cfg.raw.get("properties_table", "properties")
@@ -184,7 +191,9 @@ class SnlMiningSource(DataSource):
             self._resolve_path(commodity_prices_path_override)
             if commodity_prices_path_override
             else os.path.join(
-                layout.output_root(self.ctx.data_root, "commodity_prices", PipelineStep.PREPARE),
+                layout.output_root(
+                    self.ctx.data_root, "commodity_prices", PipelineStep.PREPARE, agg=layout.MISC_AGG
+                ),
                 "commodity_prices.parquet",
             )
         )
@@ -248,7 +257,7 @@ class SnlMiningSource(DataSource):
         `CountryClassificationsSource._plan_prepare()` resolves its own
         cross-source gadm reference (src/data/sources/misc/country_classifications.py)."""
         gadm_prepare_dir = layout.output_root(
-            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm"
+            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", agg=layout.ADM_AGG
         )
         return {
             "mine_count_adm1": {
@@ -879,10 +888,10 @@ class SnlMiningSource(DataSource):
             grid_id=self.ctx.grid_id,
         )
 
-    def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
+    def output_root(self, step: PipelineStep, *, namespace: str | None = None, agg: str | None = None) -> str:
         if step is PipelineStep.GRID:
             return self._output_root()
-        return super().output_root(step, namespace=namespace)
+        return super().output_root(step, namespace=namespace, agg=agg)
 
     def _create_empty_target_zarr(self, output_path: str, geobox, years: List[int]) -> bool:
         import dask.array as da

@@ -57,7 +57,7 @@ Two distinct GRID targets, both gated on the PREPARE output existing:
 **1. `ecoregions_grid` — rasterized id-grid.** Rasterizes each polygon's boundary mask *once* per tile and reuses it to paint all three id-grids (`realm_id`, `biome_id`, `eco_id`) simultaneously — unlike GADM's one-rasterize-call-per-level-per-polygon, all three RESOLVE attributes share the same geometry. Codes are mapped to sequential integer ids per column (`code_to_id[col] = {code: i+1 for i, code in enumerate(sorted(gdf[col].unique()))}`), tiled via `odc.geo.GeoboxTiles` (2048×2048 tiles) with an `sindex`-based per-tile candidate prefilter, and geometries are reprojected once up front to the target geobox's CRS before tiling (guarding against the CRS-mismatch bug the module docstring says GADM's rasterizer hit in commit `f653033`).
 
 - **Output path**
-  - `<data_root>/grid/<grid_id>/ecoregions.zarr` (flat; `<grid_id>` is `ease6933` under the checked-in config)
+  - `<data_root>/prepared/<data_path>/crs/<grid_id>/ecoregions.zarr` (`<grid_id>` is `ease6933` under the checked-in config)
 - **Format:** single zarr store, dims `(<y>, <x>)` following the target geobox's own dimension names, `uint32` dtype, chunks `(512, 512)`, Blosc-zstd (level 3, bitshuffle) compression, `Completion.MARKER`. A sidecar `<var>_code_mapping.json` (e.g. `realm_id_code_mapping.json`) is written per variable next to the store, mapping each raw RESOLVE code to its integer id.
 
   | variable | dtype | meaning | `value_range` (verification) |

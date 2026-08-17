@@ -7,6 +7,7 @@ import os
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.commodity_prices.source import CommodityPricesSource
+from src.data.sources import layout
 from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
@@ -44,7 +45,9 @@ def test_prepare_plan_target_when_fetch_output_present(tmp_path):
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     target = targets[0]
-    assert target.output_path == os.path.join(source.output_root(PipelineStep.PREPARE), "commodity_prices.parquet")
+    assert target.output_path == os.path.join(
+        source.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "commodity_prices.parquet"
+    )
     assert target.inputs == (fetch_file,)
     assert target.completion == Completion.PATH_EXISTS
 
@@ -91,5 +94,7 @@ def test_prepare_plan_always_reflects_this_hosts_own_raw_file(tmp_path):
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     target = targets[0]
-    assert target.output_path == os.path.join(source.output_root(PipelineStep.PREPARE), "commodity_prices.parquet")
+    assert target.output_path == os.path.join(
+        source.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "commodity_prices.parquet"
+    )
     assert target.inputs == (fetch_file,)

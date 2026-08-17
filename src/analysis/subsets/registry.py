@@ -14,19 +14,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Optional
 
-#: Where GADM's country-id (GID_0) sidecar lands (src/data/sources/layout.py's
-#: grid_store_path(), family="country_id") -- same sidecar filename,
-#: alongside country_id.zarr under grid/<grid_id>/, which is why
-#: default_mapping_path() takes a grid_id too.
-COUNTRY_MAPPING_PATH_TEMPLATE = "data_nobackup/grid/{grid_id}/GID_0_code_mapping.json"
-#: PREPARE-stage artefact -- gadm's own simplified level-0 vector.
-DEFAULT_GADM_PATH = "data_nobackup/prepared/misc/gadm/gadm_levelADM_0_simplified.gpkg"
-#: country_classifications' PREPARE-stage output (a genuine PREPARE-stage
-#: artefact, unlike COUNTRY_MAPPING_PATH_TEMPLATE above which is GRID-stage
-#: despite being read alongside PREPARE data by resolve.py) -- under the
-#: top-level `prepared/` tree (src/data/sources/layout.py's
-#: output_root(..., PipelineStep.PREPARE)).
-CLASSIFICATIONS_PATH = "data_nobackup/prepared/misc/country_classifications/classifications.parquet"
+#: Where GADM's country-id (GID_0) sidecar lands (src/data/sources/misc/
+#: gadm.py's gid_mapping_path()): the ADM_AGG bucket, alongside gadm's
+#: simplified `.gpkg` boundary files (src/data/sources/layout.py's
+#: crs/adm/misc split) -- `grid_id` is kept in the template/signature for
+#: call-site symmetry with `default_mapping_path()`'s callers even though
+#: the mapping itself is grid-independent (gid_mapping_path()'s docstring).
+COUNTRY_MAPPING_PATH_TEMPLATE = "data_nobackup/prepared/misc/adm/gadm/GID_0_code_mapping.json"
+#: PREPARE-stage artefact -- gadm's own simplified level-0 vector, ADM_AGG.
+DEFAULT_GADM_PATH = "data_nobackup/prepared/misc/adm/gadm/gadm_levelADM_0_simplified.gpkg"
+#: country_classifications' PREPARE-stage output, ADM_AGG (GID_0-keyed --
+#: src/data/sources/layout.py's crs/adm/misc split).
+CLASSIFICATIONS_PATH = "data_nobackup/prepared/misc/adm/country_classifications/classifications.parquet"
 
 
 @dataclass(frozen=True)
@@ -52,9 +51,10 @@ class CountryRegistry:
 
 
 def default_mapping_path(project_root: Path, *, grid_id: str = "legacy_4326") -> Path:
-    """GADM's `grid/<grid_id>/GID_0_code_mapping.json` sidecar."""
-    rel_path = COUNTRY_MAPPING_PATH_TEMPLATE.format(grid_id=grid_id)
-    return Path(project_root) / rel_path
+    """GADM's `prepared/misc/adm/gadm/GID_0_code_mapping.json` sidecar.
+    `grid_id` is accepted for call-site symmetry only -- the mapping itself
+    is grid-independent (see COUNTRY_MAPPING_PATH_TEMPLATE's docstring)."""
+    return Path(project_root) / COUNTRY_MAPPING_PATH_TEMPLATE
 
 
 def default_gadm_path(project_root: Path) -> Path:

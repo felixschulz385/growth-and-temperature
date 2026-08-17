@@ -134,15 +134,19 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
     def _classifications_path(self) -> str:
         """The joined-but-not-yet-GID_0-mapped intermediate -- a real,
         externally-read artefact (module docstring), so it keeps its own
-        PREPARE-stage path (`prepared/<data_path>/<namespace>/`)."""
-        return os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet")
+        PREPARE-stage path (`prepared/<data_path>/<agg>/<namespace>/`).
+        ADM_AGG: a GID_0-keyed table (src/data/sources/layout.py)."""
+        return os.path.join(
+            self.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG), "classifications.parquet"
+        )
 
     def _output_path(self) -> str:
         # A small per-GID parquet table, not a `<family>.zarr` pixel-grid
-        # store, so it lives under prepared/, not grid/<grid_id>/ (no
-        # readers anywhere in src/ today; kept for future use).
+        # store, so it lives under prepared/<agg>/, not the crs/<grid_id>/
+        # bucket (no readers anywhere in src/ today; kept for future use).
+        # ADM_AGG: GID_0-keyed (src/data/sources/layout.py).
         return os.path.join(
-            self.output_root(PipelineStep.PREPARE), "classifications_by_gid0.parquet"
+            self.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG), "classifications_by_gid0.parquet"
         )
 
     def _plan_prepare(self) -> List[StepTarget]:

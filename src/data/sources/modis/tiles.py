@@ -32,6 +32,17 @@ SINUSOIDAL_PROJ4 = (
     f"+proj=sinu +lon_0=0 +x_0=0 +y_0=0 +R={SPHERE_RADIUS_M} +units=m +no_defs"
 )
 
+#: LP DAAC's 1km-product tile grid is fixed at 1200x1200 pixels/tile (both
+#: `11A1` and `21A2`, this module's only two `BAND_SPECS` products, are 1km
+#: products) -- derived, not the oft-quoted "926.625433055556" literal,
+#: though it lands on that same figure. Passed explicitly to `odc.stac.load`
+#: (`source.py::_load_tile_year`) alongside `SINUSOIDAL_PROJ4` so loading
+#: doesn't depend on every STAC item carrying usable `proj` extension
+#: metadata -- some items have none at all (2026-08-17: `crs=` alone still
+#: hit "Failed to auto-guess CRS/resolution.", because odc-stac still tries
+#: to auto-derive resolution from item metadata when only `crs=` is given).
+RESOLUTION_1KM_M = TILE_SIZE_M / 1200
+
 
 def tile_bounds_m(h: int, v: int) -> tuple:
     """Sinusoidal-projection (x0, y0, x1, y1) bounds of tile (h, v)."""

@@ -9,6 +9,7 @@ import pandas as pd
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
+from src.data.sources import layout
 from src.data.sources.misc.country_classifications import CountryClassificationsSource
 from src.data.sources.misc.gadm import gid_mapping_path
 from src.data.sources.steps import PipelineStep, TargetSelection
@@ -38,7 +39,7 @@ def test_execute_prepare_writes_gid0_keyed_parquet(tmp_path):
     # Phase 1 (joining HDI+WB) already done in a prior run -- pre-populate
     # the real, externally-read classifications.parquet intermediate so
     # _execute_prepare's resumability check skips straight to phase 2.
-    vector_dir = source.output_root(PipelineStep.PREPARE)
+    vector_dir = source.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG)
     os.makedirs(vector_dir, exist_ok=True)
     classifications_parquet = os.path.join(vector_dir, "classifications.parquet")
     pd.DataFrame(
@@ -72,7 +73,7 @@ def test_execute_prepare_fails_clearly_when_mapping_missing(tmp_path):
     source, ctx = _make_source(tmp_path)
     _write_fake_raw_files(source)
 
-    vector_dir = source.output_root(PipelineStep.PREPARE)
+    vector_dir = source.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG)
     os.makedirs(vector_dir, exist_ok=True)
     classifications_parquet = os.path.join(vector_dir, "classifications.parquet")
     pd.DataFrame([{"iso3": "USA", "HDI_HI": True}]).to_parquet(classifications_parquet, index=False)

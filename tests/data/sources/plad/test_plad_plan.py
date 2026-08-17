@@ -55,7 +55,9 @@ def test_output_root_hardcodes_plad_prefix_ignoring_data_path(tmp_path):
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     cfg = SourceConfig.from_dict("plad", {"data_path": "something/else"})
     source = PlaDSource(ctx, cfg)
-    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "grid", "legacy_4326")
+    # ADM_AGG: plad's PREPARE output is a GID_N-keyed admin table (module
+    # docstring / src/data/sources/layout.py's crs/adm/misc split).
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "plad", "adm")
 
 
 def test_output_root_fetch_uses_top_level_tree(tmp_path):
@@ -90,7 +92,9 @@ def test_plan_prepare_target_output_path_includes_admin_level(tmp_path):
 
 def test_gid_mapping_file_path(tmp_path):
     source, ctx = _make_source(tmp_path, admin_level=1)
-    expected = os.path.join(ctx.data_root, "grid", "legacy_4326", "GID_1_code_mapping.json")
+    # ADM_AGG, alongside gadm's own simplified `.gpkg` boundary files (see
+    # gadm.gid_mapping_path()'s docstring).
+    expected = os.path.join(ctx.data_root, "prepared", "misc", "adm", "gadm", "GID_1_code_mapping.json")
     assert source._gid_mapping_file() == expected
 
 

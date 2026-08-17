@@ -47,7 +47,7 @@ def test_prepare_target(tmp_path):
     source, ctx = _make_source(tmp_path, year_range=[2000, 2010])
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(ctx.data_root, "grid", "legacy_4326", "berman_mining.zarr")
+    assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "berman_mining.zarr")
     assert targets[0].meta["year_range"] == (2000, 2010)
 
 

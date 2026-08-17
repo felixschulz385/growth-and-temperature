@@ -418,7 +418,18 @@ def _check_requires(spec: registry.SourceSpec, ctx, config, step: PipelineStep) 
             targets = requires_source.plan(requires_step, TargetSelection())
             if targets and all(is_complete(t) for t in targets):
                 continue
-            expected = targets[0].output_path if targets else requires_source.output_root(requires_step)
+            if targets:
+                expected = targets[0].output_path
+            else:
+                # Best-effort diagnostic only (no real target to point at) --
+                # PREPARE's output_root() requires an `agg` bucket
+                # (src/data/sources/layout.py) that isn't knowable generically
+                # here, so this falls back to a human-readable description
+                # rather than guessing wrong.
+                try:
+                    expected = requires_source.output_root(requires_step)
+                except ValueError:
+                    expected = f"<{requires_id}'s {requires_step.value} output>"
             raise MissingPrerequisiteError(spec.id, requires_id, requires_step, expected)
         finally:
             requires_source.close()
@@ -536,13 +547,16 @@ def _push_one_target(pusher, source, target) -> None:
     `run_fetch()` itself (`src/data/common/fetch/driver.py`), so this never
     runs for them.
 
-    GLASS's real filename is only known at execute time (its trailing
-    processing-date is unpredictable -- see `GlassSource._execute_fetch()`),
-    so `target.output_path` can be a synthetic placeholder; `_last_fetch
-    _output_path`, when a source sets it, is preferred over `target
-    .output_path`. Every other source's `target.output_path` is already
-    correct post-execute, so the `getattr` fallback covers them with no
-    per-source opt-in needed."""
+    GLASS-AVHRR's real filename is only known at execute time (its trailing
+    processing-date is unpredictable -- see
+    `GlassAvhrrSource._execute_fetch()`), so `target.output_path` can be a
+    synthetic placeholder; `_last_fetch_output_path`, when a source sets it,
+    is preferred over `target.output_path`. GLASS-MODIS (`GlassModisSource`)
+    and MODIS don't need this: their per-(tile, year) `output_path` is
+    deterministic at plan time (docs/design/12-glass-modis-rebuild.md §4),
+    so they never set `_last_fetch_output_path`. Every other source's
+    `target.output_path` is already correct post-execute, so the `getattr`
+    fallback covers them all with no per-source opt-in needed."""
     from src.data.common.hpc.push import PushUnit
 
     local_path = getattr(source, "_last_fetch_output_path", None) or target.output_path
@@ -591,7 +605,7 @@ def handle_run(args: argparse.Namespace) -> None:
     failures = []
     for target in targets:
         if not source.cfg.override and target.key in already_complete:
-            logger.info("Skipping %s -- already complete: %s", target.key, target.output_path)
+            logger.debug("Skipping %s -- already complete: %s", target.key, target.output_path)
             continue
         logger.info("Running %s/%s -> %s", args.source, target.key, target.output_path)
         try:

@@ -149,7 +149,11 @@ def get_or_create_geobox(hpc_root: str, output_dir: str = None, force_regenerate
         from src.data.sources import layout
         from src.data.sources.steps import PipelineStep
 
-        output_dir = layout.output_root(hpc_root, "misc", PipelineStep.PREPARE, namespace="misc")
+        # MISC_AGG: a cached geobox pickle, not a pixel-grid store or a
+        # GID_N-keyed table (src/data/sources/layout.py's crs/adm/misc split).
+        output_dir = layout.output_root(
+            hpc_root, "misc", PipelineStep.PREPARE, namespace="misc", agg=layout.MISC_AGG
+        )
     
     os.makedirs(output_dir, exist_ok=True)
     geobox_local = os.path.join(output_dir, "viirs_geobox.pkl")

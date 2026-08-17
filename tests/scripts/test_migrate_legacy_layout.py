@@ -24,6 +24,7 @@ from migrate_legacy_layout import (  # noqa: E402
 
 from src.data.pipeline.config import SourceConfig  # noqa: E402
 from src.data.pipeline.context import PipelineContext  # noqa: E402
+from src.data.sources import layout  # noqa: E402
 from src.data.sources.acag import AcagSource  # noqa: E402
 from src.data.sources.misc.gadm import GadmSource  # noqa: E402
 from src.data.sources.snl_mining.source import SnlMiningSource  # noqa: E402
@@ -169,7 +170,7 @@ def test_migrate_source_moves_fetch_prepare_grid(tmp_path):
     migrate_source("gadm", source, grid_id="legacy_4326", execute=True, tally=tally)
 
     assert os.path.isdir(source.output_root(PipelineStep.FETCH))
-    assert os.path.isdir(source.output_root(PipelineStep.PREPARE))
+    assert os.path.isdir(source.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG))
     assert os.path.isdir(os.path.join(source.output_root(PipelineStep.GRID), f"{family}.zarr"))
     assert not os.path.exists(raw_dir)
     assert not os.path.exists(prepare_dir)

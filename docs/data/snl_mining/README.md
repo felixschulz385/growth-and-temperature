@@ -180,7 +180,7 @@ preprocessor).
 
 **1. Rasterized zarr store** (genuinely per-pixel variables only):
 - **Output path**: `layout.grid_store_path(..., family="snl_mining")`.
-  - `<data_root>/grid/<grid_id>/snl_mining.zarr`
+  - `<data_root>/prepared/snl_mining/crs/<grid_id>/snl_mining.zarr`
 - **Format**: Zarr v3 store (`zarr_format=3`, `consolidated=False`), Blosc/
   zstd-compressed, chunked `(1, 1, tile_size, tile_size)` (`tile_size`
   default 2048, configurable). `Completion.MARKER` (sibling `.complete`

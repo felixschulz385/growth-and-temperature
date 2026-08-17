@@ -48,7 +48,7 @@ Builds one annual zarr per year (`.nc4` preferred over `.nc` if both exist for a
 Reprojects every annual PREPARE zarr onto the pipeline's canonical target geobox into one multi-year timeseries zarr. Since `lccs_class` is categorical, this source explicitly overrides `SpatialProcessor.process_spatial_standard`'s defaults with `dst_nodata=0` and `packaging_attrs={}` (disabling the scale/offset packing the other two sources get by default) — resampling stays at the function's default `"nearest"` (not passed explicitly, but the module docstring calls this out as deliberate: "categorical -> always nearest").
 
 - **Output path**
-  - `<data_root>/grid/<grid_id>/land_cover.zarr` (flat directory; `<grid_id>` is `ease6933` under the checked-in config)
+  - `<data_root>/prepared/<data_path>/crs/<grid_id>/land_cover.zarr` (`<grid_id>` is `ease6933` under the checked-in config)
 - **Format:** single multi-year zarr, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's CRS — `latitude`/`longitude` for geographic, `y`/`x` for projected e.g. EASE-Grid 2.0 EPSG:6933), CRS via `.rio.write_crs()`/`grid_mapping="spatial_ref"`, Blosc-zstd compression, chunks `(1, 1, 512, 512)`. Storage dtype is `uint16` (`SpatialProcessor.create_empty_target_zarr`'s default `dtype` parameter — not overridden by this source) holding the raw class codes, unscaled (`packaging_attrs={}` means no `scale_factor`/`add_offset` are applied).
 
 - **Variables**

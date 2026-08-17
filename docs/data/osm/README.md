@@ -65,7 +65,7 @@ fixes a real bug class where relying on `rasterize()`'s own georeferencing
 alone left `.rio.crs` returning `None` on later reads.
 
 - **Output path** (`layout.grid_store_path(..., family="land_mask")`):
-  - `<data_root>/grid/<grid_id>/land_mask.zarr` (flat, no namespace)
+  - `<data_root>/prepared/misc/crs/<grid_id>/land_mask.zarr` (no namespace)
 - **Format**: Zarr store, Blosc/zstd-compressed (`clevel=3, shuffle=bitshuffle`),
   coordinates rounded to 5 decimals. `Completion.MARKER` (sibling completion
   file — directory output).

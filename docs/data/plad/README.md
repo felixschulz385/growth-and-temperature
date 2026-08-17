@@ -46,7 +46,7 @@ Not implemented — not in `STEPS`.
 `_build_reg_fav_table()`: reads the raw PLAD `.dta` file (`pd.read_table`, located via the local ledger by filename), requires a `gid_{admin_level}` column to exist. For each row, expands `[max(startyear, cfg.year_range[0]), min(endyear, cfg.year_range[1])]` into one row per year, translates the raw `gid_N` string code to gadm's integer id via the `GID_N_code_mapping.json` sidecar (rows whose code isn't in the mapping — id `0` — are dropped), sets `reg_fav = True` for every remaining row, and de-duplicates on `(GID_N, year)`.
 
 - **Output path** (via the overridden `output_root()` — see the `OUTPUT_PREFIX` quirk note above; `<grid_id>` depends on `pipeline.grid`, currently `ease6933`):
-  - `<data_root>/grid/<grid_id>/plad_adm2_reg_fav.parquet` (flat; filename encodes `admin_level`, e.g. `plad_adm1_reg_fav.parquet` if `admin_level: 1`)
+  - `<data_root>/prepared/plad/adm/plad_adm2_reg_fav.parquet` (ADM_AGG -- a GID_N-keyed table, not a pixel-grid store; filename encodes `admin_level`, e.g. `plad_adm1_reg_fav.parquet` if `admin_level: 1`)
 - **Format:** single parquet file, `Completion.PATH_EXISTS`.
 - **Schema** (one row per favored admin unit per year it was favored — absence from the table, not a `False` value, means "not favored"):
 

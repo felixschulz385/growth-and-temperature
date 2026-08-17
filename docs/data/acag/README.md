@@ -50,7 +50,7 @@ Builds one annual zarr per year from the selected raw file (`.nc4` preferred ove
 Reprojects every annual PREPARE zarr onto the pipeline's canonical target geobox (`get_target_geobox(ctx)`) into one multi-year timeseries zarr, via `SpatialProcessor.process_spatial_standard` with `resampling="nearest"` (the function's default — not overridden by this source) and no explicit `dst_nodata`/`packaging_attrs` override.
 
 - **Output path**
-  - `<data_root>/grid/<grid_id>/pm25.zarr` (flat directory; `<grid_id>` is `ease6933` under the checked-in config)
+  - `<data_root>/prepared/<data_path>/crs/<grid_id>/pm25.zarr` (`<grid_id>` is `ease6933` under the checked-in config)
 - **Format:** single multi-year zarr, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's own CRS-dependent dimension names — `latitude`/`longitude` for a geographic grid, `y`/`x` for a projected one such as EASE-Grid 2.0 EPSG:6933), CRS written via `.rio.write_crs()`/`grid_mapping="spatial_ref"`, Blosc-zstd compression, chunks `(1, 1, 512, 512)`.
 - **Storage encoding (from `SpatialProcessor.create_empty_target_zarr`, since this source passes no `dst_nodata`/`packaging_attrs` override):** stored as `uint16` with `scale_factor=0.01`, `add_offset=0.0` (packed: `physical = stored * 0.01`), fill/nodata value `65535`.
 

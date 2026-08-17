@@ -111,21 +111,21 @@ class PlaDSource(ConfiguredFilesFetchMixin, DataSource):
     def _gid_column(self) -> str:
         return f"GID_{self.admin_level}"
 
-    def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
+    def output_root(self, step: PipelineStep, *, namespace: str | None = None, agg: str | None = None) -> str:
         if step is PipelineStep.PREPARE:
-            # This source's PREPARE output lives at the on-disk `grid/<grid_id>`
-            # location (via layout's own PipelineStep.GRID convention), not
-            # the generic `prepared/` path a plain PREPARE would map to. Same
-            # rationale as gadm/osm/country_classifications: PREPARE writes
-            # to the GRID path.
+            # PLAD's PREPARE output (`plad_adm{admin_level}_reg_fav.parquet`)
+            # is always a GID_N-keyed admin table, not a pixel-grid store --
+            # ADM_AGG per src/data/sources/layout.py's crs/adm/misc split,
+            # regardless of whatever `agg` a generic caller passes (see this
+            # module's REQUIRES table).
             return layout.output_root(
                 self.ctx.data_root,
                 self.OUTPUT_PREFIX,
-                PipelineStep.GRID,
+                PipelineStep.PREPARE,
                 namespace=namespace,
-                grid_id=self.ctx.grid_id,
+                agg=layout.ADM_AGG,
             )
-        return super().output_root(step, namespace=namespace)
+        return super().output_root(step, namespace=namespace, agg=agg)
 
     # list_remote_files/local_path/filename_to_entrypoint/get_all_entrypoints/
     # download/download_async/has_entrypoints: inherited from

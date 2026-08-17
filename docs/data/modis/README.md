@@ -111,7 +111,7 @@ zarr store one year-region at a time.
 ad hoc case (module docstring, `docs/design/05-migration.md` §1).
 
 **Output path** (`layout.grid_store_path`, `family=f"modis_lst_{product.lower()}"`):
-- `<data_root>/grid/ease6933/modis_lst_<product>.zarr` (e.g.
+- `<data_root>/prepared/<data_path>/crs/ease6933/modis_lst_<product>.zarr` (e.g.
   `modis_lst_21a2.zarr`, `modis_lst_11a1.zarr` — flat, no namespace, so the two
   config variants land in genuinely separate stores)
 

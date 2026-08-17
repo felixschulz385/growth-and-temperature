@@ -76,7 +76,7 @@ def test_prepare_plan_respects_year_selection(tmp_path):
 
 def test_output_path_uses_family(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "pm25.zarr")
+    assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), "pm25.zarr")
 
 
 def test_unsupported_step_raises_for_a_source_with_a_narrower_contract(tmp_path):

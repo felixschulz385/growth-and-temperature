@@ -73,7 +73,7 @@ integer ids starting at 1 (`{code: i + 1 for i, code in enumerate(sorted(codes))
 (`_process_gadm_tiles`, `to_zarr(..., region="auto", mode="r+")`).
 
 - **Output path — zarr grid** (`layout.grid_store_path(..., family="country_id")`):
-  - `<data_root>/grid/<grid_id>/country_id.zarr`
+  - `<data_root>/prepared/misc/crs/<grid_id>/country_id.zarr`
 - **Format**: Zarr store, `uint32` data variables, chunked `(512, 512)`,
   Blosc/zstd-compressed. `Completion.MARKER`.
 - **Variables** (dynamic — one per ADM level found in PREPARE's output, not
@@ -99,7 +99,7 @@ integer ids starting at 1 (`{code: i + 1 for i, code in enumerate(sorted(codes))
   string `GID_N` code (e.g. `"USA.1_1"`) to the same integer id used in the
   zarr grid:
   - **Path**: same directory as the zarr store above, i.e.
-    `<data_root>/grid/<grid_id>/{GID_N}_code_mapping.json`, directly beside
+    `<data_root>/prepared/misc/adm/gadm/{GID_N}_code_mapping.json`, alongside gadm's simplified `.gpkg` boundary files (the ADM_AGG bucket), not beside
     `country_id.zarr` (the flat GRID directory applies no per-source
     namespace).
   - **Format**: JSON object, `{"<GID_N code>": <int id>, ...}`.

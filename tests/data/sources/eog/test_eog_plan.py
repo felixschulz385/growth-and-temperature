@@ -146,7 +146,7 @@ def test_output_path_uses_source_type_family(tmp_path):
         ("dvnl", "eog_viirs_dvnl"),
     ):
         source, ctx = _make_source(tmp_path, source_type)
-        assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", f"{family}.zarr")
+        assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), f"{family}.zarr")
 
 
 def test_filename_to_entrypoint_extracts_year_for_viirs_annual(tmp_path):

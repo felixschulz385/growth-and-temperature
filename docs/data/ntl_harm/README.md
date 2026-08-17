@@ -60,7 +60,7 @@ Builds one annual zarr per year from the selected raw file (`.tif` preferred, th
 Reprojects every annual PREPARE zarr onto the pipeline's canonical target geobox into one multi-year timeseries zarr, via `SpatialProcessor.process_spatial_standard`. Unlike `acag`/`esacci` (which use the function's `"nearest"` default), this source explicitly passes `resampling=self.resampling`, which defaults to `"sum"` (`cfg.raw.get("resampling", "sum")`, not overridden in the checked-in `data.yaml`) — an area-weighted aggregation appropriate for a radiance-like field, per the module docstring's reference to `docs/design/04-ingest.md §1`. No `dst_nodata`/`packaging_attrs` override is passed, so `SpatialProcessor.create_empty_target_zarr`'s defaults apply.
 
 - **Output path**
-  - `<data_root>/grid/<grid_id>/ntl_harm.zarr` (flat directory; `<grid_id>` is `ease6933` under the checked-in config)
+  - `<data_root>/prepared/<data_path>/crs/<grid_id>/ntl_harm.zarr` (`<grid_id>` is `ease6933` under the checked-in config)
 - **Format:** single multi-year zarr, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's CRS — `latitude`/`longitude` for geographic, `y`/`x` for projected e.g. EASE-Grid 2.0 EPSG:6933), CRS via `.rio.write_crs()`/`grid_mapping="spatial_ref"`, Blosc-zstd compression, chunks `(1, 1, 512, 512)`.
 - **Storage encoding (from `SpatialProcessor.create_empty_target_zarr`, since this source passes no `dst_nodata`/`packaging_attrs` override):** stored as `uint16` with `scale_factor=0.01`, `add_offset=0.0` (packed: `physical = stored * 0.01`), fill/nodata value `65535`.
 

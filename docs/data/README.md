@@ -48,5 +48,5 @@ inferred from `data.yaml`.
 ## Layout note
 
 Every source's path template follows one stage-name-first physical tree:
-`raw/<data_path>`, `prepared/<data_path>`, `grid/<grid_id>/<family>.zarr` —
+`raw/<data_path>`, `prepared/<data_path>/<agg>/...`, pixel-grid stores under `prepared/<data_path>/crs/<grid_id>/<family>.zarr` —
 see `src/data/sources/layout.py`.

@@ -1,6 +1,7 @@
 """Physically move already-computed pipeline output from the old per-source
 directory layout into the current stage-name-first tree (`raw/<data_path>`,
-`prepared/<data_path>`, `grid/<grid_id>/<family>.zarr` -- see
+`prepared/<data_path>/<agg>/...`, pixel-grid stores under
+`prepared/<data_path>/crs/<grid_id>/<family>.zarr` -- see
 `src/data/sources/layout.py`).
 
 The old ("legacy") layout was:
@@ -86,13 +87,34 @@ GADM_SIDECAR_FILENAMES = ("country_code_mapping.json", "subdivision_code_mapping
 #: src/data/sources/snl_mining/source.py.
 PREPARE_EXCEPTIONS = {"snl_mining"}
 
-#: Sources whose PREPARE step writes directly into the *shared* GRID root
-#: (grid/<grid_id>/) rather than its own prepared/<data_path>/ directory, so
-#: a generic whole-directory PREPARE move would clobber other sources' grid
-#: stores. Migrated as a per-file move instead (see migrate_plad below).
-#: MODIS is also GRID-shaped, but its output is a `<family>.zarr` store
-#: already covered by GRID_FILENAME_AND_FAMILY.
+#: Sources whose PREPARE step is migrated as a single per-instance-filename
+#: move rather than a generic whole-directory move: MODIS/MODIS-robustness
+#: write directly into the *shared* GRID root (grid/<grid_id>/, a
+#: `<family>.zarr` store already covered by GRID_FILENAME_AND_FAMILY); plad
+#: writes one per-instance-config filename (`plad_adm{admin_level}_reg_fav.
+#: parquet`) into the ADM_AGG bucket. A generic whole-directory move would
+#: either clobber other sources' grid stores (MODIS) or risk assuming the
+#: wrong legacy source path (plad's OUTPUT_PREFIX vs cfg.data_path). See
+#: migrate_grid()/migrate_plad() below.
 PREPARE_IS_GRID_SHAPED = {"modis", "modis_robustness_11a1", "plad"}
+
+#: (source id) -> agg bucket its whole PREPARE-stage directory now lives
+#: under (src/data/sources/layout.py's CRS_AGG/ADM_AGG/MISC_AGG split) --
+#: every source not listed here defaults to CRS_AGG (the common case: a
+#: pixel-grid raster intermediate feeding the source's own GRID/family.zarr
+#: output). `plad` isn't listed: its PREPARE output is a per-instance
+#: filename under ADM_AGG, handled by migrate_plad() below, not this
+#: whole-directory move.
+PREPARE_AGG_OVERRIDES = {
+    "gadm": "adm",
+    "country_classifications": "adm",
+    "osm": "misc",
+    # ecoregions' PREPARE directory only ever held its simplified vector
+    # (`ecoregions_simplified.gpkg`) -- dominant_biome_by_gid3.parquet used
+    # to fall back to the GRID root instead, so it never shared this
+    # directory; migrated separately via RELOCATED_PREPARE_TABLES below.
+    "ecoregions": "misc",
+}
 
 #: MODIS forces grid_id=ease6933 unconditionally, independent of the
 #: pipeline's own grid_id choice (src/data/sources/modis/source.py). The
@@ -218,7 +240,8 @@ def migrate_prepare(source_key: str, source: DataSource, *, execute: bool, tally
 
     label = f"{source_key}/PREPARE"
     old_root = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE, namespace=source.cfg.namespace)
-    new_root = source.output_root(PipelineStep.PREPARE)
+    agg = PREPARE_AGG_OVERRIDES.get(source_key, layout.CRS_AGG)
+    new_root = source.output_root(PipelineStep.PREPARE, agg=agg)
     planned = plan_move(label, old_root, new_root, tally)
     if planned is not None:
         do_move(label, *planned, execute=execute, tally=tally)
@@ -252,12 +275,13 @@ def migrate_grid(source_key: str, source: DataSource, *, grid_id: str, execute: 
 
 
 def migrate_plad(source_key: str, source: DataSource, *, grid_id: str, execute: bool, tally: MigrationTally) -> None:
-    """PLAD's PREPARE output is a single parquet file written directly into
-    the (shared) GRID root, not a `<family>.zarr` store -- see
-    `PlaDSource.output_root()`/`_discover_prepare()`
-    (src/data/sources/plad.py). `admin_level` is per-instance config, so the
-    filename is read off the live source object, mirroring how
-    `_discover_prepare()` builds it."""
+    """PLAD's PREPARE output is a single GID_N-keyed parquet file --
+    ADM_AGG, via `output_root(PREPARE, agg=ADM_AGG)` (see
+    `PlaDSource.output_root()`/`_discover_prepare()`,
+    src/data/sources/plad.py). The legacy layout wrote it into the (shared)
+    GRID root instead. `admin_level` is per-instance config, so the filename
+    is read off the live source object, mirroring how `_discover_prepare()`
+    builds it."""
     if source_key != "plad":
         return
     admin_level = getattr(source, "admin_level", None)
@@ -266,7 +290,7 @@ def migrate_plad(source_key: str, source: DataSource, *, grid_id: str, execute: 
         return
     filename = f"plad_adm{admin_level}_reg_fav.parquet"
     old_dir = legacy_output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.GRID, grid_id=grid_id)
-    new_dir = layout.output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.GRID, grid_id=grid_id)
+    new_dir = layout.output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.PREPARE, agg=layout.ADM_AGG)
     label = f"plad/PREPARE/{filename}"
     planned = plan_move(label, os.path.join(old_dir, filename), os.path.join(new_dir, filename), tally)
     if planned is not None:
@@ -282,7 +306,12 @@ def migrate_relocated_prepare_tables(source_key: str, source: DataSource, *, gri
             continue
         label = f"{source_key}/PREPARE/{new_filename}"
         old_dir = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, namespace=source.cfg.namespace, grid_id=grid_id)
-        new_dir = layout.output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE, namespace=namespace or source.cfg.namespace)
+        # ADM_AGG: both of RELOCATED_PREPARE_TABLES' entries are GID_N-keyed
+        # tables (src/data/sources/layout.py's crs/adm/misc split).
+        new_dir = layout.output_root(
+            source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE,
+            namespace=namespace or source.cfg.namespace, agg=layout.ADM_AGG,
+        )
         planned = plan_move(label, os.path.join(old_dir, legacy_filename), os.path.join(new_dir, new_filename), tally)
         if planned is not None:
             do_move(label, *planned, execute=execute, tally=tally)

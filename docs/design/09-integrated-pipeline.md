@@ -185,6 +185,23 @@ FETCH/PREPARE/GRID. Physical layout under `layout: v2`:
 | `PREPARE` | `<data_root>/prepared/<data_path>[/<namespace>]` |
 | `GRID` | `<data_root>/grid/<grid_id>/<family>.zarr` -- one store per variable family (§2's original decision was scoped to single-contributing-source families only; every registered GRID-capable source turned out to fit that shape, so no multi-source write-coordination mechanism was needed) |
 
+**Update: GRID folded under `prepared/`, PREPARE split into crs/adm/misc buckets.**
+The disjoint top-level `grid/<grid_id>/` tree above meant a source's PREPARE-stage
+intermediates (vector files, per-GID tables) and its GRID-stage pixel store lived under
+two unrelated roots even though they're the same source's one PREPARE step output.
+Current physical tree (`src/data/sources/layout.py`):
+
+| Step | Path |
+|---|---|
+| `FETCH` | `<data_root>/raw/<data_path>[/<namespace>]` |
+| `PREPARE` | `<data_root>/prepared/<data_path>/<agg>[/<namespace>]`, `agg` one of `crs`/`adm`/`misc` (required, no default) |
+| `GRID` | `<data_root>/prepared/<data_path>/crs/<grid_id>/<family>.zarr` -- the `crs` bucket, same "one store per variable family" decision as above |
+
+`crs`: pixel-grid zarr stores (what GRID always wrote). `adm`: admin-unit-keyed
+tables (GID_N-keyed parquet) and the admin-shaped vector/JSON intermediates that
+feed them (e.g. gadm's simplified `.gpkg` boundary files, `GID_N_code_mapping.json`).
+`misc`: everything else non-spatial (e.g. commodity-price lookup tables).
+
 Of the eight originally-listed consumers, `assemble:`'s `stage_3` blocks were found to be disconnected
 from any code currently in `src/data/assemble/*.py` (no code produces or reads the `*_tabular.parquet`
 filenames those blocks reference) and were deliberately left untouched rather than migrated -- flagged as

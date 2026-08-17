@@ -110,7 +110,14 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _vector_path(self) -> str:
-        return os.path.join(self.output_root(PipelineStep.PREPARE), "land_polygons_simplified.gpkg")
+        # MISC_AGG: a PREPARE-stage vector intermediate that feeds the
+        # CRS_AGG land_mask.zarr rasterization below, but isn't itself
+        # GID-keyed or an admin boundary file -- "everything else"
+        # (src/data/sources/layout.py's crs/adm/misc split), same judgment
+        # call as ecoregions_simplified.gpkg.
+        return os.path.join(
+            self.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "land_polygons_simplified.gpkg"
+        )
 
     def _output_path(self) -> str:
         return layout.grid_store_path(

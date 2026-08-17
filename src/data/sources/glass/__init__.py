@@ -1,3 +1,4 @@
-from .source import GlassSource
+from .avhrr import GlassAvhrrSource
+from .modis import GlassModisSource
 
-__all__ = ["GlassSource"]
+__all__ = ["GlassAvhrrSource", "GlassModisSource"]

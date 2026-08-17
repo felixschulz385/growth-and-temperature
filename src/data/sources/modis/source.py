@@ -364,16 +364,32 @@ class ModisSource(DataSource):
         # practice, so which one is "authoritative" is moot; this warning is
         # kept as a live tripwire in case that ever changes for some item,
         # not because a disagreement is expected.
+        #
+        # 2026-08-17: a real disagreement showed up -- a batch of items with
+        # `platform` entirely empty (not wrong-platform, just missing), which
+        # the original `platform_ok`-only filter silently dropped as if they
+        # belonged to the other satellite. An empty `platform` carries no
+        # information, so it can't outweigh an unambiguous id prefix: only
+        # treat `platform` as authoritative when it's actually populated,
+        # and fall back to the id prefix otherwise.
         id_prefix = "MYD" if self.platform == "aqua" else "MOD"
         filtered = []
         for item in items:
-            platform_ok = item.properties.get("platform") == self.platform
+            platform_value = item.properties.get("platform")
+            platform_ok = platform_value == self.platform
             id_ok = item.id.startswith(id_prefix)
             if platform_ok != id_ok:
-                logger.warning(
-                    "STAC item %s: platform property (%s) and id prefix disagree", item.id, item.properties.get("platform")
-                )
-            if platform_ok:
+                if platform_value:
+                    # Populated and still wrong -- the real tripwire case.
+                    logger.warning(
+                        "STAC item %s: platform property (%s) and id prefix disagree", item.id, platform_value
+                    )
+                else:
+                    # Empty is an expected, handled fallback (below), not an
+                    # anomaly -- worth a record, not a WARNING-level alert.
+                    logger.debug("STAC item %s: empty platform property, falling back to id prefix", item.id)
+            include = id_ok if not platform_value else platform_ok
+            if include:
                 filtered.append(item)
         return filtered
 
@@ -390,7 +406,22 @@ class ModisSource(DataSource):
         # not a double-application bug.
         assets = self.band_spec["assets"]
         bands = [spec["name"] for spec in assets.values()]
-        ds = odc.stac.load(items, bands=bands, chunks={"time": 1, "x": 2400, "y": 2400}, resampling="nearest")
+        # `crs=`/`resolution=` pinned explicitly: odc-stac otherwise
+        # auto-guesses both from each item's STAC `proj` extension fields,
+        # which some items lack entirely (observed 2026-08-17 -- items with
+        # no `platform` property either, so likely a batch with generally
+        # incomplete metadata) and then raises
+        # `ValueError("Failed to auto-guess CRS/resolution.")` outright
+        # instead of degrading gracefully. `crs=` alone isn't enough --
+        # odc-stac still tries to auto-derive resolution from item metadata
+        # when resolution is left unset, and hits the same error. The
+        # sinusoidal grid and its 1km pixel size are fixed and already known
+        # here (`_tile_bbox_4326`/`RESOLUTION_1KM_M`), so there's nothing to
+        # guess.
+        ds = odc.stac.load(
+            items, bands=bands, crs=modis_util.SINUSOIDAL_PROJ4, resolution=modis_util.RESOLUTION_1KM_M,
+            chunks={"time": 1, "x": 2400, "y": 2400}, resampling="nearest",
+        )
         if not ds.data_vars:
             return None
 

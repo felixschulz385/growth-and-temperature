@@ -185,8 +185,8 @@ def test_resolve_subset_missing_file_raises_with_available_list(tmp_path):
 
 
 def _write_partitioned_fixture(project_root, rows, mapping):
-    classifications_dir = project_root / "data_nobackup" / "prepared" / "misc" / "country_classifications"
-    mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
+    classifications_dir = project_root / "data_nobackup" / "prepared" / "misc" / "adm" / "country_classifications"
+    mapping_dir = project_root / "data_nobackup" / "prepared" / "misc" / "adm" / "gadm"
     classifications_dir.mkdir(parents=True)
     mapping_dir.mkdir(parents=True)
     pd.DataFrame(rows).to_parquet(classifications_dir / "classifications.parquet", index=False)
@@ -328,7 +328,7 @@ def test_generate_hodler_raschky_2014_reports_missing_countries_in_json(tmp_path
 
 def test_generate_all_default_subsets_continues_after_one_category_fails(tmp_path):
     project_root = tmp_path
-    mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
+    mapping_dir = project_root / "data_nobackup" / "prepared" / "misc" / "adm" / "gadm"
     mapping_dir.mkdir(parents=True)
     mapping_dir.joinpath("GID_0_code_mapping.json").write_text(
         json.dumps({"USA": 1, "BBB": 2})

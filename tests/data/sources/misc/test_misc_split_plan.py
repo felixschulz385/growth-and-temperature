@@ -7,7 +7,7 @@ import os
 
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources import registry
+from src.data.sources import layout, registry
 from src.data.sources.steps import MissingPrerequisiteError, PipelineStep, TargetSelection
 
 
@@ -30,12 +30,16 @@ def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees(
     cc, _ = _make(tmp_path, "country_classifications")
 
     assert osm.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "osm")
-    assert osm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "misc", "osm")
+    assert osm.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG) == os.path.join(
+        ctx.data_root, "prepared", "misc", "misc", "osm"
+    )
     assert gadm.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "gadm")
-    assert gadm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "misc", "gadm")
+    assert gadm.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG) == os.path.join(
+        ctx.data_root, "prepared", "misc", "adm", "gadm"
+    )
     assert cc.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "country_classifications")
-    assert cc.output_root(PipelineStep.PREPARE) == os.path.join(
-        ctx.data_root, "prepared", "misc", "country_classifications"
+    assert cc.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG) == os.path.join(
+        ctx.data_root, "prepared", "misc", "adm", "country_classifications"
     )
     # Distinct index files -- the actual point of the split.
     assert osm.data_path == "misc/osm"
@@ -75,7 +79,7 @@ def test_country_classifications_prepare_target_output_path(tmp_path):
     targets = cc.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(
-        cc.output_root(PipelineStep.PREPARE), "classifications_by_gid0.parquet"
+        cc.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG), "classifications_by_gid0.parquet"
     )
 
 
@@ -91,21 +95,22 @@ def test_country_classifications_requires_gadm_prepare():
 
 def test_osm_output_path_uses_family(tmp_path):
     osm, ctx = _make(tmp_path, "osm")
-    assert osm._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_mask.zarr")
+    assert osm._output_path() == os.path.join(osm.output_root(PipelineStep.GRID), "land_mask.zarr")
 
 
 def test_gadm_output_path_uses_family(tmp_path):
     gadm, ctx = _make(tmp_path, "gadm")
-    assert gadm._grid_output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "country_id.zarr")
+    assert gadm._grid_output_path() == os.path.join(gadm.output_root(PipelineStep.GRID), "country_id.zarr")
 
 
 def test_country_classifications_output_path_lives_under_prepare_root(tmp_path):
     # country_classifications' own output is a small per-GID_0 parquet table,
     # not a `<family>.zarr` pixel-grid store, so it lives under the PREPARE
-    # root rather than GRID's shared grid/<grid_id>/ directory (see module
-    # docstring). GADM's own output path (which *is* a zarr family) is
-    # unaffected -- see test_gadm_output_path_uses_family above.
+    # root's ADM_AGG bucket rather than GRID's shared crs/<grid_id>/
+    # directory (see module docstring). GADM's own output path (which *is* a
+    # zarr family) is unaffected -- see test_gadm_output_path_uses_family
+    # above.
     cc, ctx = _make(tmp_path, "country_classifications")
     assert cc._output_path() == os.path.join(
-        cc.output_root(PipelineStep.PREPARE), "classifications_by_gid0.parquet"
+        cc.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG), "classifications_by_gid0.parquet"
     )

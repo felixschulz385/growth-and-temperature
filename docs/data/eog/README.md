@@ -196,7 +196,7 @@ zarr has no CRS written, using `resampling=self.resampling` (default
 
 **Output path**: `layout.grid_store_path(..., grid_id=ctx.grid_id,
 family=f"eog_{source_type}")`:
-- `<data_root>/grid/<grid_id>/eog_<source_type>.zarr` (flat, no namespace)
+- `<data_root>/prepared/<data_path>/crs/<grid_id>/eog_<source_type>.zarr` (no namespace)
 
 The filename/`family` differs per variant: `eog_dmsp.zarr`,
 `eog_viirs_annual.zarr`, `eog_viirs_dvnl.zarr`.

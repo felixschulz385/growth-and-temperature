@@ -68,16 +68,23 @@ def _gid_column_for_level(level: str) -> str:
 
 
 def gid_mapping_path(data_root: str, grid_id: str, gid_col: str) -> str:
-    """Path to gadm GRID's `{gid_col}_code_mapping.json` sidecar for another
-    source to consult (docs/design/09-integrated-pipeline.md §2: cross-source
-    coupling is on artefact paths, never a class import). Shared by every
-    source that needs to translate its own native GADM string codes (e.g.
-    `GID_1` values like "USA.1_1") into the same integer ids gadm's own
-    per-pixel `GID_N` grid uses, so a small per-GID table can be merged
-    directly onto assembled rows instead of being rasterized
-    (`src.data.assemble.processors.TileProcessor`'s `join_on` mechanism)."""
-    gadm_zarr = layout.grid_store_path(data_root, "misc", grid_id=grid_id, family="country_id")
-    return os.path.join(os.path.dirname(gadm_zarr), f"{gid_col}_code_mapping.json")
+    """Path to gadm PREPARE's `{gid_col}_code_mapping.json` sidecar for
+    another source to consult (docs/design/09-integrated-pipeline.md §2:
+    cross-source coupling is on artefact paths, never a class import).
+    Shared by every source that needs to translate its own native GADM
+    string codes (e.g. `GID_1` values like "USA.1_1") into the same integer
+    ids gadm's own per-pixel `GID_N` grid uses, so a small per-GID table can
+    be merged directly onto assembled rows instead of being rasterized
+    (`src.data.assemble.processors.TileProcessor`'s `join_on` mechanism).
+
+    `grid_id` is unused by the path itself (the mapping is grid-independent
+    -- it's a string-code -> integer-id table, not pixel data) but kept in
+    the signature for call-site symmetry with the `country_id.zarr` grid
+    store it accompanies. ADM_AGG (src/data/sources/layout.py): a GID_N-keyed
+    sidecar, not a pixel-grid store, filed alongside gadm's simplified
+    `.gpkg` boundary files under the same "admin data" bucket."""
+    adm_dir = layout.output_root(data_root, "misc", PipelineStep.PREPARE, namespace="gadm", agg=layout.ADM_AGG)
+    return os.path.join(adm_dir, f"{gid_col}_code_mapping.json")
 
 
 class GadmSource(ConfiguredFilesFetchMixin, DataSource):
@@ -144,7 +151,12 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _vector_dir(self) -> str:
-        return self.output_root(PipelineStep.PREPARE)
+        # ADM_AGG: gadm's simplified `.gpkg` boundary files are admin-shaped
+        # vector intermediates that feed the GID_N_code_mapping.json sidecars
+        # (src/data/sources/layout.py's crs/adm/misc split), not pixel-grid
+        # data -- kept with the code-mapping sidecars in the same bucket
+        # (gid_mapping_path() above).
+        return self.output_root(PipelineStep.PREPARE, agg=layout.ADM_AGG)
 
     def _grid_output_path(self) -> str:
         return layout.grid_store_path(
@@ -267,8 +279,13 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             if not self._process_gadm_tiles(tiles, output_path, level_gdfs, level_code_to_id):
                 return False
 
+        # ADM_AGG, not `output_dir` (the CRS_AGG grid-store directory) --
+        # these sidecars are read via gid_mapping_path() above, which looks
+        # in the ADM_AGG bucket alongside the simplified `.gpkg` vectors.
+        adm_dir = self._vector_dir()
+        os.makedirs(adm_dir, exist_ok=True)
         for gid_col, code_to_id in level_code_to_id.items():
-            with open(os.path.join(output_dir, f"{gid_col}_code_mapping.json"), "w") as f:
+            with open(os.path.join(adm_dir, f"{gid_col}_code_mapping.json"), "w") as f:
                 json.dump(code_to_id, f, indent=2)
         return True
 

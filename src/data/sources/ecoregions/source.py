@@ -307,7 +307,14 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
         return os.path.join(self.output_root(PipelineStep.FETCH), self.CONFIGURED_FILES[0].name)
 
     def _vector_path(self) -> str:
-        return os.path.join(self.output_root(PipelineStep.PREPARE), "ecoregions_simplified.gpkg")
+        # MISC_AGG: a PREPARE-stage vector intermediate that feeds both the
+        # CRS_AGG grid rasterization below and the ADM_AGG dominant-biome
+        # table, but isn't itself GID-keyed or an admin boundary file --
+        # "everything else" (src/data/sources/layout.py's crs/adm/misc
+        # split), same judgment call as osm's land_polygons_simplified.gpkg.
+        return os.path.join(
+            self.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "ecoregions_simplified.gpkg"
+        )
 
     def _ecoregions_grid_path(self) -> str:
         return layout.grid_store_path(
@@ -319,17 +326,21 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
 
     def _gadm_gid3_file(self) -> str:
         return os.path.join(
-            layout.output_root(self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm"),
+            layout.output_root(
+                self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", agg=layout.ADM_AGG
+            ),
             f"gadm_level{self.gadm_gid3_level}_simplified.gpkg",
         )
 
     def _dominant_biome_path(self) -> str:
-        # A small per-GID parquet table, not a pixel-grid store -- lives
-        # under prepared/, not grid/<grid_id>/ (no readers anywhere in
-        # src/ today; kept for future use, same rationale as
-        # country_classifications.py's _output_path()).
+        # A small per-GID (GID_3) parquet table, not a pixel-grid store --
+        # ADM_AGG (no readers anywhere in src/ today; kept for future use,
+        # same rationale as country_classifications.py's _output_path()).
         return os.path.join(
-            layout.output_root(self.ctx.data_root, self.cfg.data_path, PipelineStep.PREPARE, namespace=self.cfg.namespace),
+            layout.output_root(
+                self.ctx.data_root, self.cfg.data_path, PipelineStep.PREPARE,
+                namespace=self.cfg.namespace, agg=layout.ADM_AGG,
+            ),
             "dominant_biome_by_gid3.parquet",
         )
 
