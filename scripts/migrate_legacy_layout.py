@@ -1,27 +1,45 @@
-"""Physically move already-computed pipeline output from the old per-source
-directory layout into the current stage-name-first tree (`raw/<data_path>`,
+"""Physically move already-computed pipeline output from either of two older
+directory layouts into the current stage-name-first tree (`raw/<data_path>`,
 `prepared/<data_path>/<agg>/...`, pixel-grid stores under
 `prepared/<data_path>/crs/<grid_id>/<family>.zarr` -- see
 `src/data/sources/layout.py`).
 
-The old ("legacy") layout was:
+There are two prior layouts this script knows how to migrate *from*, because
+both were live in production at different points and each may have left real
+data on disk:
+
+- "legacy" (the original preprocess-era layout):
     <data_root>/<data_path>/raw[/<namespace>]
     <data_root>/<data_path>/processed/stage_1[/<namespace>]
     <data_root>/<data_path>/processed/stage_2[/<namespace>]/<legacy_filename>
     <data_root>/<data_path>/processed/stage_2_ease6933[/<namespace>]/<legacy_filename>
 
-`src/data/sources/layout.py` no longer knows how to build those paths (the
-legacy layout was removed there entirely) -- this script rebuilds the old
-formula locally, and reads each source's *current* code (registration,
-`output_root()`/`grid_store_path()` overrides) to build the new-side paths,
-so the mapping tracks the real implementation instead of a hand-copied list.
+- "interim" (commit d43db13's short-lived flat "v2" layout -- legacy support
+  had just been removed from `layout.py`, but the crs/adm/misc bucket split
+  hadn't landed yet; a real pipeline run on HPC executed against this code
+  before the bucket-split merge, so its output needs migrating too):
+    <data_root>/raw/<data_path>[/<namespace>]                    (same as FETCH today -- no move needed)
+    <data_root>/prepared/<data_path>[/<namespace>]
+    <data_root>/grid/<grid_id>/<family>.zarr                     (one flat shared dir across all sources)
+
+`src/data/sources/layout.py` no longer knows how to build either of those
+paths -- this script rebuilds both formulas locally, and reads each source's
+*current* code (registration, `output_root()`/`grid_store_path()` overrides)
+to build the new-side paths, so the mapping tracks the real implementation
+instead of a hand-copied list.
+
+For each source/step, both old-layout candidates are checked; whichever one
+actually exists on disk is what gets moved. If data exists under *both* old
+layouts for the same target, that's a conflict needing human review (skipped,
+never guessed at).
 
 Dry-run by default -- pass `--execute` to actually touch the filesystem.
 Safe to re-run: a source/step already migrated (new destination exists) is
-skipped; a source/step with nothing to migrate (no legacy data) is skipped;
-a conflicting destination (both old and new paths exist) is skipped with a
-warning rather than silently overwritten. Any expected source path that
-doesn't exist on disk is skipped/warned, never an error.
+skipped; a source/step with nothing to migrate (no old data under either
+layout) is skipped; a conflicting destination (an old path and the new path
+both exist, or both old layouts have data) is skipped with a warning rather
+than silently overwritten. Any expected source path that doesn't exist on
+disk is skipped/warned, never an error.
 
 Usage:
     python scripts/migrate_legacy_layout.py --config orchestration/configs/data.yaml
@@ -59,6 +77,10 @@ logger = logging.getLogger(__name__)
 #: already in place) so this script has no ordering dependency on the data
 #: it's migrating. plad and snl_mining have per-instance-config-dependent
 #: filenames/families and are handled separately below.
+#: `legacy_filename` is `None` for sources that never existed under the
+#: original preprocess-era "legacy" layout (only introduced during the
+#: interim/current rework) -- their legacy candidate is skipped entirely
+#: rather than built from a made-up filename.
 GRID_FILENAME_AND_FAMILY = {
     "acag": ("acag_pm25_timeseries_reprojected.zarr", "pm25"),
     "esacci": ("esacci_lc_timeseries_reprojected.zarr", "land_cover"),
@@ -69,6 +91,7 @@ GRID_FILENAME_AND_FAMILY = {
     "modis": ("modis_21A2_timeseries_reprojected.zarr", "modis_lst_21a2"),
     "modis_robustness_11a1": ("modis_11A1_timeseries_reprojected.zarr", "modis_lst_11a1"),
     "glass_modis": ("modis_timeseries_reprojected.zarr", "glass_modis_lst"),
+    "glass_ta_modis": (None, "glass_modis_ta"),
     "glass_avhrr": ("avhrr_timeseries_reprojected.zarr", "glass_avhrr_lst"),
     "osm": ("land_mask.zarr", "land_mask"),
     "gadm": ("countries_grid.zarr", "country_id"),
@@ -78,8 +101,13 @@ GRID_FILENAME_AND_FAMILY = {
 }
 
 #: GADM's GRID output has sidecar files living alongside the zarr store, not
-#: produced via a StepTarget -- move them together with the store.
-GADM_SIDECAR_FILENAMES = ("country_code_mapping.json", "subdivision_code_mapping.json")
+#: produced via a StepTarget -- move them together with the store. Under the
+#: true preprocess-era "legacy" layout these were a fixed pair with old-style
+#: names (commit 7ea6e60 renamed them to the dynamic `{gid_col}_code_mapping.
+#: json` scheme below, before the interim layout ever existed -- so "interim"
+#: data never used these old names, see the glob-based interim handling in
+#: migrate_grid()). (legacy filename, gid_col it corresponds to).
+GADM_LEGACY_SIDECARS = (("country_code_mapping.json", "GID_0"), ("subdivision_code_mapping.json", "GID_1"))
 
 #: Sources whose PREPARE step is a documented exception: it resolves its own
 #: output path from config (`prepared_db_path`/`duckdb_path` overrides), not
@@ -114,6 +142,7 @@ PREPARE_AGG_OVERRIDES = {
     # to fall back to the GRID root instead, so it never shared this
     # directory; migrated separately via RELOCATED_PREPARE_TABLES below.
     "ecoregions": "misc",
+    "commodity_prices": "misc",
 }
 
 #: MODIS forces grid_id=ease6933 unconditionally, independent of the
@@ -162,6 +191,30 @@ def legacy_output_root(
     return base
 
 
+def interim_output_root(
+    data_root: str,
+    data_path: str,
+    step: PipelineStep,
+    *,
+    namespace: Optional[str] = None,
+    grid_id: str = LEGACY_GRID_ID,
+) -> str:
+    """Commit d43db13's short-lived flat layout: `prepared/<data_path>[/<ns>]`
+    for PREPARE, and a single flat `grid/<grid_id>/` shared across every
+    source for GRID (no per-source nesting, no agg buckets -- both added by
+    the later crs/adm/misc-bucket merge). FETCH is identical to today's
+    `raw/<data_path>[/<ns>]`, so callers never need an interim FETCH root."""
+    if step is PipelineStep.PREPARE:
+        base = os.path.join(data_root, "prepared", data_path)
+    elif step is PipelineStep.GRID:
+        return os.path.join(data_root, "grid", grid_id)
+    else:  # pragma: no cover
+        raise ValueError(f"Unknown step: {step}")
+    if namespace:
+        base = os.path.join(base, namespace)
+    return base
+
+
 @dataclass
 class MigrationTally:
     moved: list = field(default_factory=list)
@@ -181,25 +234,53 @@ class MigrationTally:
 
 
 def plan_move(label: str, old_path: str, new_path: str, tally: MigrationTally) -> Optional[tuple]:
-    old_exists = os.path.exists(old_path)
+    """Single-candidate form, kept for callers with only one possible old
+    location (e.g. FETCH, which is identical under "interim" and "current")."""
+    return plan_move_multi(label, [("legacy", old_path)], new_path, tally)
+
+
+def plan_move_multi(
+    label: str, old_candidates: list[tuple[str, str]], new_path: str, tally: MigrationTally
+) -> Optional[tuple]:
+    """Like `plan_move()`, but checks multiple named old-layout candidates
+    (e.g. "legacy" and "interim") for the same eventual `new_path`, since a
+    real HPC run may have produced data under either one depending on when it
+    ran. Exactly one candidate existing is the normal case; zero is "nothing
+    to migrate"; the new path already existing is "already migrated"; more
+    than one old candidate existing, or an old candidate coexisting with the
+    new path, is a conflict -- never guessed at, always left for a human."""
+    existing = [(layout_name, p) for layout_name, p in old_candidates if os.path.exists(p)]
     new_exists = os.path.exists(new_path)
 
-    if not old_exists and not new_exists:
-        logger.debug("[%s] nothing to migrate (no legacy data): %s", label, old_path)
+    if not existing and not new_exists:
+        logger.debug("[%s] nothing to migrate (no old data): %s", label, [p for _, p in old_candidates])
         tally.skipped_nothing_to_migrate.append(label)
         return None
-    if not old_exists and new_exists:
+    if not existing and new_exists:
         logger.info("[%s] already migrated: %s", label, new_path)
         tally.skipped_already_migrated.append(label)
         return None
-    if old_exists and new_exists:
+    if len(existing) > 1:
         logger.warning(
-            "[%s] CONFLICT: both old (%s) and new (%s) paths exist -- skipping, needs human review",
-            label, old_path, new_path,
+            "[%s] CONFLICT: old data exists under multiple layouts (%s) -- skipping, needs human review",
+            label, existing,
+        )
+        tally.skipped_conflict.append(label)
+        return None
+    (layout_name, old_path) = existing[0]
+    if new_exists:
+        logger.warning(
+            "[%s] CONFLICT: both %s (%s) and new (%s) paths exist -- skipping, needs human review",
+            label, layout_name, old_path, new_path,
         )
         tally.skipped_conflict.append(label)
         return None
     return old_path, new_path
+
+
+def _is_strict_subpath(candidate: str, of: str) -> bool:
+    candidate, of = os.path.normpath(candidate), os.path.normpath(of)
+    return candidate != of and candidate.startswith(of + os.sep)
 
 
 def do_move(label: str, old_path: str, new_path: str, *, execute: bool, tally: MigrationTally) -> None:
@@ -209,8 +290,25 @@ def do_move(label: str, old_path: str, new_path: str, *, execute: bool, tally: M
         return
     try:
         logger.info("[%s] moving %s -> %s", label, old_path, new_path)
-        os.makedirs(os.path.dirname(new_path), exist_ok=True)
-        shutil.move(old_path, new_path)
+        if _is_strict_subpath(new_path, old_path):
+            # A whole-directory PREPARE move where the interim old directory
+            # (e.g. prepared/<data_path>) becomes the parent of the new
+            # agg-bucketed one (prepared/<data_path>/<agg>) -- new_path lives
+            # *inside* old_path, so a direct rename would try to move the
+            # directory into its own subdirectory (`shutil.move` raises
+            # "Cannot move a directory into itself"). Stage it out of the way
+            # first: rename old_path to a sibling temp dir, recreate old_path
+            # as an empty parent, then move the temp dir's contents into the
+            # final new_path.
+            staging = old_path + ".migrate_staging"
+            if os.path.exists(staging):
+                raise FileExistsError(f"staging path already exists, refusing to overwrite: {staging}")
+            os.rename(old_path, staging)
+            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+            shutil.move(staging, new_path)
+        else:
+            os.makedirs(os.path.dirname(new_path), exist_ok=True)
+            shutil.move(old_path, new_path)
         logger.info("[%s] done", label)
         tally.moved.append(label)
     except Exception:
@@ -239,10 +337,11 @@ def migrate_prepare(source_key: str, source: DataSource, *, execute: bool, tally
         return  # handled by migrate_grid()/migrate_plad() instead
 
     label = f"{source_key}/PREPARE"
-    old_root = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE, namespace=source.cfg.namespace)
+    legacy_root = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE, namespace=source.cfg.namespace)
+    interim_root = interim_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE, namespace=source.cfg.namespace)
     agg = PREPARE_AGG_OVERRIDES.get(source_key, layout.CRS_AGG)
     new_root = source.output_root(PipelineStep.PREPARE, agg=agg)
-    planned = plan_move(label, old_root, new_root, tally)
+    planned = plan_move_multi(label, [("legacy", legacy_root), ("interim", interim_root)], new_root, tally)
     if planned is not None:
         do_move(label, *planned, execute=execute, tally=tally)
 
@@ -254,24 +353,60 @@ def migrate_grid(source_key: str, source: DataSource, *, grid_id: str, execute: 
     legacy_filename, family = mapping
     effective_grid_id = EASE_GRID_ID if source_key in MODIS_FORCED_GRID_IDS else grid_id
 
-    old_dir = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, grid_id=effective_grid_id)
+    legacy_dir = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, grid_id=effective_grid_id)
+    # interim's GRID root is flat and shared across every source (keyed only
+    # by grid_id, not data_path) -- see interim_output_root()'s docstring.
+    interim_dir = interim_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, grid_id=effective_grid_id)
     new_path = layout.grid_store_path(source.ctx.data_root, source.cfg.data_path, grid_id=effective_grid_id, family=family)
-    old_path = os.path.join(old_dir, legacy_filename)
+
+    candidates = [("interim", os.path.join(interim_dir, f"{family}.zarr"))]
+    if legacy_filename is not None:
+        candidates.insert(0, ("legacy", os.path.join(legacy_dir, legacy_filename)))
 
     label = f"{source_key}/GRID"
-    planned = plan_move(label, old_path, new_path, tally)
+    planned = plan_move_multi(label, candidates, new_path, tally)
     if planned is not None:
         do_move(label, *planned, execute=execute, tally=tally)
 
     if source_key == "gadm":
-        new_dir = os.path.dirname(new_path)
-        for sidecar in GADM_SIDECAR_FILENAMES:
-            sidecar_label = f"{source_key}/GRID/{sidecar}"
-            sidecar_old = os.path.join(old_dir, sidecar)
-            sidecar_new = os.path.join(new_dir, sidecar)
-            planned = plan_move(sidecar_label, sidecar_old, sidecar_new, tally)
+        from src.data.sources.misc.gadm import gid_mapping_path
+
+        # Both old layouts wrote these sidecars alongside the GRID zarr store
+        # (legacy: <stage_2 dir>/<name>; interim: the shared flat
+        # grid/<grid_id>/<name>). The *current* location moved to the
+        # ADM_AGG bucket (gid_mapping_path()) alongside gadm's simplified
+        # .gpkg boundary files, not alongside the CRS zarr -- see
+        # gid_mapping_path()'s own docstring. Legacy only ever wrote the
+        # fixed country/subdivision pair; interim already used the dynamic
+        # `{gid_col}_code_mapping.json` naming (see GADM_LEGACY_SIDECARS'
+        # comment) for however many ADM levels a given run actually
+        # rasterized, so that side is discovered by globbing rather than
+        # assumed to be exactly GID_0/GID_1.
+        gid_cols_seen = set()
+        for legacy_name, gid_col in GADM_LEGACY_SIDECARS:
+            gid_cols_seen.add(gid_col)
+            sidecar_label = f"{source_key}/GRID/{legacy_name}"
+            sidecar_candidates = [("legacy", os.path.join(legacy_dir, legacy_name))]
+            interim_current_name = os.path.join(interim_dir, f"{gid_col}_code_mapping.json")
+            if os.path.exists(interim_current_name):
+                sidecar_candidates.append(("interim", interim_current_name))
+            sidecar_new = gid_mapping_path(source.ctx.data_root, effective_grid_id, gid_col)
+            planned = plan_move_multi(sidecar_label, sidecar_candidates, sidecar_new, tally)
             if planned is not None:
                 do_move(sidecar_label, *planned, execute=execute, tally=tally)
+
+        if os.path.isdir(interim_dir):
+            import glob
+
+            for interim_sidecar in glob.glob(os.path.join(interim_dir, "*_code_mapping.json")):
+                gid_col = os.path.basename(interim_sidecar).removesuffix("_code_mapping.json")
+                if gid_col in gid_cols_seen:
+                    continue  # already handled above alongside its legacy pair
+                sidecar_label = f"{source_key}/GRID/{gid_col}_code_mapping.json"
+                sidecar_new = gid_mapping_path(source.ctx.data_root, effective_grid_id, gid_col)
+                planned = plan_move_multi(sidecar_label, [("interim", interim_sidecar)], sidecar_new, tally)
+                if planned is not None:
+                    do_move(sidecar_label, *planned, execute=execute, tally=tally)
 
 
 def migrate_plad(source_key: str, source: DataSource, *, grid_id: str, execute: bool, tally: MigrationTally) -> None:
@@ -289,10 +424,17 @@ def migrate_plad(source_key: str, source: DataSource, *, grid_id: str, execute: 
         logger.warning("[plad/PREPARE] source has no admin_level -- skipping")
         return
     filename = f"plad_adm{admin_level}_reg_fav.parquet"
-    old_dir = legacy_output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.GRID, grid_id=grid_id)
+    legacy_dir = legacy_output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.GRID, grid_id=grid_id)
+    # interim (d43db13) wrote straight into the flat PREPARE root (no agg
+    # buckets existed yet), unlike legacy which shared the GRID root.
+    interim_dir = interim_output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.PREPARE)
     new_dir = layout.output_root(source.ctx.data_root, source.OUTPUT_PREFIX, PipelineStep.PREPARE, agg=layout.ADM_AGG)
     label = f"plad/PREPARE/{filename}"
-    planned = plan_move(label, os.path.join(old_dir, filename), os.path.join(new_dir, filename), tally)
+    candidates = [
+        ("legacy", os.path.join(legacy_dir, filename)),
+        ("interim", os.path.join(interim_dir, filename)),
+    ]
+    planned = plan_move_multi(label, candidates, os.path.join(new_dir, filename), tally)
     if planned is not None:
         do_move(label, *planned, execute=execute, tally=tally)
 
@@ -305,14 +447,24 @@ def migrate_relocated_prepare_tables(source_key: str, source: DataSource, *, gri
         if table_source_key != source_key:
             continue
         label = f"{source_key}/PREPARE/{new_filename}"
-        old_dir = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, namespace=source.cfg.namespace, grid_id=grid_id)
+        effective_namespace = namespace or source.cfg.namespace
+        legacy_dir = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, namespace=source.cfg.namespace, grid_id=grid_id)
+        # interim (d43db13) already relocated these off the GRID root into
+        # the flat PREPARE root (no agg buckets existed yet), using the same
+        # filename as today (new_filename == legacy_filename for both
+        # RELOCATED_PREPARE_TABLES entries).
+        interim_dir = interim_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE, namespace=effective_namespace)
         # ADM_AGG: both of RELOCATED_PREPARE_TABLES' entries are GID_N-keyed
         # tables (src/data/sources/layout.py's crs/adm/misc split).
         new_dir = layout.output_root(
             source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE,
-            namespace=namespace or source.cfg.namespace, agg=layout.ADM_AGG,
+            namespace=effective_namespace, agg=layout.ADM_AGG,
         )
-        planned = plan_move(label, os.path.join(old_dir, legacy_filename), os.path.join(new_dir, new_filename), tally)
+        candidates = [
+            ("legacy", os.path.join(legacy_dir, legacy_filename)),
+            ("interim", os.path.join(interim_dir, new_filename)),
+        ]
+        planned = plan_move_multi(label, candidates, os.path.join(new_dir, new_filename), tally)
         if planned is not None:
             do_move(label, *planned, execute=execute, tally=tally)
 
@@ -359,7 +511,7 @@ def main() -> None:
 
     source_keys = [args.source] if args.source else sorted((config.get("sources") or {}).keys())
 
-    logger.info("Migrating layout: legacy -> current, data_root=%s, grid_id=%s, execute=%s", data_root, args.grid_id, args.execute)
+    logger.info("Migrating layout: legacy|interim -> current, data_root=%s, grid_id=%s, execute=%s", data_root, args.grid_id, args.execute)
     logger.info("Sources: %s", ", ".join(source_keys))
 
     tally = MigrationTally()

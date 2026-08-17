@@ -15,18 +15,21 @@ from migrate_legacy_layout import (  # noqa: E402
     MigrationTally,
     build_source,
     do_move,
+    interim_output_root,
     legacy_output_root,
     legacy_raw_root,
     migrate_grid,
+    migrate_prepare,
     migrate_source,
     plan_move,
+    plan_move_multi,
 )
 
 from src.data.pipeline.config import SourceConfig  # noqa: E402
 from src.data.pipeline.context import PipelineContext  # noqa: E402
 from src.data.sources import layout  # noqa: E402
 from src.data.sources.acag import AcagSource  # noqa: E402
-from src.data.sources.misc.gadm import GadmSource  # noqa: E402
+from src.data.sources.misc.gadm import GadmSource, gid_mapping_path  # noqa: E402
 from src.data.sources.snl_mining.source import SnlMiningSource  # noqa: E402
 from src.data.sources.steps import PipelineStep  # noqa: E402
 
@@ -203,7 +206,10 @@ def test_migrate_source_skips_source_with_nothing_to_migrate(tmp_path):
 # -- gadm sidecar handling ---------------------------------------------------
 
 
-def test_migrate_grid_moves_gadm_sidecars_alongside_the_zarr(tmp_path):
+def test_migrate_grid_moves_gadm_sidecars_into_the_adm_bucket(tmp_path):
+    """GADM's code-mapping sidecars live under the ADM_AGG bucket
+    (`gid_mapping_path()`) alongside its simplified `.gpkg` boundary files,
+    not next to the CRS zarr store -- `gid_mapping_path()`'s own docstring."""
     source = _gadm_source(tmp_path)
     grid_dir = legacy_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID)
     legacy_filename, family = GRID_FILENAME_AND_FAMILY["gadm"]
@@ -216,8 +222,8 @@ def test_migrate_grid_moves_gadm_sidecars_alongside_the_zarr(tmp_path):
 
     new_grid_dir = source.output_root(PipelineStep.GRID)
     assert os.path.isdir(os.path.join(new_grid_dir, f"{family}.zarr"))
-    assert os.path.exists(os.path.join(new_grid_dir, "country_code_mapping.json"))
-    assert os.path.exists(os.path.join(new_grid_dir, "subdivision_code_mapping.json"))
+    assert os.path.exists(gid_mapping_path(source.ctx.data_root, "legacy_4326", "GID_0"))
+    assert os.path.exists(gid_mapping_path(source.ctx.data_root, "legacy_4326", "GID_1"))
     assert tally.failed == []
 
 
@@ -235,6 +241,68 @@ def test_migrate_grid_skips_sidecar_that_does_not_exist(tmp_path):
 
     assert tally.failed == []
     assert "gadm/GRID/subdivision_code_mapping.json" in tally.skipped_nothing_to_migrate
+
+
+# -- interim layout (commit d43db13's short-lived flat "v2" tree) -----------
+# A real HPC run executed against that commit before the crs/adm/misc-bucket
+# merge landed, leaving output under `prepared/<data_path>[/<ns>]` (PREPARE)
+# and a single flat `grid/<grid_id>/<family>.zarr` (GRID, shared across every
+# source) -- distinct from both the true legacy layout and the current one.
+
+
+def test_migrate_grid_finds_interim_flat_grid_store(tmp_path):
+    source = _acag_source(tmp_path)
+    legacy_filename, family = GRID_FILENAME_AND_FAMILY["acag"]
+    interim_dir = interim_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.GRID, grid_id="legacy_4326")
+    os.makedirs(os.path.join(interim_dir, f"{family}.zarr"))
+
+    tally = MigrationTally()
+    migrate_grid("acag", source, grid_id="legacy_4326", execute=True, tally=tally)
+
+    assert os.path.isdir(os.path.join(source.output_root(PipelineStep.GRID), f"{family}.zarr"))
+    assert not os.path.exists(os.path.join(interim_dir, f"{family}.zarr"))
+    assert tally.failed == []
+
+
+def test_migrate_prepare_finds_interim_flat_prepare_dir_with_misc_agg(tmp_path):
+    """commodity_prices' PREPARE output is MISC_AGG -- exercises both the
+    interim-candidate lookup and that the whole-directory move lands in the
+    right bucket (not the CRS_AGG default)."""
+    data_root = str(tmp_path / "data_root")
+    cfg = SourceConfig.from_dict("commodity_prices", {})
+    from src.data.sources.commodity_prices.source import CommodityPricesSource
+
+    source = CommodityPricesSource(PipelineContext(data_root=data_root), cfg)
+    interim_dir = interim_output_root(source.ctx.data_root, source.cfg.data_path, PipelineStep.PREPARE)
+    os.makedirs(interim_dir)
+    Path(interim_dir, "commodity_prices.parquet").write_text("fake parquet")
+
+    tally = MigrationTally()
+    migrate_prepare("commodity_prices", source, execute=True, tally=tally)
+
+    new_path = os.path.join(source.output_root(PipelineStep.PREPARE, agg=layout.MISC_AGG), "commodity_prices.parquet")
+    assert os.path.exists(new_path)
+    # interim_dir (prepared/commodity_prices) still exists -- it's now the
+    # *parent* of the new misc/ bucket -- but the old flat file location
+    # directly inside it is gone.
+    assert not os.path.exists(os.path.join(interim_dir, "commodity_prices.parquet"))
+    assert tally.failed == []
+
+
+def test_plan_move_multi_flags_conflict_when_both_old_layouts_have_data(tmp_path):
+    legacy_path = tmp_path / "legacy" / "x"
+    interim_path = tmp_path / "interim" / "x"
+    legacy_path.parent.mkdir(parents=True)
+    interim_path.parent.mkdir(parents=True)
+    legacy_path.write_text("a")
+    interim_path.write_text("b")
+    new_path = str(tmp_path / "new" / "x")
+
+    tally = MigrationTally()
+    planned = plan_move_multi("dummy", [("legacy", str(legacy_path)), ("interim", str(interim_path))], new_path, tally)
+
+    assert planned is None
+    assert tally.skipped_conflict == ["dummy"]
 
 
 # -- snl_mining PREPARE exception -------------------------------------------
