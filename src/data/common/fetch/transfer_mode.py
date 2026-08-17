@@ -24,7 +24,10 @@ from typing import Any
 #: several ids here (glass_modis/glass_avhrr) share one class/`.ID` value
 #: ("glass"), so `.ID` alone can't distinguish them.
 AUTO_TRANSFER_DEFAULT_SOURCES = frozenset(
-    {"modis", "modis_lst", "modis_robustness_11a1", "glass_modis", "glass_avhrr", "acag", "esacci", "ntl_harm", "eog"}
+    {
+        "modis", "modis_lst", "modis_robustness_11a1", "glass_modis", "glass_ta_modis", "glass_avhrr",
+        "acag", "esacci", "ntl_harm", "eog",
+    }
 )
 
 

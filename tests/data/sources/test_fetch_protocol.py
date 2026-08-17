@@ -38,12 +38,14 @@ _CONSTRUCT_AS: dict[str, str] = {
 #: per-(year, tile) STAC queries from Planetary Computer, not a crawlable flat
 #: file list, so there is no `list_remote_files()`/`download_async()` to
 #: satisfy -- it tracks per-unit state directly in the ledger's generic
-#: `artifacts` table instead (`_get_ledger()`/`_execute_fetch()`). GLASS
-#: (docs/design/11-glass-static-fetch.md) is the same shape: a static
-#: per-(year, day[, tile]) target list attempted-and-logged directly, not a
-#: crawlable remote listing -- no `get_all_entrypoints()`/`list_remote_files()`
-#: either.
-_CRAWLER_PROTOCOL_EXEMPT = {"modis", "modis_extended", "glass_modis", "glass_avhrr"}
+#: `artifacts` table instead (`_get_ledger()`/`_execute_fetch()`). GLASS is
+#: the same shape: `glass_avhrr` still attempts a static per-(year, day)
+#: target list directly (docs/design/11-glass-static-fetch.md);
+#: `glass_modis`/`glass_ta_modis` now attempt a static per-(tile, year)
+#: target list instead (docs/design/12-glass-modis-rebuild.md §4) -- neither
+#: is a crawlable remote listing, so none of the three implement
+#: `get_all_entrypoints()`/`list_remote_files()`.
+_CRAWLER_PROTOCOL_EXEMPT = {"modis", "modis_extended", "glass_modis", "glass_ta_modis", "glass_avhrr"}
 
 
 def _fetch_capable_specs():

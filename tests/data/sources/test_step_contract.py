@@ -25,6 +25,10 @@ _EXTRA_CONFIG: dict[str, dict] = {
         "base_url": "https://example.invalid/glass/avhrr/",
         "day_range": {"start": [1992, 1], "end": [2020, 365]},
     },
+    "glass_ta_modis": {
+        "base_url": "https://example.invalid/glass/ta_modis/",
+        "day_range": {"start": [2000, 55], "end": [2020, 365]},
+    },
 }
 
 #: `source_id` to actually construct with, for sources whose bare `spec.id`

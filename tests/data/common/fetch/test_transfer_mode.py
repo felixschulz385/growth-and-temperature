@@ -17,12 +17,14 @@ def test_defaults_to_manual_for_an_unlisted_source():
 
 
 def test_matches_by_cfg_source_id_not_class_id():
-    # GlassSource registers two ids ("glass_modis"/"glass_avhrr") sharing one
-    # class whose .ID is always "glass" -- matching on cfg.source_id (the
-    # config key the instance was actually built under) is required for
-    # either alias to resolve to "auto".
-    assert resolve_transfer_mode(_source("glass_modis", source_id_attr="glass")) == "auto"
-    assert resolve_transfer_mode(_source("glass_avhrr", source_id_attr="glass")) == "auto"
+    # GlassModisSource registers two ids ("glass_modis"/"glass_ta_modis",
+    # docs/design/12-glass-modis-rebuild.md §4) sharing one class whose .ID
+    # is always "glass_modis" -- matching on cfg.source_id (the config key
+    # the instance was actually built under) is required for either alias to
+    # resolve to "auto". glass_avhrr is its own separate class/id.
+    assert resolve_transfer_mode(_source("glass_modis", source_id_attr="glass_modis")) == "auto"
+    assert resolve_transfer_mode(_source("glass_ta_modis", source_id_attr="glass_modis")) == "auto"
+    assert resolve_transfer_mode(_source("glass_avhrr", source_id_attr="glass_avhrr")) == "auto"
 
 
 def test_explicit_config_overrides_the_default_either_direction():
