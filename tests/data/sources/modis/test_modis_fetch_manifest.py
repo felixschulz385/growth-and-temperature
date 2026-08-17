@@ -24,7 +24,7 @@ pytest.importorskip("rasterio")
 def _make_source(tmp_path, tiles=("h18v04",), year_range=(2019, 2019), source_id="modis"):
     data_root = str(tmp_path / "data_root")
     local_index_dir = str(tmp_path / "index")
-    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir, layout="legacy")
+    ctx = PipelineContext(data_root=data_root, local_index_dir=local_index_dir)
     cfg = SourceConfig.from_dict(source_id, {"year_range": list(year_range), "tiles": list(tiles)})
     return ModisSource(ctx, cfg), ctx
 

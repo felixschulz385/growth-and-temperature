@@ -170,7 +170,7 @@ def _summarize_fetch(source, *, detailed: bool) -> str:
     from src.data.sources import layout
 
     raw_root = layout.raw_root(
-        source.ctx.data_root, source.cfg.data_path, namespace=source.cfg.namespace, layout=source.ctx.layout
+        source.ctx.data_root, source.cfg.data_path, namespace=source.cfg.namespace
     )
     max_depth = getattr(source, "RAW_LISTING_DEPTH", None)
     listing = manifest.snapshot_local_listing(raw_root, max_depth=max_depth)

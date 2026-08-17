@@ -307,11 +307,8 @@ class AcagSource(DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            "acag_pm25_timeseries_reprojected.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="pm25",
+            family="pm25",
         )
 
     def _execute_prepare(self, target: StepTarget) -> bool:

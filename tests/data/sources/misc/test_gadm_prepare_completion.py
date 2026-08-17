@@ -25,9 +25,9 @@ from src.data.sources import registry
 from src.data.sources.steps import Completion, PipelineStep, TargetSelection, is_complete, marker_path
 
 
-def _make(tmp_path, layout="legacy"):
+def _make(tmp_path):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index")
     )
     cfg = SourceConfig.from_dict("gadm", {})
     cls = registry.load("gadm")

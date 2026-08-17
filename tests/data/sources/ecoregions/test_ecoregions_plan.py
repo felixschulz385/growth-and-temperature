@@ -18,8 +18,8 @@ from src.data.sources.misc.gadm import gid_mapping_path
 from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
-def _make(tmp_path, layout_mode="legacy"):
-    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout_mode)
+def _make(tmp_path):
+    ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     cfg = SourceConfig.from_dict("ecoregions", {"url": "https://example.test/eco.zip", "name": "eco.zip"})
     cls = registry.load("ecoregions")
     return cls(ctx, cfg), ctx
@@ -33,14 +33,14 @@ def _write_raw_file(source):
 
 
 def _write_gadm_gid3_artifacts(ctx):
-    gadm_prepare_dir = layout.output_root(ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=ctx.layout)
+    gadm_prepare_dir = layout.output_root(ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm")
     os.makedirs(gadm_prepare_dir, exist_ok=True)
     gadm_gid3_file = os.path.join(gadm_prepare_dir, "gadm_levelADM_3_simplified.gpkg")
     gpd.GeoDataFrame({"GID_3": ["AAA.1.1_1"]}, geometry=[Point(0, 0)], crs="EPSG:4326").to_file(
         gadm_gid3_file, driver="GPKG"
     )
 
-    mapping_path = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_3")
+    mapping_path = gid_mapping_path(ctx.data_root, ctx.grid_id, "GID_3")
     os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
     with open(mapping_path, "w") as f:
         json.dump({"AAA.1.1_1": 1}, f)

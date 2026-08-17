@@ -35,9 +35,9 @@ def _no_real_eog_credentials_file(monkeypatch, tmp_path):
     monkeypatch.setattr(eog_credentials, "DEFAULT_CREDENTIALS_PATH", tmp_path / "unused-eog-credentials.json")
 
 
-def _make_source(tmp_path, source_type="viirs", layout="legacy", **raw):
+def _make_source(tmp_path, source_type="viirs", **raw):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index")
     )
     cfg = SourceConfig.from_dict(
         f"eog_{source_type}",
@@ -87,8 +87,8 @@ def test_source_type_derivation_raises_on_unrecognized_source_id(tmp_path, monke
         EogSource(ctx, cfg)
 
 
-def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, "viirs", layout="v2")
+def test_output_root_fetch_and_prepare_use_top_level_trees(tmp_path):
+    source, ctx = _make_source(tmp_path, "viirs")
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "eog/viirs")
 
 
@@ -139,18 +139,13 @@ def test_prepare_target_prefers_tif_over_tgz_per_file_extensions_order(tmp_path)
     assert targets[0].meta["raw_files"][2020] == "F182020.v4d_web.stable_lights.avg_vis.tif"
 
 
-def test_output_path_uses_source_type(tmp_path):
-    source, _ = _make_source(tmp_path, "dmsp")
-    assert source._output_path().endswith("dmsp_timeseries_reprojected.zarr")
-
-
-def test_output_path_uses_v2_family_under_layout_v2(tmp_path):
+def test_output_path_uses_source_type_family(tmp_path):
     for source_type, family in (
         ("dmsp", "eog_dmsp"),
         ("viirs", "eog_viirs_annual"),
         ("dvnl", "eog_viirs_dvnl"),
     ):
-        source, ctx = _make_source(tmp_path, source_type, layout="v2")
+        source, ctx = _make_source(tmp_path, source_type)
         assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", f"{family}.zarr")
 
 

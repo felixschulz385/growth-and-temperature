@@ -61,19 +61,11 @@ def test_load_subset_generates_partitioned_hdi_subset_from_classifications(tmp_p
     classifications_dir = (
         project_root
         / "data_nobackup"
+        / "prepared"
         / "misc"
-        / "processed"
-        / "stage_1"
         / "country_classifications"
     )
-    mapping_dir = (
-        project_root
-        / "data_nobackup"
-        / "misc"
-        / "processed"
-        / "stage_2"
-        / "gadm"
-    )
+    mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
     classifications_dir.mkdir(parents=True)
     mapping_dir.mkdir(parents=True)
 
@@ -104,19 +96,11 @@ def test_load_subset_generates_partitioned_wb_subset_from_classifications(tmp_pa
     classifications_dir = (
         project_root
         / "data_nobackup"
+        / "prepared"
         / "misc"
-        / "processed"
-        / "stage_1"
         / "country_classifications"
     )
-    mapping_dir = (
-        project_root
-        / "data_nobackup"
-        / "misc"
-        / "processed"
-        / "stage_2"
-        / "gadm"
-    )
+    mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
     classifications_dir.mkdir(parents=True)
     mapping_dir.mkdir(parents=True)
 

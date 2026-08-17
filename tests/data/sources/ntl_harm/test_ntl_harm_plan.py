@@ -83,7 +83,7 @@ def test_prepare_plan_one_target_covering_every_available_year(tmp_path):
     assert target.key == "all"
     assert target.meta["years"] == [2019, 2020, 2021]
     assert target.completion == Completion.MARKER
-    assert target.output_path.endswith("ntl_harm_timeseries_reprojected.zarr")
+    assert target.output_path.endswith("ntl_harm.zarr")
 
 
 def test_prepare_plan_prefers_tif_over_zip_per_year(tmp_path):

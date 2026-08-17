@@ -40,13 +40,15 @@ falls through to the generic camelcase-import branch, raising
 class as `--source eog_viirs` (docs/design/09-integrated-pipeline.md §1).
 Fixed here by registering `modis_robustness_11a1` as a real alias.
 
-**Quirk deliberately preserved, not "fixed"**: unlike every other source's
-PREPARE/spatial step, MODIS's `_process_spatial_target` never checks
-`override`/output-existence before writing a year into the shared multi-year
-zarr -- it always re-runs. Modeled here as `Completion.NEVER` on PREPARE
-targets rather than inventing a skip-if-exists check that never existed
-(pinned by tests/data/preprocess/sources/test_characterization_modis.py
-against the old code).
+**PREPARE planning fixed to match GLASS's shape**: `_discover_prepare` used
+to emit one `StepTarget` per year, all sharing the same `output_path` and
+each `Completion.NEVER` (so `data summary` showed e.g. "0/23" for a single
+combined zarr, and every run re-wrote every year regardless of what already
+existed). It now emits a single `key="all"` target, `Completion.MARKER`,
+mirroring GLASS's `_plan_prepare`/`_execute_prepare` split
+(`src/data/sources/glass/source.py`): `_execute_prepare` loops over all
+available years internally and only calls `mark_complete()` once, at the
+end, once every year has been written.
 """
 
 from __future__ import annotations
@@ -134,7 +136,7 @@ class ModisSource(DataSource):
     lst_night summary stats + valid counts) and `modis_extended` (emissivity
     + view geometry). One class, `self.variant` derived from `cfg.source_id`,
     so both share FETCH's STAC/QC plumbing; each writes its own tiles/PREPARE
-    zarr (`data_path`/`v2_family` include the variant so they never collide)."""
+    zarr (`data_path`/`family` include the variant so they never collide)."""
 
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
@@ -197,15 +199,15 @@ class ModisSource(DataSource):
         regardless of any global grid config (docs/design/05-migration.md
         §1), and passes the literal `PipelineStep.GRID` through to
         `layout.output_root()` since the physical tier is still "GRID"
-        (`stage_2_ease6933`/`grid/ease6933`), only MODIS's own declared step
-        name changed. Also accepts the literal `PipelineStep.GRID` itself
-        (not just PREPARE): `scripts/migrate_layout_v2.py::migrate_grid()`
-        calls `output_root(PipelineStep.GRID)` on every source regardless of
-        whether GRID is still in that source's own `STEPS`.
+        (`grid/ease6933`), only MODIS's own declared step name changed. Also
+        accepts the literal `PipelineStep.GRID` itself (not just PREPARE):
+        `scripts/migrate_legacy_layout.py` calls `output_root(PipelineStep.GRID)`
+        on every source regardless of whether GRID is still in that source's
+        own `STEPS`.
 
-        FETCH now uses the base class's default (`raw/<data_path>` v2 /
-        `<data_path>/raw` legacy -- `layout.raw_root()`), same as every
-        other FETCH-capable source; no longer a MODIS-only special case.
+        FETCH now uses the base class's default (`raw/<data_path>` --
+        `layout.raw_root()`), same as every other FETCH-capable source; no
+        longer a MODIS-only special case.
         """
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
@@ -217,7 +219,6 @@ class ModisSource(DataSource):
                 PipelineStep.GRID,
                 namespace=namespace,
                 grid_id=EASE_GRID_ID,
-                layout=self.ctx.layout,
             )
         return super().output_root(step, namespace=namespace)
 
@@ -540,31 +541,29 @@ class ModisSource(DataSource):
         from src.data.sources import layout
         from src.data.sources.layout import EASE_GRID_ID
 
-        # `v2_family` alone determines a v2-layout store's path (independent
-        # of `data_path`) -- must include the variant or main/extended would
+        # `family` alone determines the store's path (independent of
+        # `data_path`) -- must include the variant or main/extended would
         # collide on the same zarr.
         suffix = "" if self.variant == "main" else "_extended"
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            f"modis_{self.product}{suffix}_timeseries_reprojected.zarr",
             grid_id=EASE_GRID_ID,
-            layout=self.ctx.layout,
-            v2_family=f"modis_lst_{self.product.lower()}{suffix}",
+            family=f"modis_lst_{self.product.lower()}{suffix}",
         )
 
     def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        """A year's PREPARE target's `inputs` (per-tile GeoTIFF paths, up to
-        ~300/year) come straight from an `os.listdir()` of FETCH's own
-        output directory, matching every other source's live-filesystem-crawl
-        PREPARE planning."""
+        """One PREPARE target for the whole source ("all"), matching GLASS's
+        `_plan_prepare` -- `_execute_prepare` writes each available year into
+        the shared multi-year zarr internally rather than one StepTarget per
+        year sharing the same `output_path` (module docstring)."""
         stage1_root = self.output_root(PipelineStep.FETCH)
         output_path = self._prepare_output_path()
         years = self.years or (
             self.cfg.year_range and list(range(self.cfg.year_range[0], self.cfg.year_range[1] + 1))
         ) or []
 
-        targets = []
+        available_years = []
         for year in years:
             if not selection.matches_year(year) or not selection.matches_key(str(year)):
                 continue
@@ -572,39 +571,38 @@ class ModisSource(DataSource):
             if not os.path.isdir(year_dir):
                 logger.warning("No stage-1 output for year %d at %s", year, year_dir)
                 continue
-            tile_files = sorted(os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif"))
-            if not tile_files:
+            if not any(f.endswith(".tif") for f in os.listdir(year_dir)):
                 continue
-            targets.append(
-                StepTarget(
-                    source_id=self.cfg.source_id,
-                    step=PipelineStep.PREPARE,
-                    key=str(year),
-                    output_path=output_path,
-                    inputs=tuple(tile_files),
-                    # Quirk preserved, not invented -- see module docstring:
-                    # the old spatial stage never checked override/existence.
-                    completion=Completion.NEVER,
-                    meta={
-                        "year": year,
-                        "years_all": years,
-                        # Already Kelvin (scale/offset applied at FETCH time)
-                        # for the main variant's lst_night_mean, so no packed
-                        # decode is needed here; extended has no LST band, so
-                        # sanity-check emissivity's 0-1 range instead.
-                        **(
-                            verify.verification_meta(
-                                self.cfg.raw, expected_vars=("lst_night_mean",), value_range=(150, 350)
-                            )
-                            if self.variant == "main"
-                            else verify.verification_meta(
-                                self.cfg.raw, expected_vars=("emis_31",), value_range=(0, 1)
-                            )
-                        ),
-                    },
-                )
+            available_years.append(year)
+
+        if not available_years:
+            return []
+
+        return [
+            StepTarget(
+                source_id=self.cfg.source_id,
+                step=PipelineStep.PREPARE,
+                key="all",
+                output_path=output_path,
+                completion=Completion.MARKER,
+                meta={
+                    "years": available_years,
+                    # Already Kelvin (scale/offset applied at FETCH time)
+                    # for the main variant's lst_night_mean, so no packed
+                    # decode is needed here; extended has no LST band, so
+                    # sanity-check emissivity's 0-1 range instead.
+                    **(
+                        verify.verification_meta(
+                            self.cfg.raw, expected_vars=("lst_night_mean",), value_range=(150, 350)
+                        )
+                        if self.variant == "main"
+                        else verify.verification_meta(
+                            self.cfg.raw, expected_vars=("emis_31",), value_range=(0, 1)
+                        )
+                    ),
+                },
             )
-        return targets
+        ]
 
     def _read_annual_geotiff(self, path: str, year: int) -> xr.Dataset:
         import rasterio
@@ -633,8 +631,14 @@ class ModisSource(DataSource):
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_or_create_canonical_geobox
         from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.sources.steps import is_complete, mark_complete
 
-        year = target.meta["year"]
+        if not self.cfg.override and is_complete(target):
+            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
+            return True
+
+        stage1_root = self.output_root(PipelineStep.FETCH)
+        years = target.meta["years"]
         try:
             with self._dask_client() as client:
                 cache_path = os.path.join(self.ctx.data_root, "canonical_geobox.pkl")
@@ -645,24 +649,37 @@ class ModisSource(DataSource):
                 )
 
                 with spatial_processor.setup_dask_config():
-                    mosaic = self._mosaic_tiles(list(target.inputs), year)
-                    if mosaic.rio.crs is None:
-                        mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
+                    for year in years:
+                        year_dir = os.path.join(stage1_root, str(year))
+                        tile_files = sorted(
+                            os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
+                        )
+                        if not tile_files:
+                            logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
+                            return False
 
-                    if not os.path.exists(target.output_path):
-                        variables = list(mosaic.data_vars.keys())
-                        if not spatial_processor.create_empty_target_zarr(
-                            target.output_path, target_geobox, target.meta["years_all"], variables,
-                            sample_attrs=mosaic.attrs, packaging_attrs={}, dst_nodata=float("nan"), dtype="float32",
+                        mosaic = self._mosaic_tiles(tile_files, year)
+                        if mosaic.rio.crs is None:
+                            mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
+
+                        if not os.path.exists(target.output_path):
+                            variables = list(mosaic.data_vars.keys())
+                            if not spatial_processor.create_empty_target_zarr(
+                                target.output_path, target_geobox, years, variables,
+                                sample_attrs=mosaic.attrs, packaging_attrs={}, dst_nodata=float("nan"), dtype="float32",
+                            ):
+                                return False
+
+                        if not spatial_processor.write_year_to_zarr(
+                            mosaic, target.output_path, year, target_geobox,
+                            resampling=SPATIAL_RESAMPLING, dst_nodata=float("nan"),
                         ):
                             return False
 
-                    return spatial_processor.write_year_to_zarr(
-                        mosaic, target.output_path, year, target_geobox,
-                        resampling=SPATIAL_RESAMPLING, dst_nodata=float("nan"),
-                    )
+            mark_complete(target.output_path)
+            return True
         except Exception:
-            logger.exception("Error in MODIS spatial processing for year %d.", year)
+            logger.exception("Error in MODIS spatial processing for years %s.", years)
             return False
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).

@@ -5,7 +5,7 @@ Generalizes the branch that today only `ModisSource._execute_grid`
 (src/data/sources/modis/source.py) implements correctly and unconditionally
 -- every other source ignores `ctx.grid_id` for the actual reprojection
 target, even though `DataSource.output_root()` already picks the right
-*directory name* (`stage_2` vs `stage_2_ease6933`) from it. A free function
+*directory name* (`grid/legacy_4326` vs `grid/ease6933`) from it. A free function
 keyed on `ctx` rather than a `DataSource` method because `snl_mining` needs
 the same branch during PREPARE (to pick the CRS baked into a DuckDB
 `ST_Transform`), not just during GRID.

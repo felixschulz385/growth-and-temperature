@@ -19,12 +19,11 @@ from src.data.sources.plad import PlaDSource
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, admin_level=1, year_range=(1980, 2022), grid_id="legacy_4326", layout="legacy"):
+def _make_source(tmp_path, admin_level=1, year_range=(1980, 2022), grid_id="legacy_4326"):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"),
         local_index_dir=str(tmp_path / "index"),
         grid_id=grid_id,
-        layout=layout,
     )
     cfg = SourceConfig.from_dict("plad", {"admin_level": admin_level, "year_range": list(year_range)})
     return PlaDSource(ctx, cfg), ctx
@@ -33,7 +32,7 @@ def _make_source(tmp_path, admin_level=1, year_range=(1980, 2022), grid_id="lega
 def _write_gadm_mapping(ctx, gid_col, mapping):
     from src.data.sources.misc.gadm import gid_mapping_path
 
-    path = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, gid_col)
+    path = gid_mapping_path(ctx.data_root, ctx.grid_id, gid_col)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
         json.dump(mapping, f)
@@ -56,11 +55,11 @@ def test_output_root_hardcodes_plad_prefix_ignoring_data_path(tmp_path):
     ctx = PipelineContext(data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"))
     cfg = SourceConfig.from_dict("plad", {"data_path": "something/else"})
     source = PlaDSource(ctx, cfg)
-    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "plad", "processed", "stage_2")
+    assert source.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "grid", "legacy_4326")
 
 
-def test_output_root_fetch_uses_top_level_tree_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
+def test_output_root_fetch_uses_top_level_tree(tmp_path):
+    source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "plad")
 
 
@@ -89,8 +88,8 @@ def test_plan_prepare_target_output_path_includes_admin_level(tmp_path):
     assert t1.meta["admin_level"] == 1
 
 
-def test_gid_mapping_file_honors_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, admin_level=1, layout="v2")
+def test_gid_mapping_file_path(tmp_path):
+    source, ctx = _make_source(tmp_path, admin_level=1)
     expected = os.path.join(ctx.data_root, "grid", "legacy_4326", "GID_1_code_mapping.json")
     assert source._gid_mapping_file() == expected
 

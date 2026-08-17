@@ -313,30 +313,24 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            "ecoregions_grid.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="ecoregions",
+            family="ecoregions",
         )
 
     def _gadm_gid3_file(self) -> str:
         return os.path.join(
-            layout.output_root(self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout),
+            layout.output_root(self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm"),
             f"gadm_level{self.gadm_gid3_level}_simplified.gpkg",
         )
 
     def _dominant_biome_path(self) -> str:
-        return layout.grid_store_path(
-            self.ctx.data_root,
-            self.cfg.data_path,
+        # A small per-GID parquet table, not a pixel-grid store -- lives
+        # under prepared/, not grid/<grid_id>/ (no readers anywhere in
+        # src/ today; kept for future use, same rationale as
+        # country_classifications.py's _output_path()).
+        return os.path.join(
+            layout.output_root(self.ctx.data_root, self.cfg.data_path, PipelineStep.PREPARE, namespace=self.cfg.namespace),
             "dominant_biome_by_gid3.parquet",
-            namespace=self.cfg.namespace,
-            grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            # v2_family intentionally omitted -- a small per-GID parquet
-            # table, not a pixel-grid store, same rationale as
-            # country_classifications.py's _output_path().
         )
 
     def _plan_prepare(self) -> List[StepTarget]:
@@ -363,7 +357,7 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
         if os.path.exists(gadm_gid3_file):
             from src.data.sources.misc.gadm import gid_mapping_path
 
-            gadm_gid3_mapping = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, "GID_3")
+            gadm_gid3_mapping = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, "GID_3")
             if os.path.exists(gadm_gid3_mapping):
                 targets.append(
                     StepTarget(

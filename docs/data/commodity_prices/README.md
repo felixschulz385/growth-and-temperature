@@ -23,8 +23,7 @@ Source data: the World Bank Commodity Markets "Pink Sheet" CMO Historical Data w
 Uses `ConfiguredFilesFetchMixin` (same pattern as `gadm`/`osm`/`country_classifications`) to download the single configured file (`prices_url`/`prices_name`).
 
 - **Output path**
-  - legacy: `<data_root>/commodity_prices/raw/CMO-Historical-Data-Annual.xlsx`
-  - v2: `<data_root>/raw/commodity_prices/CMO-Historical-Data-Annual.xlsx`
+  - `<data_root>/raw/commodity_prices/CMO-Historical-Data-Annual.xlsx`
 - **Format:** raw `.xlsx` workbook as downloaded, unchanged.
 - **Caveats (from code/`data.yaml` comments):**
   - The World Bank Pink Sheet download URL (`thedocs.worldbank.org/.../related/CMO-Historical-Data-Annual.xlsx`) embeds a content hash + release date and **rotates roughly monthly** — per both the module docstring and the `data.yaml` comment, if FETCH starts 404ing this is expected maintenance, not a bug; the current link should be re-fetched from https://www.worldbank.org/en/research/commodity-markets and `prices_url` bumped.
@@ -44,8 +43,7 @@ Reads the raw workbook (via `prices_path` override if set, else FETCH's own outp
 - Computes `ln_price_real = log(price_real)`.
 
 - **Output path**
-  - legacy: `<data_root>/commodity_prices/processed/stage_1/commodity_prices.parquet`
-  - v2: `<data_root>/prepared/commodity_prices/commodity_prices.parquet`
+  - `<data_root>/prepared/commodity_prices/commodity_prices.parquet`
 - **Format:** single parquet file, one row per (commodity, year), sorted by `(commodity, year)`.
 - **Schema**
 

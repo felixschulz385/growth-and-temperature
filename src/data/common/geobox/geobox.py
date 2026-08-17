@@ -146,7 +146,10 @@ def get_or_create_geobox(hpc_root: str, output_dir: str = None, force_regenerate
     """
     # Default output directory
     if output_dir is None:
-        output_dir = os.path.join(hpc_root, "misc", "processed", "stage_1", "misc")
+        from src.data.sources import layout
+        from src.data.sources.steps import PipelineStep
+
+        output_dir = layout.output_root(hpc_root, "misc", PipelineStep.PREPARE, namespace="misc")
     
     os.makedirs(output_dir, exist_ok=True)
     geobox_local = os.path.join(output_dir, "viirs_geobox.pkl")

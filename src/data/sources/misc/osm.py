@@ -5,10 +5,8 @@ sources `misc.py` (both download and preprocess sides) used to bundle behind
 config-key string matching. Ports the OSM-specific slice of
 `src/data/download/sources/misc.py::MiscDataSource` (one configured file) and
 `src/data/preprocess/sources/misc.py::MiscPreprocessor`'s
-`_process_osm_target`/`_rasterize_osm_target`. Output paths unchanged:
-`misc/processed/stage_1/osm/land_polygons_simplified.gpkg`, `misc/processed/
-stage_2/osm/land_mask.zarr` -- so `src/data/assemble/constants.py` needs no
-edit.
+`_process_osm_target`/`_rasterize_osm_target`. Output paths:
+`prepared/misc/osm/land_polygons_simplified.gpkg`, `grid/<grid_id>/land_mask.zarr`.
 
 OSM's final output is one whole-extent `rasterize()` call (no time dimension,
 no per-year resumability need), so unlike the tiled raster sources
@@ -118,11 +116,8 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            "land_mask.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="land_mask",
+            family="land_mask",
         )
 
     def _plan_prepare(self) -> List[StepTarget]:

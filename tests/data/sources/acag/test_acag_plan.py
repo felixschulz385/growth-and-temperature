@@ -13,9 +13,9 @@ from src.data.sources.acag import AcagSource
 from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, layout="legacy", **raw):
+def _make_source(tmp_path, **raw):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index")
     )
     cfg = SourceConfig.from_dict("acag", {"data_path": "acag/pm25", **raw})
     return AcagSource(ctx, cfg), ctx
@@ -32,8 +32,8 @@ def test_steps_is_fetch_and_prepare_only():
     assert AcagSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
+def test_output_root_fetch_and_prepare_use_top_level_trees(tmp_path):
+    source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "acag/pm25")
 
 
@@ -58,7 +58,7 @@ def test_prepare_plan_one_target_covering_every_available_year_prefers_nc4(tmp_p
     assert target.completion == Completion.MARKER
     assert target.meta["years"] == [2019, 2020, 2021]
     assert target.meta["raw_files"][2020] == "GL/Annual/V6GL02.04.CNNPM25.GL.202001-202012.nc4"
-    assert target.output_path.endswith("acag_pm25_timeseries_reprojected.zarr")
+    assert target.output_path.endswith("pm25.zarr")
 
 
 def test_prepare_plan_respects_year_selection(tmp_path):
@@ -74,8 +74,8 @@ def test_prepare_plan_respects_year_selection(tmp_path):
     assert targets[0].meta["years"] == [2020, 2021]
 
 
-def test_output_path_uses_v2_family_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
+def test_output_path_uses_family(tmp_path):
+    source, ctx = _make_source(tmp_path)
     assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "pm25.zarr")
 
 

@@ -35,7 +35,6 @@ class _FakeSource:
             self.ctx.data_root,
             self.cfg.data_path,
             namespace=namespace if namespace is not None else self.cfg.namespace,
-            layout=self.ctx.layout,
         )
 
     def list_remote_files(self, entrypoint=None):
@@ -64,7 +63,7 @@ def cfg():
 def _raw_root(ctx, cfg):
     from src.data.sources import layout
 
-    return layout.raw_root(ctx.data_root, cfg.data_path, namespace=cfg.namespace, layout=ctx.layout)
+    return layout.raw_root(ctx.data_root, cfg.data_path, namespace=cfg.namespace)
 
 
 def test_run_fetch_downloads_required_files(ctx, cfg):

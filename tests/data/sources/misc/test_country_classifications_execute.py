@@ -14,12 +14,11 @@ from src.data.sources.misc.gadm import gid_mapping_path
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, grid_id="legacy_4326", layout="legacy"):
+def _make_source(tmp_path, grid_id="legacy_4326"):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"),
         local_index_dir=str(tmp_path / "index"),
         grid_id=grid_id,
-        layout=layout,
     )
     cfg = SourceConfig.from_dict("country_classifications", {})
     return CountryClassificationsSource(ctx, cfg), ctx
@@ -50,7 +49,7 @@ def test_execute_prepare_writes_gid0_keyed_parquet(tmp_path):
         ]
     ).to_parquet(classifications_parquet, index=False)
 
-    mapping_path = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_0")
+    mapping_path = gid_mapping_path(ctx.data_root, ctx.grid_id, "GID_0")
     os.makedirs(os.path.dirname(mapping_path), exist_ok=True)
     with open(mapping_path, "w") as f:
         json.dump({"USA": 5, "FRA": 9}, f)

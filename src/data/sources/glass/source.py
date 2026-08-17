@@ -183,7 +183,6 @@ class GlassSource(DataSource):
             step,
             namespace=namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
         )
 
     def download(self, file_url: str, output_path: str, session: Any = None) -> None:
@@ -421,8 +420,7 @@ class GlassSource(DataSource):
         if os.path.isabs(file_path) or (self.ctx.data_root and file_path.startswith(self.ctx.data_root)):
             return file_path
         # Route through output_root(FETCH) rather than hand-building
-        # "<path_prefix>/raw/..." -- that hardcodes the legacy shape and
-        # ignores ctx.layout="v2", which relocates FETCH output to
+        # "<path_prefix>/raw/..." -- FETCH output actually lives at
         # "raw/<data_path>/..." (src/data/sources/layout.py).
         return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
@@ -515,6 +513,13 @@ class GlassSource(DataSource):
         return groups
 
     def _annual_zarr_path(self, group: Dict[str, Any]) -> str:
+        # TODO(GLASS rework): GLASS is slated to move to a new reprojection
+        # workflow later; revisit whether these per-tile annual zarrs (and
+        # `_ensure_annual_zarr` below) should become truly temporary instead
+        # of persisted scratch, per the "only persist what's read downstream"
+        # policy -- deferred for now because they double as a resumability
+        # marker across process restarts (`marker_path` in
+        # `_ensure_annual_zarr`).
         if self.data_source_kind == "MODIS":
             return os.path.join(self.output_root(PipelineStep.PREPARE), str(group["year"]), f"{group['grid_cell']}.zarr")
         return os.path.join(self.output_root(PipelineStep.PREPARE), f"{group['year']}.zarr")
@@ -706,18 +711,14 @@ class GlassSource(DataSource):
             return layout.grid_store_path(
                 self.ctx.data_root,
                 self.path_prefix,
-                "modis_timeseries_reprojected.zarr",
                 grid_id=self.ctx.grid_id,
-                layout=self.ctx.layout,
-                v2_family="glass_modis_lst",
+                family="glass_modis_lst",
             )
         return layout.grid_store_path(
             self.ctx.data_root,
             self.path_prefix,
-            "avhrr_timeseries_reprojected.zarr",
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="glass_avhrr_lst",
+            family="glass_avhrr_lst",
         )
 
     def _ensure_annual_zarr(self, group: Dict[str, Any]) -> Optional[str]:
@@ -894,7 +895,7 @@ class GlassSource(DataSource):
 
                 if len(year_files) > 1:
                     prepare_root = layout.output_root(
-                        self.ctx.data_root, self.path_prefix, PipelineStep.PREPARE, layout=self.ctx.layout
+                        self.ctx.data_root, self.path_prefix, PipelineStep.PREPARE
                     )
                     annual_temp_path = os.path.join(prepare_root, str(year), "temp_combined.tzarr")
                     if not self._aggregate_year_files(year_files, annual_temp_path, year):

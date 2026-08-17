@@ -98,82 +98,88 @@ def rechunk_zarr_file(zarr_path, chunk_size=256, logger=None):
             shutil.rmtree(temp_path)
         raise
 
-def find_stage1_directories(base_path):
+def find_prepared_directories(base_path):
     """
-    Find all stage_1 directories in the project structure.
-    
+    Find every source's PREPARE-stage directory under the shared
+    `prepared/` tree (`<data_root>/prepared/<data_path>[/<namespace>]` --
+    see `src/data/sources/layout.py`). Each one is the equivalent of what
+    used to be a per-source `<data_path>/processed/stage_1[/<namespace>]`
+    directory: a leaf directory that directly contains either yearly
+    `YYYY.zarr` files or `YYYY/` subdirectories of zarr files.
+
     Args:
         base_path: Base project path
-        
+
     Returns:
-        List of stage_1 directory paths
+        List of PREPARE-stage directory paths
     """
     base_path = Path(base_path)
-    stage1_dirs = []
-    
-    # Look for stage_1 directories in the data structure
-    data_dirs = [
-        base_path / "data_nobackup",
-        base_path / "processed"
-    ]
-    
-    for data_dir in data_dirs:
-        if data_dir.exists():
-            # Find all stage_1 directories recursively
-            for stage1_path in data_dir.rglob("stage_1"):
-                if stage1_path.is_dir():
-                    stage1_dirs.append(stage1_path)
-    
-    return stage1_dirs
+    prepared_root = base_path / "data_nobackup" / "prepared"
+    prepared_dirs = []
+
+    if prepared_root.exists():
+        for candidate in prepared_root.rglob("*"):
+            if not candidate.is_dir():
+                continue
+            has_yearly_zarr = any(
+                f.stem.isdigit() and len(f.stem) == 4 for f in candidate.glob("*.zarr")
+            )
+            has_year_subdir = any(
+                d.is_dir() and d.name.isdigit() and len(d.name) == 4 for d in candidate.iterdir()
+            )
+            if has_yearly_zarr or has_year_subdir:
+                prepared_dirs.append(candidate)
+
+    return prepared_dirs
 
 def rechunk_annual_zarrs(base_path, chunk_size=256):
     """
-    Rechunk all zarr files in processed/stage_1/[YYYY] directories.
-    
+    Rechunk all zarr files in prepared/<data_path>/[YYYY] directories.
+
     Args:
         base_path: Base project path
         chunk_size: Size for spatial chunks (default 256)
     """
     logger = setup_logging()
-    
+
     base_path = Path(base_path)
-    
+
     logger.info(f"Starting zarr rechunking process")
     logger.info(f"Base path: {base_path}")
     logger.info(f"Target chunk size: {chunk_size}")
-    
-    # Find all stage_1 directories
-    stage1_dirs = find_stage1_directories(base_path)
-    
+
+    # Find all PREPARE-stage directories
+    stage1_dirs = find_prepared_directories(base_path)
+
     if not stage1_dirs:
-        logger.warning(f"No stage_1 directories found in {base_path}")
+        logger.warning(f"No prepared/ directories found in {base_path}")
         return
-    
-    logger.info(f"Found {len(stage1_dirs)} stage_1 directories:")
+
+    logger.info(f"Found {len(stage1_dirs)} prepared/ directories:")
     for stage1_path in stage1_dirs:
         logger.info(f"  {stage1_path}")
-    
+
     total_files = 0
     processed_files = 0
     skipped_files = 0
     failed_files = 0
-    
+
     for stage1_path in stage1_dirs:
-        logger.info(f"Processing stage_1 directory: {stage1_path}")
-        
+        logger.info(f"Processing prepared/ directory: {stage1_path}")
+
         # Check for two different structures:
-        # 1. YYYY.zarr files directly in stage_1 (new structure)
+        # 1. YYYY.zarr files directly in the directory (new structure)
         # 2. YYYY/ subdirectories containing *.zarr files (old structure)
-        
-        # Find yearly zarr files directly in stage_1
-        yearly_zarr_files = [f for f in stage1_path.glob("*.zarr") 
+
+        # Find yearly zarr files directly in the directory
+        yearly_zarr_files = [f for f in stage1_path.glob("*.zarr")
                            if f.stem.isdigit() and len(f.stem) == 4]
-        
+
         # Find year directories containing zarr files
-        year_dirs = [d for d in stage1_path.iterdir() 
+        year_dirs = [d for d in stage1_path.iterdir()
                      if d.is_dir() and d.name.isdigit() and len(d.name) == 4]
-        
-        # Process yearly zarr files directly in stage_1
+
+        # Process yearly zarr files directly in the directory
         if yearly_zarr_files:
             logger.info(f"  Found {len(yearly_zarr_files)} yearly zarr files in {stage1_path}")
             total_files += len(yearly_zarr_files)

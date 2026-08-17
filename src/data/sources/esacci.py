@@ -306,11 +306,8 @@ class EsacciSource(DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            "esacci_lc_timeseries_reprojected.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="land_cover",
+            family="land_cover",
         )
 
     def _execute_prepare(self, target: StepTarget) -> bool:

@@ -21,8 +21,7 @@ Downloads a single configured file via `ConfiguredFilesFetchMixin`
   → `gadm_410-levels.zip`. `data.yaml`'s `gadm:` block repeats these defaults
   verbatim.
 - **Output path**:
-  - legacy: `<data_root>/misc/raw/gadm`
-  - v2: `<data_root>/raw/misc/gadm`
+  - `<data_root>/raw/misc/gadm`
 - **Format**: one zip archive containing a single GeoPackage with multiple
   layers, one per administrative level (`ADM_0`, `ADM_1`, ... — GADM v4.1's
   "levels" package format; the exact number of levels present is discovered
@@ -41,8 +40,7 @@ every layer via `gpd.list_layers()`, and for each layer simplifies geometry
 its own GeoPackage file.
 
 - **Output path**: a directory, not a single file.
-  - legacy: `<data_root>/misc/processed/stage_1/gadm/`
-  - v2: `<data_root>/prepared/misc/gadm/`
+  - `<data_root>/prepared/misc/gadm/`
   - contains one file per level: `gadm_level{ADM_N}_simplified.gpkg` (e.g.
     `gadm_levelADM_0_simplified.gpkg`, `gadm_levelADM_1_simplified.gpkg`, ...).
 - **Format**: GeoPackage per level; attribute columns are GADM's own native
@@ -74,12 +72,8 @@ integer ids starting at 1 (`{code: i + 1 for i, code in enumerate(sorted(codes))
 (`_create_empty_gadm_zarr`, all-zeros `uint32`), then filled tile-by-tile
 (`_process_gadm_tiles`, `to_zarr(..., region="auto", mode="r+")`).
 
-- **Output path — zarr grid** (`layout.grid_store_path(..., v2_family="country_id")`):
-  - legacy: `<data_root>/misc/processed/stage_2[_ease6933]/gadm/countries_grid.zarr`
-  - v2: `<data_root>/grid/<grid_id>/country_id.zarr` — note the v2 filename
-    (`country_id.zarr`, from `v2_family`) differs from the legacy filename
-    (`countries_grid.zarr`); this is a straight file-family rename under v2,
-    not a schema change.
+- **Output path — zarr grid** (`layout.grid_store_path(..., family="country_id")`):
+  - `<data_root>/grid/<grid_id>/country_id.zarr`
 - **Format**: Zarr store, `uint32` data variables, chunked `(512, 512)`,
   Blosc/zstd-compressed. `Completion.MARKER`.
 - **Variables** (dynamic — one per ADM level found in PREPARE's output, not
@@ -105,12 +99,11 @@ integer ids starting at 1 (`{code: i + 1 for i, code in enumerate(sorted(codes))
   string `GID_N` code (e.g. `"USA.1_1"`) to the same integer id used in the
   zarr grid:
   - **Path**: same directory as the zarr store above, i.e.
-    `<dirname of countries_grid.zarr / country_id.zarr>/{GID_N}_code_mapping.json`
-    (legacy: `.../gadm/GID_0_code_mapping.json`, etc.; v2: directly beside
-    `country_id.zarr` under `<data_root>/grid/<grid_id>/`, since v2's flat
-    GRID directory applies no per-source namespace).
+    `<data_root>/grid/<grid_id>/{GID_N}_code_mapping.json`, directly beside
+    `country_id.zarr` (the flat GRID directory applies no per-source
+    namespace).
   - **Format**: JSON object, `{"<GID_N code>": <int id>, ...}`.
-  - **Purpose**: `gid_mapping_path(data_root, grid_id, layout_mode, gid_col)`
+  - **Purpose**: `gid_mapping_path(data_root, grid_id, gid_col)`
     (module-level function in `gadm.py`) computes this exact path for other
     sources to consult without importing `GadmSource` (per
     `docs/design/09-integrated-pipeline.md` §2: cross-source coupling stays

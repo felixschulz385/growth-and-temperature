@@ -14,7 +14,8 @@ _REPO_ROOT = _THIS_DIR.parents[4]
 # This tool is standalone (not pipeline-wired -- see module docstring in
 # src/data/sources/snl_mining/source.py on why FETCH is declared absent), so
 # its output lives under the gitignored /data convention rather than through
-# ctx.layout. It shares data/raw/snl_mining with the pipeline source's own
+# the pipeline's own layout module. It shares data/raw/snl_mining with the
+# pipeline source's own
 # manual-export DuckDB on purpose -- both are "parsed xlsx", just from
 # different intake paths, and DEFAULT_DB_PATH below is the single merged
 # database both sides read/write.

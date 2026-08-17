@@ -64,8 +64,7 @@ would use elsewhere (`ModisSource.output_root()` explicitly overrides the base
 class to route FETCH through `layout.output_root(..., PipelineStep.PREPARE, ...)`
 rather than `layout.raw_root()`'s bare-bytes convention every crawler-based FETCH
 source uses):
-- legacy: `<data_root>/<data_path>/processed/stage_1[/<namespace>]/<year>/<tile>.tif`
-- v2: `<data_root>/prepared/<data_path>[/<namespace>]/<year>/<tile>.tif`
+- `<data_root>/prepared/<data_path>[/<namespace>]/<year>/<tile>.tif`
 
 **Format**: one GeoTIFF per `(year, tile)`, float32, `nodata=NaN`, deflate-compressed,
 band descriptions set to the variable/month names above (`dst.set_band_description`).
@@ -111,9 +110,8 @@ zarr store one year-region at a time.
 `ctx.grid_id`/`pipeline.grid` in `data.yaml` — a deliberately preserved MODIS-only
 ad hoc case (module docstring, `docs/design/05-migration.md` §1).
 
-**Output path** (`layout.grid_store_path`, `v2_family=f"modis_lst_{product.lower()}"`):
-- legacy: `<data_root>/<data_path>/processed/stage_2_ease6933[/<namespace>]/modis_<product>_timeseries_reprojected.zarr`
-- v2: `<data_root>/grid/ease6933/modis_lst_<product>.zarr` (e.g.
+**Output path** (`layout.grid_store_path`, `family=f"modis_lst_{product.lower()}"`):
+- `<data_root>/grid/ease6933/modis_lst_<product>.zarr` (e.g.
   `modis_lst_21a2.zarr`, `modis_lst_11a1.zarr` — flat, no namespace, so the two
   config variants land in genuinely separate stores)
 

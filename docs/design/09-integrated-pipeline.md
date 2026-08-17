@@ -192,8 +192,16 @@ likely-dead config, not a live consumer. The other seven were updated to be `lay
 previously-undocumented hardcoded consumers found during that work
 (`src/analysis/subsets/resolve.py`'s classifications path, and a fragile `glass/source.py` hack that
 derived a temp path by string-splitting a GRID output path on the literal substring `"stage_2"`).
-A migration script (`scripts/migrate_layout_v2.py`, `orchestration/slurm/migrate-layout-v2.sh`) physically
+A migration script (`scripts/migrate_legacy_layout.py`) physically
 moves already-computed legacy-layout data into the new layout; dry-run by default, requires `--execute`.
+
+**Update: `layout: v2` is now the only layout.** No source or orchestration config ever set
+`pipeline.layout: v2` in production, so the "legacy" default and the `layout` parameter threaded
+through `output_root()`/`raw_root()`/`grid_store_path()` were dead weight — removed entirely.
+`src/data/sources/layout.py` now builds only the physical tree the table above describes (unconditionally,
+no `layout` argument anywhere), `PipelineContext` no longer has a `layout` attribute, and
+`scripts/migrate_legacy_layout.py` is the one-time tool for moving already-computed on-disk data from the
+old `<data_path>/processed/stage_1`/`stage_2[_ease6933]` shape into it.
 
 ### Completion / resumability, generalized from the MODIS lesson
 

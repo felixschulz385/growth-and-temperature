@@ -11,35 +11,23 @@ from src.data.sources import registry
 from src.data.sources.steps import MissingPrerequisiteError, PipelineStep, TargetSelection
 
 
-def _ctx(tmp_path, layout="legacy"):
+def _ctx(tmp_path):
     return PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index")
     )
 
 
-def _make(tmp_path, source_id, layout="legacy", **raw):
-    ctx = _ctx(tmp_path, layout=layout)
+def _make(tmp_path, source_id, **raw):
+    ctx = _ctx(tmp_path)
     cfg = SourceConfig.from_dict(source_id, dict(raw))
     cls = registry.load(source_id)
     return cls(ctx, cfg), ctx
 
 
-def test_osm_and_gadm_share_output_root_but_have_distinct_index_data_path(tmp_path):
+def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees(tmp_path):
     osm, ctx = _make(tmp_path, "osm")
     gadm, _ = _make(tmp_path, "gadm")
-
-    assert osm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "misc", "processed", "stage_1", "osm")
-    assert gadm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "misc", "processed", "stage_1", "gadm")
-    # Distinct index files -- the actual point of the split.
-    assert osm.data_path == "misc/osm"
-    assert gadm.data_path == "misc/gadm"
-    assert osm.data_path != gadm.data_path
-
-
-def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
-    osm, ctx = _make(tmp_path, "osm", layout="v2")
-    gadm, _ = _make(tmp_path, "gadm", layout="v2")
-    cc, _ = _make(tmp_path, "country_classifications", layout="v2")
+    cc, _ = _make(tmp_path, "country_classifications")
 
     assert osm.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "misc", "osm")
     assert osm.output_root(PipelineStep.PREPARE) == os.path.join(ctx.data_root, "prepared", "misc", "osm")
@@ -49,6 +37,10 @@ def test_osm_gadm_country_classifications_fetch_and_prepare_use_top_level_trees_
     assert cc.output_root(PipelineStep.PREPARE) == os.path.join(
         ctx.data_root, "prepared", "misc", "country_classifications"
     )
+    # Distinct index files -- the actual point of the split.
+    assert osm.data_path == "misc/osm"
+    assert gadm.data_path == "misc/gadm"
+    assert osm.data_path != gadm.data_path
 
 
 # osm/gadm's own PREPARE-target tests live in
@@ -71,7 +63,7 @@ def test_country_classifications_prepare_target_tracks_which_sources_present(tmp
 
 
 def test_country_classifications_prepare_target_output_path(tmp_path):
-    # country_classifications' PREPARE target's own output is at GRID's
+    # country_classifications' PREPARE target's own output is at PREPARE's
     # path -- planning it doesn't need to probe gadm's output at all
     # (that's the runner's REQUIRES enforcement's job,
     # src/cli/data/handlers.py::_check_requires, gated before PREPARE runs).
@@ -83,7 +75,7 @@ def test_country_classifications_prepare_target_output_path(tmp_path):
     targets = cc.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(
-        cc.output_root(PipelineStep.GRID), "classifications_by_gid0.parquet"
+        cc.output_root(PipelineStep.PREPARE), "classifications_by_gid0.parquet"
     )
 
 
@@ -97,25 +89,23 @@ def test_country_classifications_requires_gadm_prepare():
     assert spec.requires_for(PipelineStep.PREPARE) == (("gadm", PipelineStep.PREPARE),)
 
 
-def test_osm_output_path_uses_v2_family_under_layout_v2(tmp_path):
-    osm, ctx = _make(tmp_path, "osm", layout="v2")
+def test_osm_output_path_uses_family(tmp_path):
+    osm, ctx = _make(tmp_path, "osm")
     assert osm._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_mask.zarr")
 
 
-def test_gadm_output_path_uses_v2_family_under_layout_v2(tmp_path):
-    gadm, ctx = _make(tmp_path, "gadm", layout="v2")
+def test_gadm_output_path_uses_family(tmp_path):
+    gadm, ctx = _make(tmp_path, "gadm")
     assert gadm._grid_output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "country_id.zarr")
 
 
-def test_country_classifications_output_path_ignores_layout_v2_shared_grid_dir(tmp_path):
-    # country_classifications' own output is a small per-GID_0 parquet table
-    # now, not a `<family>.zarr` pixel-grid store, so it doesn't participate
-    # in layout:v2's shared grid/<grid_id>/ directory -- it falls back to the
-    # legacy per-source path shape regardless of ctx.layout (see module
-    # docstring / gadm.grid_store_path()'s v2_family=None fallback). GADM's
-    # own output path (which *is* a v2 zarr family) is unaffected.
-    cc, ctx = _make(tmp_path, "country_classifications", layout="v2")
+def test_country_classifications_output_path_lives_under_prepare_root(tmp_path):
+    # country_classifications' own output is a small per-GID_0 parquet table,
+    # not a `<family>.zarr` pixel-grid store, so it lives under the PREPARE
+    # root rather than GRID's shared grid/<grid_id>/ directory (see module
+    # docstring). GADM's own output path (which *is* a zarr family) is
+    # unaffected -- see test_gadm_output_path_uses_family above.
+    cc, ctx = _make(tmp_path, "country_classifications")
     assert cc._output_path() == os.path.join(
-        ctx.data_root, "misc", "processed", "stage_2", "country_classifications",
-        "classifications_by_gid0.parquet",
+        cc.output_root(PipelineStep.PREPARE), "classifications_by_gid0.parquet"
     )

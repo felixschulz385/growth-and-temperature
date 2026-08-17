@@ -51,8 +51,7 @@ job, converted from a notebook into a script; see "LLM year-imputation
 script" below) and consumed as this source's raw input.
 
 - **Path**: `<output_root(fetch)>/database.duckdb` (`output_root(fetch)` =
-  `layout.raw_root()` — legacy: `<data_root>/snl_mining/raw/database.duckdb`;
-  v2: `<data_root>/raw/snl_mining/database.duckdb`). Overridable via
+  `layout.raw_root()` — `<data_root>/raw/snl_mining/database.duckdb`). Overridable via
   `sources.snl_mining.duckdb_path` in `data.yaml`. Shared with the scraper
   (Part B) — `scraper/config.py`'s `DEFAULT_DB_PATH` points at the same file,
   so PREPARE's `ATTACH ... READ_ONLY` sees both this notebook's tables and
@@ -129,8 +128,7 @@ genuinely improved resumability over the old combined `stage="spatial"`
 preprocessor).
 
 - **Output path**: `<output_root(prepare)>/snl_mining_prepared.duckdb`
-  (legacy: `<data_root>/snl_mining/processed/stage_1/...`; v2:
-  `<data_root>/prepared/snl_mining/...`). Overridable via
+  (`<data_root>/prepared/snl_mining/...`). Overridable via
   `sources.snl_mining.prepared_db_path` / `aggregation.prepared_db_path`.
 - **Format**: DuckDB database (`Completion.PATH_EXISTS` — single-file,
   atomic-write semantics don't apply the same way as a directory store, so
@@ -181,10 +179,8 @@ preprocessor).
 `_execute_grid()`. Two distinct output shapes from one PREPARE run:
 
 **1. Rasterized zarr store** (genuinely per-pixel variables only):
-- **Output path**: `layout.grid_store_path(..., v2_family="snl_mining")`.
-  - v2: `<data_root>/grid/<grid_id>/snl_mining.zarr`
-  - legacy: `<data_root>/snl_mining/processed/stage_2[_ease6933]/snl_mining_timeseries_reprojected.zarr`
-    (filename configurable via `aggregation.output_filename`)
+- **Output path**: `layout.grid_store_path(..., family="snl_mining")`.
+  - `<data_root>/grid/<grid_id>/snl_mining.zarr`
 - **Format**: Zarr v3 store (`zarr_format=3`, `consolidated=False`), Blosc/
   zstd-compressed, chunked `(1, 1, tile_size, tile_size)` (`tile_size`
   default 2048, configurable). `Completion.MARKER` (sibling `.complete`
@@ -254,8 +250,8 @@ the current production run actually used.
 Capital IQ session — `orchestration/secrets/spglobal.credentials.json` by
 default). Writes into the same `data/raw/snl_mining/database.duckdb` as
 Part A (`src/data/sources/snl_mining/scraper/config.py`'s `DEFAULT_DB_PATH`;
-deliberately under the gitignored `/data` convention, not `ctx.layout`, since
-this tool is standalone and has no `PipelineContext`). Raw downloaded
+deliberately under the gitignored `/data` convention, not the pipeline's own
+`layout.py`, since this tool is standalone and has no `PipelineContext`). Raw downloaded
 `.xlsx` exports land under `data/raw/snl_mining/scraping/` (`EXPORT_DIR`).
 Chromedriver logs are centralized under `data/raw/snl_mining/logs/`;
 ephemeral Selenium browser-profile dirs live outside `data/` entirely, under

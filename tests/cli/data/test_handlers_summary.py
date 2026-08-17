@@ -165,7 +165,7 @@ def test_handle_summary_reports_verified_pending_when_prepare_target_exists_but_
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
-    raw_dir = tmp_path / "data_root" / "misc" / "raw" / "gadm"
+    raw_dir = tmp_path / "data_root" / "raw" / "misc" / "gadm"
     os.makedirs(raw_dir, exist_ok=True)
     open(raw_dir / "gadm_410-levels.zip", "w").close()
 
@@ -183,7 +183,7 @@ def test_handle_summary_fetch_column_reports_mismatched_filename_not_generic_cou
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
     args = argparse.Namespace(log_level="ERROR", debug=False, config="unused.yaml", source="gadm")
 
-    raw_dir = tmp_path / "data_root" / "misc" / "raw" / "gadm"
+    raw_dir = tmp_path / "data_root" / "raw" / "misc" / "gadm"
     os.makedirs(raw_dir, exist_ok=True)
     open(raw_dir / "some_other_export.zip", "w").close()
 
@@ -204,7 +204,7 @@ def _complete_gadm_grid_target(tmp_path, monkeypatch):
     from src.data.sources.steps import mark_complete
 
     monkeypatch.setattr(handlers, "load_config_with_env_vars", lambda path: _fake_config(tmp_path))
-    raw_dir = tmp_path / "data_root" / "misc" / "raw" / "gadm"
+    raw_dir = tmp_path / "data_root" / "raw" / "misc" / "gadm"
     os.makedirs(raw_dir, exist_ok=True)
     open(raw_dir / "gadm_410-levels.zip", "w").close()
 
@@ -386,7 +386,7 @@ def test_summarize_fetch_falls_back_to_entrypoint_counts_when_nothing_cached(tmp
     from src.data.sources import layout
 
     source = _make_yearly_source(tmp_path, year_range=(2020, 2022))
-    raw_root = layout.raw_root(source.ctx.data_root, source.cfg.data_path, layout=source.ctx.layout)
+    raw_root = layout.raw_root(source.ctx.data_root, source.cfg.data_path)
     os.makedirs(raw_root, exist_ok=True)
     open(os.path.join(raw_root, "file_2020.tif"), "w").close()
 

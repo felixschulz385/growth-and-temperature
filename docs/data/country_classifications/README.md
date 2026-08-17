@@ -40,8 +40,7 @@ verbatim.
   per-origin subfolder in the current fetch driver — `run_fetch()` resolves
   one `raw_root()` for the whole source and each `ConfiguredFile` is written
   under its own `.name`):
-  - legacy: `<data_root>/misc/raw/country_classifications`
-  - v2: `<data_root>/raw/misc/country_classifications`
+  - `<data_root>/raw/misc/country_classifications`
 - **Format**: `HDR25.csv` (UNDP HDR composite-indices time series, CSV) and
   `DR0095334.xlsx` (World Bank "World By Income" workbook, xlsx).
 - **Caveats**: no explicit URL-rotation/expiry caveat is written in code or
@@ -87,8 +86,7 @@ If both inputs are present, the two wide tables are merged on `iso3`
 the HDI table are filled `False` rather than left null.
 
 - **Output path**:
-  - legacy: `<data_root>/misc/processed/stage_1/country_classifications/classifications.parquet`
-  - v2: `<data_root>/prepared/misc/country_classifications/classifications.parquet`
+  - `<data_root>/prepared/misc/country_classifications/classifications.parquet`
 - **Format**: parquet, one row per `iso3`.
 - **Schema** (columns present depend on which of `has_hdi`/`has_wb` were
   available at PREPARE time — not a fixed set if one input is missing):
@@ -115,7 +113,7 @@ the HDI table are filled `False` rather than left null.
 
 `_execute_grid()`: reads the PREPARE-stage parquet, resolves gadm's
 `GID_0_code_mapping.json` via `gid_mapping_path(ctx.data_root, ctx.grid_id,
-ctx.layout, "GID_0")` (imported from `src/data/sources/misc/gadm.py`; see
+"GID_0")` (imported from `src/data/sources/misc/gadm.py`; see
 `docs/data/gadm/README.md`), loads it through
 `src.analysis.subsets.registry.load_country_registry(...).country_to_id`,
 maps each row's `iso3` to gadm's integer `GID_0` id (`0` if not found), then
@@ -125,17 +123,11 @@ for this drop, only a final row/column-count log line). `_plan_grid()`
 requires gadm's grid zarr to already exist on disk before planning any
 target at all.
 
-- **Output path** (`layout.grid_store_path(...)` called **without**
-  `v2_family`): the code comment explains this is deliberate — this is a
-  small per-`GID_0` parquet table, not a `<family>.zarr` pixel-grid store, so
-  it doesn't participate in layout:v2's "one store per family" zarr
-  directory. `grid_store_path()` therefore falls back to its **legacy path
-  shape regardless of `ctx.layout`** — i.e. even when `pipeline.layout: v2`
-  is active, this output still lands at the *legacy-style* per-source path,
-  not under `<data_root>/grid/<grid_id>/`:
-  - `<data_root>/misc/processed/stage_2[_ease6933 if grid_id="ease6933"]/country_classifications/classifications_by_gid0.parquet`
-  - (this exact path is used regardless of whether `pipeline.layout` is
-    `legacy` or `v2`.)
+- **Output path**: written directly under the PREPARE root (not
+  `grid_store_path()` — this is a small per-`GID_0` parquet table, not a
+  `<family>.zarr` pixel-grid store, and has no reader anywhere in `src/`
+  today; kept for future use):
+  - `<data_root>/prepared/misc/country_classifications/classifications_by_gid0.parquet`
 - **Format**: parquet, one row per matched country.
 - **Schema**:
 

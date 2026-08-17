@@ -28,8 +28,7 @@ Source data: the Harvard Dataverse "Political Leaders and Development" (PLAD) da
 Lists files from the Harvard Dataverse API (`GET https://dataverse.harvard.edu/api/datasets/:persistentId?persistentId=<doi>`), filtering to labels ending in one of `file_extensions` (config: `["tab"]`; code default if unset: `[".csv", ".nc", ".tif", ".zip"]`). Downloads via `https://dataverse.harvard.edu/api/access/datafile/<file_id>`, with a fixed 0.5s delay before each request (`download`/`download_async`).
 
 - **Output path**
-  - legacy: `<data_root>/plad/raw`
-  - v2: `<data_root>/raw/plad`
+  - `<data_root>/raw/plad`
 - **Format:** raw file(s) as published on Dataverse — a `.dta`/`.tab` table (GRID looks specifically for a file whose name contains `"plad"` and ends in `.dta`, via the local ledger's `completed_fetch_files()`).
 - **Caveats (from code):**
   - `Completion.NEVER`: the FETCH target always re-plans; `run_fetch` decides what's actually missing.
@@ -46,9 +45,8 @@ Not implemented — not in `STEPS`.
 
 `_build_reg_fav_table()`: reads the raw PLAD `.dta` file (`pd.read_table`, located via the local ledger by filename), requires a `gid_{admin_level}` column to exist. For each row, expands `[max(startyear, cfg.year_range[0]), min(endyear, cfg.year_range[1])]` into one row per year, translates the raw `gid_N` string code to gadm's integer id via the `GID_N_code_mapping.json` sidecar (rows whose code isn't in the mapping — id `0` — are dropped), sets `reg_fav = True` for every remaining row, and de-duplicates on `(GID_N, year)`.
 
-- **Output path** (via the overridden `output_root()` — see the `OUTPUT_PREFIX` quirk note above; the `<grid_id>` folding under `v2` and the `_ease6933` legacy suffix depend on `pipeline.grid`, currently `ease6933`):
-  - legacy: `<data_root>/plad/processed/stage_2[_ease6933]/plad_adm2_reg_fav.parquet`
-  - v2: `<data_root>/grid/<grid_id>/plad_adm2_reg_fav.parquet` (flat; filename encodes `admin_level`, e.g. `plad_adm1_reg_fav.parquet` if `admin_level: 1`)
+- **Output path** (via the overridden `output_root()` — see the `OUTPUT_PREFIX` quirk note above; `<grid_id>` depends on `pipeline.grid`, currently `ease6933`):
+  - `<data_root>/grid/<grid_id>/plad_adm2_reg_fav.parquet` (flat; filename encodes `admin_level`, e.g. `plad_adm1_reg_fav.parquet` if `admin_level: 1`)
 - **Format:** single parquet file, `Completion.PATH_EXISTS`.
 - **Schema** (one row per favored admin unit per year it was favored — absence from the table, not a `False` value, means "not favored"):
 

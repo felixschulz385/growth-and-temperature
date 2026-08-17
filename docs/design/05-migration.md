@@ -9,8 +9,8 @@ today's assembly output format needs to change to introduce them.
 
 Concretely:
 - Per-source preprocessing needed for the ring model (lights, mediators, LST) is **re-run onto the
-  new grid as a parallel output path**, e.g. `<source>/processed/stage_2_ease6933/...` alongside
-  today's `<source>/processed/stage_2/...`, leaving existing EPSG:4326 outputs untouched for any
+  new grid as a parallel output path**, e.g. `grid/ease6933/...` alongside
+  `grid/legacy_4326/...`, leaving existing EPSG:4326 outputs untouched for any
   other consumer that may still depend on them.
 - The lights resampling change (`nearest` → area-weighted sum, [`04-ingest.md`](04-ingest.md) §1) is
   scoped to the new grid path if implemented as a per-variable override rather than a shared-default

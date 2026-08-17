@@ -155,11 +155,8 @@ class BermanMiningSource(DataSource):
                     output_path=layout.grid_store_path(
                         self.ctx.data_root,
                         self.cfg.data_path,
-                        "berman_mining_timeseries_reprojected.zarr",
-                        namespace=self.cfg.namespace,
                         grid_id=self.ctx.grid_id,
-                        layout=self.ctx.layout,
-                        v2_family="berman_mining",
+                        family="berman_mining",
                     ),
                     completion=Completion.PATH_EXISTS,
                     meta={

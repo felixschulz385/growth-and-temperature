@@ -89,8 +89,7 @@ variants at the entrypoint level.
 
 **Output path** (`output_root(FETCH)`, keyed by `path_prefix`, no namespace
 configured for either variant):
-- legacy: `<data_root>/<path_prefix>/raw` → `<data_root>/glass/LST/MODIS/Daily/1KM/raw` or `<data_root>/glass/LST/AVHRR/0.05D/raw`
-- v2: `<data_root>/raw/<path_prefix>` → `<data_root>/raw/glass/LST/MODIS/Daily/1KM` or `<data_root>/raw/glass/LST/AVHRR/0.05D`
+- `<data_root>/raw/<path_prefix>` → `<data_root>/raw/glass/LST/MODIS/Daily/1KM` or `<data_root>/raw/glass/LST/AVHRR/0.05D`
 
 **File format/naming**: HDF (`.hdf`, per `file_extensions` default).
 `GLASS06A01.V01.A2000055.h00v10.2022021.hdf` for MODIS (parsed by
@@ -146,11 +145,9 @@ to a separate, labelled follow-on change," not done in this migration.
 
 **Output path**: `<output_root(PREPARE)>/...`
 - MODIS: `<year>/h##v##.zarr` (+ sibling `_monthly.zarr`)
-  - legacy: `<data_root>/<path_prefix>/processed/stage_1/<year>/h##v##.zarr`
-  - v2: `<data_root>/prepared/<path_prefix>/<year>/h##v##.zarr`
+  - `<data_root>/prepared/<path_prefix>/<year>/h##v##.zarr`
 - AVHRR: `<year>.zarr` (+ sibling `_monthly.zarr`)
-  - legacy: `<data_root>/<path_prefix>/processed/stage_1/<year>.zarr`
-  - v2: `<data_root>/prepared/<path_prefix>/<year>.zarr`
+  - `<data_root>/prepared/<path_prefix>/<year>.zarr`
 
 **Format**: Zarr (annual + monthly stores), Blosc/zstd-compressed
 (`clevel=3, shuffle=2`), `consolidated=True`, chunked `{x: 1000, y: 1000,
@@ -186,13 +183,12 @@ ported as-is"). Steps, per variant-independent code path:
    reprojection, since `mode`-resampled `NaN` doesn't behave sensibly on an
    integer dtype.
 
-**Output path**: `layout.grid_store_path(..., <legacy_filename>,
-grid_id=ctx.grid_id, layout=ctx.layout, v2_family=<family>)`:
+**Output path**: `layout.grid_store_path(..., grid_id=ctx.grid_id, family=<family>)`:
 
-| variant | legacy filename | `v2_family` | legacy path | v2 path |
-|---|---|---|---|---|
-| `glass_modis` | `modis_timeseries_reprojected.zarr` | `glass_modis_lst` | `<data_root>/<path_prefix>/processed/stage_2[_ease6933]/modis_timeseries_reprojected.zarr` | `<data_root>/grid/<grid_id>/glass_modis_lst.zarr` |
-| `glass_avhrr` | `avhrr_timeseries_reprojected.zarr` | `glass_avhrr_lst` | `<data_root>/<path_prefix>/processed/stage_2[_ease6933]/avhrr_timeseries_reprojected.zarr` | `<data_root>/grid/<grid_id>/glass_avhrr_lst.zarr` |
+| variant | `family` | path |
+|---|---|---|
+| `glass_modis` | `glass_modis_lst` | `<data_root>/grid/<grid_id>/glass_modis_lst.zarr` |
+| `glass_avhrr` | `glass_avhrr_lst` | `<data_root>/grid/<grid_id>/glass_avhrr_lst.zarr` |
 
 **Completion**: `Completion.MARKER`.
 

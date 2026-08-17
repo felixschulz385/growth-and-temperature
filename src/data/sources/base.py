@@ -135,7 +135,6 @@ class DataSource(abc.ABC):
             step,
             namespace=namespace if namespace is not None else self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
         )
 
     def transfer_units(self, step: PipelineStep) -> list[TransferUnit]:
@@ -207,7 +206,7 @@ class DataSource(abc.ABC):
 
         local_raw_root = self.output_root(PipelineStep.FETCH)
         remote_raw_root = layout.raw_root(
-            "", self.cfg.data_path, namespace=self.cfg.namespace, layout=self.ctx.layout
+            "", self.cfg.data_path, namespace=self.cfg.namespace
         ).replace(os.sep, "/")
 
         listing = snapshot_local_listing(local_raw_root)

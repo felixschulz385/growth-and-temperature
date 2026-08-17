@@ -28,7 +28,7 @@ Which variant an instance is (`self.source_type`, one of `dmsp` /
 (`eog_dmsp`/`eog_viirs`/`eog_dvnl`), matched by substring (`"dmsp"` /
 `"dvnl"` / `"viirs"`, checked in that order) — not from `data_path` or
 `base_url` content. `source_type` drives PREPARE's output variable name and
-GRID's output filename / `v2_family`. A `source_id` matching none of the
+GRID's output filename / `family`. A `source_id` matching none of the
 three raises `ValueError` at construction rather than silently guessing.
 
 ## Config variants
@@ -127,8 +127,7 @@ tar_max_size_mb=500`) rather than a per-source override.
 
 **Output path** (`output_root(FETCH)` = `layout.raw_root()`; no namespace
 configured for any of the three variants):
-- legacy: `<data_root>/<data_path>/raw`
-- v2: `<data_root>/raw/<data_path>`
+- `<data_root>/raw/<data_path>`
 
 Only `data_path` differs per variant (`eog/dmsp`, `eog/viirs`, `eog/dvnl`);
 the path *shape* is identical across all three.
@@ -171,8 +170,7 @@ shuffle="bitshuffle"`), `zarr_format=3`, `consolidated=False`.
 
 **Output path**: `<output_root(PREPARE)>/<year>.zarr` — identical shape
 across all three variants (only `data_path` differs):
-- legacy: `<data_root>/<data_path>/processed/stage_1/<year>.zarr`
-- v2: `<data_root>/prepared/<data_path>/<year>.zarr`
+- `<data_root>/prepared/<data_path>/<year>.zarr`
 
 **Completion**: `Completion.MARKER` (sibling `<output>.complete` file).
 
@@ -196,13 +194,11 @@ zarr has no CRS written, using `resampling=self.resampling` (default
 `SpatialProcessor`'s own default `"nearest"`; not overridden per variant in
 `data.yaml`). Output is one combined multi-year zarr per variant.
 
-**Output path**: `layout.grid_store_path(..., f"{source_type}_timeseries_reprojected.zarr",
-namespace=None, grid_id=ctx.grid_id, layout=ctx.layout,
-v2_family=f"eog_{source_type}")`:
-- legacy: `<data_root>/<data_path>/processed/stage_2[_ease6933 if grid_id=="ease6933"]/<source_type>_timeseries_reprojected.zarr`
-- v2: `<data_root>/grid/<grid_id>/eog_<source_type>.zarr` (flat, no namespace)
+**Output path**: `layout.grid_store_path(..., grid_id=ctx.grid_id,
+family=f"eog_{source_type}")`:
+- `<data_root>/grid/<grid_id>/eog_<source_type>.zarr` (flat, no namespace)
 
-The v2 filename/`v2_family` differs per variant: `eog_dmsp.zarr`,
+The filename/`family` differs per variant: `eog_dmsp.zarr`,
 `eog_viirs_annual.zarr`, `eog_viirs_dvnl.zarr`.
 
 **Completion**: `Completion.MARKER`.

@@ -10,12 +10,11 @@ from src.data.sources.commodity_prices.source import CommodityPricesSource
 from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, *, layout="legacy", **raw):
+def _make_source(tmp_path, **raw):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"),
         local_index_dir=str(tmp_path / "index"),
         grid_id="legacy_4326",
-        layout=layout,
     )
     cfg = SourceConfig.from_dict("commodity_prices", dict(raw))
     return CommodityPricesSource(ctx, cfg), ctx

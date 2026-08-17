@@ -17,7 +17,7 @@ from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 def _make(tmp_path):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout="legacy"
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index")
     )
     cfg = SourceConfig.from_dict("gadm", {})
     cls = registry.load("gadm")

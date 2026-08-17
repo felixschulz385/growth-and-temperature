@@ -33,8 +33,7 @@ Pulls from RESOLVE's own ArcGIS REST Feature Service (`.../FeatureServer/0/query
 `download_async()` wraps the same synchronous logic in a thread-pool executor (no aiohttp-native form).
 
 - **Output path**
-  - legacy: `<data_root>/misc/raw/ecoregions/resolve_ecoregions_2017.gpkg`
-  - v2: `<data_root>/raw/misc/ecoregions/resolve_ecoregions_2017.gpkg`
+  - `<data_root>/raw/misc/ecoregions/resolve_ecoregions_2017.gpkg`
 - **Format:** single GeoPackage (`.gpkg`), all 847 (per docstring) polygon features with fields `REALM, BIOME_NUM, BIOME_NAME, ECO_ID, ECO_NAME` plus geometry (`geometryPrecision=5`, ~1.1 m at the equator).
 - **Caveats (from code/docstring):**
   - `Completion.NEVER` — the FETCH target always re-plans; `run_fetch` decides what's actually missing.
@@ -46,8 +45,7 @@ Pulls from RESOLVE's own ArcGIS REST Feature Service (`.../FeatureServer/0/query
 Reads the raw GeoPackage (or extracts a `.shp`/`.gpkg` from it first if it's actually a zip archive), validates that `REALM, BIOME_NUM, BIOME_NAME, ECO_ID, ECO_NAME` are all present (logs an error and fails if any are missing — field names may differ from the assumed RESOLVE 2017 schema), simplifies every polygon's geometry (`shapely`/geopandas `.simplify(tolerance=self.simplify_tolerance, preserve_topology=True)`, default tolerance `0.001`, config-overridable via `simplify_tolerance`), and writes the result back out as a single GeoPackage.
 
 - **Output path**
-  - legacy: `<data_root>/misc/processed/stage_1/ecoregions/ecoregions_simplified.gpkg`
-  - v2: `<data_root>/prepared/misc/ecoregions/ecoregions_simplified.gpkg`
+  - `<data_root>/prepared/misc/ecoregions/ecoregions_simplified.gpkg`
 - **Format:** single GeoPackage, one flat layer (no per-level split, unlike GADM), same attribute columns as the raw file plus simplified geometry.
 - **Schema:** `REALM` (str), `BIOME_NUM` (numeric), `BIOME_NAME` (str), `ECO_ID` (numeric), `ECO_NAME` (str), `geometry` (simplified polygon).
 - **Caveats:** completion is `Completion.PATH_EXISTS` (skipped if the output file already exists and `cfg.override` is not set); requires the raw FETCH file (or an index-file fallback via `layout.index_path`) to exist, else `_plan_prepare` yields no targets.
@@ -59,8 +57,7 @@ Two distinct GRID targets, both gated on the PREPARE output existing:
 **1. `ecoregions_grid` — rasterized id-grid.** Rasterizes each polygon's boundary mask *once* per tile and reuses it to paint all three id-grids (`realm_id`, `biome_id`, `eco_id`) simultaneously — unlike GADM's one-rasterize-call-per-level-per-polygon, all three RESOLVE attributes share the same geometry. Codes are mapped to sequential integer ids per column (`code_to_id[col] = {code: i+1 for i, code in enumerate(sorted(gdf[col].unique()))}`), tiled via `odc.geo.GeoboxTiles` (2048×2048 tiles) with an `sindex`-based per-tile candidate prefilter, and geometries are reprojected once up front to the target geobox's CRS before tiling (guarding against the CRS-mismatch bug the module docstring says GADM's rasterizer hit in commit `f653033`).
 
 - **Output path**
-  - legacy: `<data_root>/misc/processed/stage_2[_ease6933]/ecoregions/ecoregions_grid.zarr` (`_ease6933` suffix applies when `ctx.grid_id == "ease6933"`; the checked-in `data.yaml` sets `pipeline.grid: ease6933`)
-  - v2: `<data_root>/grid/<grid_id>/ecoregions.zarr` (flat; `<grid_id>` is `ease6933` under the checked-in config)
+  - `<data_root>/grid/<grid_id>/ecoregions.zarr` (flat; `<grid_id>` is `ease6933` under the checked-in config)
 - **Format:** single zarr store, dims `(<y>, <x>)` following the target geobox's own dimension names, `uint32` dtype, chunks `(512, 512)`, Blosc-zstd (level 3, bitshuffle) compression, `Completion.MARKER`. A sidecar `<var>_code_mapping.json` (e.g. `realm_id_code_mapping.json`) is written per variable next to the store, mapping each raw RESOLVE code to its integer id.
 
   | variable | dtype | meaning | `value_range` (verification) |
@@ -74,8 +71,8 @@ Two distinct GRID targets, both gated on the PREPARE output existing:
 
 **2. `gadm_gid3_dominant` — area-weighted dominant-biome-per-GID_3 table.** Only planned if both gadm's level-3 simplified polygons (PREPARE) and its `GID_3` code-mapping JSON (GRID) already exist on disk; otherwise `_plan_grid` logs an info message and skips it. Computed via `src/data/sources/ecoregions/overlay.py::compute_dominant_classes` — a polygon-polygon intersection (`geopandas.overlay`) + per-group area-argmax, deliberately **not** raster zonal-mode (the module docstring argues exact polygon-area weighting is cheaper and more accurate here than rasterizing both layers and counting pixels, and that `assemble/geometry.py`'s zonal reducers don't support majority/mode anyway). Both inputs are reprojected to the target geobox's CRS (an equal-area CRS) before computing area. Ties in area are broken by the lowest class value, for reproducibility.
 
-- **Output path:** `layout.grid_store_path(..., "dominant_biome_by_gid3.parquet", ...)` is called **without** a `v2_family`, so per `grid_store_path()`'s own docstring it falls back fully to the legacy path shape regardless of `pipeline.layout` — i.e. this file's path does **not** change under `layout: v2`:
-  - `<data_root>/misc/processed/stage_2[_ease6933]/ecoregions/dominant_biome_by_gid3.parquet` (`stage_2_ease6933` under the checked-in `grid_id: ease6933` config) — this is also what it resolves to today even though `pipeline.layout: v2` is set.
+- **Output path:** written directly under the PREPARE root (not `grid_store_path()` — it's a small per-GID parquet table, not a `<family>.zarr` pixel-grid store):
+  - `<data_root>/prepared/ecoregions/dominant_biome_by_gid3.parquet`
 - **Format:** single parquet file, `Completion.PATH_EXISTS`.
 - **Schema** (one row per `GID_3` unit that has any intersecting RESOLVE polygon and a valid gadm code mapping):
 

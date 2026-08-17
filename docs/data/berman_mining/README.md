@@ -36,8 +36,7 @@ Manual download, not an automated HTTP fetch. `list_remote_files()` returns exac
 `download_async()` wraps the same synchronous, interactive `download()` in a thread-pool executor.
 
 - **Output path**
-  - legacy: `<data_root>/berman_mining/raw`
-  - v2: `<data_root>/raw/berman_mining`
+  - `<data_root>/raw/berman_mining`
 - **Format:** whatever the user supplies, copied byte-for-byte — expected to be `BCRT_baseline.dta` (Stata `.dta`) under a `baseline/` subfolder, per `MANUAL_FILE`.
 - **Caveats (from code):**
   - Requires `ctx.ssh_target` (an HPC/remote target) configured, else `_execute_fetch` logs a warning and returns `False` — same guard as every other source's FETCH, despite this FETCH being interactive/manual rather than a real remote transfer.
@@ -54,9 +53,8 @@ Not implemented — not in `STEPS`.
 
 `_execute_grid()`: casts both variables to `uint8` (`fillna(255)` before the cast), reprojects onto the pipeline's canonical target geobox (`get_target_geobox(ctx)`, **not** GADM-derived — see `REQUIRES` note above) via `odc.geo.xr.xr_reproject(..., resampling="nearest", dst_nodata=255)`, renames the `year` dim to `time` (coordinate `f"{year}-12-31"` per year), adds a constant `band=[1]` dimension, and writes a fresh CRS/grid-mapping encoding before writing to zarr (`zarr_format=3`, `consolidated=False`).
 
-- **Output path** (`layout.grid_store_path(..., v2_family="berman_mining")`; `<grid_id>`/`_ease6933` depend on `pipeline.grid`, currently `ease6933`)
-  - legacy: `<data_root>/berman_mining/processed/stage_2[_ease6933]/berman_mining_timeseries_reprojected.zarr`
-  - v2: `<data_root>/grid/<grid_id>/berman_mining.zarr` (flat)
+- **Output path** (`layout.grid_store_path(..., family="berman_mining")`; `<grid_id>` depends on `pipeline.grid`, currently `ease6933`)
+  - `<data_root>/grid/<grid_id>/berman_mining.zarr` (flat)
 - **Format:** single multi-year zarr store, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's own dimension names), `uint8` dtype, chunks `(1, 512, 512, 1)` (as declared in the encoding — dimension order not independently re-derived here), Blosc-zstd (level 3, bitshuffle) compression, `fill_value=255`, `Completion.PATH_EXISTS`.
 
 - **Variables**

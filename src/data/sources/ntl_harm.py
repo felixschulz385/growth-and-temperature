@@ -239,11 +239,8 @@ class NtlHarmSource(DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            "ntl_harm_timeseries_reprojected.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="ntl_harm",
+            family="ntl_harm",
         )
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:

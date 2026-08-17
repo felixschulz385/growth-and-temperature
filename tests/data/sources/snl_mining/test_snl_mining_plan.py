@@ -14,12 +14,11 @@ from src.data.sources.snl_mining.source import SnlMiningSource
 from src.data.sources.steps import PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, *, grid_id="legacy_4326", layout="legacy", **raw):
+def _make_source(tmp_path, *, grid_id="legacy_4326", **raw):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"),
         local_index_dir=str(tmp_path / "index"),
         grid_id=grid_id,
-        layout=layout,
     )
     cfg = SourceConfig.from_dict("snl_mining", dict(raw))
     return SnlMiningSource(ctx, cfg), ctx
@@ -63,9 +62,9 @@ def test_default_output_variables_is_radius_only(tmp_path):
 def test_default_duckdb_and_prepared_db_paths(tmp_path):
     source, ctx = _make_source(tmp_path)
     assert source.duckdb_path == os.path.join(
-        ctx.data_root, "snl_mining", "raw", "database.duckdb"
+        ctx.data_root, "raw", "snl_mining", "database.duckdb"
     )
-    assert source.prepared_db_path == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_1", "snl_mining_prepared.duckdb")
+    assert source.prepared_db_path == os.path.join(ctx.data_root, "prepared", "snl_mining", "snl_mining_prepared.duckdb")
 
 
 def test_verify_fetch_reports_missing_manual_export(tmp_path):
@@ -90,30 +89,8 @@ def test_verify_fetch_reports_present_manual_export(tmp_path):
     assert "present" in result.detail
 
 
-def test_duckdb_path_honors_layout_v2(tmp_path):
-    # Stage-0's manual export is this source's raw input -- routed through
-    # output_root(FETCH) (-> layout.raw_root()) so it moves under
-    # layout="v2" too, instead of hardcoding the legacy processed/stage_0
-    # shape. "database.duckdb" is shared with the scraper (scraper/config.py's
-    # DEFAULT_DB_PATH) -- one merged file for both intake paths.
-    v2_source, v2_ctx = _make_source(tmp_path, layout="v2")
-    assert v2_source.duckdb_path == os.path.join(
-        v2_ctx.data_root, "raw", "snl_mining", "database.duckdb"
-    )
-
-
-def test_prepared_db_path_honors_layout_v2(tmp_path):
-    # PREPARE is snl_mining's own artefact, like every other source's --
-    # routed through output_root() so it moves under layout="v2" too,
-    # instead of hardcoding the legacy processed/stage_1 shape.
-    v2_source, v2_ctx = _make_source(tmp_path, layout="v2")
-    assert v2_source.prepared_db_path == os.path.join(
-        v2_ctx.data_root, "prepared", "snl_mining", "snl_mining_prepared.duckdb"
-    )
-
-
 def test_prepared_db_path_config_override_still_wins(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2", aggregation={"prepared_db_path": "custom/prepared.duckdb"})
+    source, ctx = _make_source(tmp_path, aggregation={"prepared_db_path": "custom/prepared.duckdb"})
     assert source.prepared_db_path == os.path.join(ctx.data_root, "custom", "prepared.duckdb")
 
 
@@ -129,19 +106,15 @@ def test_default_radius_and_admin_variables(tmp_path):
         "mine_polygon_count": ("mine_polygons", None, "value", "uint16"),
     }
     assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
-        ctx.data_root, "misc", "processed", "stage_1", "gadm", "gadm_levelADM_1_simplified.gpkg"
+        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_1_simplified.gpkg"
+    )
+    assert source.admin_tables["mine_count_adm2"]["geometry_path"] == os.path.join(
+        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_2_simplified.gpkg"
     )
 
 
-def test_commodity_prices_path_resolution_legacy(tmp_path):
+def test_commodity_prices_path_resolution(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source.commodity_prices_path == os.path.join(
-        ctx.data_root, "commodity_prices", "processed", "stage_1", "commodity_prices.parquet"
-    )
-
-
-def test_commodity_prices_path_resolution_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
     assert source.commodity_prices_path == os.path.join(
         ctx.data_root, "prepared", "commodity_prices", "commodity_prices.parquet"
     )
@@ -150,19 +123,6 @@ def test_commodity_prices_path_resolution_v2(tmp_path):
 def test_commodity_prices_path_config_override_wins(tmp_path):
     source, ctx = _make_source(tmp_path, commodity_prices_path="custom/prices.parquet")
     assert source.commodity_prices_path == os.path.join(ctx.data_root, "custom", "prices.parquet")
-
-
-def test_default_admin_variables_geometry_path_honors_layout_v2(tmp_path):
-    # Cross-source reference to gadm's own PREPARE output -- must keep
-    # finding it under layout="v2" too (mirrors
-    # CountryClassificationsSource._plan_grid()'s equivalent gadm reference).
-    source, ctx = _make_source(tmp_path, layout="v2")
-    assert source.admin_tables["mine_count_adm1"]["geometry_path"] == os.path.join(
-        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_1_simplified.gpkg"
-    )
-    assert source.admin_tables["mine_count_adm2"]["geometry_path"] == os.path.join(
-        ctx.data_root, "prepared", "misc", "gadm", "gadm_levelADM_2_simplified.gpkg"
-    )
 
 
 def test_prepare_plan_empty_when_stage0_duckdb_missing(tmp_path):
@@ -194,31 +154,29 @@ def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(
-        source.output_root(PipelineStep.GRID), source.output_filename
+        source.output_root(PipelineStep.GRID), "snl_mining.zarr"
     )
     assert targets[0].inputs == (source.duckdb_path, source.commodity_prices_path)
 
 
 def test_output_root_grid_matches_old_get_hpc_output_path(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "snl_mining", "processed", "stage_2")
+    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "grid", "legacy_4326")
 
 
 def test_output_root_grid_honors_ease6933(tmp_path):
     # Regression test: _output_root() used to hardcode "stage_2" and ignore
     # ctx.grid_id entirely, unlike every other source's output_root().
     source, ctx = _make_source(tmp_path, grid_id="ease6933")
-    assert source.output_root(PipelineStep.GRID) == os.path.join(
-        ctx.data_root, "snl_mining", "processed", "stage_2_ease6933"
-    )
+    assert source.output_root(PipelineStep.GRID) == os.path.join(ctx.data_root, "grid", "ease6933")
 
 
-def test_prepare_target_uses_v2_family_path_under_layout_v2(tmp_path):
+def test_prepare_target_uses_family_zarr_path(tmp_path):
     # The PREPARE target's output path doesn't depend on prepared_db_path
     # existing (that's phase 1, built inside _execute_prepare on demand) --
     # planning only needs the stage-0 DuckDB and commodity_prices' PREPARE
     # output.
-    source, ctx = _make_source(tmp_path, layout="v2")
+    source, ctx = _make_source(tmp_path)
     os.makedirs(os.path.dirname(source.duckdb_path), exist_ok=True)
     open(source.duckdb_path, "w").close()
     os.makedirs(os.path.dirname(source.commodity_prices_path), exist_ok=True)
@@ -249,12 +207,12 @@ def test_export_admin_count_tables_writes_gid_keyed_parquet(tmp_path):
     con.execute("INSERT INTO adm2_year_counts VALUES (2020, 'USA.1.1_1', 2)")
     con.close()
 
-    mapping_path_1 = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_1")
+    mapping_path_1 = gid_mapping_path(ctx.data_root, ctx.grid_id, "GID_1")
     os.makedirs(os.path.dirname(mapping_path_1), exist_ok=True)
     with open(mapping_path_1, "w") as f:
         json.dump({"USA.1_1": 5}, f)  # FRA.2_1 deliberately absent
 
-    mapping_path_2 = gid_mapping_path(ctx.data_root, ctx.grid_id, ctx.layout, "GID_2")
+    mapping_path_2 = gid_mapping_path(ctx.data_root, ctx.grid_id, "GID_2")
     with open(mapping_path_2, "w") as f:
         json.dump({"USA.1.1_1": 7}, f)
 

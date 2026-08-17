@@ -113,9 +113,9 @@ class PlaDSource(ConfiguredFilesFetchMixin, DataSource):
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
         if step is PipelineStep.PREPARE:
-            # This source's PREPARE output lives at the on-disk location
-            # `stage_2` (via layout's own PipelineStep.GRID convention), not
-            # the generic `stage_1` a plain PREPARE would map to. Same
+            # This source's PREPARE output lives at the on-disk `grid/<grid_id>`
+            # location (via layout's own PipelineStep.GRID convention), not
+            # the generic `prepared/` path a plain PREPARE would map to. Same
             # rationale as gadm/osm/country_classifications: PREPARE writes
             # to the GRID path.
             return layout.output_root(
@@ -124,7 +124,6 @@ class PlaDSource(ConfiguredFilesFetchMixin, DataSource):
                 PipelineStep.GRID,
                 namespace=namespace,
                 grid_id=self.ctx.grid_id,
-                layout=self.ctx.layout,
             )
         return super().output_root(step, namespace=namespace)
 
@@ -199,7 +198,7 @@ class PlaDSource(ConfiguredFilesFetchMixin, DataSource):
     def _gid_mapping_file(self) -> str:
         from src.data.sources.misc.gadm import gid_mapping_path
 
-        return gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, self._gid_column)
+        return gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self._gid_column)
 
     def _resolve_plad_data_file(self) -> Optional[str]:
         raw_root = self.output_root(PipelineStep.FETCH)

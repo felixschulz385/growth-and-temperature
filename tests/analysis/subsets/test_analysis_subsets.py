@@ -184,15 +184,9 @@ def test_resolve_subset_missing_file_raises_with_available_list(tmp_path):
     assert "existing" in str(excinfo.value)
 
 
-def _write_partitioned_fixture(project_root, rows, mapping, layout="legacy"):
-    if layout == "v2":
-        classifications_dir = project_root / "data_nobackup" / "prepared" / "misc" / "country_classifications"
-        mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
-    else:
-        classifications_dir = (
-            project_root / "data_nobackup" / "misc" / "processed" / "stage_1" / "country_classifications"
-        )
-        mapping_dir = project_root / "data_nobackup" / "misc" / "processed" / "stage_2" / "gadm"
+def _write_partitioned_fixture(project_root, rows, mapping):
+    classifications_dir = project_root / "data_nobackup" / "prepared" / "misc" / "country_classifications"
+    mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
     classifications_dir.mkdir(parents=True)
     mapping_dir.mkdir(parents=True)
     pd.DataFrame(rows).to_parquet(classifications_dir / "classifications.parquet", index=False)
@@ -239,30 +233,6 @@ def test_resolve_subset_generates_partitioned_wb_subset_from_classifications(tmp
 
     assert country_ids == [10, 30]
     assert (subsets_dir / "WB_LO_LM_UM_1999.json").exists()
-
-
-def test_resolve_subset_generates_partitioned_subset_under_layout_v2(tmp_path):
-    # Regression test: _resolve_and_cache_partitioned_subset used to
-    # hardcode the legacy stage_1 classifications path directly, ignoring
-    # any layout selection -- it would have found nothing once that data
-    # moved under layout=v2's prepared/ tree.
-    project_root = tmp_path
-    subsets_dir = project_root / "data_nobackup" / "subsets"
-    _write_partitioned_fixture(
-        project_root,
-        [
-            {"iso3": "AAA", "HDI_LO_1999": True, "HDI_ME_1999": False, "HDI_HI_1999": False},
-            {"iso3": "BBB", "HDI_LO_1999": False, "HDI_ME_1999": True, "HDI_HI_1999": False},
-        ],
-        {"AAA": 10, "BBB": 20},
-        layout="v2",
-    )
-
-    country_ids = resolve_subset(
-        "HDI_LO_ME_HI_1999", subsets_dir=subsets_dir, project_root=project_root, layout="v2"
-    )
-
-    assert country_ids == [10, 20]
 
 
 def test_list_available_subsets_merges_files_and_aliases(tmp_path):
@@ -358,7 +328,7 @@ def test_generate_hodler_raschky_2014_reports_missing_countries_in_json(tmp_path
 
 def test_generate_all_default_subsets_continues_after_one_category_fails(tmp_path):
     project_root = tmp_path
-    mapping_dir = project_root / "data_nobackup" / "misc" / "processed" / "stage_2" / "gadm"
+    mapping_dir = project_root / "data_nobackup" / "grid" / "legacy_4326"
     mapping_dir.mkdir(parents=True)
     mapping_dir.joinpath("GID_0_code_mapping.json").write_text(
         json.dumps({"USA": 1, "BBB": 2})

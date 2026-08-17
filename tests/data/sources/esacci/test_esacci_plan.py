@@ -10,9 +10,9 @@ from src.data.sources.esacci import EsacciSource
 from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
-def _make_source(tmp_path, layout="legacy", **raw):
+def _make_source(tmp_path, **raw):
     ctx = PipelineContext(
-        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), layout=layout
+        data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index")
     )
     cfg = SourceConfig.from_dict("esacci", {"data_path": "esacci/landcover", **raw})
     return EsacciSource(ctx, cfg), ctx
@@ -34,8 +34,8 @@ def test_default_variables_to_keep(tmp_path):
     assert source.variables_to_keep == ["lccs_class"]
 
 
-def test_output_root_fetch_and_prepare_use_top_level_trees_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
+def test_output_root_fetch_and_prepare_use_top_level_trees(tmp_path):
+    source, ctx = _make_source(tmp_path)
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "esacci/landcover")
 
 
@@ -60,7 +60,7 @@ def test_prepare_plan_one_target_covering_every_available_year_prefers_nc4(tmp_p
     assert target.completion == Completion.MARKER
     assert target.meta["years"] == [2019, 2020, 2021]
     assert target.meta["raw_files"][2020] == "2020/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2020-v2.0.7.nc4"
-    assert target.output_path.endswith("esacci_lc_timeseries_reprojected.zarr")
+    assert target.output_path.endswith("land_cover.zarr")
 
 
 def test_prepare_plan_respects_year_selection(tmp_path):
@@ -76,6 +76,6 @@ def test_prepare_plan_respects_year_selection(tmp_path):
     assert targets[0].meta["years"] == [2020, 2021]
 
 
-def test_output_path_uses_v2_family_under_layout_v2(tmp_path):
-    source, ctx = _make_source(tmp_path, layout="v2")
+def test_output_path_uses_family(tmp_path):
+    source, ctx = _make_source(tmp_path)
     assert source._output_path() == os.path.join(ctx.data_root, "grid", "legacy_4326", "land_cover.zarr")

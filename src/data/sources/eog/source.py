@@ -28,7 +28,7 @@ if nothing matched), rather than from `cfg.source_id` -- the literal
 every config committed in `orchestration/configs/data.yaml`, but the two were
 never actually pinned together -- editing `data_path`/`base_url` without
 touching the block key would have silently mis-set `source_type`, which
-drives PREPARE's output variable name and its output filename/`v2_family`.
+drives PREPARE's output variable name and its output filename/`family`.
 Now derived from `cfg.source_id` directly, the same authoritative signal
 `GlassSource.__init__` already uses for its own MODIS/AVHRR variant
 (`data_source_kind`).
@@ -574,11 +574,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            f"{self.source_type}_timeseries_reprojected.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family=f"eog_{self.source_type}",
+            family=f"eog_{self.source_type}",
         )
 
     def _execute_prepare(self, target: StepTarget) -> bool:

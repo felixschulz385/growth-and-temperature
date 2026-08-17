@@ -20,8 +20,7 @@ logs a warning and returns `False`.
   → `land-polygons-complete-4326.zip`. `data.yaml`'s `osm:` block repeats
   these same defaults verbatim.
 - **Output path**:
-  - legacy: `<data_root>/misc/raw/osm`
-  - v2: `<data_root>/raw/misc/osm`
+  - `<data_root>/raw/misc/osm`
 - **Format**: one zip archive containing an ESRI Shapefile (`.shp` + sidecars)
   of OSM land polygons in EPSG:4326 (per the URL/filename, "land-polygons-complete-4326").
 - **Caveats**: no URL-rotation/expiry caveat is documented in code or
@@ -43,8 +42,7 @@ logs a warning and returns `False`.
 CRS is EPSG:4326).
 
 - **Output path**:
-  - legacy: `<data_root>/misc/processed/stage_1/osm/land_polygons_simplified.gpkg`
-  - v2: `<data_root>/prepared/misc/osm/land_polygons_simplified.gpkg`
+  - `<data_root>/prepared/misc/osm/land_polygons_simplified.gpkg`
 - **Format**: single GeoPackage (GPKG), one layer, geometry simplified;
   attribute columns are whatever the source shapefile carried through
   unchanged — not enumerated in code (the function copies the GeoDataFrame
@@ -66,9 +64,8 @@ write explicitly applies `write_crs_and_grid_mapping_encoding()` (CRS +
 fixes a real bug class where relying on `rasterize()`'s own georeferencing
 alone left `.rio.crs` returning `None` on later reads.
 
-- **Output path** (`layout.grid_store_path(..., v2_family="land_mask")`):
-  - legacy: `<data_root>/misc/processed/stage_2[_ease6933 if grid_id="ease6933"]/osm/land_mask.zarr`
-  - v2: `<data_root>/grid/<grid_id>/land_mask.zarr` (flat, no namespace)
+- **Output path** (`layout.grid_store_path(..., family="land_mask")`):
+  - `<data_root>/grid/<grid_id>/land_mask.zarr` (flat, no namespace)
 - **Format**: Zarr store, Blosc/zstd-compressed (`clevel=3, shuffle=bitshuffle`),
   coordinates rounded to 5 decimals. `Completion.MARKER` (sibling completion
   file — directory output).

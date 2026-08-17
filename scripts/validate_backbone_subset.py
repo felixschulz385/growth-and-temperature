@@ -137,7 +137,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output-dir",
         default=None,
-        help="Where to write the validation disc-ladder stores (default: <hpc-root>/misc/processed/stage_1/misc/backbone_validate)",
+        help="Where to write the validation disc-ladder stores (default: <hpc-root>/prepared/misc/misc/backbone_validate)",
     )
     parser.add_argument("--log-file", default=None)
     return parser.parse_args()
@@ -310,7 +310,7 @@ def main() -> int:
     logger.info("=== Backbone raster-pipeline validation (docs/design/05-migration.md step 8) ===")
     logger.info("hpc_root=%s resolution_m=%s lat_clip_deg=%s r_max_km=%s ladder_km=%s", args.hpc_root, args.resolution_m, args.lat_clip_deg, args.r_max_km, args.ladder_km)
 
-    cache_dir = Path(args.hpc_root) / "misc" / "processed" / "stage_1" / "misc"
+    cache_dir = Path(args.hpc_root) / "prepared" / "misc" / "misc"
     output_dir = Path(args.output_dir) if args.output_dir else cache_dir / "backbone_validate"
     output_dir.mkdir(parents=True, exist_ok=True)
 

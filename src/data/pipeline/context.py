@@ -16,7 +16,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Optional
 
 from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
-from src.data.sources.layout import EASE_GRID_ID, LEGACY_GRID_ID, LEGACY_LAYOUT, V2_LAYOUT
+from src.data.sources.layout import EASE_GRID_ID, LEGACY_GRID_ID
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +33,6 @@ class PipelineContext:
         ssh_target: Optional[str] = None,
         key_file: Optional[str] = None,
         grid_id: str = LEGACY_GRID_ID,
-        layout: str = LEGACY_LAYOUT,
         dask_threads: Optional[int] = None,
         dask_memory_limit: Optional[str] = None,
         dashboard_port: int = DEFAULT_DASHBOARD_PORT,
@@ -51,10 +50,6 @@ class PipelineContext:
         if grid_id not in (LEGACY_GRID_ID, EASE_GRID_ID):
             raise ValueError(f"Unknown grid_id '{grid_id}', expected one of ({LEGACY_GRID_ID!r}, {EASE_GRID_ID!r})")
         self.grid_id = grid_id
-
-        if layout not in (LEGACY_LAYOUT, V2_LAYOUT):
-            raise ValueError(f"Unknown layout '{layout}', expected one of ({LEGACY_LAYOUT!r}, {V2_LAYOUT!r})")
-        self.layout = layout
 
         self.dask_threads = dask_threads
         self.dask_memory_limit = dask_memory_limit

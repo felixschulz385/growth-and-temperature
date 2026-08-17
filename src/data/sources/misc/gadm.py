@@ -5,10 +5,8 @@ GADM-specific slice of `src/data/download/sources/misc.py::MiscDataSource`
 and `src/data/preprocess/sources/misc.py::MiscPreprocessor`'s
 `_process_gadm_target`/`_rasterize_gadm_target`/`_create_empty_gadm_zarr`/
 `_process_gadm_tiles` (`stage="vector"`, `stage="spatial"`, both under
-PREPARE). Output paths unchanged: `misc/processed/stage_1/gadm/gadm_level*_simplified.gpkg`,
-`misc/processed/stage_2/gadm/countries_grid.zarr` -- so `snl_mining`'s config and
-`src/data/common/neighbourhood/`'s cross-border masking (docs/design/03-neighbourhood-engine.md
-§5) need no edits.
+PREPARE). Output paths: `prepared/misc/gadm/gadm_level*_simplified.gpkg`,
+`grid/<grid_id>/country_id.zarr`.
 
 PREPARE rasterizes every ADM level present in its own vector output (not just
 ADM_0/ADM_1), one zarr variable per level named after its GADM id column
@@ -69,7 +67,7 @@ def _gid_column_for_level(level: str) -> str:
     return level.replace("ADM_", "GID_")
 
 
-def gid_mapping_path(data_root: str, grid_id: str, layout_mode: str, gid_col: str) -> str:
+def gid_mapping_path(data_root: str, grid_id: str, gid_col: str) -> str:
     """Path to gadm GRID's `{gid_col}_code_mapping.json` sidecar for another
     source to consult (docs/design/09-integrated-pipeline.md §2: cross-source
     coupling is on artefact paths, never a class import). Shared by every
@@ -78,10 +76,7 @@ def gid_mapping_path(data_root: str, grid_id: str, layout_mode: str, gid_col: st
     per-pixel `GID_N` grid uses, so a small per-GID table can be merged
     directly onto assembled rows instead of being rasterized
     (`src.data.assemble.processors.TileProcessor`'s `join_on` mechanism)."""
-    gadm_zarr = layout.grid_store_path(
-        data_root, "misc", "countries_grid.zarr", namespace="gadm",
-        grid_id=grid_id, layout=layout_mode, v2_family="country_id",
-    )
+    gadm_zarr = layout.grid_store_path(data_root, "misc", grid_id=grid_id, family="country_id")
     return os.path.join(os.path.dirname(gadm_zarr), f"{gid_col}_code_mapping.json")
 
 
@@ -155,11 +150,8 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
-            "countries_grid.zarr",
-            namespace=self.cfg.namespace,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
-            v2_family="country_id",
+            family="country_id",
         )
 
     def _plan_prepare(self) -> List[StepTarget]:

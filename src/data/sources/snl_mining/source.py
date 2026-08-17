@@ -24,7 +24,7 @@ retried rasterization still skips the expensive DuckDB rebuild.
 
 Ports `src/data/preprocess/sources/snl_mining.py::SnlMiningPreprocessor`.
 `REQUIRES` on gadm's PREPARE -- both for the admin-polygon join (reads
-`misc/processed/stage_1/gadm/gadm_levelADM_{1,2}_simplified.gpkg`, the same
+`prepared/misc/gadm/gadm_levelADM_{1,2}_simplified.gpkg`, the same
 GADM artefact PLAD depends on) and for `GID_1`/`GID_2_code_mapping.json` (to
 translate this source's own admin-count tables into gadm's integer ids --
 see below) -- both produced by gadm's PREPARE directly; `PipelineStep.GRID`
@@ -147,8 +147,7 @@ class SnlMiningSource(DataSource):
         # stage-0 is a pre-pipeline manual export (module docstring), not a
         # FETCH/PREPARE/GRID artefact in the pipeline's own sense -- but it is
         # this source's raw input, so it lives under output_root(FETCH) (->
-        # layout.raw_root()) like every other source's downloaded bytes,
-        # respecting ctx.layout instead of hardcoding the legacy shape.
+        # layout.raw_root()) like every other source's downloaded bytes.
         # "database.duckdb" is shared with the scraper (scraper/config.py's
         # DEFAULT_DB_PATH): the manual-import notebook's properties/
         # property_texts/property_llm_years/etc. tables and the scraper's own
@@ -163,8 +162,7 @@ class SnlMiningSource(DataSource):
             self._resolve_path(prepared_db_override)
             if prepared_db_override
             # PREPARE's own output -- route through output_root() like every
-            # other source so this respects ctx.layout (docs/design/09-integrated-pipeline.md
-            # §14's v2 rename) instead of hardcoding the legacy stage_1 shape.
+            # other source, instead of hardcoding the path.
             else os.path.join(self.output_root(PipelineStep.PREPARE), "snl_mining_prepared.duckdb")
         )
 
@@ -186,7 +184,7 @@ class SnlMiningSource(DataSource):
             self._resolve_path(commodity_prices_path_override)
             if commodity_prices_path_override
             else os.path.join(
-                layout.output_root(self.ctx.data_root, "commodity_prices", PipelineStep.PREPARE, layout=self.ctx.layout),
+                layout.output_root(self.ctx.data_root, "commodity_prices", PipelineStep.PREPARE),
                 "commodity_prices.parquet",
             )
         )
@@ -246,13 +244,11 @@ class SnlMiningSource(DataSource):
     def _default_admin_variables(self) -> Dict[str, Dict[str, str]]:
         """Cross-source reference to gadm's own PREPARE output (REQUIRES on
         gadm's PREPARE, see module docstring). Resolved through
-        `layout.output_root()` -- not hardcoded to the legacy `misc/processed/
-        stage_1/gadm` shape -- so this keeps finding gadm's simplified vector
-        files under `ctx.layout="v2"` too, matching how
+        `layout.output_root()`, matching how
         `CountryClassificationsSource._plan_prepare()` resolves its own
         cross-source gadm reference (src/data/sources/misc/country_classifications.py)."""
         gadm_prepare_dir = layout.output_root(
-            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm", layout=self.ctx.layout
+            self.ctx.data_root, "misc", PipelineStep.PREPARE, namespace="gadm"
         )
         return {
             "mine_count_adm1": {
@@ -318,10 +314,8 @@ class SnlMiningSource(DataSource):
                 output_path=layout.grid_store_path(
                     self.ctx.data_root,
                     self.cfg.data_path,
-                    self.output_filename,
                     grid_id=self.ctx.grid_id,
-                    layout=self.ctx.layout,
-                    v2_family="snl_mining",
+                    family="snl_mining",
                 ),
                 inputs=(self.duckdb_path, self.commodity_prices_path),
                 completion=Completion.PATH_EXISTS,
@@ -883,7 +877,6 @@ class SnlMiningSource(DataSource):
             self.cfg.data_path,
             PipelineStep.GRID,
             grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
         )
 
     def output_root(self, step: PipelineStep, *, namespace: str | None = None) -> str:
@@ -1088,7 +1081,7 @@ class SnlMiningSource(DataSource):
         try:
             for variable, table_spec in self.admin_tables.items():
                 gid_col = table_spec["code_column"]
-                mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, gid_col)
+                mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, gid_col)
                 if not os.path.exists(mapping_file):
                     logger.error("GADM %s mapping file not found: %s", gid_col, mapping_file)
                     return False

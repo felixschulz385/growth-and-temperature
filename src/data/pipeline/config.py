@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 from src.config.runtime import get_paths_config, get_remote_config
 from src.data.pipeline.context import PipelineContext
-from src.data.sources.layout import LEGACY_GRID_ID, LEGACY_LAYOUT
+from src.data.sources.layout import LEGACY_GRID_ID
 
 #: Fields SourceConfig models explicitly; everything else in a source's config
 #: block lands in `raw` instead of being silently dropped.
@@ -77,7 +77,6 @@ def build_context(config: Mapping[str, Any]) -> PipelineContext:
         ssh_target=remote.get("ssh_target"),
         key_file=remote.get("key_file"),
         grid_id=pipeline_cfg.get("grid", LEGACY_GRID_ID),
-        layout=pipeline_cfg.get("layout", LEGACY_LAYOUT),
     )
 
 

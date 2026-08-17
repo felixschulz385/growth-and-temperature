@@ -28,10 +28,11 @@ carrying an identical rasterized boolean.
 Ports `src/data/download/sources/misc.py::MiscDataSource` (hdi + worldbank_
 income_classes configured files) and `src/data/preprocess/sources/misc.py::
 MiscPreprocessor`'s `_process_country_classifications_target`. Output paths:
-`misc/processed/stage_1/country_classifications/classifications.parquet`
-(unchanged -- the real, externally-read intermediate), `misc/processed/
-stage_2/country_classifications/classifications_by_gid0.parquet` (was
-`classifications_grid.zarr`, this PREPARE target's own output).
+`prepared/misc/country_classifications/classifications.parquet` (the real,
+externally-read intermediate), `prepared/misc/country_classifications/
+classifications_by_gid0.parquet` (this PREPARE target's own output, no
+readers anywhere in src/ today -- kept for future use, not a pixel-grid
+zarr).
 """
 
 from __future__ import annotations
@@ -132,23 +133,16 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
 
     def _classifications_path(self) -> str:
         """The joined-but-not-yet-GID_0-mapped intermediate -- a real,
-        externally-read artefact (module docstring), not internal
-        bookkeeping, so it keeps this exact stage_1 path."""
+        externally-read artefact (module docstring), so it keeps its own
+        PREPARE-stage path (`prepared/<data_path>/<namespace>/`)."""
         return os.path.join(self.output_root(PipelineStep.PREPARE), "classifications.parquet")
 
     def _output_path(self) -> str:
-        # v2_family intentionally omitted: this is a small per-GID parquet
-        # table, not a `<family>.zarr` pixel-grid store, so it doesn't
-        # participate in layout:v2's "one store per family" zarr directory --
-        # grid_store_path() falls back to the legacy per-source path shape
-        # regardless of ctx.layout.
-        return layout.grid_store_path(
-            self.ctx.data_root,
-            self.cfg.data_path,
-            "classifications_by_gid0.parquet",
-            namespace=self.cfg.namespace,
-            grid_id=self.ctx.grid_id,
-            layout=self.ctx.layout,
+        # A small per-GID parquet table, not a `<family>.zarr` pixel-grid
+        # store, so it lives under prepared/, not grid/<grid_id>/ (no
+        # readers anywhere in src/ today; kept for future use).
+        return os.path.join(
+            self.output_root(PipelineStep.PREPARE), "classifications_by_gid0.parquet"
         )
 
     def _plan_prepare(self) -> List[StepTarget]:
@@ -213,7 +207,7 @@ class CountryClassificationsSource(ConfiguredFilesFetchMixin, DataSource):
 
         from src.data.sources.misc.gadm import gid_mapping_path
 
-        country_mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, self.ctx.layout, "GID_0")
+        country_mapping_file = gid_mapping_path(self.ctx.data_root, self.ctx.grid_id, "GID_0")
         if not os.path.exists(country_mapping_file):
             logger.error("Country mapping file not found: %s", country_mapping_file)
             return False

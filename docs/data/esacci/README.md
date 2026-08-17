@@ -24,8 +24,7 @@ Source data: ESA CCI Land Cover, the `satellite-land-cover` dataset on the Coper
 Issues one CDS API request per year via `cdsapi.Client.retrieve(...)` (synchronous; `download_async` runs it in a thread-pool executor since the CDS client has no native async mode). The remote "URL" is a virtual `cdsapi://satellite-land-cover?year=<YYYY>&version=...` URI parsed back into a `(dataset, request)` pair by `_parse_cdsapi_url`. Years default to `cfg.year_range` if set, else `range(1992, 2023)` (`list_remote_files`/`get_all_entrypoints`). Versions requested default to `["v2_0_7cds", "v2_1_1"]` (`DEFAULT_VERSIONS`, overridable via `cfg.raw["versions"]`); CDS auth reads `~/.cdsapirc` unless `cfg.raw["cdsapi_rc"]` points elsewhere. Requires `ctx.ssh_target` to be configured, same as the other two sources.
 
 - **Output path**
-  - legacy: `<data_root>/esacci/landcover/raw`
-  - v2: `<data_root>/raw/esacci/landcover`
+  - `<data_root>/raw/esacci/landcover`
 - **Format:** raw files as downloaded from CDS — one file per year, named `<year>/ESACCI-LC-L4-LCCS-Map-300m-P1Y-<year>-v2.0.7.nc` per the `rel_path` template in `list_remote_files`; the actual file the CDS API returns is a zip archive wrapping a NetCDF (see PREPARE, which unzips it), despite the `.nc`-looking name in the template.
 - **Caveats (from code):** on a failed `retrieve()`, `download` removes any partially-written `output_path` before re-raising, so a failed fetch doesn't leave a corrupt file behind. `Completion.NEVER`: the FETCH target always re-runs.
 
@@ -34,8 +33,7 @@ Issues one CDS API request per year via `cdsapi.Client.retrieve(...)` (synchrono
 Builds one annual zarr per year (`.nc4` preferred over `.nc` if both exist for a year, per `_plan_prepare`'s candidate selection). Handles the zip-wrapped NetCDF transparently: tries `zipfile.ZipFile` first and extracts the first `.nc` member to a temp path, falling back to opening the file directly if it isn't actually a zip (`BadZipFile`). Opens with `xr.open_dataset(..., engine="h5netcdf", mask_and_scale=False, ...)`, keeps only the `lccs_class` variable (logs an error and returns `None` if missing), renames dims to `latitude`/`longitude`, ensures `time` (`<year>-12-31`) and `band` dims, writes `EPSG:4326`.
 
 - **Output path**
-  - legacy: `<data_root>/esacci/landcover/processed/stage_1/<year>.zarr`
-  - v2: `<data_root>/prepared/esacci/landcover/<year>.zarr`
+  - `<data_root>/prepared/esacci/landcover/<year>.zarr`
 - **Format:** one zarr store per year, dims `(time=1, band=1, latitude, longitude)`, CRS `EPSG:4326`, chunks `(1, 1, 512, 512)`, Blosc-zstd (level 3, bitshuffle) compression, `zarr_format=3`, `consolidated=False`. Encoding preserves the source dtype explicitly (`"dtype": str(ds[var].dtype)`), rather than forcing a cast.
 - **Schema**
 
@@ -50,8 +48,7 @@ Builds one annual zarr per year (`.nc4` preferred over `.nc` if both exist for a
 Reprojects every annual PREPARE zarr onto the pipeline's canonical target geobox into one multi-year timeseries zarr. Since `lccs_class` is categorical, this source explicitly overrides `SpatialProcessor.process_spatial_standard`'s defaults with `dst_nodata=0` and `packaging_attrs={}` (disabling the scale/offset packing the other two sources get by default) — resampling stays at the function's default `"nearest"` (not passed explicitly, but the module docstring calls this out as deliberate: "categorical -> always nearest").
 
 - **Output path**
-  - legacy: `<data_root>/esacci/landcover/processed/stage_2[_ease6933]/esacci_lc_timeseries_reprojected.zarr` (`_ease6933` suffix when `ctx.grid_id == "ease6933"`; the checked-in `data.yaml` sets `pipeline.grid: ease6933`)
-  - v2: `<data_root>/grid/<grid_id>/land_cover.zarr` (flat directory; `<grid_id>` is `ease6933` under the checked-in config)
+  - `<data_root>/grid/<grid_id>/land_cover.zarr` (flat directory; `<grid_id>` is `ease6933` under the checked-in config)
 - **Format:** single multi-year zarr, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's CRS — `latitude`/`longitude` for geographic, `y`/`x` for projected e.g. EASE-Grid 2.0 EPSG:6933), CRS via `.rio.write_crs()`/`grid_mapping="spatial_ref"`, Blosc-zstd compression, chunks `(1, 1, 512, 512)`. Storage dtype is `uint16` (`SpatialProcessor.create_empty_target_zarr`'s default `dtype` parameter — not overridden by this source) holding the raw class codes, unscaled (`packaging_attrs={}` means no `scale_factor`/`add_offset` are applied).
 
 - **Variables**
