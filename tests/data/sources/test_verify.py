@@ -1,12 +1,15 @@
 """src.data.sources.verify -- the generic GRID-output sanity checker and its
 fingerprint-checked cache.
 
-Covers: format dispatch (zarr/geotiff/parquet/unrecognized), the four checks
-("has expected variables", "has a CRS", "sample is finite", "sample is
-within value_range"), range_vars excluding a variable from the range check,
-striding robustness against globally-sparse data (a fixed center-crop would
-false-fail these), the manifest cache (hit/miss/invalidation/force), and
-verification_meta()'s data.yaml `verification:`-block override behavior.
+Covers: format dispatch (zarr/geotiff/parquet/partitioned-parquet-parts/
+unrecognized), the four checks ("has expected variables", "has a CRS",
+"sample is finite", "sample is within value_range" -- the partitioned-parquet
+path has no CRS concept, so only the other three apply there), range_vars
+excluding a variable from the range check, striding/sampling robustness
+against globally-sparse data or many-part outputs (a fixed center-crop or
+first-N-files pick would false-fail these), the manifest cache
+(hit/miss/invalidation/force), and verification_meta()'s data.yaml
+`verification:`-block override behavior.
 """
 
 import json
@@ -34,6 +37,20 @@ def _write_zarr(path, data_vars, *, write_crs=True, crs_attr=False):
     elif crs_attr:
         ds.attrs["crs"] = "EPSG:4326"
     ds.to_zarr(path, mode="w", consolidated=False)
+    return path
+
+
+def _write_parquet_parts(path, columns, *, n_tiles=4, rows_per_tile=25):
+    """Mimics `run_tiled_prepare`'s own output shape: `ix=<row>/iy=<col>/
+    part[-<year>].parquet`, `cell_id` + optional `year` + data columns."""
+    os.makedirs(path, exist_ok=True)
+    for i in range(n_tiles):
+        tile_dir = os.path.join(path, f"ix=000{i}", "iy=0000")
+        os.makedirs(tile_dir, exist_ok=True)
+        data = {"cell_id": np.arange(i * rows_per_tile, (i + 1) * rows_per_tile, dtype="uint32")}
+        for name, values in columns.items():
+            data[name] = values(rows_per_tile) if callable(values) else np.full(rows_per_tile, values)
+        pd.DataFrame(data).to_parquet(os.path.join(tile_dir, "part.parquet"))
     return path
 
 
@@ -168,6 +185,105 @@ def test_zarr_range_vars_excludes_variable_from_range_check(tmp_path):
         path, expected_vars=("mean", "std"), value_range=(150, 350), range_vars=("mean",)
     )
     assert result_excluded.ok is True
+
+
+# --- partitioned parquet parts (run_tiled_prepare's output shape) ----------
+
+
+def test_partitioned_table_good_output_passes(tmp_path):
+    path = str(tmp_path / "pm25")
+    _write_parquet_parts(path, {"pm25": lambda n: np.random.uniform(5, 50, size=n).astype("float32")})
+    result = verify_grid_output(path, expected_vars=("pm25",), value_range=(0, 500))
+    assert result.ok is True
+    assert "part file" in result.detail
+
+
+def test_partitioned_table_missing_expected_variable_fails(tmp_path):
+    path = str(tmp_path / "pm25")
+    _write_parquet_parts(path, {"pm25": lambda n: np.random.uniform(5, 50, size=n).astype("float32")})
+    result = verify_grid_output(path, expected_vars=("nope",))
+    assert result.ok is False
+    assert "missing expected column" in result.detail
+
+
+def test_partitioned_table_no_data_columns_fails_when_no_expected_vars_given(tmp_path):
+    path = str(tmp_path / "onlykeys")
+    os.makedirs(os.path.join(path, "ix=0000", "iy=0000"), exist_ok=True)
+    pd.DataFrame({"cell_id": np.arange(10, dtype="uint32"), "year": np.full(10, 2020)}).to_parquet(
+        os.path.join(path, "ix=0000", "iy=0000", "part-2020.parquet")
+    )
+    result = verify_grid_output(path)
+    assert result.ok is False
+    assert "no data columns" in result.detail
+
+
+def test_partitioned_table_no_part_files_falls_through_to_existence_only(tmp_path):
+    # An empty directory with no zarr metadata and no parquet parts -- not
+    # actually one of the shapes this checker knows how to open.
+    path = str(tmp_path / "empty_dir")
+    os.makedirs(path, exist_ok=True)
+    result = verify_grid_output(path)
+    assert result.ok is True
+    assert "existence-only" in result.detail
+
+
+def test_partitioned_table_all_nan_sample_fails(tmp_path):
+    path = str(tmp_path / "allnan")
+    _write_parquet_parts(path, {"pm25": lambda n: np.full(n, np.nan, dtype="float32")})
+    result = verify_grid_output(path, expected_vars=("pm25",))
+    assert result.ok is False
+    assert "entirely nodata/NaN" in result.detail
+
+
+def test_partitioned_table_out_of_range_sample_fails(tmp_path):
+    path = str(tmp_path / "badrange")
+    _write_parquet_parts(path, {"pm25": lambda n: np.full(n, 99999.0, dtype="float32")})
+    result = verify_grid_output(path, expected_vars=("pm25",), value_range=(0, 500))
+    assert result.ok is False
+    assert "outside expected range" in result.detail
+
+
+def test_partitioned_table_samples_across_many_part_files(tmp_path):
+    # More parts than the 8-file sample cap -- the bad value only lives in
+    # one of them, so the fixed 8-file spread must actually reach it (same
+    # "spread across the extent" guarantee _stride_sample gives zarr chunks).
+    path = str(tmp_path / "manyparts")
+    os.makedirs(path, exist_ok=True)
+    n_tiles = 20
+    for i in range(n_tiles):
+        tile_dir = os.path.join(path, f"ix={i:04d}", "iy=0000")
+        os.makedirs(tile_dir, exist_ok=True)
+        value = 99999.0 if i == n_tiles - 1 else 10.0
+        pd.DataFrame(
+            {"cell_id": np.arange(5, dtype="uint32"), "pm25": np.full(5, value, dtype="float32")}
+        ).to_parquet(os.path.join(tile_dir, "part.parquet"))
+    result = verify_grid_output(path, expected_vars=("pm25",), value_range=(0, 500))
+    assert result.ok is False
+
+
+def test_partitioned_table_range_vars_excludes_variable_from_range_check(tmp_path):
+    path = str(tmp_path / "glasslike")
+    _write_parquet_parts(
+        path,
+        {
+            "mean": lambda n: np.random.uniform(250, 300, size=n).astype("float32"),
+            "std": lambda n: np.random.uniform(1, 10, size=n).astype("float32"),
+        },
+    )
+    result_no_exclusion = verify_grid_output(path, expected_vars=("mean", "std"), value_range=(150, 350))
+    assert result_no_exclusion.ok is False
+
+    result_excluded = verify_grid_output(
+        path, expected_vars=("mean", "std"), value_range=(150, 350), range_vars=("mean",)
+    )
+    assert result_excluded.ok is True
+
+
+def test_partitioned_table_year_column_present_is_not_treated_as_a_data_column(tmp_path):
+    path = str(tmp_path / "withyear")
+    _write_parquet_parts(path, {"pm25": lambda n: np.random.uniform(5, 50, size=n).astype("float32"), "year": 2020})
+    result = verify_grid_output(path)  # no expected_vars -- must infer data columns, excluding cell_id/year
+    assert result.ok is True
 
 
 # --- geotiff -----------------------------------------------------------------

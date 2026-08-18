@@ -11,8 +11,11 @@ per-day-HDF-crawl-then-naive-annual-resample pipeline the former
   convention) via the shared month-first `composite_annual_stats()`
   compositor, and is auto-pushed to HPC per file (existing
   `transfer_mode=auto` machinery).
-- PREPARE mosaics tiles and reprojects via the shared `SpatialProcessor`,
-  exactly like `ModisSource._execute_prepare`.
+- PREPARE mosaics each year's fetched tiles once, then reprojects onto the
+  canonical grid tile-by-tile via the shared `run_tiled_prepare` driver
+  (`src/data/common/prepare/driver.py`), exactly like `ModisSource.
+  _execute_prepare` -- a single `key="all"` target, output is `cell_id`-keyed
+  parquet, not a Zarr store.
 
 Registered twice, mirroring `ModisSource`'s `main`/`extended` dual
 registration: `glass_modis` (variant "lst", `GLASS06A01`, single daily band
@@ -52,6 +55,7 @@ import pandas as pd
 import rioxarray as rxr
 import xarray as xr
 
+from src.data.common import tiling
 from src.data.common.fetch import manifest
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -257,6 +261,9 @@ class GlassModisSource(DataSource):
 
     DATA_SOURCE_NAME = "glass"
 
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
+
     #: 8-band shape every GLASS-MODIS variant's FETCH output carries (§2).
     STAT_VARS = ("mean", "std", "max", "min", "count_above", "count_below", "valid_period_count", "valid_month_count")
     #: "std"/the two count vars aren't on the same absolute physical scale as
@@ -330,6 +337,7 @@ class GlassModisSource(DataSource):
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"glass_modis_{self.variant}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
 
         # In-run-only memoization of one (year, day) directory listing across
         # every sibling tile sharing that day, for the lifetime of this
@@ -752,14 +760,19 @@ class GlassModisSource(DataSource):
             self.path_prefix,
             grid_id=self.ctx.grid_id,
             family=f"glass_modis_{self.variant}",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store
         )
 
     def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        """One PREPARE target for the whole source ("all"), matching
+        `ModisSource._discover_prepare` -- `_execute_prepare` loops over all
+        available years internally via `run_tiled_prepare` rather than one
+        StepTarget per year sharing the same `output_path`."""
         stage1_root = self.output_root(PipelineStep.FETCH)
         output_path = self._prepare_output_path()
         years = list(range(self.day_range_start[0], self.day_range_end[0] + 1))
 
-        targets = []
+        available_years = []
         for year in years:
             if not selection.matches_year(year) or not selection.matches_key(str(year)):
                 continue
@@ -767,33 +780,31 @@ class GlassModisSource(DataSource):
             if not os.path.isdir(year_dir):
                 logger.warning("No stage-1 output for year %d at %s", year, year_dir)
                 continue
-            tile_files = sorted(os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif"))
-            if not tile_files:
+            if not any(f.endswith(".tif") for f in os.listdir(year_dir)):
                 continue
-            targets.append(
-                StepTarget(
-                    source_id=self.cfg.source_id,
-                    step=PipelineStep.PREPARE,
-                    key=str(year),
-                    output_path=output_path,
-                    inputs=tuple(tile_files),
-                    # Same quirk ModisSource's PREPARE keeps -- no override/
-                    # existence check before writing a year into the shared
-                    # multi-year zarr (modis/source.py module docstring).
-                    completion=Completion.NEVER,
-                    meta={
-                        "year": year,
-                        "years_all": years,
-                        **verify.verification_meta(
-                            self.cfg.raw,
-                            expected_vars=self.STAT_VARS,
-                            value_range=(self.value_min, self.value_max),
-                            range_vars=self.RANGE_VARS,
-                        ),
-                    },
-                )
+            available_years.append(year)
+
+        if not available_years:
+            return []
+
+        return [
+            StepTarget(
+                source_id=self.cfg.source_id,
+                step=PipelineStep.PREPARE,
+                key="all",
+                output_path=output_path,
+                completion=Completion.MARKER,
+                meta={
+                    "years": available_years,
+                    **verify.verification_meta(
+                        self.cfg.raw,
+                        expected_vars=self.STAT_VARS,
+                        value_range=(self.value_min, self.value_max),
+                        range_vars=self.RANGE_VARS,
+                    ),
+                },
             )
-        return targets
+        ]
 
     def _read_annual_geotiff(self, path: str, year: int) -> xr.Dataset:
         import rasterio
@@ -820,10 +831,49 @@ class GlassModisSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
         from src.data.sources.modis import tiles as modis_util
+        from src.data.sources.steps import is_complete
 
-        year = target.meta["year"]
+        if not self.cfg.override and is_complete(target):
+            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
+            return True
+
+        stage1_root = self.output_root(PipelineStep.FETCH)
+        years = target.meta["years"]
+
+        # One year's mosaic memoized at a time -- `run_tiled_prepare` iterates
+        # (year, tile) year-major, so at most one year's full-mosaic Dataset
+        # is ever held in memory (same pattern as GlassAvhrrSource._execute_prepare).
+        mosaic_cache: Dict[int, xr.Dataset] = {}
+
+        def year_mosaic(year: int) -> Optional[xr.Dataset]:
+            if year not in mosaic_cache:
+                mosaic_cache.clear()
+                year_dir = os.path.join(stage1_root, str(year))
+                tile_files = sorted(
+                    os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
+                ) if os.path.isdir(year_dir) else []
+                if not tile_files:
+                    logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
+                    return None
+                mosaic = self._mosaic_tiles(tile_files, year)
+                if mosaic.rio.crs is None:
+                    mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
+                mosaic_cache[year] = mosaic
+            return mosaic_cache[year]
+
+        def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+            mosaic = year_mosaic(year)
+            if mosaic is None:
+                return None
+            bbox = tile.geobox.pad(32, 32).extent.to_crs(mosaic.rio.crs).boundingbox
+            clipped = mosaic.sel(y=slice(bbox.top, bbox.bottom), x=slice(bbox.left, bbox.right))
+            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
+                return None
+            return clipped
+
         try:
             with self._dask_client() as client:
                 target_geobox = get_target_geobox(self.ctx)
@@ -833,24 +883,20 @@ class GlassModisSource(DataSource):
                 )
 
                 with spatial_processor.setup_dask_config():
-                    mosaic = self._mosaic_tiles(list(target.inputs), year)
-                    if mosaic.rio.crs is None:
-                        mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
-
-                    if not os.path.exists(target.output_path):
-                        variables = list(mosaic.data_vars.keys())
-                        if not spatial_processor.create_empty_target_zarr(
-                            target.output_path, target_geobox, target.meta["years_all"], variables,
-                            sample_attrs=mosaic.attrs, packaging_attrs={}, dst_nodata=float("nan"), dtype="float32",
-                        ):
-                            return False
-
-                    return spatial_processor.write_year_to_zarr(
-                        mosaic, target.output_path, year, target_geobox,
-                        resampling="nearest", dst_nodata=float("nan"),
+                    return run_tiled_prepare(
+                        output_path=target.output_path,
+                        years=years,
+                        target_geobox=target_geobox,
+                        processor=spatial_processor,
+                        raw_getter=raw_getter,
+                        tile_size=self.tile_size,
+                        resampling="nearest",
+                        dst_nodata=float("nan"),
+                        processing_version=self.PROCESSING_VERSION,
+                        override=self.cfg.override,
                     )
         except Exception:
-            logger.exception("Error in GLASS-MODIS spatial processing for year %d (variant=%s).", year, self.variant)
+            logger.exception("Error in GLASS-MODIS spatial processing for years %s (variant=%s).", years, self.variant)
             return False
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py) --

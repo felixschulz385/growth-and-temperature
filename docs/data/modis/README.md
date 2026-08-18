@@ -97,27 +97,31 @@ there. This doc does not re-derive the ledger mechanism itself — see
   which pixels contribute to each composite before the GeoTIFF is written: see
   [GRID caveats](#caveats) for the per-product bit-layout status.
 
-## GRID
+## GRID (PREPARE)
 
-Per-year `StepTarget`s (`_plan_grid`), one per year with at least one FETCH
-GeoTIFF present. `_execute_grid` mosaics that year's per-tile GeoTIFFs
-(`_mosaic_tiles`, `xr.combine_by_coords` over sinusoidal coordinates), then
-reprojects onto the canonical target geobox via `SpatialProcessor`
-(`nearest` resampling, `SPATIAL_RESAMPLING`), writing into a shared multi-year
-zarr store one year-region at a time.
+A single `key="all"` `StepTarget` (`_discover_prepare`) covering every year
+with at least one FETCH GeoTIFF present. `_execute_prepare` builds each
+year's mosaic once (`_mosaic_tiles`, `xr.combine_by_coords` over sinusoidal
+coordinates, memoized one year at a time), then reprojects it tile-by-tile
+onto the canonical target geobox via the shared `run_tiled_prepare` driver
+(`src/data/common/prepare/driver.py`, `nearest` resampling,
+`SPATIAL_RESAMPLING`) instead of one whole-extent zarr region-write per year.
+`raw_getter(tile, year)` clips a 32px-halo-padded bbox out of that year's
+memoized mosaic per tile, mirroring GLASS-AVHRR's own `raw_getter`.
 
 `output_root(GRID)` always forces `grid_id="ease6933"` regardless of
 `ctx.grid_id`/`pipeline.grid` in `data.yaml` — a deliberately preserved MODIS-only
 ad hoc case (module docstring, `docs/design/05-migration.md` §1).
 
-**Output path** (`layout.grid_store_path`, `family=f"modis_lst_{product.lower()}"`):
-- `<data_root>/prepared/<data_path>/crs/ease6933/modis_lst_<product>.zarr` (e.g.
-  `modis_lst_21a2.zarr`, `modis_lst_11a1.zarr` — flat, no namespace, so the two
-  config variants land in genuinely separate stores)
+**Output path** (`layout.grid_store_path`, `family=f"modis_lst_{product.lower()}"`, `suffix=""`):
+- `<data_root>/prepared/<data_path>/crs/ease6933/modis_lst_<product>/ix=<row>/iy=<col>/part-<year>.parquet`
+  (e.g. under `modis_lst_21a2/`, `modis_lst_11a1/` — flat, no namespace, so the
+  two config variants land in genuinely separate stores)
 
-**Format**: Zarr (via `SpatialProcessor.create_empty_target_zarr`/
-`write_year_to_zarr`), `dtype="float32"`, `dst_nodata=NaN`, dims include `time`
-(one coordinate per year) over the canonical EPSG:6933 geobox.
+**Format**: `cell_id`-keyed parquet parts (one per (tile, year) unit, via
+`SpatialProcessor.process_tile_region`), `dtype="float32"`, `dst_nodata=NaN`,
+sorted by `cell_id`. `Completion.MARKER` — a sibling `.complete` file is only
+written once every declared (tile, year) unit has been written.
 
 **Variables** — `lst_night` is always written (per `_execute_fetch`'s `data_vars`
 dict); the diagnostic/auxiliary bands are also mosaicked/reprojected whenever
@@ -140,18 +144,17 @@ not knowable from code/config alone.
 **TODO (needs live data):** actual land-tile count ingested by a real `modis`
 run (the ~317-figure in `07a-modis-band-reference.md` is explicitly flagged
 UNVERIFIED there, and `land_tiles` is unset — see FETCH caveats); observed
-`lst_night` value distribution; zarr store sizes for `modis_lst_21a2.zarr` /
-`modis_lst_11a1.zarr`; whether a full `modis` backfill (2002–2025 × full tile
+`lst_night` value distribution; parquet part sizes for `modis_lst_21a2` /
+`modis_lst_11a1`; whether a full `modis` backfill (2002–2025 × full tile
 list) has actually completed.
 
 ### Caveats
 
-- **`Completion.NEVER` on GRID targets** (`_plan_grid`): unlike every other
-  source's GRID step, MODIS's GRID never checks `override`/output-existence
-  before writing a year into the shared multi-year zarr — it always re-runs
-  that year. Preserved deliberately (module docstring cites
-  `tests/data/preprocess/sources/test_characterization_modis.py` pinning the
-  old behavior), not a bug.
+- **`Completion.MARKER` on the PREPARE target** (`_discover_prepare`): unlike
+  the earlier per-year/`Completion.NEVER` shape, a single `key="all"` target
+  now covers every year; `_execute_prepare` loops over years internally via
+  `run_tiled_prepare` and only calls `mark_complete()` once every declared
+  (tile, year) unit has been written.
 - **`qc_max_lst_error_k`** (default `2.0`, both config blocks): the LST-error-K
   threshold `decode_qc_valid_mask` applies when building the FETCH-time valid
   mask — a configurable policy choice, not a layout fact, per

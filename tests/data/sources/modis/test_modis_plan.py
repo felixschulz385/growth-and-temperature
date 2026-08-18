@@ -77,7 +77,7 @@ def test_prepare_target_is_one_per_source_covering_available_years(tmp_path):
     assert targets[0].key == "all"
     assert targets[0].meta["years"] == [2019]
     assert targets[0].output_path == os.path.join(
-        source.output_root(PipelineStep.PREPARE), "modis_lst_21a2.zarr"
+        source.output_root(PipelineStep.PREPARE), "modis_lst_21a2"
     )
 
 
@@ -93,7 +93,7 @@ def test_prepare_target_uses_family_zarr_path(tmp_path):
         assert len(targets) == 1
         # MODIS forces grid_id=ease6933 unconditionally (see output_root()),
         # independent of ctx.grid_id.
-        assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), f"{family}.zarr")
+        assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), family)
 
 
 def test_prepare_target_uses_marker_completion(tmp_path):

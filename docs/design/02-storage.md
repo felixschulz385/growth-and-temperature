@@ -7,28 +7,33 @@ the canonical GeoBox *and* after temporal compositing to annual, and (2) the nes
 store (`S_d`, `N_d`), after convolution. Everything else (halo-padded arrays, intermediate
 reprojections, ring means derived from `S_d`/`N_d`) stays in memory / Dask graphs, never persisted.
 
-**Update — point 1 is now parquet for the shared-driver sources.** `acag`, `esacci`, `ntl_harm`, and
-`eog` (every source going through `src.data.common.prepare.driver.run_tiled_prepare` /
-`SpatialProcessor.process_tile_region`) now write `cell_id`-keyed parquet parts
-(`ix=<row>/iy=<col>/part-<year>.parquet`, one self-contained file per (tile, year) unit) instead of a
-Zarr region write into a pre-allocated skeleton — no shared store to bootstrap, no region-write
-chunk-alignment constraint. Written as a wide table (`cell_id`, `year`, one column per data variable)
-so a later stage can widen it with more columns (e.g. convolution output) without changing its shape.
-SCAFFOLDING: no convolution/ring-mean logic runs here, this is exactly the reprojected variable
-value(s). `glass/modis.py` and `modis/source.py` (the other point-1 producers, via
-`SpatialProcessor.write_year_to_zarr`/`process_spatial_standard`, whole-extent-per-year, multi-band)
-are **unchanged** — still Zarr, deferred because their output shape and the CRS-bug regression tests
-guarding `write_year_to_zarr` (`tests/data/common/raster/test_spatial_crs_preservation.py`) are
-meaningfully different from the single/few-variable tiled case. `gadm.py`/`ecoregions/source.py`/
-`snl_mining/source.py`/`glass/avhrr.py`/`osm.py`/`berman_mining.py`'s bespoke hand-rolled Zarr tiling
-is also unchanged. Point 2 (the disc-ladder store) is unaffected — see this document's earlier
-addendum on `write_disc_tile_parquet`.
+**Update — point 1 is now parquet for every pixel-grid source.** Every source with a PREPARE-stage
+pixel grid now goes through `src.data.common.prepare.driver.run_tiled_prepare` /
+`SpatialProcessor.process_tile_region` and writes `cell_id`-keyed parquet parts
+(`ix=<row>/iy=<col>/part[-<year>].parquet`, one self-contained file per (tile[, year]) unit) instead of
+a Zarr region write into a pre-allocated skeleton — no shared store to bootstrap, no region-write
+chunk-alignment constraint. Written as a wide table (`cell_id`, `year` when temporal, one column per
+data variable) so a later stage can widen it with more columns (e.g. convolution output) without
+changing its shape. SCAFFOLDING: no convolution/ring-mean logic runs here, this is exactly the
+reprojected variable value(s). This covers the original shared-driver sources (`acag`, `esacci`,
+`ntl_harm`, `eog`), the six bespoke hand-rolled-Zarr-tiling sources moved onto the same driver
+(`gadm.py`, `ecoregions/source.py`, `snl_mining/source.py`, `glass/avhrr.py`, `osm.py`,
+`berman_mining.py`, via `years=None`/`reproject=False` for the static/vector-rasterization cases), and
+`glass/modis.py`/`modis/source.py` (mosaic-once-per-year, then tile-by-tile via `run_tiled_prepare`,
+replacing `write_year_to_zarr`/`create_empty_target_zarr`). `plad`, `country_classifications`, and
+`commodity_prices` were never pixel-grid Zarr to begin with (small `(GID, year)`-keyed lookup tables,
+no GRID step) — nothing to migrate there. Point 2 (the disc-ladder store) is unaffected — see this
+document's earlier addendum on `write_disc_tile_parquet`.
 
-Not yet done, left for follow-up: `src/data/sources/verify.py`'s `_run_verification` dispatches any
-directory path to `_verify_zarr` (`xr.open_zarr`), so verification of these four sources' PREPARE
-output now fails (caught, reported as a verification failure, not a crash) until it gains a
-parquet-parts-directory check; `src/data/assemble/loaders.py` still reads Zarr and does not yet
-consume this parquet output.
+`src/data/sources/verify.py`'s `_run_verification` now dispatches a directory to `_verify_zarr` only
+when it actually carries zarr root metadata, and to a new `_verify_partitioned_table` (schema, row
+count, and a stride-sampled-across-part-files value-range check) when it's a directory of `cell_id`-
+keyed parquet parts instead — so verification works for every one of the sources above.
+
+Still left for follow-up: `src/data/assemble/loaders.py` still reads Zarr and does not yet consume
+this parquet output; `scripts/migrate_legacy_layout.py`'s `GRID_FILENAME_AND_FAMILY` mapping still
+builds its migration-destination path via `layout.grid_store_path(...)` without `suffix=""`, so it
+would compute a stale `.zarr` destination for every source above.
 
 **Why not fewer than two.** The convolution engine needs a *common* grid — same CRS, resolution, and
 tiling — across every input before it can share one kernel registry and one halo-read pattern

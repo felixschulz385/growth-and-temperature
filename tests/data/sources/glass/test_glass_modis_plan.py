@@ -1,7 +1,7 @@
-"""GlassModisSource: PREPARE plan shape (docs/design/12-glass-modis-rebuild.md
-§4) -- one target per year, `inputs` populated straight from FETCH's raw
-output directory's per-tile GeoTIFFs, mirroring `ModisSource._discover_
-prepare` (`modis/source.py:556-607`)."""
+"""GlassModisSource: PREPARE plan shape -- a single `key="all"` target
+covering every available year, mirroring `ModisSource._discover_prepare`
+(`modis/source.py`), with `_execute_prepare` looping over years internally
+via the shared `run_tiled_prepare` driver."""
 
 import os
 
@@ -37,24 +37,24 @@ def test_steps_is_fetch_and_prepare_only():
     assert GlassModisSource.STEPS == (PipelineStep.FETCH, PipelineStep.PREPARE)
 
 
-def test_discover_prepare_one_target_per_year_with_tile_inputs(tmp_path):
+def test_discover_prepare_one_target_covering_available_years(tmp_path):
     source, _ = _make_source(tmp_path)
     _write_tile_tifs(source, 2019, ["h08v05", "h01v07"])
     _write_tile_tifs(source, 2020, ["h08v05"])
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
-    assert {t.key for t in targets} == {"2019", "2020"}
-    by_key = {t.key: t for t in targets}
-    assert set(os.path.basename(f) for f in by_key["2019"].inputs) == {"h08v05.tif", "h01v07.tif"}
-    assert by_key["2019"].completion == Completion.NEVER
-    assert by_key["2019"].output_path == by_key["2020"].output_path  # one shared multi-year store
+    assert len(targets) == 1
+    assert targets[0].key == "all"
+    assert targets[0].meta["years"] == [2019, 2020]
+    assert targets[0].completion == Completion.MARKER
 
 
 def test_discover_prepare_skips_years_with_no_tile_output(tmp_path):
     source, _ = _make_source(tmp_path)
     _write_tile_tifs(source, 2019, ["h08v05"])
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
-    assert {t.key for t in targets} == {"2019"}
+    assert len(targets) == 1
+    assert targets[0].meta["years"] == [2019]
 
 
 def test_prepare_output_path_uses_variant_specific_family(tmp_path):
@@ -62,10 +62,10 @@ def test_prepare_output_path_uses_variant_specific_family(tmp_path):
     ta_source, ta_ctx = _make_source(tmp_path, "glass_ta_modis")
 
     assert lst_source._prepare_output_path() == os.path.join(
-        lst_ctx.data_root, "prepared", "glass/LST/MODIS/Daily/1KM/", "crs", "legacy_4326", "glass_modis_lst.zarr"
+        lst_ctx.data_root, "prepared", "glass/LST/MODIS/Daily/1KM/", "crs", "legacy_4326", "glass_modis_lst"
     )
     assert ta_source._prepare_output_path() == os.path.join(
-        ta_ctx.data_root, "prepared", "glass/Ta/MODIS/", "crs", "legacy_4326", "glass_modis_ta.zarr"
+        ta_ctx.data_root, "prepared", "glass/Ta/MODIS/", "crs", "legacy_4326", "glass_modis_ta"
     )
     # Different variants never collide on the same store.
     assert lst_source._prepare_output_path() != ta_source._prepare_output_path()

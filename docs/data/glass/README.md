@@ -155,6 +155,17 @@ time: 1}` at write. **Completion**: `Completion.MARKER`.
 
 ## GRID
 
+**Stale below**: this section describes the pre-rebuild `GlassSource`
+architecture (`_process_years_chunked`/`_aggregate_year_files`/whole-extent
+zarr region-writes). The actual GRID/PREPARE step now lives in
+`src/data/sources/glass/modis.py` (`GlassModisSource`) and
+`src/data/sources/glass/avhrr.py` (`GlassAvhrrSource`), both on the shared
+`run_tiled_prepare` driver (`src/data/common/prepare/driver.py`) writing
+`cell_id`-keyed parquet parts, not Zarr — see those modules' own docstrings
+and `docs/data/modis/README.md`'s GRID (PREPARE) section for the current
+shape. Only the `family`/output-path table immediately below has been
+corrected; the rest of this section is retained for historical context only.
+
 `_plan_grid()` lists all annual `.zarr` files (excluding `_monthly.zarr`)
 under the PREPARE output dir matching the requested year selection, and
 builds one `StepTarget`:
@@ -183,12 +194,15 @@ ported as-is"). Steps, per variant-independent code path:
    reprojection, since `mode`-resampled `NaN` doesn't behave sensibly on an
    integer dtype.
 
-**Output path**: `layout.grid_store_path(..., grid_id=ctx.grid_id, family=<family>)`:
+**Output path**: `layout.grid_store_path(..., grid_id=ctx.grid_id, family=<family>, suffix="")` —
+`cell_id`-keyed parquet parts, `ix=<row>/iy=<col>/part[-<year>].parquet`, not a
+Zarr store:
 
 | variant | `family` | path |
 |---|---|---|
-| `glass_modis` | `glass_modis_lst` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_modis_lst.zarr` |
-| `glass_avhrr` | `glass_avhrr_lst` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_avhrr_lst.zarr` |
+| `glass_modis` | `glass_modis_lst` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_modis_lst/` |
+| `glass_ta_modis` | `glass_modis_ta` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_modis_ta/` |
+| `glass_avhrr` | `glass_avhrr_lst` | `<data_root>/prepared/<data_path>/crs/<grid_id>/glass_avhrr_lst/` |
 
 **Completion**: `Completion.MARKER`.
 

@@ -176,12 +176,17 @@ def verify_grid_output(
     """Verify a GRID-stage (or assembly-input) output at *path*, using a
     fingerprint-checked cache (see module docstring) unless *force* is set.
 
-    Dispatches on file type: zarr stores (directories) and GeoTIFFs get a
-    full raster check (variables/bands, CRS, sampled value sanity); parquet
-    tables (e.g. per-GID sidecar outputs, which aren't gridded and have no
-    CRS/pixel values) get a schema + row-count check. Anything else is
-    reported ok on existence alone -- an unrecognized format shouldn't hard-
-    fail verification just because this checker doesn't know how to open it.
+    Dispatches on file type: zarr stores (directories with zarr root
+    metadata) and GeoTIFFs get a full raster check (variables/bands, CRS,
+    sampled value sanity); a single parquet file (e.g. per-GID sidecar
+    outputs, which aren't gridded and have no CRS/pixel values) gets a schema
+    + row-count check; a directory of `cell_id`-keyed parquet parts (the
+    `run_tiled_prepare` driver's own output shape, `ix=<row>/iy=<col>/
+    part[-<year>].parquet`) gets the same variable/range checks a zarr store
+    would, sampled across a bounded spread of part files instead of chunks.
+    Anything else is reported ok on existence alone -- an unrecognized format
+    shouldn't hard-fail verification just because this checker doesn't know
+    how to open it.
 
     *range_vars* narrows which of *expected_vars* actually get the
     *value_range* check (all of them, if omitted) -- for sources where one
@@ -204,6 +209,20 @@ def verify_grid_output(
     return result
 
 
+def _is_zarr_store(path: str) -> bool:
+    """Same root-metadata-file check `_fingerprint()` uses -- a directory
+    only counts as a zarr store if it actually carries zarr's own root
+    metadata, not just because it's a directory (the `run_tiled_prepare`
+    driver's `cell_id`-keyed parquet-parts output is also a directory)."""
+    return any(os.path.exists(os.path.join(path, name)) for name in ("zarr.json", ".zmetadata", ".zgroup"))
+
+
+def _partitioned_parquet_files(path: str) -> list[str]:
+    import glob
+
+    return sorted(glob.glob(os.path.join(path, "**", "*.parquet"), recursive=True))
+
+
 def _run_verification(
     path: str,
     *,
@@ -215,7 +234,13 @@ def _run_verification(
         if path.endswith(".parquet"):
             return _verify_table(path, expected_vars=expected_vars)
         if os.path.isdir(path):
-            return _verify_zarr(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
+            if _is_zarr_store(path):
+                return _verify_zarr(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
+            part_files = _partitioned_parquet_files(path)
+            if part_files:
+                return _verify_partitioned_table(
+                    part_files, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars
+                )
         if path.lower().endswith((".tif", ".tiff")):
             return _verify_geotiff(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
     except Exception as exc:  # noqa: BLE001 -- verification must never crash the caller
@@ -369,3 +394,63 @@ def _verify_table(path: str, *, expected_vars: Sequence[str] | None) -> Verifica
     if pf.metadata.num_rows == 0:
         return VerificationResult(False, "table has zero rows")
     return VerificationResult(True, f"ok: {pf.metadata.num_rows} row(s), {len(columns)} column(s)")
+
+
+def _verify_partitioned_table(
+    part_files: Sequence[str],
+    *,
+    expected_vars: Sequence[str] | None,
+    value_range: tuple[float, float] | None,
+    range_vars: Sequence[str] | None,
+) -> VerificationResult:
+    """Verify a `run_tiled_prepare`-produced output: a directory of
+    `cell_id`-keyed parquet parts (`ix=<row>/iy=<col>/part[-<year>].parquet`),
+    not a single file -- so unlike `_verify_table`, this reads a bounded
+    sample of *files*, not one file's own row sample.
+
+    Row-count and column presence come cheaply from each file's own parquet
+    footer metadata (no data read). The value-range check reads a stride
+    sample of up to 8 part files spread across the *entire* file list (same
+    "spread across the extent, bound the file count" spirit as
+    `_stride_sample` -- one tile is not representative of a globally sparse
+    or regionally-biased source any more than one chunk was for a zarr
+    store), same `range_vars` narrowing `_verify_zarr` supports.
+    """
+    import numpy as np
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    schema_names = set(pq.ParquetFile(part_files[0]).schema_arrow.names)
+    if expected_vars:
+        missing = [v for v in expected_vars if v not in schema_names]
+        if missing:
+            return VerificationResult(False, f"missing expected column(s): {missing}")
+        check_cols = list(expected_vars)
+    else:
+        check_cols = sorted(schema_names - {"cell_id", "year"})
+        if not check_cols:
+            return VerificationResult(False, "no data columns found (only cell_id/year)")
+
+    total_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in part_files)
+    if total_rows == 0:
+        return VerificationResult(False, "table has zero rows across all part files")
+
+    n_pick = min(8, len(part_files))
+    picked = [part_files[i] for i in np.linspace(0, len(part_files) - 1, n_pick, dtype=int)]
+    sample_df = pd.concat([pd.read_parquet(f, columns=check_cols) for f in picked], ignore_index=True)
+
+    range_var_set = set(range_vars) if range_vars is not None else None
+    for col in check_cols:
+        values = pd.to_numeric(sample_df[col], errors="coerce").to_numpy(dtype="float64")
+        applies_range = range_var_set is None or col in range_var_set
+        failure = _check_sample_range(
+            values, value_range=value_range if applies_range else None, label=f"column '{col}'"
+        )
+        if failure is not None:
+            return failure
+
+    return VerificationResult(
+        True,
+        f"ok: {len(check_cols)} column(s) sampled across {len(picked)}/{len(part_files)} part file(s), "
+        f"{total_rows} row(s), values sane",
+    )

@@ -63,6 +63,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
+from src.data.common import tiling
 from src.data.common.fetch import manifest
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -141,6 +142,10 @@ class ModisSource(DataSource):
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         self.product = cfg.raw.get("product", "21A2")
@@ -189,6 +194,7 @@ class ModisSource(DataSource):
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="modis_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
 
         self._stac_client = None
 
@@ -580,12 +586,13 @@ class ModisSource(DataSource):
         # `family` alone determines the store's path (independent of
         # `data_path`) -- must include the variant or main/extended would
         # collide on the same zarr.
-        suffix = "" if self.variant == "main" else "_extended"
+        variant_suffix = "" if self.variant == "main" else "_extended"
         return layout.grid_store_path(
             self.ctx.data_root,
             self.cfg.data_path,
             grid_id=EASE_GRID_ID,
-            family=f"modis_lst_{self.product.lower()}{suffix}",
+            family=f"modis_lst_{self.product.lower()}{variant_suffix}",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store
         )
 
     def _discover_prepare(self, selection: TargetSelection) -> List[StepTarget]:
@@ -666,8 +673,9 @@ class ModisSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_or_create_canonical_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
@@ -675,6 +683,38 @@ class ModisSource(DataSource):
 
         stage1_root = self.output_root(PipelineStep.FETCH)
         years = target.meta["years"]
+
+        # One year's mosaic memoized at a time -- `run_tiled_prepare` iterates
+        # (year, tile) year-major, so at most one year's full-mosaic Dataset
+        # is ever held in memory (same pattern as GlassAvhrrSource._execute_prepare).
+        mosaic_cache: Dict[int, xr.Dataset] = {}
+
+        def year_mosaic(year: int) -> Optional[xr.Dataset]:
+            if year not in mosaic_cache:
+                mosaic_cache.clear()
+                year_dir = os.path.join(stage1_root, str(year))
+                tile_files = sorted(
+                    os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
+                ) if os.path.isdir(year_dir) else []
+                if not tile_files:
+                    logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
+                    return None
+                mosaic = self._mosaic_tiles(tile_files, year)
+                if mosaic.rio.crs is None:
+                    mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
+                mosaic_cache[year] = mosaic
+            return mosaic_cache[year]
+
+        def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+            mosaic = year_mosaic(year)
+            if mosaic is None:
+                return None
+            bbox = tile.geobox.pad(32, 32).extent.to_crs(mosaic.rio.crs).boundingbox
+            clipped = mosaic.sel(y=slice(bbox.top, bbox.bottom), x=slice(bbox.left, bbox.right))
+            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
+                return None
+            return clipped
+
         try:
             with self._dask_client() as client:
                 cache_path = os.path.join(self.ctx.data_root, "canonical_geobox.pkl")
@@ -685,35 +725,18 @@ class ModisSource(DataSource):
                 )
 
                 with spatial_processor.setup_dask_config():
-                    for year in years:
-                        year_dir = os.path.join(stage1_root, str(year))
-                        tile_files = sorted(
-                            os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
-                        )
-                        if not tile_files:
-                            logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
-                            return False
-
-                        mosaic = self._mosaic_tiles(tile_files, year)
-                        if mosaic.rio.crs is None:
-                            mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
-
-                        if not os.path.exists(target.output_path):
-                            variables = list(mosaic.data_vars.keys())
-                            if not spatial_processor.create_empty_target_zarr(
-                                target.output_path, target_geobox, years, variables,
-                                sample_attrs=mosaic.attrs, packaging_attrs={}, dst_nodata=float("nan"), dtype="float32",
-                            ):
-                                return False
-
-                        if not spatial_processor.write_year_to_zarr(
-                            mosaic, target.output_path, year, target_geobox,
-                            resampling=SPATIAL_RESAMPLING, dst_nodata=float("nan"),
-                        ):
-                            return False
-
-            mark_complete(target.output_path)
-            return True
+                    return run_tiled_prepare(
+                        output_path=target.output_path,
+                        years=years,
+                        target_geobox=target_geobox,
+                        processor=spatial_processor,
+                        raw_getter=raw_getter,
+                        tile_size=self.tile_size,
+                        resampling=SPATIAL_RESAMPLING,
+                        dst_nodata=float("nan"),
+                        processing_version=self.PROCESSING_VERSION,
+                        override=self.cfg.override,
+                    )
         except Exception:
             logger.exception("Error in MODIS spatial processing for years %s.", years)
             return False
