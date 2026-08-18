@@ -223,6 +223,45 @@ def test_run_tiled_prepare_reproject_false_uses_raw_getter_output_as_is(tmp_path
     assert len(df) == tile_size * tile_size
 
 
+def test_run_tiled_prepare_logs_per_unit_progress_and_a_final_summary(tmp_path, target_geobox, processor, caplog):
+    import logging
+
+    output_path = str(tmp_path / "output")
+    with caplog.at_level(logging.INFO, logger="src.data.common.prepare.driver"):
+        ok = run_tiled_prepare(
+            output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
+            processor=processor, raw_getter=_always_returns_full_extent, target_dims=target_geobox.dimensions,
+            tile_size=4, packaging_attrs={},
+        )
+    assert ok is True
+
+    messages = [r.message for r in caplog.records]
+    assert any("4 unit(s) to check" in m for m in messages)
+    per_unit = [m for m in messages if "[1/4]" in m or "[2/4]" in m or "[3/4]" in m or "[4/4]" in m]
+    assert len(per_unit) == 4
+    assert any("4 processed, 0 already complete, 0 failed/unavailable" in m for m in messages)
+
+
+def test_run_tiled_prepare_second_run_logs_already_complete_not_reprocessed(tmp_path, target_geobox, processor, caplog):
+    import logging
+
+    output_path = str(tmp_path / "output")
+    kwargs = dict(
+        output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
+        processor=processor, raw_getter=_always_returns_full_extent, target_dims=target_geobox.dimensions,
+        tile_size=4, packaging_attrs={},
+    )
+    run_tiled_prepare(**kwargs)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="src.data.common.prepare.driver"):
+        ok = run_tiled_prepare(**kwargs)
+    assert ok is True
+
+    messages = [r.message for r in caplog.records]
+    assert any("0 processed, 4 already complete, 0 failed/unavailable" in m for m in messages)
+
+
 def test_prepare_status_counts_after_partial_failure(tmp_path, target_geobox, processor):
     output_path = str(tmp_path / "output")
     getter = _make_getter(fail_units={(2020, "0000_0000")})
