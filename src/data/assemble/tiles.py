@@ -9,39 +9,36 @@ import math
 import logging
 from typing import Dict, Any, List, Tuple
 
-from odc.geo import GeoboxTiles
-
 from src.data.assemble.constants import DEFAULT_TILE_SIZE
+from src.data.common import tiling
 
 logger = logging.getLogger(__name__)
 
 
 def get_available_tiles(
-    assembly_config: Dict[str, Any], 
+    assembly_config: Dict[str, Any],
     target_geobox
 ) -> List[Tuple[int, int]]:
     """
-    Get all available tile index combinations (ix, iy) using geobox tiling.
-    
-    Creates a grid of tiles covering the entire target geobox extent.
-    
+    Get all available tile index combinations (ix, iy) using the shared PREPARE
+    tile grid (`src.data.common.tiling`), so assembly's tile numbering is
+    structurally guaranteed to match whatever tiled-parquet PREPARE output it
+    reads -- not just accidentally identical from two independent
+    `GeoboxTiles` constructions.
+
     Args:
         assembly_config: Assembly configuration with optional tile_size
         target_geobox: Target geobox to tile
-        
+
     Returns:
         List of (ix, iy) tuples for all tiles
     """
     tile_size = assembly_config.get('processing', {}).get('tile_size', DEFAULT_TILE_SIZE)
-    tiles = GeoboxTiles(target_geobox, (tile_size, tile_size))
-    
-    all_tiles = [
-        (ix, iy) 
-        for ix in range(tiles.shape[0]) 
-        for iy in range(tiles.shape[1])
-    ]
-    
-    logger.info(f"Generated {len(all_tiles)} tiles from geobox ({tiles.shape[0]}x{tiles.shape[1]})")
+    n_rows, n_cols = tiling.grid_shape(target_geobox, tile_size)
+
+    all_tiles = [(ix, iy) for ix in range(n_rows) for iy in range(n_cols)]
+
+    logger.info(f"Generated {len(all_tiles)} tiles from geobox ({n_rows}x{n_cols})")
     return all_tiles
 
 
@@ -82,21 +79,20 @@ def adjust_tile_size_for_reprojection(
 
 
 def create_tile_geobox(
-    target_geobox, 
-    tile_size: int, 
-    ix: int, 
+    target_geobox,
+    tile_size: int,
+    ix: int,
     iy: int
 ):
     """
     Create a geobox for a specific tile.
-    
+
     Args:
         target_geobox: Full target geobox
         tile_size: Tile size in pixels
         ix, iy: Tile indices
-        
+
     Returns:
         Geobox for the specified tile
     """
-    tiles = GeoboxTiles(target_geobox, (tile_size, tile_size))
-    return tiles[ix, iy]
+    return tiling.build_tile_grid(target_geobox, tile_size)[ix, iy]
