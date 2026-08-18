@@ -5,9 +5,15 @@ write points (the first, analysis-ready per-source grids, is out of this
 module's scope -- see docs/design/05-migration.md §5 step 6 vs. step 2). New
 pattern for this repo's assembly stage: today's stage_3 output is parquet,
 and Zarr is otherwise only used for intermediate stage_2 arrays.
+
+Also holds `write_disc_tile_parquet`, a scaffolding-only sibling to
+`write_disc_tile` that writes the same per-tile convolution output as a
+`cell_id`-keyed parquet part instead of a Zarr region write -- see its
+docstring for scope.
 """
 
 import logging
+import os
 from typing import Sequence
 
 import dask.array as da
@@ -16,6 +22,8 @@ import pandas as pd
 import xarray as xr
 from odc.geo.xr import xr_coords
 from zarr.codecs import BloscCodec
+
+from src.data.common.geobox.cell_id import encode_cell_ids
 
 logger = logging.getLogger(__name__)
 
@@ -180,3 +188,68 @@ def write_disc_tile(output_path, tile_data: xr.DataArray, year: int, variable: s
     except Exception:
         logger.exception("Error writing tile to disc store at %s (year=%s)", output_path, year)
         return False
+
+
+def write_disc_tile_parquet(
+    output_dir,
+    S_d: xr.DataArray,
+    N_d: xr.DataArray,
+    tile,
+    year: int,
+    full_width: int,
+    compression: str = "snappy",
+) -> str:
+    """SCAFFOLDING ONLY -- write one tile's raw convolution output as a
+    parquet part, keyed on the new global `cell_id`
+    (`src/data/common/geobox/cell_id.py`), instead of a Zarr region write.
+
+    Unlike `write_disc_tile`, this is not the production disc-store writer:
+    it stores raw `S_d`/`N_d` (no ring-mean division -- `ring_means.
+    ring_means_from_discs` stays unwired), the column layout below is
+    provisional, and this function is not called from any pipeline CLI step
+    -- full per-source PREPARE wiring and the final production schema are
+    tracked as follow-up work, not done here (docs/design/03-neighbourhood-
+    engine.md, docs/design/09-integrated-pipeline.md).
+
+    Args:
+        output_dir: Root directory for this convolved variable's parquet
+            output (analogous to `write_disc_tile`'s `output_path`, but a
+            directory of Hive-partitioned parts rather than one Zarr store).
+        S_d, N_d: `convolve_tile`'s trimmed output for this tile, dims
+            `(radius_km, y, x)` matching `tile.geobox.shape`.
+        tile: `src.data.common.tiling.Tile` for this tile -- supplies the
+            global pixel offset (`y_slice.start`/`x_slice.start`, used for
+            `cell_id` encoding) and the `row`/`col` tile indices used for
+            the output path (`row` -> `ix`, `col` -> `iy`, matching
+            `src/data/assemble/processors.py::_get_output_path`'s
+            convention -- see `cell_id.py` module docstring).
+        full_width: Pixel width `W` of the full canonical grid, passed to
+            `encode_cell_ids` (never hardcoded/memoized -- see `cell_id.py`).
+
+    Returns:
+        The written file path, `<output_dir>/ix=<tile.row>/iy=<tile.col>/
+        part-<year>.parquet`, sorted by `(cell_id, radius_km)`.
+    """
+    row0, col0 = tile.y_slice.start, tile.x_slice.start
+    cell_ids_2d = encode_cell_ids(row0, col0, tile.geobox, full_width)
+    h, w = cell_ids_2d.shape
+
+    radii = np.asarray(S_d.coords["radius_km"].values)
+    n_r = radii.shape[0]
+    S_vals = np.asarray(S_d.values).reshape(n_r, h, w)
+    N_vals = np.asarray(N_d.values).reshape(n_r, h, w)
+
+    df = pd.DataFrame(
+        {
+            "cell_id": np.broadcast_to(cell_ids_2d, (n_r, h, w)).reshape(-1),
+            "year": year,
+            "radius_km": np.repeat(radii, h * w),
+            "S_d": S_vals.reshape(-1),
+            "N_d": N_vals.reshape(-1),
+        }
+    ).sort_values(["cell_id", "radius_km"]).reset_index(drop=True)
+
+    out_path = os.path.join(output_dir, f"ix={tile.row}", f"iy={tile.col}", f"part-{year}.parquet")
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    df.to_parquet(out_path, index=False, compression=compression, engine="pyarrow")
+    return out_path

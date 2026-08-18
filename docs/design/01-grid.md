@@ -160,6 +160,58 @@ enormous margin (exhausted only at tile_size ≥ 65,536, an implausible choice).
 item, not a redesign** — worth stating explicitly since the migration brief flagged it as something
 to verify.
 
+### 5a. `cell_id`: a new scheme for the ease6933 path
+
+`pixel_id` stays exactly as above, unchanged, for `ctx.grid_id == LEGACY_GRID_ID` (the EPSG:4326
+grid). For `ctx.grid_id == EASE_GRID_ID` a **new, separate** column, `cell_id`
+(`src/data/common/geobox/cell_id.py`), is introduced instead — motivated by grid-parallel processing
+(DuckDB sharding, tile-parallel merges) and arbitrary-factor spatial coarsening, both of which need
+cheap integer arithmetic on a *globally flat* index. `pixel_id`'s tile-packed layout requires a decode
+step (`ix`, `iy`, `local_pixel` unpacked from bit-shifts) before any of that; `cell_id` does not.
+
+**Encoding:** `cell_id = row * W + col`, where `(row, col)` are 0-based indices into the *full*
+canonical grid (not tile-relative) and `W` is the canonical grid's pixel width, always sourced at
+call time from `canonical_ease_geobox()`/`get_or_create_canonical_geobox()` — never hardcoded or
+memoized inside `cell_id.py`, so it can't silently desync from the actual grid. This makes every
+derived operation a plain integer division/modulo, directly expressible in SQL:
+
+```
+row, col                 = divmod(cell_id, W)
+tile_row, tile_col       = row // tile_size, col // tile_size   # -> ix, iy partition key
+coarse_row, coarse_col   = row // factor, col // factor          # arbitrary-factor coarsening
+shaken_row, shaken_col   = (row + dr) // factor, (col + dc) // factor  # grid-shake offset
+```
+
+**Dtype: uint32**, not uint64 like `pixel_id`. ~34,735 × 12,703 ≈ 441.2M pixels fits uint32
+(max ≈ 4.29B) with large headroom — even a hypothetical future resolution bump has room — and halves
+the storage/IO cost of the dominant per-row column across every assembled parquet file. `cell_id` is
+semantically distinct from `pixel_id` (different grid, different encoding); there's no requirement
+that the two share a bit width. `encode_cell_ids` raises `ValueError` if `row*W+col` would ever
+exceed uint32 range, so a future resolution/extent change that overflows this fails loudly at
+grid-construction time rather than silently wrapping.
+
+**Tile-index mapping (verified, not the intuitive-looking one):** `tile_row` corresponds to the
+assemble pipeline's `ix` partition key and `Tile.row`; `tile_col` corresponds to `iy` and `Tile.col`.
+Confirmed end-to-end: `src/data/assemble/tiles.py::get_available_tiles` binds `ix` to
+`GeoboxTiles.shape[0]` (the row/y axis) and `iy` to `shape[1]` (col/x axis), consumed unchanged
+through `workflow.py::_process_all_tiles` into `processors.py::_get_output_path`'s `ix=.../iy=...`
+output directories. **Note:** `scripts/validate_backbone_subset.py`, a validation-only script, uses
+the opposite (`ix=col`, `iy=row`) convention — a pre-existing inconsistency in that script, not
+reconciled by this change.
+
+**Scope of this change:** only `cell_id.py` (the encode/decode/derive-tile-index functions), a
+scaffolding-only parquet writer for neighbourhood convolution output keyed on `cell_id`
+(`store.py::write_disc_tile_parquet`, see [`02-storage.md`](02-storage.md)/
+[`03-neighbourhood-engine.md`](03-neighbourhood-engine.md)), and a DuckDB-based merge engine swap in
+`src/data/assemble/processors.py` (`_merge_dataframes`/`_merge_update_table`, now via
+`TileProcessor._duckdb_join`, replacing iterative `pd.merge` — see
+[`09-integrated-pipeline.md`](09-integrated-pipeline.md)). Explicitly **not** done here: wiring
+`cell_id`-based fixed effects into `src/analysis/core/config.py` (its `FIXED_EFFECT_LABELS`/
+`FIXED_EFFECT_TERMS` dicts are hardcoded on literal `pixel_id*` strings and need parallel
+`cell_id*` entries plus an `orchestration/configs/analysis.xlsx` update before any ease6933 analysis
+run can use `cell_id`-keyed fixed effects — tracked as a follow-up, not implemented); full per-source
+PREPARE CLI wiring for the neighbourhood engine; and making `ring_means.ring_means_from_discs` live.
+
 ## 6. Latitude-band elliptical kernel registry
 
 **Decision: precompute one 2-D convolution kernel per narrow latitude band**, applied by selecting

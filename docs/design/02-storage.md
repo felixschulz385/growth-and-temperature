@@ -26,6 +26,15 @@ Each of the two chosen points corresponds to a genuinely different array shape/g
 (point 1: one array per pixel per year; point 2: one array per pixel per year per radius) — that's
 what makes them the right two, not an arbitrary pair.
 
+**Scaffolding addendum:** a parquet-format sibling writer for point 2's per-tile output now exists,
+`src/data/common/neighbourhood/store.py::write_disc_tile_parquet` — raw `S_d`/`N_d` per pixel per
+radius, keyed on the new global `cell_id` (ease6933-only, [`01-grid.md`](01-grid.md) §5a), sorted and
+written as `ix=<row>/iy=<col>/part-<year>.parquet` instead of a Zarr region write. It is explicitly
+**not** production-wired (no per-source PREPARE CLI calls it; only unit tests and
+`scripts/validate_backbone_subset.py`'s optional `--parquet-out` flag exercise it) and does not change
+the "exactly two Zarr write points" decision above — it's an additional, parallel output format for
+point 2, not a replacement.
+
 ## 2. One store per variable family — tied to the CRS decision
 
 **Decision: one Zarr store per variable family** (e.g. `lights.zarr`, `lst.zarr`, `ndvi.zarr`,

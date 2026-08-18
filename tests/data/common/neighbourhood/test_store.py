@@ -6,13 +6,16 @@ import xarray as xr
 from odc.geo.geobox import GeoBox, GeoboxTiles
 from odc.geo.xr import xr_zeros
 
+from src.data.common.geobox.cell_id import encode_cell_ids
 from src.data.common.neighbourhood.discs import convolve_discs, convolve_tile
 from src.data.common.neighbourhood.kernels import EllipticalKernelRegistry, compute_band_edges
 from src.data.common.neighbourhood.store import (
     create_empty_disc_count_store,
     create_empty_disc_sum_store,
     write_disc_tile,
+    write_disc_tile_parquet,
 )
+from src.data.common.tiling import iter_tiles
 
 
 def _make_geobox(width_m=20_000, height_m=10_000, resolution=1000.0):
@@ -204,3 +207,49 @@ def test_write_disc_tile_casts_float_convolution_output_to_stored_integer_dtype(
     expected = np.round(N_d.sel(radius_km=1).values).astype(np.uint16)
     np.testing.assert_array_equal(written.values, expected)
     assert written.values.max() < 1000  # sanity ceiling: not a bit-pattern-corrupted huge value
+
+
+def _middle_tile(canonical, tile_size):
+    tiles = list(iter_tiles(canonical, tile_size=tile_size))
+    return tiles[len(tiles) // 2]
+
+
+def test_write_disc_tile_parquet_round_trips_and_sorts_by_cell_id(tmp_path):
+    canonical = _make_geobox(width_m=100_000, height_m=100_000)
+    variable = xr_zeros(canonical, dtype="float32")
+    variable.values[...] = 3.0
+    mask = xr_zeros(canonical, dtype="bool")
+    mask.values[...] = True
+
+    ladder = [1, 2, 3]
+    registry = _build_registry(radii_km=ladder)
+    tile_size = 20
+    full_width = canonical.shape.x
+    tile = _middle_tile(canonical, tile_size)
+
+    S_d, N_d = convolve_tile(
+        variable, mask, tile.geobox, r_max_m=3000.0, ladder_km=ladder, kernel_registry=registry
+    )
+
+    out_dir = tmp_path / "s_d_parquet"
+    out_path = write_disc_tile_parquet(out_dir, S_d, N_d, tile, year=2020, full_width=full_width)
+
+    expected_path = out_dir / f"ix={tile.row}" / f"iy={tile.col}" / "part-2020.parquet"
+    assert str(out_path) == str(expected_path)
+    assert expected_path.exists()
+
+    df = pd.read_parquet(out_path)
+    h, w = tile.geobox.shape
+    assert len(df) == h * w * len(ladder)
+    assert set(df.columns) == {"cell_id", "year", "radius_km", "S_d", "N_d"}
+    assert (df["year"] == 2020).all()
+
+    # sorted by (cell_id, radius_km)
+    assert list(df["cell_id"]) == sorted(df["cell_id"])
+    for cid, group in df.groupby("cell_id"):
+        assert list(group["radius_km"]) == sorted(group["radius_km"])
+
+    # cell_id values match an independently computed encoding
+    row0, col0 = tile.y_slice.start, tile.x_slice.start
+    expected_ids = set(encode_cell_ids(row0, col0, tile.geobox, full_width).reshape(-1).tolist())
+    assert set(df["cell_id"].unique().tolist()) == expected_ids

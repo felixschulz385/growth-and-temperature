@@ -9,6 +9,7 @@ import os
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 
+import duckdb
 import geopandas as gpd
 import numpy as np
 import pandas as pd
@@ -119,6 +120,11 @@ class TileProcessor:
         self.uses_geometry_aggregation = uses_geometry_aggregation(assembly_config)
         self.column_order_map = {}  # Track {dataset_name: [col1, col2, ...]}
         self.all_index_cols = self._get_all_index_cols()  # Cache all index columns
+        # One in-memory DuckDB connection reused for every tile's merges --
+        # this instance is already reused across the whole tile loop
+        # (_process_all_tiles), so opening a fresh connection per merge call
+        # would add avoidable overhead across hundreds of tiles.
+        self._duckdb_con = duckdb.connect()
         self.derived_pixel_id_specs = normalize_derived_pixel_id_specs(
             self.processing_config.get("derived_pixel_ids")
         )
@@ -515,6 +521,88 @@ class TileProcessor:
             logger.warning(f"Failed to extract tile [{ix}, {iy}]: {e}")
             return None
     
+    def _duckdb_join(
+        self,
+        left: pd.DataFrame,
+        right: pd.DataFrame,
+        merge_cols: List[str],
+        how: str,
+    ) -> pd.DataFrame:
+        """Join two DataFrames on `merge_cols` via DuckDB, matching
+        `pd.merge(left, right, on=merge_cols, how=how)`'s row-order and
+        merge-key semantics (`how` is 'outer' or 'left').
+
+        Column order is NOT reproduced here -- callers of this helper always
+        feed into `_reorder_columns`, which is applied once to the final
+        combined result before writing (not after every pairwise merge), so
+        intermediate column order is immaterial.
+        """
+        con = self._duckdb_con
+        row_ord_col = "__row_ord__"
+        left_ordered = left.reset_index(drop=True)
+        left_ordered = left_ordered.assign(**{row_ord_col: np.arange(len(left_ordered))})
+
+        con.register("_left", left_ordered)
+        con.register("_right", right)
+        try:
+            # `IS NOT DISTINCT FROM`, not `=`: a plain `=` join drops rows
+            # with a NULL merge key on either side, but pandas' outer/left
+            # merges keep them (NaN keys round-trip as unmatched rows).
+            on_clause = " AND ".join(
+                f'_left."{c}" IS NOT DISTINCT FROM _right."{c}"' for c in merge_cols
+            )
+            if how == "outer":
+                join_kw = "FULL OUTER JOIN"
+                key_select = [f'COALESCE(_left."{c}", _right."{c}") AS "{c}"' for c in merge_cols]
+            elif how == "left":
+                join_kw = "LEFT JOIN"
+                key_select = [f'_left."{c}" AS "{c}"' for c in merge_cols]
+            else:
+                raise ValueError(f"Unsupported join type: {how!r}")
+
+            left_extra = [c for c in left.columns if c not in merge_cols]
+            right_extra = [c for c in right.columns if c not in merge_cols]
+            select_cols = (
+                key_select
+                + [f'_left."{c}"' for c in left_extra]
+                + [f'_right."{c}"' for c in right_extra]
+                + [f'_left."{row_ord_col}"']
+            )
+            query = f'SELECT {", ".join(select_cols)} FROM _left {join_kw} _right ON {on_clause}'
+            result = con.sql(query).df()
+        finally:
+            con.unregister("_left")
+            con.unregister("_right")
+
+        # Preserve left-frame row order (SQL joins don't guarantee output
+        # order the way pd.merge does). Rows that only exist on the right
+        # side (outer join) have a NULL row-order and sort after every
+        # left-originated row -- pd.merge(how='outer') doesn't guarantee a
+        # specific relative order for those either, only that left rows
+        # keep their original relative order.
+        result = (
+            result.sort_values(row_ord_col, kind="stable", na_position="last")
+            .drop(columns=[row_ord_col])
+            .reset_index(drop=True)
+        )
+
+        # DuckDB's Arrow round-trip can shift a column's dtype at the
+        # margins (e.g. int64 -> float64) differently than pandas would --
+        # cast back to the pre-join dtype where the values still fit and no
+        # nulls were introduced, so callers see the same dtype contract as
+        # the pre-swap pandas merge.
+        for col in result.columns:
+            prior_dtype = left[col].dtype if col in left.columns else (
+                right[col].dtype if col in right.columns else None
+            )
+            if prior_dtype is not None and result[col].dtype != prior_dtype and not result[col].isna().any():
+                try:
+                    result[col] = result[col].astype(prior_dtype)
+                except (TypeError, ValueError):
+                    pass
+
+        return result
+
     def _merge_dataframes(
         self,
         combined: pd.DataFrame,
@@ -525,28 +613,28 @@ class TileProcessor:
     ) -> pd.DataFrame:
         """
         Merge a new DataFrame into the combined result.
-        
+
         Uses all available common index columns from the unified set for merging.
         Uses outer join to preserve all rows, with land mask filtering applied later.
         """
         # Find common merge columns from the unified index set
         # Use all index columns that are present in both dataframes
         merge_cols = [col for col in self.all_index_cols if col in combined.columns and col in df.columns]
-        
+
         if not merge_cols:
             logger.warning(
                 f"Tile [{ix}, {iy}]: {dataset_name} - no common columns found for merge. "
                 f"all_index_cols: {self.all_index_cols}, combined: {list(combined.columns)}, df: {list(df.columns)}"
             )
             return combined
-        
+
         rows_before = len(combined)
-        combined = pd.merge(combined, df, on=merge_cols, how='outer')
+        combined = self._duckdb_join(combined, df, merge_cols, how="outer")
         logger.debug(
             f"Tile [{ix}, {iy}]: {dataset_name} - merged on {merge_cols}, "
             f"rows: {rows_before} -> {len(combined)}"
         )
-        
+
         return combined
 
     def _combine_dataset_tables(
@@ -624,7 +712,7 @@ class TileProcessor:
             existing_df = existing_df.drop(columns=cols_to_drop)
 
         logger.info(f"{context}: merging on index columns: {merge_cols}")
-        return pd.merge(existing_df, update_df, on=merge_cols, how='left')
+        return self._duckdb_join(existing_df, update_df, merge_cols, how="left")
     
     def _reorder_columns(
         self,

@@ -93,7 +93,15 @@ The ladder conceptually continues `fetch → prepare → grid → convolve → a
 `PipelineStep` — consistent with [`04-ingest.md`](04-ingest.md) §6's decision to tabularize exactly once,
 at the very end. `src/data/common/neighbourhood/` currently has **no CLI verb at all** (only driven by
 `scripts/validate_backbone_subset.py`); this document flags that as a known gap, out of scope here, worth a
-future `run.py neighbourhood run`.
+future `run.py neighbourhood run`. A scaffolding-only parquet writer for its per-tile output now exists
+(`store.py::write_disc_tile_parquet`, keyed on the new `cell_id` scheme — see
+[`01-grid.md`](01-grid.md) §5 and [`02-storage.md`](02-storage.md)), but it is exercised only by unit
+tests and `scripts/validate_backbone_subset.py`'s optional `--parquet-out` flag — this does not close
+the CLI-verb gap above.
+
+The assemble stage's multi-source merge (`src/data/assemble/processors.py`) now runs on DuckDB
+(`TileProcessor._duckdb_join`) rather than iterative `pd.merge` calls, for the same row-order/NaN-key/
+dtype contract as before — a performance/engine change, not a behavioral one.
 
 ### Declaring step absence — structurally, not by name
 

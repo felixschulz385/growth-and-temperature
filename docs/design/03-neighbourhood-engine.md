@@ -50,6 +50,11 @@ climatology, and latitude — exactly the kind of confound this entire redesign 
 Convolving the mask alongside the variable, and dividing only at read/tabularization time, makes the
 missing-data handling exact instead of approximate.
 
+**Output writers:** `store.py::write_disc_tile` (Zarr region write, production path for point 2 of
+[`02-storage.md`](02-storage.md) §1) and `store.py::write_disc_tile_parquet` (scaffolding-only,
+`cell_id`-keyed parquet sibling — see `02-storage.md`'s addendum and [`01-grid.md`](01-grid.md) §5a).
+Neither is called from a pipeline CLI step yet — still no CLI verb (§ below).
+
 ## 3. Halo reads via `GeoBox.buffered(R_max)`
 
 `GeoBox.buffered(xbuff, ybuff=None)` exists in the installed odc-geo API and is not currently called
