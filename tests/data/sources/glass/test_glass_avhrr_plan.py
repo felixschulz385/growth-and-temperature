@@ -99,5 +99,5 @@ def test_output_path_uses_family(tmp_path):
     source, ctx = _make_source(tmp_path)
     _write_raw_files(source, _AVHRR_FILES)
     assert source._grid_output_path() == os.path.join(
-        ctx.data_root, "prepared", "glass/LST/AVHRR/0.05D/", "crs", "legacy_4326", "glass_avhrr_lst.zarr"
+        ctx.data_root, "prepared", "glass/LST/AVHRR/0.05D/", "crs", "legacy_4326", "glass_avhrr_lst"
     )

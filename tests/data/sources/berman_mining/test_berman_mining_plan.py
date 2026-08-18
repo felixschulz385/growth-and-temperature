@@ -8,7 +8,7 @@ import os
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources.berman_mining import BermanMiningSource
-from src.data.sources.steps import PipelineStep, TargetSelection
+from src.data.sources.steps import Completion, PipelineStep, TargetSelection
 
 
 def _make_source(tmp_path, grid_id="legacy_4326", **raw):
@@ -47,8 +47,12 @@ def test_prepare_target(tmp_path):
     source, ctx = _make_source(tmp_path, year_range=[2000, 2010])
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "berman_mining.zarr")
+    assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "berman_mining")
     assert targets[0].meta["year_range"] == (2000, 2010)
+    # MARKER, not PATH_EXISTS: output_path is a directory of per-(tile,
+    # year) parquet parts written incrementally by run_tiled_prepare, so
+    # plain existence can't signal completion (see berman_mining.py).
+    assert targets[0].completion == Completion.MARKER
 
 
 def test_get_or_create_geobox_delegates_to_shared_target_helper(tmp_path, monkeypatch):

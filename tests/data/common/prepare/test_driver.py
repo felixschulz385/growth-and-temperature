@@ -5,6 +5,7 @@ refuses concurrent invocation.
 """
 
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -59,7 +60,7 @@ def _make_getter(fail_units=frozenset()):
 
 
 def test_run_tiled_prepare_fills_every_tile_and_marks_complete(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     ok = run_tiled_prepare(
         output_path=output_path,
         years=[2020],
@@ -74,15 +75,15 @@ def test_run_tiled_prepare_fills_every_tile_and_marks_complete(tmp_path, target_
     assert ok is True
     assert os.path.exists(marker_path(output_path))
 
-    ds = xr.open_zarr(output_path, consolidated=False, decode_coords="all")
-    try:
-        assert np.all(ds["value"].isel(time=0, band=0).values == 2020.0)
-    finally:
-        ds.close()
+    parts = sorted(Path(output_path).glob("ix=*/iy=*/part-2020.parquet"))
+    assert len(parts) == 4  # 2x2 tile grid at tile_size=4 on an 8x8 geobox
+    df = pd.concat(pd.read_parquet(p) for p in parts)
+    assert (df["value"] == 2020.0).all()
+    assert (df["year"] == 2020).all()
 
 
 def test_second_run_is_a_noop_skips_completed_units(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     getter = _make_getter()
     kwargs = dict(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
@@ -97,7 +98,7 @@ def test_second_run_is_a_noop_skips_completed_units(tmp_path, target_geobox, pro
 
 
 def test_failure_in_one_tile_records_status_and_returns_false(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     getter = _make_getter(fail_units={(2020, "0000_0000")})
 
     ok = run_tiled_prepare(
@@ -115,7 +116,7 @@ def test_failure_in_one_tile_records_status_and_returns_false(tmp_path, target_g
 
 
 def test_retry_after_failure_succeeds_and_completes(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     fail_unit = (2020, "0000_0000")
     getter = _make_getter(fail_units={fail_unit})
     kwargs = dict(
@@ -132,7 +133,7 @@ def test_retry_after_failure_succeeds_and_completes(tmp_path, target_geobox, pro
 
 
 def test_processing_version_bump_forces_reprocessing(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     getter_v1 = _make_getter()
     common = dict(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
@@ -146,7 +147,7 @@ def test_processing_version_bump_forces_reprocessing(tmp_path, target_geobox, pr
 
 
 def test_run_tiled_prepare_refuses_concurrent_invocation(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     status_dir = status_dir_for(output_path)
     lock_path = os.path.join(status_dir, "prepare.lock")
     lockfile.acquire(lock_path)
@@ -162,13 +163,68 @@ def test_run_tiled_prepare_refuses_concurrent_invocation(tmp_path, target_geobox
 
 
 def test_prepare_status_counts_before_any_run(tmp_path, target_geobox):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     counts = prepare_status(output_path, [2020], target_geobox, tile_size=4)
     assert counts == {"complete": 0, "outstanding": 4, "unavailable": 0}
 
 
+def test_run_tiled_prepare_static_years_none_writes_one_part_per_tile_no_year(tmp_path, target_geobox, processor):
+    output_path = str(tmp_path / "output")
+
+    def static_getter(tile, year):
+        assert year is None
+        return _fake_source_ds(2020)  # value irrelevant to year; getter ignores it
+
+    ok = run_tiled_prepare(
+        output_path=output_path,
+        years=None,
+        target_geobox=target_geobox,
+        processor=processor,
+        raw_getter=static_getter,
+        tile_size=4,
+    )
+    assert ok is True
+    assert os.path.exists(marker_path(output_path))
+
+    parts = sorted(Path(output_path).glob("ix=*/iy=*/part.parquet"))
+    assert len(parts) == 4
+    df = pd.concat(pd.read_parquet(p) for p in parts)
+    assert "year" not in df.columns
+    assert (df["value"] == 2020.0).all()
+
+    status_dir = status_dir_for(output_path)
+    # static units are keyed by tile id alone, not "<year>/<tile id>"
+    assert statusfile.read(statusfile.status_path(status_dir, "0000_0000")) is not None
+
+
+def test_run_tiled_prepare_reproject_false_uses_raw_getter_output_as_is(tmp_path, target_geobox, processor):
+    output_path = str(tmp_path / "output")
+    tile_size = 4
+
+    def prerasterized_getter(tile, year):
+        h, w = tile.geobox.shape
+        return xr.Dataset({"land_mask": (("y", "x"), np.ones((h, w), dtype="uint8"))})
+
+    ok = run_tiled_prepare(
+        output_path=output_path,
+        years=None,
+        target_geobox=target_geobox,
+        processor=processor,
+        raw_getter=prerasterized_getter,
+        tile_size=tile_size,
+        reproject=False,
+    )
+    assert ok is True
+
+    parts = sorted(Path(output_path).glob("ix=*/iy=*/part.parquet"))
+    assert len(parts) == 4
+    df = pd.read_parquet(parts[0])
+    assert (df["land_mask"] == 1).all()
+    assert len(df) == tile_size * tile_size
+
+
 def test_prepare_status_counts_after_partial_failure(tmp_path, target_geobox, processor):
-    output_path = str(tmp_path / "output.zarr")
+    output_path = str(tmp_path / "output")
     getter = _make_getter(fail_units={(2020, "0000_0000")})
     run_tiled_prepare(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,

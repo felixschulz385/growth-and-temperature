@@ -58,7 +58,7 @@ def test_prepare_plan_one_target_covering_every_available_year_prefers_nc4(tmp_p
     assert target.completion == Completion.MARKER
     assert target.meta["years"] == [2019, 2020, 2021]
     assert target.meta["raw_files"][2020] == "GL/Annual/V6GL02.04.CNNPM25.GL.202001-202012.nc4"
-    assert target.output_path.endswith("pm25.zarr")
+    assert target.output_path.endswith("pm25")
 
 
 def test_prepare_plan_respects_year_selection(tmp_path):
@@ -76,7 +76,7 @@ def test_prepare_plan_respects_year_selection(tmp_path):
 
 def test_output_path_uses_family(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), "pm25.zarr")
+    assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), "pm25")
 
 
 def test_unsupported_step_raises_for_a_source_with_a_narrower_contract(tmp_path):

@@ -8,12 +8,11 @@ config-key string matching. Ports the OSM-specific slice of
 `_process_osm_target`/`_rasterize_osm_target`. Output paths:
 `prepared/misc/osm/land_polygons_simplified.gpkg`, `grid/<grid_id>/land_mask.zarr`.
 
-OSM's final output is one whole-extent `rasterize()` call (no time dimension,
-no per-year resumability need), so unlike the tiled raster sources
-(acag/esacci/eog/ntl_harm/glass) this doesn't route through
-`src.data.common.prepare.driver.run_tiled_prepare` -- it's simply one
-PREPARE target that extracts+simplifies the vector, then rasterizes it, in
-one call. There is no separate GRID step.
+OSM's final output has no time dimension -- `run_tiled_prepare(years=None,
+reproject=False, ...)`, one static rasterized `cell_id`-keyed parquet part
+per tile (the vector rasterization happens inside `raw_getter`, directly on
+each `tile.geobox`, so no raster resampling step is needed). There is no
+separate GRID step.
 """
 
 from __future__ import annotations
@@ -23,13 +22,9 @@ import logging
 import os
 import tempfile
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import List
 
-from zarr.codecs import BloscCodec
-
-from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -125,6 +120,7 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
             self.cfg.data_path,
             grid_id=self.ctx.grid_id,
             family="land_mask",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _plan_prepare(self) -> List[StepTarget]:
@@ -165,51 +161,46 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         gdf_simplified.to_file(vector_path, driver="GPKG")
         return True
 
-    def _rasterize(self, vector_path: str, output_path: str) -> bool:
-        import geopandas as gpd
-        import shapely
+    def _rasterize_tile(self, land_polygons, source_crs: str, tile) -> "xr.Dataset":
+        """One tile's rasterized land mask, on `tile.geobox` directly -- the
+        `raw_getter` for `run_tiled_prepare(years=None, reproject=False,
+        ...)`. `land_polygons`/`source_crs` are built once by the caller and
+        closed over, not reloaded per tile."""
         import xarray as xr
         from odc.geo.geom import Geometry
         from odc.geo.xr import rasterize
 
-        from src.data.common.geobox import get_target_geobox
+        geom = Geometry(land_polygons, crs=source_crs)
+        land_mask = rasterize(geom, tile.geobox)
+        return xr.Dataset(data_vars={"land_mask": land_mask})
 
-        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    def _rasterize(self, vector_path: str, output_path: str) -> bool:
+        import geopandas as gpd
+        import shapely
+
+        from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor
 
         gdf = gpd.read_file(vector_path, engine="pyogrio")
         geobox = get_target_geobox(self.ctx)
-
         land_polygons = shapely.MultiPolygon(gdf.geometry.tolist())
-        geom = Geometry(land_polygons, crs=str(gdf.crs))
-        land_mask = rasterize(geom, geobox)
-        dim_y, dim_x = geobox.dimensions
-        land_mask.coords[dim_y] = land_mask.coords[dim_y].values.round(5)
-        land_mask.coords[dim_x] = land_mask.coords[dim_x].values.round(5)
+        source_crs = str(gdf.crs)
 
-        ds = xr.Dataset(
-            data_vars={"land_mask": land_mask},
-            attrs={
-                "description": "Land/water mask (1=land, 0=water)",
-                "source": "OpenStreetMap land polygons",
-                "date_created": datetime.now().isoformat(),
-            },
+        processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
+        return run_tiled_prepare(
+            output_path=output_path,
+            years=None,
+            target_geobox=geobox,
+            processor=processor,
+            raw_getter=lambda tile, year: self._rasterize_tile(land_polygons, source_crs, tile),
+            reproject=False,
+            processing_version="1-tiled",
+            override=self.cfg.override,
         )
-        # Unlike every other GRID step's zarr writer, this one relied solely
-        # on `rasterize()`'s own georeferencing rather than an explicit
-        # `.rio.write_crs()` + "grid_mapping" encoding entry -- the same fix
-        # gadm/ecoregions/snl_mining/glass/berman_mining each needed (see
-        # write_crs_and_grid_mapping_encoding()'s docstring): without it, a
-        # data variable's zarr encoding has no link to the CRS coordinate,
-        # so `.rio.crs` (and any grid_mapping-based reader) returns None on
-        # a later read even though the CRS metadata is otherwise present.
-        compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-        base_encoding = {"land_mask": {"compressors": (compressor,)}}
-        ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
-        ds.to_zarr(output_path, encoding=encoding, mode="w")
-        return True
 
     def _execute_prepare(self, target: StepTarget) -> bool:
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping OSM processing -- already complete: %s", target.output_path)
@@ -220,10 +211,7 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
             if not self._simplify_vector(target.inputs[0], vector_path):
                 return False
 
-        if not self._rasterize(vector_path, target.output_path):
-            return False
-        mark_complete(target.output_path)
-        return True
+        return self._rasterize(vector_path, target.output_path)
 
 
 registry.register(OsmSource.ID, __name__, OsmSource.__name__, OsmSource.STEPS)

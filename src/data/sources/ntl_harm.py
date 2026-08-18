@@ -241,6 +241,7 @@ class NtlHarmSource(DataSource):
             self.cfg.data_path,
             grid_id=self.ctx.grid_id,
             family="ntl_harm",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:

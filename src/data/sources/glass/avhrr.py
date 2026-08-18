@@ -25,7 +25,6 @@ from __future__ import annotations
 import calendar
 import logging
 import os
-import re
 import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -35,10 +34,8 @@ import pandas as pd
 import rioxarray as rxr
 import xarray as xr
 from odc.geo.geom import clip_lon180
-from odc.geo.xr import xr_reproject
 from zarr.codecs import BloscCodec
 
-from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -93,6 +90,9 @@ class GlassAvhrrSource(DataSource):
 
     DATA_SOURCE_NAME = "glass"
 
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
+
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         self.path_prefix = self.AVHRR_PATH_PREFIX
 
@@ -119,6 +119,10 @@ class GlassAvhrrSource(DataSource):
         self.version = cfg.raw.get("version", "v1")
         self.chunk_size = cfg.raw.get("chunk_size") or {"band": 1, "x": 500, "y": 500}
         self.dashboard_port = cfg.raw.get("dashboard_port", ctx.dashboard_port)
+
+        from src.data.common import tiling
+
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="glass_AVHRR_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -629,6 +633,7 @@ class GlassAvhrrSource(DataSource):
             self.path_prefix,
             grid_id=self.ctx.grid_id,
             family="glass_avhrr_lst",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _ensure_annual_zarr(self, group: Dict[str, Any]) -> Optional[str]:
@@ -655,34 +660,70 @@ class GlassAvhrrSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         """First ensure every requested year's daily->annual stats zarr
-        exists, then reproject them all into the final output, tile by
-        tile, using GLASS's own bespoke reprojection path
-        (`_process_years_chunked`/`_process_year_tiles`, ported verbatim
-        from `GlassPreprocessor._process_spatial_target` and its chunked-tile
-        helpers -- not the shared SpatialProcessor, see module docstring)."""
+        exists (unchanged, `_ensure_annual_zarr`), then reproject them onto
+        the canonical grid via the shared `run_tiled_prepare` driver instead
+        of GLASS's own bespoke tile loop. `raw_getter` reproduces the same
+        halo-clip (32px pad, antimeridian-safe bbox) this used to do inline
+        in `_process_year_tiles`, and memoizes one year's opened annual
+        dataset at a time -- `run_tiled_prepare` iterates (year, tile)
+        year-major, so at most one year's zarr handle is ever open."""
         from src.data.common.geobox import get_target_geobox
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
             return True
 
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
-
-        years_available = set(target.meta["years_available"])
+        years_available = sorted(target.meta["years_available"])
         group_keys = tuple(target.meta["group_keys"])
         groups = self._group_daily_files(TargetSelection(keys=group_keys))
         if not groups:
             logger.error("No daily file groups found for PREPARE (source=%s)", self.cfg.source_id)
             return False
 
-        annual_paths = []
+        annual_paths_by_year: Dict[int, str] = {}
         for group in groups:
             annual_path = self._ensure_annual_zarr(group)
             if annual_path is None:
                 logger.error("Failed to build annual stats zarr for %s/%s", group["year"], group["grid_cell"])
                 return False
-            annual_paths.append(annual_path)
+            annual_paths_by_year[group["year"]] = annual_path
+
+        try:
+            target_geobox = get_target_geobox(self.ctx)
+        except Exception:
+            logger.exception("Failed to get target geobox")
+            return False
+
+        year_cache: Dict[int, xr.Dataset] = {}
+
+        def year_ds(year: int) -> xr.Dataset:
+            if year not in year_cache:
+                year_cache.clear()  # drop the previous year's open handle
+                ds = xr.open_zarr(annual_paths_by_year[year], consolidated=False, decode_coords="all")
+                ds = ds.rio.write_crs(4326)
+                ds = ds.sel(y=slice(None, None, -1))
+                if ds.rio.crs is None:
+                    try:
+                        ds = ds.rio.write_crs(ds.spatial_ref.crs_wkt)
+                    except Exception:
+                        logger.warning("Error setting crs on dataset", exc_info=True)
+                year_cache[year] = ds
+            return year_cache[year]
+
+        def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+            ds = year_ds(year)
+            bbox = clip_lon180(tile.geobox.pad(32, 32).extent).to_crs(ds.rio.crs).boundingbox
+            clipped_ds = ds.sel(y=slice(bbox.bottom, bbox.top), x=slice(bbox.left, bbox.right)).compute()
+            if clipped_ds.sizes.get("x", 0) == 0 or clipped_ds.sizes.get("y", 0) == 0:
+                return None
+
+            int_vars = [key for key, val in clipped_ds.dtypes.items() if np.issubdtype(val, np.integer)]
+            if int_vars:
+                clipped_ds[int_vars] = clipped_ds[int_vars].astype("float32").where(clipped_ds.valid_count > 0, np.nan)
+            return clipped_ds
 
         try:
             with self._dask_client() as client:
@@ -690,252 +731,27 @@ class GlassAvhrrSource(DataSource):
                 if dashboard_link:
                     logger.info("Created Dask client for spatial processing: %s", dashboard_link)
 
-                import dask
-
-                with dask.config.set(
-                    {
-                        "array.slicing.split_large_chunks": True,
-                        "array.chunk-size": "512MB",
-                        "optimization.fuse.active": False,
-                        "distributed.comm.compression": "lz4",
-                    }
-                ):
-                    try:
-                        target_geobox = get_target_geobox(self.ctx)
-                    except Exception:
-                        logger.exception("Failed to get target geobox")
-                        return False
-
-                    if not os.path.exists(target.output_path):
-                        if not self._create_empty_target_zarr(target.output_path, target_geobox, tuple(annual_paths)):
-                            return False
-
-                    ok = self._process_years_chunked(
-                        annual_paths, target.output_path, target_geobox, sorted(years_available)
+                processor = SpatialProcessor(
+                    hpc_root=self.ctx.data_root,
+                    temp_dir=self.temp_dir,
+                    dask_client=client,
+                    target_geobox=target_geobox,
+                )
+                with processor.setup_dask_config():
+                    return run_tiled_prepare(
+                        output_path=target.output_path,
+                        years=years_available,
+                        target_geobox=target_geobox,
+                        processor=processor,
+                        raw_getter=raw_getter,
+                        tile_size=self.tile_size,
+                        resampling="mode",
+                        dst_nodata=np.nan,
+                        processing_version=self.PROCESSING_VERSION,
+                        override=self.cfg.override,
                     )
-                    if ok:
-                        mark_complete(target.output_path)
-                    return ok
         except Exception:
             logger.exception("Error in GLASS spatial processing")
-            return False
-
-    def _create_empty_target_zarr(self, output_path: str, target_geobox, source_files: Tuple[str, ...]) -> bool:
-        try:
-            from src.data.common.raster.spatial import _NON_DATA_VAR_NAMES
-
-            sample_ds = xr.open_zarr(source_files[0], mask_and_scale=False, chunks="auto", consolidated=False)
-            # Exclude a leaked CRS grid-mapping variable (opened above
-            # without decode_coords="all", so rioxarray's own "spatial_ref"
-            # coordinate shows up in data_vars too) -- treating it as a real
-            # data variable below would corrupt the actual CRS write_crs()
-            # writes under the same name.
-            variables = [v for v in sample_ds.data_vars.keys() if v not in _NON_DATA_VAR_NAMES]
-            sample_attrs = sample_ds.attrs.copy()
-
-            years = sorted(self._years_from_source_files(source_files))
-            time_coords = pd.to_datetime([f"{year}-12-31" for year in years])
-
-            ny, nx = target_geobox.shape
-            dim_y, dim_x = target_geobox.dimensions
-            y_coords = target_geobox.coords[dim_y].values.round(5)
-            x_coords = target_geobox.coords[dim_x].values.round(5)
-
-            data_vars = {}
-            default_attrs = {"_FillValue": 0}
-            packaging_attrs = {"scale_factor": 0.01, "add_offset": 0.0}
-            for var in variables:
-                var_attrs = sample_ds[var].attrs.copy() | default_attrs
-                if "float" in str(sample_ds[var].dtype):
-                    var_attrs |= packaging_attrs
-                data_vars[var] = xr.DataArray(
-                    da.zeros((len(years), 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 512, 512)),
-                    dims=["time", "band", dim_y, dim_x],
-                    coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
-                    attrs=var_attrs,
-                )
-            sample_ds.close()
-
-            empty_ds = xr.Dataset(data_vars, attrs=sample_attrs)
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            base_encoding = {
-                var: {"chunks": (1, 1, 512, 512), "compressors": (compressor,), "dtype": "uint16"} for var in variables
-            }
-            empty_ds, encoding = write_crs_and_grid_mapping_encoding(empty_ds, target_geobox, base_encoding)
-
-            empty_ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, zarr_format=3, consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error creating empty target zarr")
-            return False
-
-    @staticmethod
-    def _years_from_source_files(source_files: Tuple[str, ...]) -> List[int]:
-        years = set()
-        for f in source_files:
-            m = re.search(r"/(\d{4})/", f) or re.search(r"(\d{4})\.zarr", os.path.basename(f))
-            if m:
-                years.add(int(m.group(1)))
-        return sorted(years)
-
-    def _group_files_by_year(self, source_files: List[str]) -> Dict[int, List[str]]:
-        files_by_year: Dict[int, List[str]] = {}
-        for file_path in source_files:
-            m = re.search(r"(\d{4})\.zarr", os.path.basename(file_path))
-            if m:
-                files_by_year.setdefault(int(m.group(1)), []).append(file_path)
-        return files_by_year
-
-    def _process_years_chunked(self, source_files: List[str], output_path: str, target_geobox, years_to_process: List[int]) -> bool:
-        try:
-            files_by_year = self._group_files_by_year(source_files)
-            from odc.geo import GeoboxTiles
-
-            tile_size = 2048
-            tiles = GeoboxTiles(target_geobox, (tile_size, tile_size))
-
-            for year in sorted(files_by_year):
-                if year not in years_to_process:
-                    continue
-                year_files = files_by_year[year]
-                logger.info("Processing year %s with %d files", year, len(year_files))
-
-                if len(year_files) > 1:
-                    prepare_root = layout.output_root(
-                        self.ctx.data_root, self.path_prefix, PipelineStep.PREPARE,
-                        agg=layout.CRS_AGG,
-                    )
-                    annual_temp_path = os.path.join(prepare_root, str(year), "temp_combined.tzarr")
-                    if not self._aggregate_year_files(year_files, annual_temp_path, year):
-                        logger.error("Failed to aggregate files for year %s", year)
-                        return False
-                    year_source = annual_temp_path
-                else:
-                    year_source = year_files[0]
-
-                if not self._process_year_tiles(year_source, output_path, target_geobox, tiles, year, tile_size):
-                    logger.error("Failed to process tiles for year %s", year)
-                    return False
-            return True
-        except Exception:
-            logger.exception("Error in chunked year processing")
-            return False
-
-    def _aggregate_year_files(self, year_files: List[str], temp_output_path: str, year: int) -> bool:
-        try:
-            if os.path.exists(temp_output_path):
-                logger.info("Temporary output path already exists")
-                return True
-
-            logger.info("Aggregating %d files for year %s", len(year_files), year)
-            datasets = []
-            for file_path in year_files:
-                ds = xr.open_zarr(file_path, decode_coords="all", chunks="auto")
-                ds.coords["x"] = ds.coords["x"].astype("int")
-                ds.coords["y"] = ds.coords["y"].astype("int")
-                datasets.append(ds)
-
-            combined = xr.combine_by_coords(datasets, combine_attrs="drop_conflicts", join="outer")
-            x_coords = combined.coords["x"]
-            y_coords = combined.coords["y"]
-            nx, ny = len(x_coords), len(y_coords)
-
-            variables = list(ds.data_vars.keys())
-            coordinates = list(ds.coords.keys())
-            data_vars = {}
-            default_attrs = {"_FillValue": 0}
-            packaging_attrs = {"scale_factor": 0.01, "add_offset": 0.0}
-            for var in variables:
-                var_attrs = combined[var].attrs.copy() | default_attrs
-                if "float" in str(datasets[0][var].dtype):
-                    var_attrs |= packaging_attrs
-                data_vars[var] = xr.DataArray(
-                    da.zeros((1, 1, ny, nx), dtype=np.uint16, chunks=(1, 1, 300, 300)),
-                    dims=["band", "time", "y", "x"],
-                    coords={"band": [1], "time": [pd.to_datetime(f"{year}-12-31")], "y": y_coords, "x": x_coords},
-                    attrs=var_attrs,
-                )
-            combined_ds = xr.Dataset(data_vars)
-
-            crs = 4326
-            combined_ds = combined_ds.rio.write_crs(crs)
-
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            encoding = {
-                var: {"chunks": (1, 1, 300, 300), "compressors": (compressor,), "dtype": "uint16"} for var in variables
-            } | {coord: {"compressors": (compressor,)} for coord in coordinates}
-
-            combined_ds.to_zarr(temp_output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False, compute=False)
-
-            for i, ds in enumerate(datasets):
-                try:
-                    ds_clean = ds.rio.write_crs(crs)
-                    ds_clean = ds_clean.drop_vars(["spatial_ref"]).drop_attrs()
-                    ds_clean = ds_clean.chunk({"band": 1, "time": 1, "y": 300, "x": 300})
-                    ds_clean = ds_clean.isel(y=slice(None, None, -1))
-                    if ds_clean.sizes["x"] == 0 or ds_clean.sizes["y"] == 0:
-                        continue
-                    ds_clean.to_zarr(temp_output_path, region="auto", align_chunks=True)
-                except Exception:
-                    logger.warning("Error processing region %d/%d for year %s", i + 1, len(datasets), year, exc_info=True)
-                    continue
-
-            combined_ds.close()
-            for ds in datasets:
-                ds.close()
-            return True
-        except Exception:
-            logger.exception("Error aggregating year files for %s", year)
-            return False
-
-    def _process_year_tiles(self, year_source: str, output_path: str, target_geobox, tiles, year: int, tile_size: int) -> bool:
-        try:
-            year_ds = xr.open_zarr(year_source, consolidated=False, decode_coords="all")
-
-            year_ds = year_ds.rio.write_crs(4326)
-            year_ds = year_ds.sel(y=slice(None, None, -1))
-
-            if year_ds.rio.crs is None:
-                try:
-                    year_ds = year_ds.rio.write_crs(year_ds.spatial_ref.crs_wkt)
-                except Exception:
-                    logger.warning("Error setting crs on dataset", exc_info=True)
-
-            for ix in range(tiles.shape[0]):
-                for iy in range(tiles.shape[1]):
-                    try:
-                        logger.info("Reprojecting tile [%d, %d] for year %s to: %s", ix, iy, year, output_path)
-                        tile_geobox = tiles[ix, iy]
-
-                        def extract_slice(ds, tg):
-                            bbox = clip_lon180(tg.pad(32, 32).extent).to_crs(year_ds.rio.crs).boundingbox
-                            return ds.sel(y=slice(bbox.bottom, bbox.top), x=slice(bbox.left, bbox.right))
-
-                        clipped_ds = extract_slice(year_ds, tile_geobox).compute()
-                        if clipped_ds.sizes["x"] == 0 or clipped_ds.sizes["y"] == 0:
-                            continue
-
-                        int_vars = [key for key, val in clipped_ds.dtypes.items() if np.issubdtype(val, np.integer)]
-                        if int_vars:
-                            clipped_ds[int_vars] = clipped_ds[int_vars].astype("float32").where(clipped_ds.valid_count > 0, np.nan)
-
-                        reprojected_ds = xr_reproject(clipped_ds, tile_geobox, resampling="mode", dst_nodata=np.nan)
-                        reprojected_ds = reprojected_ds.drop_vars(["spatial_ref"]).drop_attrs()
-                        tile_dim_y, tile_dim_x = tile_geobox.dimensions
-                        reprojected_ds.coords[tile_dim_x] = reprojected_ds.coords[tile_dim_x].round(5)
-                        reprojected_ds.coords[tile_dim_y] = reprojected_ds.coords[tile_dim_y].round(5)
-                        reprojected_ds = reprojected_ds.chunk({"band": 1, "time": 1, tile_dim_y: 512, tile_dim_x: 512})
-
-                        reprojected_ds.to_zarr(output_path, region="auto", align_chunks=True, zarr_format=3, consolidated=False)
-                        reprojected_ds.close()
-                    except Exception:
-                        logger.warning("Error processing tile [%d, %d] for year %s", ix, iy, year, exc_info=True)
-                        continue
-
-            year_ds.close()
-            return True
-        except Exception:
-            logger.exception("Error processing tiles for year %s", year)
             return False
 
 

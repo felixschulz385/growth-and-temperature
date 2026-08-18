@@ -60,7 +60,7 @@ def test_prepare_plan_one_target_covering_every_available_year_prefers_nc4(tmp_p
     assert target.completion == Completion.MARKER
     assert target.meta["years"] == [2019, 2020, 2021]
     assert target.meta["raw_files"][2020] == "2020/ESACCI-LC-L4-LCCS-Map-300m-P1Y-2020-v2.0.7.nc4"
-    assert target.output_path.endswith("land_cover.zarr")
+    assert target.output_path.endswith("land_cover")
 
 
 def test_prepare_plan_respects_year_selection(tmp_path):
@@ -78,4 +78,4 @@ def test_prepare_plan_respects_year_selection(tmp_path):
 
 def test_output_path_uses_family(tmp_path):
     source, ctx = _make_source(tmp_path)
-    assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), "land_cover.zarr")
+    assert source._output_path() == os.path.join(source.output_root(PipelineStep.GRID), "land_cover")

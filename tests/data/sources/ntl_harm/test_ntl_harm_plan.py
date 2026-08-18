@@ -83,7 +83,7 @@ def test_prepare_plan_one_target_covering_every_available_year(tmp_path):
     assert target.key == "all"
     assert target.meta["years"] == [2019, 2020, 2021]
     assert target.completion == Completion.MARKER
-    assert target.output_path.endswith("ntl_harm.zarr")
+    assert target.output_path.endswith("ntl_harm")
 
 
 def test_prepare_plan_prefers_tif_over_zip_per_year(tmp_path):
@@ -133,12 +133,12 @@ def test_execute_prepare_writes_a_real_reprojected_tiled_output(tmp_path, monkey
     assert ok is True
     assert os.path.exists(marker_path(target.output_path))
 
-    import xarray as xr
+    import glob
 
-    ds = xr.open_zarr(target.output_path, consolidated=False, decode_coords="all")
-    try:
-        values = ds[source.VARIABLE_NAME].isel(time=0, band=0).values
-        assert np.all(np.isfinite(values))
-        assert values.shape == (8, 8)
-    finally:
-        ds.close()
+    import pandas as pd
+
+    parts = sorted(glob.glob(os.path.join(target.output_path, "ix=*", "iy=*", "part-2020.parquet")))
+    assert len(parts) == 4  # 2x2 tile grid at tile_size=4 on an 8x8 geobox
+    df = pd.concat(pd.read_parquet(p) for p in parts)
+    assert len(df) == 64  # 8x8 pixels total
+    assert np.all(np.isfinite(df[source.VARIABLE_NAME].values))

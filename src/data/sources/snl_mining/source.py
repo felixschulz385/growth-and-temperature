@@ -72,7 +72,6 @@ import tempfile
 from typing import Dict, List, Tuple
 
 from src.data.common.geobox import get_target_geobox
-from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
 from src.data.common.years import MAX_PLAUSIBLE_YEAR as _MAX_PLAUSIBLE_YEAR, MIN_PLAUSIBLE_YEAR as _MIN_PLAUSIBLE_YEAR
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
@@ -102,12 +101,6 @@ DEFAULT_RADIUS_VARIABLES = {
     "mine_polygon_count": {"table_name": "mine_polygons", "value_column": "value", "dtype": "uint16"},
 }
 
-#: nodata/fill sentinel per rasterized dtype -- `0` is a legitimate value for
-#: `mine_priceshock_*` (a mine-year with genuinely zero-priced-exposure
-#: coverage), so it can't share `mine_count_*`'s `0` fill/nodata convention;
-#: `NaN` is used instead (see module docstring).
-DTYPE_FILL_VALUES: Dict[str, float] = {"uint16": 0, "float32": float("nan")}
-
 #: Scraper tables fused into PREPARE's mine identity/location/closing-year
 #: (docs/data/snl_mining/README.md's fusion section): `mines` is the identity
 #: backbone (adds mine-only-in-scraper records the manual `.xls` export never
@@ -124,11 +117,13 @@ SCRAPED_CLOSURE_MILESTONES_TABLE = "detail_discoveries_milestones__milestones"
 
 class SnlMiningSource(DataSource):
     """SNL/S&P Global mining property tables -- gridded metric-radius buffer
-    counts (zarr) + per-GID containing-ADM-polygon counts (parquet, merged
-    directly during assembly rather than rasterized)."""
+    counts (cell_id-keyed parquet) + per-GID containing-ADM-polygon counts
+    (parquet, merged directly during assembly rather than rasterized)."""
 
     ID = "snl_mining"
     STEPS = (PipelineStep.PREPARE,)
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
     # gadm's PREPARE builds both the admin-polygon join output and the GID_N
     # mapping sidecars directly; PipelineStep.GRID doesn't exist for gadm to
     # require, so one gadm entry covers both.
@@ -325,9 +320,17 @@ class SnlMiningSource(DataSource):
                     self.cfg.data_path,
                     grid_id=self.ctx.grid_id,
                     family="snl_mining",
+                    suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
                 ),
                 inputs=(self.duckdb_path, self.commodity_prices_path),
-                completion=Completion.PATH_EXISTS,
+                # MARKER, not PATH_EXISTS: output_path is now a directory of
+                # per-(tile, year) parquet parts written incrementally by
+                # run_tiled_prepare -- it exists as soon as the first part is
+                # written, long before every unit is done, so plain existence
+                # can't signal completion the way it could for a single zarr
+                # store. MARKER's sibling ".complete" file is only written
+                # once every declared unit is complete (see driver.py).
+                completion=Completion.MARKER,
                 meta=verify.verification_meta(
                     self.cfg.raw,
                     expected_vars=tuple(self.output_variables),
@@ -893,66 +896,6 @@ class SnlMiningSource(DataSource):
             return self._output_root()
         return super().output_root(step, namespace=namespace, agg=agg)
 
-    def _create_empty_target_zarr(self, output_path: str, geobox, years: List[int]) -> bool:
-        import dask.array as da
-        import numpy as np
-        import pandas as pd
-        import xarray as xr
-        from zarr.codecs import BloscCodec
-
-        try:
-            time_coords = pd.to_datetime([f"{year}-12-31" for year in sorted(years)])
-            ny, nx = geobox.shape
-            dim_y, dim_x = geobox.dimensions
-            y_coords = geobox.coords[dim_y].values.round(5)
-            x_coords = geobox.coords[dim_x].values.round(5)
-
-            data_vars = {}
-            for var in self.output_variables:
-                dtype_name = self.buffer_tables[var][3]
-                np_dtype = np.dtype(dtype_name)
-                fill = DTYPE_FILL_VALUES[dtype_name]
-                data_vars[var] = xr.DataArray(
-                    da.full(
-                        (len(time_coords), 1, ny, nx), fill, dtype=np_dtype,
-                        chunks=(1, 1, self.tile_size, self.tile_size),
-                    ),
-                    dims=["time", "band", dim_y, dim_x],
-                    coords={"time": time_coords, "band": [1], dim_y: y_coords, dim_x: x_coords},
-                    attrs={"_FillValue": fill, "nodata": fill},
-                )
-            ds = xr.Dataset(
-                data_vars,
-                attrs={
-                    "source_duckdb_path": self.duckdb_path,
-                    "prepared_duckdb_path": self.prepared_db_path,
-                    "metric_crs": self.metric_crs,
-                    "radius_semantics": (
-                        "mine_count_*: count of active mine buffers covering pixel center. "
-                        "mine_priceshock_*: sum of share * ln(real price) over active, "
-                        "price-matched mine buffers covering pixel center; NaN where no "
-                        "price-matched mine buffer covers the pixel (see module docstring)."
-                    ),
-                },
-            )
-
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            base_encoding = {}
-            for var in self.output_variables:
-                dtype_name = self.buffer_tables[var][3]
-                base_encoding[var] = {
-                    "chunks": (1, 1, self.tile_size, self.tile_size),
-                    "compressors": (compressor,),
-                    "dtype": dtype_name,
-                    "fill_value": DTYPE_FILL_VALUES[dtype_name],
-                }
-            ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
-            ds.to_zarr(output_path, mode="w", compute=False, encoding=encoding, zarr_format=3, consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error creating SNL mining zarr skeleton")
-            return False
-
     def _fetch_features(self, con, table_name: str, value_column: str, year: int, tile_wkt: str):
         # `{value_column} IS NOT NULL` is what makes an all-unmatched-commodity
         # mine-year (mine_priceshock.value = SQL NULL, see
@@ -966,87 +909,66 @@ class SnlMiningSource(DataSource):
         """
         return con.execute(sql, [int(year), tile_wkt]).fetchall()
 
-    def _rasterize_tiles_to_zarr(self, output_path: str, geobox, years: List[int]) -> bool:
+    def _rasterize_tile(self, con, tile, year: int) -> "xr.Dataset":
+        """One (tile, year) unit's rasterized output, on `tile.geobox` --
+        the `raw_getter` for `run_tiled_prepare(reproject=False, ...)`.
+
+        Additive accumulation across every buffer radius/variable, same
+        semantics as before this moved onto the shared driver: uint16 counts
+        sum by `+= count`, float32 price-shocks sum by `+= value` and track
+        which pixels were ever touched so an untouched pixel resolves to
+        NaN (a legitimate "no matched mine nearby" value), not the
+        accumulator's additive identity 0 -- 0 is itself a valid price-shock
+        value (see module docstring). Always returns a dataset (never
+        `None`) even when no rows matched this tile/year: the untouched-
+        pixel defaults (0 for counts, NaN for price-shocks) are still the
+        correct output, and `run_tiled_prepare` would otherwise record a
+        real "no data" unit as a retryable failure.
+        """
         import numpy as np
-        import pandas as pd
         import shapely.wkb
         import xarray as xr
-        from odc.geo import GeoboxTiles
         from odc.geo.geom import Geometry
         from odc.geo.xr import rasterize
 
-        con = self._connect_duckdb(self.prepared_db_path)
-        try:
-            tiles = GeoboxTiles(geobox, (self.tile_size, self.tile_size))
-            for year in years:
-                for ix in range(tiles.shape[0]):
-                    for iy in range(tiles.shape[1]):
-                        tile_geobox = tiles[ix, iy]
-                        bounds = tile_geobox.boundingbox
-                        tile_wkt = (
-                            f"POLYGON(({bounds.left} {bounds.bottom}, {bounds.right} {bounds.bottom}, "
-                            f"{bounds.right} {bounds.top}, {bounds.left} {bounds.top}, {bounds.left} {bounds.bottom}))"
-                        )
-                        tile_arrays = {}
-                        tile_touched = {}
-                        for var in self.output_variables:
-                            dtype_name = self.buffer_tables[var][3]
-                            tile_arrays[var] = np.zeros(tile_geobox.shape, dtype=np.dtype(dtype_name))
-                            if dtype_name == "float32":
-                                tile_touched[var] = np.zeros(tile_geobox.shape, dtype=bool)
-                        any_data = False
+        tile_geobox = tile.geobox
+        bounds = tile_geobox.boundingbox
+        tile_wkt = (
+            f"POLYGON(({bounds.left} {bounds.bottom}, {bounds.right} {bounds.bottom}, "
+            f"{bounds.right} {bounds.top}, {bounds.left} {bounds.top}, {bounds.left} {bounds.bottom}))"
+        )
+        tile_arrays = {}
+        tile_touched = {}
+        for var in self.output_variables:
+            dtype_name = self.buffer_tables[var][3]
+            tile_arrays[var] = np.zeros(tile_geobox.shape, dtype=np.dtype(dtype_name))
+            if dtype_name == "float32":
+                tile_touched[var] = np.zeros(tile_geobox.shape, dtype=bool)
 
-                        for var_name, (table_name, _radius_m, value_column, dtype_name) in self.buffer_tables.items():
-                            rows = self._fetch_features(con, table_name, value_column, year, tile_wkt)
-                            any_data = any_data or bool(rows)
-                            for value, geom_wkb in rows:
-                                geom = Geometry(shapely.wkb.loads(bytes(geom_wkb)), crs=str(tile_geobox.crs))
-                                mask = rasterize(geom, tile_geobox).values.astype(bool)
-                                if dtype_name == "float32":
-                                    tile_arrays[var_name][mask] += np.float32(value)
-                                    tile_touched[var_name] |= mask
-                                else:
-                                    tile_arrays[var_name] = tile_arrays[var_name] + (mask.astype(np.uint16) * int(value))
+        for var_name, (table_name, _radius_m, value_column, dtype_name) in self.buffer_tables.items():
+            rows = self._fetch_features(con, table_name, value_column, year, tile_wkt)
+            for value, geom_wkb in rows:
+                geom = Geometry(shapely.wkb.loads(bytes(geom_wkb)), crs=str(tile_geobox.crs))
+                mask = rasterize(geom, tile_geobox).values.astype(bool)
+                if dtype_name == "float32":
+                    tile_arrays[var_name][mask] += np.float32(value)
+                    tile_touched[var_name] |= mask
+                else:
+                    tile_arrays[var_name] = tile_arrays[var_name] + (mask.astype(np.uint16) * int(value))
 
-                        # An untouched pixel of a float32 (price-shock) variable
-                        # must resolve to NaN, not the accumulator's additive
-                        # identity 0 -- 0 is itself a legitimate price-shock
-                        # value (see module docstring). uint16 count variables
-                        # are unaffected: 0 has always been their correct
-                        # "no mine nearby" value.
-                        for var_name in self.output_variables:
-                            dtype_name = self.buffer_tables[var_name][3]
-                            if dtype_name == "float32":
-                                tile_arrays[var_name] = np.where(
-                                    tile_touched[var_name], tile_arrays[var_name], np.nan
-                                ).astype(np.float32)
+        for var_name in self.output_variables:
+            dtype_name = self.buffer_tables[var_name][3]
+            if dtype_name == "float32":
+                tile_arrays[var_name] = np.where(
+                    tile_touched[var_name], tile_arrays[var_name], np.nan
+                ).astype(np.float32)
 
-                        if any_data:
-                            dim_y, dim_x = tile_geobox.dimensions
-                            tile_ds = xr.Dataset(
-                                {
-                                    var: xr.DataArray(
-                                        tile_arrays[var][None, None, :, :],
-                                        dims=["time", "band", dim_y, dim_x],
-                                        coords={
-                                            "time": pd.to_datetime([f"{year}-12-31"]),
-                                            "band": [1],
-                                            dim_y: tile_geobox.coords[dim_y].values.round(5),
-                                            dim_x: tile_geobox.coords[dim_x].values.round(5),
-                                        },
-                                    )
-                                    for var in self.output_variables
-                                }
-                            )
-                            tile_ds.to_zarr(output_path, mode="r+", region="auto", consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error rasterizing SNL mining tiles")
-            return False
-        finally:
-            con.close()
+        dim_y, dim_x = tile_geobox.dims
+        return xr.Dataset({var: ((dim_y, dim_x), tile_arrays[var]) for var in self.output_variables})
 
     def _execute_prepare(self, target: StepTarget) -> bool:
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -1065,12 +987,25 @@ class SnlMiningSource(DataSource):
             logger.error("No active mine years found in prepared DB %s", self.prepared_db_path)
             return False
 
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
         try:
             geobox = self._get_or_create_geobox()
-            if not self._create_empty_target_zarr(target.output_path, geobox, years):
-                return False
-            if not self._rasterize_tiles_to_zarr(target.output_path, geobox, years):
+            con = self._connect_duckdb(self.prepared_db_path)
+            try:
+                processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
+                ok = run_tiled_prepare(
+                    output_path=target.output_path,
+                    years=years,
+                    target_geobox=geobox,
+                    processor=processor,
+                    raw_getter=lambda tile, year: self._rasterize_tile(con, tile, year),
+                    tile_size=self.tile_size,
+                    reproject=False,
+                    processing_version=self.PROCESSING_VERSION,
+                    override=self.cfg.override,
+                )
+            finally:
+                con.close()
+            if not ok:
                 return False
             return self._export_admin_count_tables(os.path.dirname(target.output_path))
         except Exception:

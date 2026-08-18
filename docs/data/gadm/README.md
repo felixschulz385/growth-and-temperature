@@ -55,27 +55,32 @@ its own GeoPackage file.
 
 ## GRID
 
-`_execute_grid()` rasterizes **every** ADM level present in PREPARE's output
-(not just `ADM_0`/`ADM_1`) into one zarr variable per level, named after that
-level's own GADM id column (`ADM_1` file → `GID_1` variable, etc.), using
-tiled rasterization (`odc.geo.GeoboxTiles`, `tile_size=2048`) under a Dask
-client. Before tiling, every level's GeoDataFrame is reprojected to the
-target geobox's CRS via `reproject_for_tile_overlap()` — the module docstring
-flags this as a real, previously-shipped bug fix (commit `f653033`): without
-it, the per-tile `intersects()` overlap pre-filter compares un-reprojected
-(e.g. WGS84 degree) geometries against tile bounds in the target CRS (e.g.
-EASE6933 meters), silently producing ~100%-null output with no exception.
+`_rasterize_levels()` rasterizes **every** ADM level present in PREPARE's
+output (not just `ADM_0`/`ADM_1`) into one `cell_id`-keyed parquet column per
+level, named after that level's own GADM id column (`ADM_1` file → `GID_1`
+column, etc.), via the shared `run_tiled_prepare(years=None, reproject=False,
+...)` driver (`src/data/common/prepare/driver.py`) under a Dask client.
+Before tiling, every level's GeoDataFrame is reprojected to the target
+geobox's CRS via `reproject_for_tile_overlap()` — the module docstring flags
+this as a real, previously-shipped bug fix (commit `f653033`): without it,
+the per-tile `intersects()` overlap pre-filter compares un-reprojected (e.g.
+WGS84 degree) geometries against tile bounds in the target CRS (e.g. EASE6933
+meters), silently producing ~100%-null output with no exception.
 
 Each level's unique `GID_N` string codes are sorted and assigned sequential
 integer ids starting at 1 (`{code: i + 1 for i, code in enumerate(sorted(codes))}`);
-`0` means "no unit at this level." An empty zarr is created first
-(`_create_empty_gadm_zarr`, all-zeros `uint32`), then filled tile-by-tile
-(`_process_gadm_tiles`, `to_zarr(..., region="auto", mode="r+")`).
+`0` means "no unit at this level." `_rasterize_tile` (the driver's
+`raw_getter`) rasterizes each tile directly on its own `tile.geobox` (no
+raster resampling needed) and always returns a dataset, even when no polygon
+overlaps -- untouched pixels stay at the `0` default, and `run_tiled_prepare`
+would otherwise treat "nothing here" as a retryable failure. Each part is
+written as `ix=<row>/iy=<col>/part.parquet` (no year -- this output is
+static).
 
-- **Output path — zarr grid** (`layout.grid_store_path(..., family="country_id")`):
-  - `<data_root>/prepared/misc/crs/<grid_id>/country_id.zarr`
-- **Format**: Zarr store, `uint32` data variables, chunked `(512, 512)`,
-  Blosc/zstd-compressed. `Completion.MARKER`.
+- **Output path — parquet parts** (`layout.grid_store_path(..., family="country_id", suffix="")`):
+  - `<data_root>/prepared/misc/crs/<grid_id>/country_id/ix=<row>/iy=<col>/part.parquet`
+- **Format**: `cell_id`-keyed parquet, `uint32` data columns, one column per
+  ADM level, sorted by `cell_id`. `Completion.MARKER`.
 - **Variables** (dynamic — one per ADM level found in PREPARE's output, not
   a fixed set):
 

@@ -6,6 +6,7 @@ Oracle: tests/data/preprocess/sources/test_characterization_snl_mining.py.
 
 import os
 
+import numpy as np
 import pytest
 
 from src.data.pipeline.config import SourceConfig
@@ -156,7 +157,7 @@ def test_prepare_plan_target_when_stage0_duckdb_present(tmp_path):
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
     assert targets[0].output_path == os.path.join(
-        source.output_root(PipelineStep.GRID), "snl_mining.zarr"
+        source.output_root(PipelineStep.GRID), "snl_mining"
     )
     assert targets[0].inputs == (source.duckdb_path, source.commodity_prices_path)
 
@@ -186,7 +187,7 @@ def test_prepare_target_uses_family_zarr_path(tmp_path):
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
-    assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "snl_mining.zarr")
+    assert targets[0].output_path == os.path.join(source.output_root(PipelineStep.GRID), "snl_mining")
 
 
 def test_export_admin_count_tables_writes_gid_keyed_parquet(tmp_path):
@@ -470,6 +471,69 @@ def test_create_buffer_table_carries_value_and_value_priceshock(tmp_path):
     assert rows["m1"] == (1, 7.5)
     assert rows["m2"][0] == 1
     assert rows["m2"][1] is None
+
+
+# --- tiled rasterization (run_tiled_prepare(reproject=False, ...)'s raw_getter) --
+
+
+def test_rasterize_tile_accumulates_count_and_priceshock_within_buffer(tmp_path):
+    """_rasterize_tile is a verbatim port of the pre-shared-driver
+    _rasterize_tiles_to_zarr loop body -- this pins its accumulation
+    semantics still hold: uint16 counts and float32 price-shocks both
+    populate for a tile covering the mine, and a tile far away gets the
+    untouched-pixel defaults (0 count, NaN price-shock), not a missing/None
+    result (run_tiled_prepare would treat None as a retryable failure)."""
+    from odc.geo.geobox import GeoBox
+
+    from src.data.common import tiling
+
+    source, _ = _make_source(tmp_path)
+    source.commodity_prices_path = _write_prices_parquet(tmp_path, [("gold", 2020, 7.5)])
+    con = _attach_raw_db_with_shares(tmp_path, [("m1", "gold", 1.0)])
+    con.execute("LOAD spatial;")
+    con.execute(
+        "CREATE TABLE active_mines AS SELECT 'm1' AS property_id, 2020 AS year, ST_Point(0, 0) AS point_metric"
+    )
+    source._create_commodity_shares_table(con)
+    source._create_mine_priceshock_table(con)
+    # 100km, not the family's real 10km, so the transformed buffer circle
+    # (~1.8deg across near the origin) comfortably spans multiple pixels at
+    # this test geobox's 0.25deg resolution -- a literal 10km buffer would be
+    # smaller than one pixel here and rasterize to nothing, which would be a
+    # resolution artifact of this synthetic geobox, not a real behavior gap.
+    source._create_buffer_table(con, "mine_buffers_100km", 100_000, "EPSG:4326")
+
+    source.buffer_tables = {
+        "mine_count_100km": ("mine_buffers_100km", 100_000, "value", "uint16"),
+        "mine_priceshock_100km": ("mine_buffers_100km", 100_000, "value_priceshock", "float32"),
+    }
+    source.output_variables = ["mine_count_100km", "mine_priceshock_100km"]
+
+    # The 100km buffer transforms to roughly a 1.8deg-wide circle around
+    # (0, 0) -- rather than predict which tile(s) that lands in (grid-
+    # alignment/rounding makes the exact tile fragile to pin down), rasterize
+    # every tile in a grid wide enough to have untouched corners far from the
+    # mine, and check the aggregate: touched tiles get a nonzero count and a
+    # non-NaN price-shock, everything else stays at the untouched-pixel
+    # defaults.
+    target_geobox = GeoBox.from_bbox((-2, -2, 2, 2), crs="EPSG:4326", resolution=0.25)  # 16x16
+    tiles = list(tiling.iter_tiles(target_geobox, tile_size=4))
+    results = {tile.id: source._rasterize_tile(con, tile, 2020) for tile in tiles}
+
+    total_count = sum(int(ds["mine_count_100km"].values.sum()) for ds in results.values())
+    assert total_count >= 1
+
+    touched_priceshock = [
+        float(v) for ds in results.values() for v in ds["mine_priceshock_100km"].values.reshape(-1)
+        if not np.isnan(v)
+    ]
+    assert touched_priceshock and all(v == pytest.approx(7.5) for v in touched_priceshock)
+
+    untouched_tiles = [ds for ds in results.values() if int(ds["mine_count_100km"].values.sum()) == 0]
+    assert untouched_tiles  # most tiles are nowhere near the mine
+    for ds in untouched_tiles:
+        assert (ds["mine_count_100km"].values == 0).all()
+        assert np.isnan(ds["mine_priceshock_100km"].values).all()
 
 
 # --- identity/location/closing-year fusion: _create_active_mines_table ------

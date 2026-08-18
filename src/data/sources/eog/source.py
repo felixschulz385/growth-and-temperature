@@ -576,6 +576,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             self.cfg.data_path,
             grid_id=self.ctx.grid_id,
             family=f"eog_{self.source_type}",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _execute_prepare(self, target: StepTarget) -> bool:

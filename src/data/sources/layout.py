@@ -120,20 +120,28 @@ def grid_store_path(
     *,
     grid_id: str = LEGACY_GRID_ID,
     family: str,
+    suffix: str = ".zarr",
 ) -> str:
     """The full GRID-stage store path for one source's output:
-    `<data_root>/prepared/<data_path>/crs/<grid_id>/<family>.zarr`, per
+    `<data_root>/prepared/<data_path>/crs/<grid_id>/<family><suffix>`, per
     docs/design/02-storage.md §2's "one store per variable family" decision
     -- a shared directory of per-family stores. `grid_id` is folded into the
     path so the directory is self-documenting about which CRS it holds.
 
-    Purely for pixel-grid `<family>.zarr` stores -- non-pixel-grid PREPARE
-    outputs (GID-keyed parquet tables, GADM's boundary files, etc.) should
-    call `output_root(..., PipelineStep.PREPARE, agg=ADM_AGG/MISC_AGG)`
-    directly plus their own filename instead of going through this function.
+    `suffix` defaults to `.zarr` (unchanged prior behaviour). Pass `""` for
+    a source whose PREPARE driver writes `cell_id`-keyed parquet parts under
+    this path instead of a Zarr store (`src.data.common.prepare.driver
+    .run_tiled_prepare`'s output -- a directory of `ix=/iy=/part-<year>
+    .parquet` files, not a single-file store, so a `.zarr`-suffixed name
+    would be actively misleading there).
+
+    Purely for pixel-grid stores -- non-pixel-grid PREPARE outputs (GID-keyed
+    parquet tables, GADM's boundary files, etc.) should call
+    `output_root(..., PipelineStep.PREPARE, agg=ADM_AGG/MISC_AGG)` directly
+    plus their own filename instead of going through this function.
     """
     root = output_root(data_root, data_path, PipelineStep.GRID, grid_id=grid_id)
-    return os.path.join(root, f"{family}.zarr")
+    return os.path.join(root, f"{family}{suffix}")
 
 
 def index_path(local_index_dir: str | None, data_path: str) -> str | None:

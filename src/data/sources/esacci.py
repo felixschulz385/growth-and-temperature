@@ -308,6 +308,7 @@ class EsacciSource(DataSource):
             self.cfg.data_path,
             grid_id=self.ctx.grid_id,
             family="land_cover",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _execute_prepare(self, target: StepTarget) -> bool:

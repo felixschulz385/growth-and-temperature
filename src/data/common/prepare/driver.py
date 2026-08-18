@@ -41,14 +41,16 @@ STATUS_COMPLETE = "complete"
 
 @dataclass(frozen=True)
 class TileUnit:
-    """One (tile, year) unit of PREPARE work."""
+    """One (tile, year) unit of PREPARE work -- or one (tile,) unit for a
+    static, year-independent source (`year=None`, e.g. gadm/ecoregions/osm:
+    one value per pixel, no temporal dimension at all)."""
 
     tile: tiling.Tile
-    year: int
+    year: Optional[int] = None
 
     @property
     def unit_id(self) -> str:
-        return f"{self.year}/{self.tile.id}"
+        return self.tile.id if self.year is None else f"{self.year}/{self.tile.id}"
 
 
 def status_dir_for(output_path: str) -> str:
@@ -61,21 +63,28 @@ def status_dir_for(output_path: str) -> str:
     return os.path.join(os.path.dirname(trimmed), statusfile.STATUS_SUBDIR, os.path.basename(trimmed))
 
 
-def tile_units(years: Sequence[int], target_geobox, tile_size: int = tiling.DEFAULT_TILE_SIZE) -> list[TileUnit]:
+def tile_units(
+    years: Optional[Sequence[int]], target_geobox, tile_size: int = tiling.DEFAULT_TILE_SIZE
+) -> list[TileUnit]:
+    """`years=None` (or empty) declares a static, year-independent output --
+    one unit per tile, `year=None` -- instead of one unit per (tile, year)."""
     tiles = list(tiling.iter_tiles(target_geobox, tile_size=tile_size))
+    if not years:
+        return [TileUnit(tile=t, year=None) for t in tiles]
     return [TileUnit(tile=t, year=y) for y in years for t in tiles]
 
 
 def run_tiled_prepare(
     *,
     output_path: str,
-    years: Sequence[int],
-    variables: Sequence[str],
+    years: Optional[Sequence[int]] = None,
+    variables: Sequence[str] = (),
     target_geobox,
     processor: Any,
-    raw_getter: "Callable[[tiling.Tile, int], Optional[Any]]",
-    target_dims: tuple[str, str],
+    raw_getter: "Callable[[tiling.Tile, Optional[int]], Optional[Any]]",
+    target_dims: tuple[str, str] = (),
     tile_size: int = tiling.DEFAULT_TILE_SIZE,
+    reproject: bool = True,
     preprocess_func: "Optional[Callable[[Any], Any]]" = None,
     dst_nodata: Optional[float] = None,
     resampling: str = "nearest",
@@ -87,47 +96,57 @@ def run_tiled_prepare(
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
 ) -> bool:
     """Run PREPARE for one tiled output. Returns True only if every declared
-    (tile, year) unit ends the run `complete` (a unit stuck `unavailable`
-    after *max_attempts* keeps this False forever until an operator
-    intervenes -- unlike FETCH, a permanently-missing tile is not an
-    acceptable steady state for a raster output a downstream reader expects
-    to be gap-free).
+    unit ends the run `complete` (a unit stuck `unavailable` after
+    *max_attempts* keeps this False forever until an operator intervenes --
+    unlike FETCH, a permanently-missing tile is not an acceptable steady
+    state for a raster output a downstream reader expects to be gap-free).
+
+    *years=None* (default) declares a static, year-independent output -- one
+    unit per tile instead of one per (tile, year), for sources with no
+    temporal dimension at all (e.g. gadm/ecoregions' admin-boundary grids,
+    osm's land mask). Pass an explicit year list for temporal outputs.
 
     *raw_getter(tile, year)* returns the source-local input dataset already
     covering `tile.geobox`'s extent plus whatever halo that source's own
     reprojection needs (this driver applies no buffering itself), or `None`/
     raises if that unit's input isn't available yet -- either way the unit is
     recorded as a failure and retried on the next call, exactly like a FETCH
-    download failure.
+    download failure. *year* is `None` when `years=None`. `raw_getter` is
+    also where any per-source pre-tile setup belongs (loading vector layers,
+    building an id-mapping dict, a DuckDB feature pre-pass, memoizing a
+    per-year composite across tile calls, ...) -- this driver only calls
+    `raw_getter(tile, year)` per unit, so a source closes over whatever
+    shared state it needs before calling `run_tiled_prepare`.
+
+    *reproject=True* (default) reprojects `raw_getter`'s return value onto
+    `tile.geobox` via `xr_reproject` (the raster-resampling case). Pass
+    `reproject=False` for a source whose `raw_getter` already rasterizes/
+    produces its output directly on `tile.geobox` (e.g. vector polygon
+    rasterization) -- the dataset is used as-is, no resampling applied.
 
     *processing_version* is a source-controlled cache-buster: bump it when a
     raw-getter or its processing logic changes in a way that must invalidate
     every unit's `complete` status, forcing a full reprocess. `override=True`
     forces every unit regardless of status, same meaning as every other
     step's `cfg.override`.
+
+    Output is `cell_id`-keyed parquet, one self-contained part per unit
+    (`processor.process_tile_region`), not a Zarr store -- so there is no
+    shared skeleton to bootstrap before the tile loop (each unit's own
+    `os.makedirs` creates whatever directories it needs). `dtype`,
+    `packaging_attrs`, `sample_attrs`, and `target_dims` are accepted but
+    unused: kept so every existing caller's keyword arguments (acag/esacci/
+    ntl_harm/eog) still work unchanged; they were Zarr-skeleton/region-write-
+    only concerns.
     """
     status_dir = status_dir_for(output_path)
     lock_path = os.path.join(status_dir, "prepare.lock")
 
     units = tile_units(years, target_geobox, tile_size=tile_size)
+    full_width = target_geobox.shape.x
 
     try:
         with lockfile.held(lock_path):
-            if not os.path.exists(output_path):
-                if not processor.create_empty_target_zarr(
-                    output_path,
-                    target_geobox,
-                    list(years),
-                    list(variables),
-                    sample_attrs=sample_attrs,
-                    dst_nodata=dst_nodata,
-                    packaging_attrs=packaging_attrs,
-                    dtype=dtype,
-                    chunk_size=(tile_size, tile_size),
-                ):
-                    logger.error("Failed to bootstrap empty output zarr at %s", output_path)
-                    return False
-
             all_ok = True
             for unit in units:
                 unit_status_path = statusfile.status_path(status_dir, unit.unit_id)
@@ -162,7 +181,9 @@ def run_tiled_prepare(
                     source_ds,
                     output_path,
                     unit.tile,
-                    target_dims,
+                    unit.year,
+                    full_width,
+                    reproject=reproject,
                     preprocess_func=preprocess_func,
                     dst_nodata=dst_nodata,
                     resampling=resampling,
@@ -185,7 +206,10 @@ def run_tiled_prepare(
 
 
 def prepare_status(
-    output_path: str, years: Sequence[int], target_geobox, tile_size: int = tiling.DEFAULT_TILE_SIZE
+    output_path: str,
+    years: Optional[Sequence[int]],
+    target_geobox,
+    tile_size: int = tiling.DEFAULT_TILE_SIZE,
 ) -> dict[str, int]:
     """Per-unit status counts for `data summary --by-tile` -- complete/
     outstanding/unavailable across every declared (tile, year) unit, without

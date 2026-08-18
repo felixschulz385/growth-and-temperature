@@ -10,6 +10,7 @@ import dask.array as da
 from zarr.codecs import BloscCodec
 from odc.geo import GeoboxTiles
 from odc.geo.xr import xr_reproject
+from src.data.common.geobox.cell_id import encode_cell_ids
 from src.data.common.geobox.geobox import get_or_create_geobox
 
 logger = logging.getLogger(__name__)
@@ -396,7 +397,9 @@ class SpatialProcessor:
         source_ds: xr.Dataset,
         output_path: str,
         tile,
-        target_dims: Tuple[str, str],
+        year: Optional[int],
+        full_width: int,
+        reproject: bool = True,
         preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None,
         dst_nodata: Optional[float] = None,
         resampling: str = "nearest",
@@ -404,15 +407,24 @@ class SpatialProcessor:
         """
         Reproject `source_ds` onto one output tile's own geobox
         (`tile.geobox`, a crop of the shared target geobox -- see
-        `src.data.common.tiling`) and region-write it into the pre-created,
-        chunk-aligned empty output zarr at `output_path`.
+        `src.data.common.tiling`) and write it as one `cell_id`-keyed
+        parquet part, instead of a Zarr region write.
 
-        Unlike `write_year_to_zarr` (which reprojects onto the *whole*
-        target geobox and writes a full-extent region per year), this writes
-        only the (row, col) slice `tile.y_slice`/`tile.x_slice` covers --
-        the empty zarr's chunk boundaries must equal the tile grid's own
-        boundaries (`create_empty_target_zarr(..., chunk_size=tile_size)`)
-        or this region write silently touches a neighboring tile's chunk.
+        SCAFFOLDING: this writes exactly the reprojected variable values --
+        no convolution/ring-mean columns are computed here (that's a
+        separate, still-unwired stage, `src.data.common.neighbourhood`).
+        Written as a wide table, one row per pixel: `cell_id`, `year` (when
+        given), then one column per data variable in `source_ds` -- so a
+        future PREPARE stage can add more columns (e.g. convolution output)
+        without changing this table's shape, just widening it.
+
+        `output_path` is a directory (previously a Zarr store root); this
+        writes `<output_path>/ix=<tile.row>/iy=<tile.col>/part-<year>.parquet`
+        (or `.../part.parquet` when `year is None` -- a static, year-
+        independent output), sorted by `cell_id`, one file per unit --
+        self-contained, no pre-created skeleton needed (unlike the old
+        region-write-into-a-skeleton pattern), so concurrent tile writers
+        never contend on a shared store.
 
         `source_ds` should already cover `tile.geobox`'s extent plus
         whatever halo the caller's raw-getter reads for edge-effect-free
@@ -420,46 +432,61 @@ class SpatialProcessor:
         this method) -- reprojecting a too-small `source_ds` just leaves
         nodata at the tile's edges, it does not raise.
 
-        `region=` mixes an explicit slice per spatial dim with `"auto"` for
-        every other dim (typically `time`/`band`) -- `"auto"` resolves by
-        matching `source_ds`'s own coordinate labels (e.g. one year's
-        timestamp) against the on-disk zarr's coords, the same mechanism
-        `write_year_to_zarr`'s `region='auto'` already relies on for its
-        non-spatial dims.
+        `reproject=True` (default) reprojects `source_ds` onto `tile.geobox`
+        via `xr_reproject` (raster resampling). Pass `reproject=False` for a
+        source whose `raw_getter` already produced `source_ds` directly on
+        `tile.geobox` -- e.g. vector polygon rasterization done inside the
+        raw-getter itself -- in which case `source_ds` is used as-is and
+        `resampling`/`dst_nodata` are not applied.
+
+        `full_width` is the *full* target grid's pixel width (e.g.
+        `target_geobox.shape.x`), passed to
+        `src.data.common.geobox.cell_id.encode_cell_ids` -- never hardcoded,
+        see that module's docstring for why.
         """
         try:
             if preprocess_func:
                 source_ds = preprocess_func(source_ds)
 
-            reproj_kwargs = {"resampling": resampling}
-            effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
-            if effective_nodata is not None:
-                reproj_kwargs["dst_nodata"] = effective_nodata
-            reprojected_ds = xr_reproject(source_ds, tile.geobox, **reproj_kwargs)
+            if reproject:
+                reproj_kwargs = {"resampling": resampling}
+                effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
+                if effective_nodata is not None:
+                    reproj_kwargs["dst_nodata"] = effective_nodata
+                reprojected_ds = xr_reproject(source_ds, tile.geobox, **reproj_kwargs)
+            else:
+                reprojected_ds = source_ds
 
             reprojected_ds = reprojected_ds.drop_vars(['spatial_ref'], errors='ignore').drop_attrs()
 
-            dim_y, dim_x = target_dims
-            reprojected_ds.coords[dim_x] = reprojected_ds.coords[dim_x].round(5)
-            reprojected_ds.coords[dim_y] = reprojected_ds.coords[dim_y].round(5)
+            row0, col0 = tile.y_slice.start, tile.x_slice.start
+            cell_ids = encode_cell_ids(row0, col0, tile.geobox, full_width)
+            h, w = cell_ids.shape
 
-            region: Dict[str, Any] = {dim_y: tile.y_slice, dim_x: tile.x_slice}
-            for dim in reprojected_ds.dims:
-                if dim not in region:
-                    region[dim] = "auto"
+            data: Dict[str, Any] = {"cell_id": cell_ids.reshape(-1)}
+            if year is not None:
+                data["year"] = year
+            for var in reprojected_ds.data_vars:
+                values = np.asarray(reprojected_ds[var].values)
+                if values.size != h * w:
+                    raise ValueError(
+                        f"variable {var!r} has {values.size} values, expected {h * w} "
+                        f"(tile shape {h}x{w}) -- unexpected extra non-singleton dims"
+                    )
+                data[str(var)] = values.reshape(-1)
 
-            reprojected_ds.to_zarr(
-                output_path,
-                region=region,
-                zarr_format=3,
-                consolidated=False,
-            )
+            df = pd.DataFrame(data).sort_values("cell_id").reset_index(drop=True)
 
-            logger.info("Successfully wrote tile %s to zarr", getattr(tile, "id", f"({tile.row},{tile.col})"))
+            filename = "part.parquet" if year is None else f"part-{year}.parquet"
+            out_path = os.path.join(output_path, f"ix={tile.row}", f"iy={tile.col}", filename)
+            os.makedirs(os.path.dirname(out_path), exist_ok=True)
+            df.to_parquet(out_path, index=False, engine="pyarrow")
+
+            logger.info("Successfully wrote tile %s to %s", getattr(tile, "id", f"({tile.row},{tile.col})"), out_path)
             return True
 
         except Exception as e:
-            logger.exception(f"Error writing tile {getattr(tile, 'id', '?')} to zarr: {e}")
+            logger.exception(f"Error writing tile {getattr(tile, 'id', '?')} to parquet: {e}")
             return False
 
     def process_spatial_standard(

@@ -20,6 +20,17 @@ twice each in the same class body (verified by direct source inspection,
 pinned in tests/data/preprocess/sources/test_characterization_berman_mining.py)
 -- the second definitions silently shadow the first, byte-identical dead
 code. Not carried forward.
+
+PREPARE now runs on the shared `run_tiled_prepare` driver
+(`src/data/common/prepare/driver.py`) instead of one whole-extent,
+all-years-at-once `xr_reproject` call: `mines_ds` (the `.dta` read, cast to
+`uint8`/`fillna(255)`) is still built exactly once, up front; `raw_getter
+(tile, year)` just returns `mines_ds.sel(year=year)` (uncropped --
+`process_tile_region`'s own `xr_reproject` call handles cropping to the
+tile), a cheap in-memory index into the already-loaded dataset. `years`
+comes from `mines_ds.year.values` before reprojection, not after (the old
+code re-derived it from the already-reprojected output). Output is
+`cell_id`-keyed parquet, one part per (tile, year) unit, not a Zarr store.
 """
 
 from __future__ import annotations
@@ -30,9 +41,7 @@ import os
 import tempfile
 from typing import Any, Dict, List, Optional
 
-from zarr.codecs import BloscCodec
-
-from src.data.common.raster.spatial import write_crs_and_grid_mapping_encoding
+from src.data.common import tiling
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -53,6 +62,8 @@ class BermanMiningSource(DataSource):
     DATA_SOURCE_NAME = "berman_mining"
     has_entrypoints = False
     RAW_LISTING_DEPTH = 2  # <subfolder>/<file>, see MANUAL_FILE below
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
 
     MANUAL_FILE = {
         "name": "BCRT_baseline.dta",
@@ -78,6 +89,7 @@ class BermanMiningSource(DataSource):
         )
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="berman_mining_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+        self.tile_size = int(cfg.raw.get("tile_size", tiling.DEFAULT_TILE_SIZE))
 
     # ------------------------------------------------------------------
     # RemoteFileCatalog contract (ports ManualDataSource verbatim)
@@ -157,8 +169,16 @@ class BermanMiningSource(DataSource):
                         self.cfg.data_path,
                         grid_id=self.ctx.grid_id,
                         family="berman_mining",
+                        suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
                     ),
-                    completion=Completion.PATH_EXISTS,
+                    # MARKER, not PATH_EXISTS: output_path is now a directory
+                    # of per-(tile, year) parquet parts written
+                    # incrementally by run_tiled_prepare -- it exists as
+                    # soon as the first part is written, long before every
+                    # unit is done, so plain existence can't signal
+                    # completion. MARKER's sibling ".complete" file is only
+                    # written once every declared unit is complete.
+                    completion=Completion.MARKER,
                     meta={
                         "year_range": self.cfg.year_range,
                         **verify.verification_meta(
@@ -205,53 +225,39 @@ class BermanMiningSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         import numpy as np
-        import pandas as pd
-        from odc.geo.xr import xr_reproject
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping spatial processing, output already exists: %s", target.output_path)
             return True
 
-        os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
         try:
             mines_ds = self._create_mining_dataset(target.meta.get("year_range"))
             if mines_ds is None:
                 logger.error("Failed to create mining dataset")
                 return False
 
-            geobox = self._get_or_create_geobox()
             for var in mines_ds.data_vars:
                 mines_ds[var] = mines_ds[var].fillna(255).astype(np.uint8, casting="unsafe")
 
-            reprojected_ds = xr_reproject(mines_ds, geobox, resampling="nearest", dst_nodata=255)
-            years = sorted(reprojected_ds.year.values)
-            reprojected_ds = reprojected_ds.rename({"year": "time"})
-            reprojected_ds["time"] = pd.to_datetime([f"{year}-12-31" for year in years])
-            reprojected_ds = reprojected_ds.expand_dims("band").assign_coords(band=[1])
-            dim_y, dim_x = geobox.dimensions
-            reprojected_ds = reprojected_ds.assign_coords(
-                {dim_y: geobox.coords[dim_y].values.round(5), dim_x: geobox.coords[dim_x].values.round(5)}
-            )
-            # xr_reproject's own "spatial_ref" is dropped (its coords don't
-            # match the rounded/renamed ones assigned above) and rewritten
-            # fresh via write_crs_and_grid_mapping_encoding() below.
-            reprojected_ds = reprojected_ds.drop_vars(["spatial_ref"], errors="ignore")
-            reprojected_ds = reprojected_ds.chunk({"time": 1, "band": 1, dim_y: 512, dim_x: 512})
+            years = sorted(int(y) for y in mines_ds.year.values)
+            geobox = self._get_or_create_geobox()
+            processor = SpatialProcessor(hpc_root=self.ctx.data_root, temp_dir=self.temp_dir, target_geobox=geobox)
 
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            base_encoding = {
-                var: {
-                    "chunks": (1, 512, 512, 1),
-                    "compressors": (compressor,),
-                    "dtype": "uint8",
-                    "fill_value": 255,
-                }
-                for var in reprojected_ds.data_vars
-            }
-            reprojected_ds, encoding = write_crs_and_grid_mapping_encoding(reprojected_ds, geobox, base_encoding)
-            reprojected_ds.to_zarr(target.output_path, mode="w", encoding=encoding, zarr_format=3, consolidated=False)
-            return True
+            return run_tiled_prepare(
+                output_path=target.output_path,
+                years=years,
+                target_geobox=geobox,
+                processor=processor,
+                raw_getter=lambda tile, year: mines_ds.sel(year=year),
+                tile_size=self.tile_size,
+                dst_nodata=255,
+                resampling="nearest",
+                processing_version=self.PROCESSING_VERSION,
+                override=self.cfg.override,
+            )
         except Exception:
             logger.exception("Error in Berman mining spatial processing")
             return False

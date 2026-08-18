@@ -50,4 +50,4 @@ def test_prepare_plan_one_target_when_raw_file_present(tmp_path):
     assert target.inputs == (raw_file,)
     assert target.completion == Completion.MARKER
     assert target.output_path == source._output_path()
-    assert target.output_path.endswith("land_mask.zarr")
+    assert target.output_path.endswith("land_mask")

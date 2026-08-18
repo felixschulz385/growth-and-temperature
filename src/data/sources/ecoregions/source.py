@@ -74,13 +74,10 @@ import re
 import tempfile
 import time
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from zarr.codecs import BloscCodec
-
-from src.data.common.raster.spatial import reproject_for_tile_overlap, write_crs_and_grid_mapping_encoding
+from src.data.common.raster.spatial import reproject_for_tile_overlap
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -145,6 +142,8 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
     REQUIRES = ((PipelineStep.PREPARE, "gadm", PipelineStep.PREPARE),)
 
     DATA_SOURCE_NAME = "ecoregions"
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -322,6 +321,7 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             self.cfg.data_path,
             grid_id=self.ctx.grid_id,
             family="ecoregions",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _gadm_gid3_file(self) -> str:
@@ -450,10 +450,61 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             return self._execute_gid3_dominant(target)
         return self._execute_ecoregions_grid(target)
 
-    def _execute_ecoregions_grid(self, target: StepTarget) -> bool:
-        from odc.geo import GeoboxTiles
+    @staticmethod
+    def _rasterize_tile(
+        gdf: "gpd.GeoDataFrame",  # noqa: F821 -- geopandas imported lazily by caller
+        code_to_id: Dict[str, Dict],
+        tile,
+    ) -> "xr.Dataset":
+        """One tile's rasterized realm/biome/ecoregion id grid, on
+        `tile.geobox` directly -- the `raw_getter` for
+        `run_tiled_prepare(years=None, reproject=False, ...)`. `gdf`/
+        `code_to_id` are built once by the caller and closed over, not
+        reloaded per tile.
 
+        Always returns a dataset, one column per `CLASS_COLUMNS` variable,
+        even when no polygon overlaps this tile: the untouched-pixel
+        default (0 = "no polygon at this pixel") is the correct output, and
+        `run_tiled_prepare` would otherwise record a legitimate "nothing
+        here" tile as a retryable failure.
+        """
+        import shapely.geometry
+        import xarray as xr
+        import numpy as np
+        from odc.geo.geom import Geometry
+        from odc.geo.xr import rasterize
+
+        tile_geobox = tile.geobox
+        tile_bounds = tile_geobox.boundingbox
+        tile_polygon = shapely.geometry.box(tile_bounds.left, tile_bounds.bottom, tile_bounds.right, tile_bounds.top)
+
+        tile_arrays = {var: np.zeros(tile_geobox.shape, dtype=np.uint32) for var in CLASS_COLUMNS.values()}
+        # `gdf.sindex.query()` bbox-prunes candidates first (the index is
+        # built lazily on first access and cached by geopandas across
+        # calls, so this doesn't rebuild it per tile) -- a plain
+        # `.intersects()` scan here would test every one of the ~14,000
+        # RESOLVE polygons against every one of the ~100+ output tiles,
+        # unlike snl_mining's analogous per-tile spatial join, which gets
+        # this for free via DuckDB's rtree index.
+        candidate_idx = gdf.sindex.query(tile_polygon, predicate="intersects")
+        overlap = gdf.iloc[candidate_idx]
+        # One rasterize() call per polygon, reused for all three id-grids --
+        # REALM/BIOME_NUM/ECO_ID all live on the same geometry (unlike
+        # GADM's genuinely distinct per-level polygons), so there's no need
+        # to rasterize the same boundary three times.
+        for _, row in overlap.iterrows():
+            geom = Geometry(row.geometry, crs=str(gdf.crs))
+            mask = rasterize(geom, tile_geobox)
+            for col, var in CLASS_COLUMNS.items():
+                value = code_to_id[col][row[col]]
+                tile_arrays[var] = np.where(mask, value, tile_arrays[var])
+
+        return xr.Dataset({var: (tile_geobox.dims, arr) for var, arr in tile_arrays.items()})
+
+    def _execute_ecoregions_grid(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor
         from src.data.sources.steps import is_complete, mark_complete
 
         if not self.cfg.override and is_complete(target):
@@ -465,9 +516,6 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
         vector_path = self._ensure_vector_file(target.inputs[0])
         if vector_path is None:
             return False
-
-        output_dir = os.path.dirname(target.output_path)
-        os.makedirs(output_dir, exist_ok=True)
 
         gdf = gpd.read_file(vector_path, engine="pyogrio")
         missing = [c for c in CLASS_COLUMNS if c not in gdf.columns]
@@ -485,8 +533,6 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
                 logger.info("Created Dask client for ecoregions rasterization: %s", dashboard_link)
 
             geobox = get_target_geobox(self.ctx)
-            tile_size = 2048
-            tiles = GeoboxTiles(geobox, (tile_size, tile_size))
 
             # Reproject once, up front -- same CRS-mismatch pitfall gadm hit
             # (commit f653033): the per-tile overlap prefilter compares raw
@@ -495,138 +541,35 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             # reproject_for_tile_overlap()'s docstring for details.
             gdf = reproject_for_tile_overlap(gdf, geobox.crs)
 
-            if not self._create_empty_ecoregions_zarr(target.output_path, geobox):
-                return False
-            if not self._process_ecoregions_tiles(tiles, target.output_path, gdf, code_to_id):
+            processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
+            ok = run_tiled_prepare(
+                output_path=target.output_path,
+                years=None,
+                target_geobox=geobox,
+                processor=processor,
+                raw_getter=lambda tile, year: self._rasterize_tile(gdf, code_to_id, tile),
+                reproject=False,
+                processing_version=self.PROCESSING_VERSION,
+                override=self.cfg.override,
+            )
+            if not ok:
                 return False
 
+        output_dir = os.path.dirname(target.output_path)
+        os.makedirs(output_dir, exist_ok=True)
         for col, var in CLASS_COLUMNS.items():
             with open(os.path.join(output_dir, f"{var}_code_mapping.json"), "w") as f:
                 json.dump({str(k): v for k, v in code_to_id[col].items()}, f, indent=2, default=str)
 
+        # Redundant with run_tiled_prepare's own internal mark_complete() in
+        # the real path (harmless double-write of the same marker file) --
+        # kept explicit so this method's own completion contract doesn't
+        # depend on what run_tiled_prepare happens to delegate to internally
+        # (e.g. tests stubbing it directly).
         mark_complete(target.output_path)
         return True
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
-
-    @staticmethod
-    def _create_empty_ecoregions_zarr(output_path: str, geobox) -> bool:
-        import dask.array as da
-        import numpy as np
-        import xarray as xr
-
-        try:
-            ny, nx = geobox.shape
-            dim_y, dim_x = geobox.dimensions
-            y_coords = geobox.coords[dim_y].values.round(5)
-            x_coords = geobox.coords[dim_x].values.round(5)
-
-            data_vars = {
-                var: xr.DataArray(
-                    da.zeros((ny, nx), dtype=np.uint32, chunks=(512, 512)),
-                    dims=[dim_y, dim_x],
-                    coords={dim_y: y_coords, dim_x: x_coords},
-                    attrs={"description": f"{var} id grid (0=no polygon at this pixel)", "_FillValue": 0},
-                )
-                for var in CLASS_COLUMNS.values()
-            }
-
-            ds = xr.Dataset(
-                data_vars,
-                attrs={
-                    "description": "RESOLVE Ecoregions & Biomes grid (realm/biome/ecoregion ids)",
-                    "source": "RESOLVE Ecoregions and Biomes (Dinerstein et al. 2017)",
-                    "date_created": datetime.now().isoformat(),
-                },
-            )
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            base_encoding = {
-                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32"} for v in data_vars
-            }
-            ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
-            ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error creating empty ecoregions zarr")
-            return False
-
-    @staticmethod
-    def _process_ecoregions_tiles(
-        tiles,
-        output_path: str,
-        gdf: "gpd.GeoDataFrame",  # noqa: F821 -- geopandas imported lazily by caller
-        code_to_id: Dict[str, Dict],
-    ) -> bool:
-        import shapely.geometry
-        import xarray as xr
-        import numpy as np
-        from odc.geo.geom import Geometry
-        from odc.geo.xr import rasterize
-
-        try:
-            total_tiles = tiles.shape[0] * tiles.shape[1]
-            processed_tiles = 0
-
-            for ix in range(tiles.shape[0]):
-                for iy in range(tiles.shape[1]):
-                    try:
-                        tile_geobox = tiles[ix, iy]
-                        tile_bounds = tile_geobox.boundingbox
-                        tile_polygon = shapely.geometry.box(tile_bounds.left, tile_bounds.bottom, tile_bounds.right, tile_bounds.top)
-
-                        # `gdf.sindex.query()` bbox-prunes candidates first
-                        # (the index is built lazily on first access and
-                        # cached by geopandas across calls, so this doesn't
-                        # rebuild it per tile) -- a plain `.intersects()`
-                        # scan here would test every one of the ~14,000
-                        # RESOLVE polygons against every one of the ~100+
-                        # output tiles, unlike snl_mining's analogous
-                        # per-tile spatial join, which gets this for free via
-                        # DuckDB's rtree index.
-                        candidate_idx = gdf.sindex.query(tile_polygon, predicate="intersects")
-                        overlap = gdf.iloc[candidate_idx]
-                        if len(overlap) == 0:
-                            processed_tiles += 1
-                            continue
-
-                        tile_shape = tile_geobox.shape
-                        tile_dim_y, tile_dim_x = tile_geobox.dimensions
-                        tile_coords = {
-                            tile_dim_y: tile_geobox.coords[tile_dim_y].values.round(5),
-                            tile_dim_x: tile_geobox.coords[tile_dim_x].values.round(5),
-                        }
-
-                        tile_arrays = {var: np.zeros(tile_shape, dtype=np.uint32) for var in CLASS_COLUMNS.values()}
-                        # One rasterize() call per polygon, reused for all three
-                        # id-grids -- REALM/BIOME_NUM/ECO_ID all live on the same
-                        # geometry (unlike GADM's genuinely distinct per-level
-                        # polygons), so there's no need to rasterize the same
-                        # boundary three times.
-                        for _, row in overlap.iterrows():
-                            geom = Geometry(row.geometry, crs=str(gdf.crs))
-                            mask = rasterize(geom, tile_geobox)
-                            for col, var in CLASS_COLUMNS.items():
-                                value = code_to_id[col][row[col]]
-                                tile_arrays[var] = np.where(mask, value, tile_arrays[var])
-
-                        tile_data_vars = {
-                            var: xr.DataArray(arr, dims=[tile_dim_y, tile_dim_x], coords=tile_coords)
-                            for var, arr in tile_arrays.items()
-                        }
-                        xr.Dataset(tile_data_vars).to_zarr(output_path, region="auto", mode="r+", consolidated=False)
-                        processed_tiles += 1
-                        if processed_tiles % 100 == 0:
-                            logger.info("Processed %d/%d tiles", processed_tiles, total_tiles)
-                    except Exception:
-                        logger.warning("Error processing tile [%d, %d]", ix, iy, exc_info=True)
-                        processed_tiles += 1
-                        continue
-
-            logger.info("Completed processing all %d tiles", total_tiles)
-            return True
-        except Exception:
-            logger.exception("Error processing ecoregions tiles")
-            return False
 
     # -- GID_3 dominant-biome table -----------------------------------------
 

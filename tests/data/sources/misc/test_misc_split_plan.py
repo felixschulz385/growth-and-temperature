@@ -95,12 +95,12 @@ def test_country_classifications_requires_gadm_prepare():
 
 def test_osm_output_path_uses_family(tmp_path):
     osm, ctx = _make(tmp_path, "osm")
-    assert osm._output_path() == os.path.join(osm.output_root(PipelineStep.GRID), "land_mask.zarr")
+    assert osm._output_path() == os.path.join(osm.output_root(PipelineStep.GRID), "land_mask")
 
 
 def test_gadm_output_path_uses_family(tmp_path):
     gadm, ctx = _make(tmp_path, "gadm")
-    assert gadm._grid_output_path() == os.path.join(gadm.output_root(PipelineStep.GRID), "country_id.zarr")
+    assert gadm._grid_output_path() == os.path.join(gadm.output_root(PipelineStep.GRID), "country_id")
 
 
 def test_country_classifications_output_path_lives_under_prepare_root(tmp_path):

@@ -17,12 +17,14 @@ mapping GADM's string GID code to the integer id.
 `src/analysis/subsets/registry.py` and `country_classifications.py` read
 `GID_0_code_mapping.json` and the `GID_0` variable.
 
-GADM's rasterization is tiled (`GeoboxTiles`, `_process_gadm_tiles`, region
-writes) -- unlike OSM's single whole-extent `rasterize()` call -- but has no
-time dimension needing per-year resumability, so this stays its own bespoke
-two-phase `_execute_prepare` (vector extraction, then rasterization) rather
-than routing through `src.data.common.prepare.driver.run_tiled_prepare`.
-There is no separate GRID step.
+GADM's rasterization is tiled, has no time dimension, and every polygon is
+already rasterized directly onto each tile's own geobox (no raster
+resampling needed) -- `run_tiled_prepare(years=None, reproject=False, ...)`,
+one static `cell_id`-keyed parquet part per tile, one column per GID level.
+`_execute_prepare` stays its own bespoke two-phase driver (vector
+extraction, then rasterization) since phase 1 (extracting/simplifying every
+ADM level from the raw zip) isn't tile-shaped at all. There is no separate
+GRID step.
 """
 
 from __future__ import annotations
@@ -34,13 +36,10 @@ import os
 import re
 import tempfile
 import zipfile
-from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from zarr.codecs import BloscCodec
-
-from src.data.common.raster.spatial import reproject_for_tile_overlap, write_crs_and_grid_mapping_encoding
+from src.data.common.raster.spatial import reproject_for_tile_overlap
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
@@ -95,6 +94,8 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "gadm"
+    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
+    PROCESSING_VERSION = "1-tiled"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         if cfg.data_path is None:
@@ -164,6 +165,7 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             self.cfg.data_path,
             grid_id=self.ctx.grid_id,
             family="country_id",
+            suffix="",  # cell_id-keyed parquet parts, not a Zarr store -- see grid_store_path docstring
         )
 
     def _plan_prepare(self) -> List[StepTarget]:
@@ -219,18 +221,56 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             logger.info("GADM level %s processing complete: %s", level, out_path)
         return level_files
 
-    def _rasterize_levels(self, level_files: List[str], output_path: str) -> bool:
-        """Phase 2: tiled rasterization -- ported verbatim from the old
-        `_execute_grid` (module docstring: GADM already tiled its own
-        rasterization, unlike OSM's single whole-extent call)."""
-        from odc.geo import GeoboxTiles
+    @staticmethod
+    def _rasterize_tile(
+        level_gdfs: Dict[str, "gpd.GeoDataFrame"],
+        level_code_to_id: Dict[str, Dict[str, int]],
+        tile,
+    ) -> "xr.Dataset":
+        """One tile's rasterized GID-id grid, on `tile.geobox` directly --
+        the `raw_getter` for `run_tiled_prepare(years=None, reproject=False,
+        ...)`. `level_gdfs`/`level_code_to_id` are built once by the caller
+        (`_rasterize_levels`) and closed over, not reloaded per tile.
 
+        Always returns a dataset, one column per GID level, even when no
+        polygon overlaps this tile: the untouched-pixel default (0 = "no
+        unit at this level") is the correct output, and `run_tiled_prepare`
+        would otherwise record a legitimate "nothing here" tile as a
+        retryable failure. The per-level `.intersects()` pre-filter below is
+        a performance optimization (skip rasterize() calls for polygons that
+        can't possibly touch this tile), not a correctness requirement.
+        """
+        import shapely.geometry
+        import xarray as xr
+        import numpy as np
+        from odc.geo.geom import Geometry
+        from odc.geo.xr import rasterize
+
+        tile_geobox = tile.geobox
+        tile_bounds = tile_geobox.boundingbox
+        tile_polygon = shapely.geometry.box(tile_bounds.left, tile_bounds.bottom, tile_bounds.right, tile_bounds.top)
+
+        tile_data_vars = {}
+        for gid_col, gdf in level_gdfs.items():
+            level_tile = np.zeros(tile_geobox.shape, dtype=np.uint32)
+            code_to_id = level_code_to_id[gid_col]
+            overlap = gdf[gdf.geometry.intersects(tile_polygon)]
+            for _, row in overlap.iterrows():
+                value = code_to_id[row[gid_col]]
+                geom = Geometry(row.geometry, crs=str(gdf.crs))
+                mask = rasterize(geom, tile_geobox)
+                level_tile = np.where(mask, value, level_tile)
+            tile_data_vars[gid_col] = (tile_geobox.dims, level_tile)
+
+        return xr.Dataset(tile_data_vars)
+
+    def _rasterize_levels(self, level_files: List[str], output_path: str) -> bool:
+        """Phase 2: tiled rasterization onto `run_tiled_prepare`."""
         from src.data.common.geobox import get_target_geobox
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor
 
         import geopandas as gpd
-
-        output_dir = os.path.dirname(output_path)
-        os.makedirs(output_dir, exist_ok=True)
 
         # One GeoDataFrame + id mapping per ADM level, keyed by that level's
         # own GID column ("ADM_2" file -> "GID_2" column).
@@ -262,26 +302,33 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
                 logger.info("Created Dask client for GADM rasterization: %s", dashboard_link)
 
             geobox = get_target_geobox(self.ctx)
-            tile_size = 2048
-            tiles = GeoboxTiles(geobox, (tile_size, tile_size))
 
-            # Reproject once, up front -- _process_gadm_tiles's per-tile
-            # overlap pre-filter compares each level's geometries directly
-            # against a tile_polygon built in the *target* geobox's CRS via
-            # plain shapely `.intersects()`, which never reprojects itself.
-            # See reproject_for_tile_overlap()'s docstring for why skipping
-            # this silently produces ~100%-null GRID output with no
-            # exception (the bug this line fixes, commit f653033).
+            # Reproject once, up front -- _rasterize_tile's per-tile overlap
+            # pre-filter compares each level's geometries directly against a
+            # tile_polygon built in the *target* geobox's CRS via plain
+            # shapely `.intersects()`, which never reprojects itself. See
+            # reproject_for_tile_overlap()'s docstring for why skipping this
+            # silently produces ~100%-null GRID output with no exception
+            # (the bug this line fixes, commit f653033).
             level_gdfs = {gid_col: reproject_for_tile_overlap(gdf, geobox.crs) for gid_col, gdf in level_gdfs.items()}
 
-            if not self._create_empty_gadm_zarr(output_path, geobox, list(level_gdfs.keys())):
-                return False
-            if not self._process_gadm_tiles(tiles, output_path, level_gdfs, level_code_to_id):
+            processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
+            ok = run_tiled_prepare(
+                output_path=output_path,
+                years=None,
+                target_geobox=geobox,
+                processor=processor,
+                raw_getter=lambda tile, year: self._rasterize_tile(level_gdfs, level_code_to_id, tile),
+                reproject=False,
+                processing_version=self.PROCESSING_VERSION,
+                override=self.cfg.override,
+            )
+            if not ok:
                 return False
 
-        # ADM_AGG, not `output_dir` (the CRS_AGG grid-store directory) --
-        # these sidecars are read via gid_mapping_path() above, which looks
-        # in the ADM_AGG bucket alongside the simplified `.gpkg` vectors.
+        # ADM_AGG, not the CRS_AGG grid-store directory -- these sidecars
+        # are read via gid_mapping_path() above, which looks in the ADM_AGG
+        # bucket alongside the simplified `.gpkg` vectors.
         adm_dir = self._vector_dir()
         os.makedirs(adm_dir, exist_ok=True)
         for gid_col, code_to_id in level_code_to_id.items():
@@ -305,121 +352,15 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
 
         if not self._rasterize_levels(level_files, target.output_path):
             return False
+        # Redundant with run_tiled_prepare's own internal mark_complete() in
+        # the real path (harmless double-write of the same marker file) --
+        # kept explicit here so `_execute_prepare`'s own completion contract
+        # doesn't depend on what `_rasterize_levels` happens to delegate to
+        # internally (e.g. tests stubbing `_rasterize_levels` directly).
         mark_complete(target.output_path)
         return True
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
-
-    @staticmethod
-    def _create_empty_gadm_zarr(output_path: str, geobox, gid_columns: List[str]) -> bool:
-        import dask.array as da
-        import numpy as np
-        import xarray as xr
-
-        try:
-            ny, nx = geobox.shape
-            dim_y, dim_x = geobox.dimensions
-            y_coords = geobox.coords[dim_y].values.round(5)
-            x_coords = geobox.coords[dim_x].values.round(5)
-
-            data_vars = {
-                gid_col: xr.DataArray(
-                    da.zeros((ny, nx), dtype=np.uint32, chunks=(512, 512)),
-                    dims=[dim_y, dim_x],
-                    coords={dim_y: y_coords, dim_x: x_coords},
-                    attrs={"description": f"{gid_col} id grid (0=no unit at this level)", "_FillValue": 0},
-                )
-                for gid_col in gid_columns
-            }
-
-            ds = xr.Dataset(
-                data_vars,
-                attrs={
-                    "description": "GADM administrative boundaries grid",
-                    "source": "GADM administrative boundaries",
-                    "date_created": datetime.now().isoformat(),
-                    "levels_included": ", ".join(sorted(gid_columns)),
-                },
-            )
-            compressor = BloscCodec(cname="zstd", clevel=3, shuffle="bitshuffle", blocksize=0)
-            base_encoding = {
-                v: {"chunks": (512, 512), "compressors": compressor, "dtype": "uint32"} for v in data_vars
-            }
-            ds, encoding = write_crs_and_grid_mapping_encoding(ds, geobox, base_encoding)
-            ds.to_zarr(output_path, mode="w", encoding=encoding, compute=False, consolidated=False)
-            return True
-        except Exception:
-            logger.exception("Error creating empty GADM zarr")
-            return False
-
-    @staticmethod
-    def _process_gadm_tiles(
-        tiles,
-        output_path: str,
-        level_gdfs: Dict[str, "gpd.GeoDataFrame"],
-        level_code_to_id: Dict[str, Dict[str, int]],
-    ) -> bool:
-        import shapely.geometry
-        import xarray as xr
-        import numpy as np
-        from odc.geo.geom import Geometry
-        from odc.geo.xr import rasterize
-
-        try:
-            total_tiles = tiles.shape[0] * tiles.shape[1]
-            processed_tiles = 0
-
-            for ix in range(tiles.shape[0]):
-                for iy in range(tiles.shape[1]):
-                    try:
-                        tile_geobox = tiles[ix, iy]
-                        tile_bounds = tile_geobox.boundingbox
-                        tile_polygon = shapely.geometry.box(tile_bounds.left, tile_bounds.bottom, tile_bounds.right, tile_bounds.top)
-
-                        overlapping_by_level = {
-                            gid_col: gdf[gdf.geometry.intersects(tile_polygon)]
-                            for gid_col, gdf in level_gdfs.items()
-                        }
-
-                        if all(len(overlap) == 0 for overlap in overlapping_by_level.values()):
-                            processed_tiles += 1
-                            continue
-
-                        tile_shape = tile_geobox.shape
-                        tile_dim_y, tile_dim_x = tile_geobox.dimensions
-                        tile_coords = {
-                            tile_dim_y: tile_geobox.coords[tile_dim_y].values.round(5),
-                            tile_dim_x: tile_geobox.coords[tile_dim_x].values.round(5),
-                        }
-
-                        tile_data_vars = {}
-                        for gid_col, overlap in overlapping_by_level.items():
-                            level_tile = np.zeros(tile_shape, dtype=np.uint32)
-                            gdf = level_gdfs[gid_col]
-                            code_to_id = level_code_to_id[gid_col]
-                            for _, row in overlap.iterrows():
-                                value = code_to_id[row[gid_col]]
-                                geom = Geometry(row.geometry, crs=str(gdf.crs))
-                                mask = rasterize(geom, tile_geobox)
-                                level_tile = np.where(mask, value, level_tile)
-                            tile_data_vars[gid_col] = xr.DataArray(
-                                level_tile, dims=[tile_dim_y, tile_dim_x], coords=tile_coords,
-                            )
-
-                        xr.Dataset(tile_data_vars).to_zarr(output_path, region="auto", mode="r+", consolidated=False)
-                        processed_tiles += 1
-                        if processed_tiles % 100 == 0:
-                            logger.info("Processed %d/%d tiles", processed_tiles, total_tiles)
-                    except Exception:
-                        logger.warning("Error processing tile [%d, %d]", ix, iy, exc_info=True)
-                        processed_tiles += 1
-                        continue
-
-            logger.info("Completed processing all %d tiles", total_tiles)
-            return True
-        except Exception:
-            logger.exception("Error processing GADM tiles")
-            return False
 
 
 registry.register(GadmSource.ID, __name__, GadmSource.__name__, GadmSource.STEPS)

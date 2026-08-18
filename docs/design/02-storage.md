@@ -7,6 +7,29 @@ the canonical GeoBox *and* after temporal compositing to annual, and (2) the nes
 store (`S_d`, `N_d`), after convolution. Everything else (halo-padded arrays, intermediate
 reprojections, ring means derived from `S_d`/`N_d`) stays in memory / Dask graphs, never persisted.
 
+**Update — point 1 is now parquet for the shared-driver sources.** `acag`, `esacci`, `ntl_harm`, and
+`eog` (every source going through `src.data.common.prepare.driver.run_tiled_prepare` /
+`SpatialProcessor.process_tile_region`) now write `cell_id`-keyed parquet parts
+(`ix=<row>/iy=<col>/part-<year>.parquet`, one self-contained file per (tile, year) unit) instead of a
+Zarr region write into a pre-allocated skeleton — no shared store to bootstrap, no region-write
+chunk-alignment constraint. Written as a wide table (`cell_id`, `year`, one column per data variable)
+so a later stage can widen it with more columns (e.g. convolution output) without changing its shape.
+SCAFFOLDING: no convolution/ring-mean logic runs here, this is exactly the reprojected variable
+value(s). `glass/modis.py` and `modis/source.py` (the other point-1 producers, via
+`SpatialProcessor.write_year_to_zarr`/`process_spatial_standard`, whole-extent-per-year, multi-band)
+are **unchanged** — still Zarr, deferred because their output shape and the CRS-bug regression tests
+guarding `write_year_to_zarr` (`tests/data/common/raster/test_spatial_crs_preservation.py`) are
+meaningfully different from the single/few-variable tiled case. `gadm.py`/`ecoregions/source.py`/
+`snl_mining/source.py`/`glass/avhrr.py`/`osm.py`/`berman_mining.py`'s bespoke hand-rolled Zarr tiling
+is also unchanged. Point 2 (the disc-ladder store) is unaffected — see this document's earlier
+addendum on `write_disc_tile_parquet`.
+
+Not yet done, left for follow-up: `src/data/sources/verify.py`'s `_run_verification` dispatches any
+directory path to `_verify_zarr` (`xr.open_zarr`), so verification of these four sources' PREPARE
+output now fails (caught, reported as a verification failure, not a crash) until it gains a
+parquet-parts-directory check; `src/data/assemble/loaders.py` still reads Zarr and does not yet
+consume this parquet output.
+
 **Why not fewer than two.** The convolution engine needs a *common* grid — same CRS, resolution, and
 tiling — across every input before it can share one kernel registry and one halo-read pattern
 (`GeoBox.buffered(R_max)`). That makes a canonical-grid intermediate structurally required before
