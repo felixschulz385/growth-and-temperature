@@ -30,7 +30,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
-from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources.steps import Completion, PipelineStep, StepTarget
 from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
@@ -69,35 +69,8 @@ class OsmSource(ConfiguredFilesFetchMixin, DataSource):
         see `DataSource.data_path`'s docstring (src/data/sources/base.py)."""
         return f"{self.cfg.data_path}/{self.cfg.namespace}"
 
-    def _plan_fetch(self) -> List[StepTarget]:
-        return [
-            StepTarget(
-                source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-            )
-        ]
-
-    def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._plan_prepare()
-        raise AssertionError(f"unreachable: {step}")
-
-    def _execute(self, target: StepTarget) -> bool:
-        if target.step is PipelineStep.FETCH:
-            return self._execute_fetch(target)
-        if target.step is PipelineStep.PREPARE:
-            return self._execute_prepare(target)
-        raise AssertionError(f"unreachable: {target.step}")
-
-    def _execute_fetch(self, target: StepTarget) -> bool:
-        # FETCH is local-disk only now -- no HPC target required. `data
-        # transfer` (separate, manual or auto per source config) is the only
-        # thing that pushes to HPC.
-        from src.data.common.fetch.driver import run_fetch
-
-        return run_fetch(self, **self.cfg.raw.get("download", {}))
+    # _plan_fetch/_execute_fetch/_plan/_execute: inherited from
+    # ConfiguredFilesFetchMixin.
 
     # -- PREPARE (raw zip -> simplified vector -> rasterized land mask) ----
 

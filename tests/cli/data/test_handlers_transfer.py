@@ -181,7 +181,7 @@ class _FakeSource:
 def _make_source(tmp_path, units):
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"),
-        staging_dir=str(tmp_path / "staging"), ssh_target="user@host:/remote/base",
+        ssh_target="user@host:/remote/base",
     )
     cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})
     return _FakeSource(ctx, cfg, units)

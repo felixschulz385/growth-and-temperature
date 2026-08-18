@@ -628,6 +628,15 @@ class TileProcessor:
             )
             return combined
 
+        # _duckdb_join has no pd.merge-style _x/_y suffixing for colliding
+        # non-key column names -- drop any non-merge column `df` also
+        # provides from `combined` first so the two frames never collide.
+        df_cols = [col for col in df.columns if col not in merge_cols]
+        cols_to_drop = [col for col in df_cols if col in combined.columns]
+        if cols_to_drop:
+            logger.debug(f"Tile [{ix}, {iy}]: {dataset_name} - dropping existing columns: {cols_to_drop}")
+            combined = combined.drop(columns=cols_to_drop)
+
         rows_before = len(combined)
         combined = self._duckdb_join(combined, df, merge_cols, how="outer")
         logger.debug(

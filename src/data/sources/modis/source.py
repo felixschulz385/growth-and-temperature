@@ -144,8 +144,6 @@ class ModisSource(DataSource):
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
     #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
     PROCESSING_VERSION = "1-tiled"
-    #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
-    PROCESSING_VERSION = "1-tiled"
 
     def __init__(self, ctx: PipelineContext, cfg: SourceConfig):
         self.product = cfg.raw.get("product", "21A2")
@@ -675,12 +673,15 @@ class ModisSource(DataSource):
         from src.data.common.geobox import get_or_create_canonical_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete
 
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
-            return True
-
+        # No top-level `is_complete(target)` short-circuit here: `target`'s
+        # marker can already exist from a prior run while `target.meta["years"]`
+        # (freshly discovered by `_discover_prepare`) has since grown with
+        # newly-fetched years. `run_tiled_prepare` has its own finer-grained
+        # per-unit status tracking (see its docstring) that cheaply skips
+        # units already complete and only processes new ones, so it's
+        # always safe and correct to call it rather than trusting the
+        # coarse marker.
         stage1_root = self.output_root(PipelineStep.FETCH)
         years = target.meta["years"]
 
@@ -712,7 +713,19 @@ class ModisSource(DataSource):
             bbox = tile.geobox.pad(32, 32).extent.to_crs(mosaic.rio.crs).boundingbox
             clipped = mosaic.sel(y=slice(bbox.top, bbox.bottom), x=slice(bbox.left, bbox.right))
             if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
-                return None
+                # This tile falls outside the mosaic's spatial coverage -- a
+                # legitimate tile state, not a fetch failure. Return a
+                # NaN-filled dataset on tile.geobox instead of None so
+                # run_tiled_prepare doesn't record it as a retryable failure
+                # and permanently block mark_complete (same convention as
+                # ecoregions/gadm/snl_mining's _rasterize_tile).
+                dim_y, dim_x = tile.geobox.dims
+                return xr.Dataset(
+                    {
+                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
+                        for var in mosaic.data_vars
+                    }
+                )
             return clipped
 
         try:

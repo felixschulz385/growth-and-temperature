@@ -241,6 +241,8 @@ def _run_verification(
                 return _verify_partitioned_table(
                     part_files, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars
                 )
+            if not os.listdir(path):
+                return VerificationResult(False, f"{path} is empty")
         if path.lower().endswith((".tif", ".tiff")):
             return _verify_geotiff(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
     except Exception as exc:  # noqa: BLE001 -- verification must never crash the caller
