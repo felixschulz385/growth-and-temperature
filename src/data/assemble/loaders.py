@@ -16,49 +16,78 @@ from odc.geo.xr import ODCExtensionDa
 
 from src.data.assemble.constants import (
     DEFAULT_CRS,
+    DEFAULT_TILE_SIZE,
     EXCLUDED_VARIABLES,
     LAND_MASK_RELATIVE_PATHS,
     TIME_COORD,
     YEAR_COORD,
 )
+from src.data.assemble.parquet_raster import is_tiled_parquet_dataset, open_tiled_parquet_dataset
 from src.data.assemble.utils import (
     convert_int_to_float32,
     apply_column_prefix,
 )
+from src.data.sources import layout
 
 logger = logging.getLogger(__name__)
 
 
-def load_land_mask(hpc_root: str, land_mask_path: Optional[str] = None) -> Optional[xr.Dataset]:
+def _open_dataset_path(
+    path: str,
+    target_geobox,
+    tile_size: int,
+) -> xr.Dataset:
+    """Open a GRID-stage dataset at *path*, dispatching on format: a Zarr
+    store (legacy, being phased out) or a `run_tiled_prepare`-produced
+    directory of `cell_id`-keyed tiled parquet parts (current PREPARE output
+    for every pixel-grid source, see `src.data.assemble.parquet_raster`)."""
+    if is_tiled_parquet_dataset(path):
+        ds = open_tiled_parquet_dataset(path, target_geobox, tile_size=tile_size)
+    else:
+        ds = xr.open_zarr(path, mask_and_scale=True, consolidated=False, chunks='auto')
+    return ds.odc.assign_crs(DEFAULT_CRS)
+
+
+def load_land_mask(
+    hpc_root: str,
+    target_geobox,
+    tile_size: int,
+    land_mask_path: Optional[str] = None,
+) -> Optional[xr.Dataset]:
     """
-    Load land mask from zarr file.
-    
+    Load the land mask, dispatching on format (Zarr or tiled parquet).
+
     Args:
-        hpc_root: HPC root directory
+        hpc_root: HPC root directory (i.e. data_root)
+        target_geobox: Target geobox, needed to reconstruct a tiled-parquet
+            land mask as a raster (unused for a Zarr land mask)
+        tile_size: Tile size the land mask's tiled-parquet output (if any)
+            was written with
         land_mask_path: Explicit path to land mask, or None to auto-detect
-        
+
     Returns:
         Land mask dataset or None if not found
     """
     try:
         if land_mask_path is None:
             potential_paths = [
-                os.path.join(hpc_root, rel_path) 
+                layout.grid_store_path(hpc_root, "misc", grid_id=grid_id, family="land_mask", suffix="")
+                for grid_id in (layout.LEGACY_GRID_ID, layout.EASE_GRID_ID)
+            ] + [
+                os.path.join(hpc_root, rel_path)
                 for rel_path in LAND_MASK_RELATIVE_PATHS
             ]
         else:
             potential_paths = [land_mask_path]
-        
+
         for path in potential_paths:
             if os.path.exists(path):
                 logger.info(f"Loading land mask from: {path}")
-                land_mask_ds = xr.open_zarr(path, consolidated=False, chunks='auto')
-                land_mask_ds = land_mask_ds.odc.assign_crs(DEFAULT_CRS)
-                return land_mask_ds
-        
+                return _open_dataset_path(path, target_geobox, tile_size)
+
         logger.warning(f"Land mask not found in any of: {potential_paths}")
         return None
-        
+
     except Exception as e:
         logger.warning(f"Error loading land mask: {e}")
         return None
@@ -147,42 +176,46 @@ def _select_columns(
 def load_single_dataset(
     dataset_name: str,
     dataset_config: Dict[str, Any],
+    target_geobox,
+    tile_size: int,
     year_range: Optional[Tuple[int, int]] = None,
 ) -> Optional[Tuple[str, xr.Dataset, Dict[str, Any]]]:
     """
     Load a single dataset with all transformations applied.
-    
+
     Processing steps:
-    1. Open zarr with automatic scaling
+    1. Open the dataset (Zarr store or tiled-parquet directory) with automatic scaling
     2. Assign CRS
     3. Standardize time to year coordinate
     4. Apply year range filter
     5. Select columns
     6. Apply column prefix
     7. Convert int to float32
-    
+
     Args:
         dataset_name: Name identifier for the dataset
         dataset_config: Configuration dict for the dataset
+        target_geobox: Assembly's target geobox, needed to reconstruct a
+            tiled-parquet dataset as a raster
+        tile_size: Tile size the dataset's tiled-parquet output (if any) was
+            written with
         year_range: Optional year range filter (start, end)
-        
+
     Returns:
         Tuple of (name, dataset, config) or None if loading fails
     """
-    zarr_path = dataset_config['path']
+    dataset_path = dataset_config['path']
     resampling_method = dataset_config.get('resampling', 'mode')
-    
-    if not os.path.exists(zarr_path):
-        logger.warning(f"Dataset path does not exist: {zarr_path}, skipping")
+
+    if not os.path.exists(dataset_path):
+        logger.warning(f"Dataset path does not exist: {dataset_path}, skipping")
         return None
-    
-    logger.info(f"Loading dataset {dataset_name} from {zarr_path} (resampling: {resampling_method})")
-    
+
+    logger.info(f"Loading dataset {dataset_name} from {dataset_path} (resampling: {resampling_method})")
+
     try:
-        # Open zarr with automatic scaling and masking
-        ds = xr.open_zarr(zarr_path, mask_and_scale=True, consolidated=False, chunks='auto')
-        ds = ds.odc.assign_crs(DEFAULT_CRS)
-        
+        ds = _open_dataset_path(dataset_path, target_geobox, tile_size)
+
         # Standardize coordinates
         ds = _standardize_time_coordinate(ds, dataset_name)
         
@@ -224,15 +257,18 @@ def load_all_datasets(
     assembly_config: Dict[str, Any],
     target_geobox,
     datasource_filter: Optional[str] = None,
+    tile_size: int = None,
 ) -> List[Tuple[str, xr.Dataset, Dict[str, Any]]]:
     """
     Load all datasets specified in assembly configuration.
-    
+
     Args:
         assembly_config: Assembly configuration with datasets section
         target_geobox: Target geobox for alignment checks
         datasource_filter: Optional filter to load only specific datasource (for update mode)
-        
+        tile_size: Tile size for reconstructing tiled-parquet datasets; defaults to
+            `assembly_config['processing']['tile_size']` (or the module default) when omitted
+
     Returns:
         List of tuples (dataset_name, dataset_xr, dataset_config)
         
@@ -268,10 +304,14 @@ def load_all_datasets(
         # pixel-grid data -- they never go through this zarr-loading path.
         datasets_config = {name: cfg for name, cfg in datasets_config.items() if not cfg.get('join_on')}
     
+    effective_tile_size = tile_size or processing_config.get('tile_size', DEFAULT_TILE_SIZE)
+
     loaded = []
-    
+
     for dataset_name, dataset_config in datasets_config.items():
-        result = load_single_dataset(dataset_name, dataset_config, year_range)
+        result = load_single_dataset(
+            dataset_name, dataset_config, target_geobox, effective_tile_size, year_range
+        )
         if result is not None:
             name, ds, config = result
             

@@ -83,7 +83,7 @@ from src.data.pipeline.context import PipelineContext
 from src.data.sources import layout, registry
 from src.data.sources.base import DataSource
 from src.data.sources.misc._fetch import ConfiguredFile, ConfiguredFilesFetchMixin
-from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection
+from src.data.sources.steps import Completion, PipelineStep, StepTarget
 from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
@@ -166,35 +166,8 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
     def data_path(self) -> str:
         return f"{self.cfg.data_path}/{self.cfg.namespace}"
 
-    def _plan_fetch(self) -> List[StepTarget]:
-        return [
-            StepTarget(
-                source_id=self.ID, step=PipelineStep.FETCH, key="all",
-                output_path=self.output_root(PipelineStep.FETCH), completion=Completion.NEVER,
-            )
-        ]
-
-    def _plan(self, step: PipelineStep, selection: TargetSelection) -> List[StepTarget]:
-        if step is PipelineStep.FETCH:
-            return self._plan_fetch()
-        if step is PipelineStep.PREPARE:
-            return self._plan_prepare()
-        raise AssertionError(f"unreachable: {step}")
-
-    def _execute(self, target: StepTarget) -> bool:
-        if target.step is PipelineStep.FETCH:
-            return self._execute_fetch(target)
-        if target.step is PipelineStep.PREPARE:
-            return self._execute_prepare(target)
-        raise AssertionError(f"unreachable: {target.step}")
-
-    def _execute_fetch(self, target: StepTarget) -> bool:
-        # FETCH is local-disk only now -- no HPC target required. `data
-        # transfer` (separate, manual or auto per source config) is the only
-        # thing that pushes to HPC.
-        from src.data.common.fetch.driver import run_fetch
-
-        return run_fetch(self, **self.cfg.raw.get("download", {}))
+    # _plan_fetch/_execute_fetch/_plan/_execute: inherited from
+    # ConfiguredFilesFetchMixin.
 
     # -- FETCH download: ArcGIS REST query, manually paginated -- overrides
     # ConfiguredFilesFetchMixin's plain streaming-GET download()/download_async()
@@ -505,7 +478,7 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete, mark_complete
+        from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
             logger.info("Skipping ecoregions rasterization, output already exists: %s", target.output_path)
@@ -561,12 +534,8 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             with open(os.path.join(output_dir, f"{var}_code_mapping.json"), "w") as f:
                 json.dump({str(k): v for k, v in code_to_id[col].items()}, f, indent=2, default=str)
 
-        # Redundant with run_tiled_prepare's own internal mark_complete() in
-        # the real path (harmless double-write of the same marker file) --
-        # kept explicit so this method's own completion contract doesn't
-        # depend on what run_tiled_prepare happens to delegate to internally
-        # (e.g. tests stubbing it directly).
-        mark_complete(target.output_path)
+        # run_tiled_prepare already called mark_complete() internally above
+        # (guarded by `if not ok: return False`), so no need to repeat it.
         return True
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).

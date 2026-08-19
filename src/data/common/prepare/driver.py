@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional, Sequence
 
@@ -85,15 +86,11 @@ def run_tiled_prepare(
     target_geobox,
     processor: Any,
     raw_getter: "Callable[[tiling.Tile, Optional[int]], Optional[Any]]",
-    target_dims: tuple[str, str] = (),
     tile_size: int = tiling.DEFAULT_TILE_SIZE,
     reproject: bool = True,
     preprocess_func: "Optional[Callable[[Any], Any]]" = None,
     dst_nodata: Optional[float] = None,
     resampling: str = "nearest",
-    dtype: str = "float32",
-    packaging_attrs: Optional[dict] = None,
-    sample_attrs: Optional[dict] = None,
     processing_version: str = "1",
     override: bool = False,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -136,43 +133,50 @@ def run_tiled_prepare(
     Output is `cell_id`-keyed parquet, one self-contained part per unit
     (`processor.process_tile_region`), not a Zarr store -- so there is no
     shared skeleton to bootstrap before the tile loop (each unit's own
-    `os.makedirs` creates whatever directories it needs). `dtype`,
-    `packaging_attrs`, `sample_attrs`, and `target_dims` are accepted but
-    unused: kept so every existing caller's keyword arguments (acag/esacci/
-    ntl_harm/eog) still work unchanged; they were Zarr-skeleton/region-write-
-    only concerns.
+    `os.makedirs` creates whatever directories it needs).
     """
     status_dir = status_dir_for(output_path)
     lock_path = os.path.join(status_dir, "prepare.lock")
 
     units = tile_units(years, target_geobox, tile_size=tile_size)
     full_width = target_geobox.shape.x
+    total_units = len(units)
 
     try:
         with lockfile.held(lock_path):
             all_ok = True
             any_processed = False
-            for unit in units:
+            processed = 0
+            skipped = 0
+            failed = 0
+            run_started = time.monotonic()
+            logger.info("PREPARE %s: %d unit(s) to check (tile_size=%d)", output_path, total_units, tile_size)
+
+            for i, unit in enumerate(units, start=1):
                 unit_status_path = statusfile.status_path(status_dir, unit.unit_id)
                 existing = statusfile.read(unit_status_path)
 
                 if not override and existing is not None:
                     if existing.get("status") == STATUS_UNAVAILABLE:
                         all_ok = False
+                        failed += 1
                         continue
                     if (
                         existing.get("status") == STATUS_COMPLETE
                         and existing.get("processing_version") == processing_version
                     ):
+                        skipped += 1
                         continue
 
                 any_processed = True
+                unit_started = time.monotonic()
                 try:
                     source_ds = raw_getter(unit.tile, unit.year)
                 except Exception as exc:  # noqa: BLE001 -- one unit's failure must not abort the whole run
                     logger.exception("raw_getter failed for unit %s", unit.unit_id)
                     record_failure(status_dir, unit.unit_id, str(exc), max_attempts=max_attempts)
                     all_ok = False
+                    failed += 1
                     continue
 
                 if source_ds is None:
@@ -180,6 +184,7 @@ def run_tiled_prepare(
                         status_dir, unit.unit_id, "raw_getter returned no data", max_attempts=max_attempts
                     )
                     all_ok = False
+                    failed += 1
                     continue
 
                 ok = processor.process_tile_region(
@@ -198,9 +203,21 @@ def run_tiled_prepare(
                     statusfile.write(
                         unit_status_path, {"status": STATUS_COMPLETE, "processing_version": processing_version}
                     )
+                    processed += 1
+                    logger.info(
+                        "PREPARE %s: [%d/%d] unit %s done in %.1fs",
+                        output_path, i, total_units, unit.unit_id, time.monotonic() - unit_started,
+                    )
                 else:
                     record_failure(status_dir, unit.unit_id, "process_tile_region failed", max_attempts=max_attempts)
                     all_ok = False
+                    failed += 1
+
+            logger.info(
+                "PREPARE %s: finished -- %d processed, %d already complete, %d failed/unavailable "
+                "(%d total unit(s)), %.1fs elapsed",
+                output_path, processed, skipped, failed, total_units, time.monotonic() - run_started,
+            )
 
             if all_ok and (any_processed or not os.path.exists(marker_path(output_path))):
                 # Only touch the marker's mtime when this run actually did

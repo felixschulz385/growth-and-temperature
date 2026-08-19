@@ -601,35 +601,45 @@ sources:
       range_vars: ["mine_count_10km", "mine_count_20km", "mine_count_50km", "mine_polygon_count"]
 
 # Data assembly configurations
+#
+# Each pixel-grid dataset below is resolved at run time from `data_path`+`family`
+# via `src.data.sources.layout.grid_store_path` (src/data/assemble/config.py's
+# `resolve_dataset_paths`) -- the same helper each PREPARE source uses to compute
+# its own GRID-stage tiled-parquet output directory, so these entries track a
+# source's real output location instead of a hand-pasted path that drifts out of
+# sync. An explicit `path:` (as still used below for `land_mask`/`cluster_vars`,
+# where dropping the escape hatch isn't required) always overrides this resolution.
 assemble:
   modis:
     description: "MODIS assembly with all datasets"
     output_path: "${DATA_NOBACKUP}/assembled/modis.parquet"
     datasets:
       modis:
-        path: "${DATA_NOBACKUP}/glass/LST/MODIS/Daily/1KM/processed/stage_3/modis_tabular.parquet"
-        index_cols: ["pixel_id", "time"]
-        columns: ["pixel_id", "time", "median"]
+        data_path: "glass/LST/MODIS/Daily/1KM/"
+        family: "glass_modis_lst"
+        index_cols: ["pixel_id", "year"]
+        columns: ["LST"]
       viirs:
-        path: "${DATA_NOBACKUP}/eog/viirs/processed/stage_3/viirs_annual_tabular.parquet"
-        index_cols: ["pixel_id", "time"]
-        join_type: "left"
+        data_path: "eog/viirs"
+        family: "eog_viirs_annual"
+        index_cols: ["pixel_id", "year"]
       dvnl:
-        path: "${DATA_NOBACKUP}/eog/dvnl/processed/stage_3/viirs_dvnl_tabular.parquet"
-        index_cols: ["pixel_id", "time"]
-        join_type: "left"
+        data_path: "eog/dvnl"
+        family: "eog_viirs_dvnl"
+        index_cols: ["pixel_id", "year"]
       dmsp:
-        path: "${DATA_NOBACKUP}/eog/dmsp/processed/stage_3/dmsp_tabular.parquet"
-        index_cols: ["pixel_id", "time"]
-        join_type: "left"
+        data_path: "eog/dmsp"
+        family: "eog_dmsp"
+        index_cols: ["pixel_id", "year"]
       cluster_vars:
-        path: "${DATA_NOBACKUP}/misc/processed/stage_3/gadm_countries_grid_tabular.parquet"
+        data_path: "misc"
+        family: "country_id"
         index_cols: ["pixel_id"]
-        join_type: "left"
+        columns: ["GID_0"]
       land_mask:
-        path: "${DATA_NOBACKUP}/misc/processed/stage_3/osm_land_mask_tabular.parquet"
+        data_path: "misc"
+        family: "land_mask"
         index_cols: ["pixel_id"]
-        join_type: "left"
     processing:
       compression: "zstd"
       # demean_columns/filter_land_only/spark deleted -- confirmed dead
@@ -641,12 +651,13 @@ assemble:
     output_path: "${DATA_NOBACKUP}/assembled/temperature_only.parquet"
     datasets:
       modis:
-        path: "${DATA_NOBACKUP}/glass/LST/MODIS/Daily/1KM/processed/stage_3/modis_tabular.parquet"
-        index_cols: ["pixel_id", "time"]
-        columns: ["pixel_id", "time", "median"]
+        data_path: "glass/LST/MODIS/Daily/1KM/"
+        family: "glass_modis_lst"
+        index_cols: ["pixel_id", "year"]
+        columns: ["LST"]
       land_mask:
-        path: "${DATA_NOBACKUP}/misc/processed/stage_3/osm_land_mask_tabular.parquet"
+        data_path: "misc"
+        family: "land_mask"
         index_cols: ["pixel_id"]
-        join_type: "left"
     processing:
       compression: "zstd"

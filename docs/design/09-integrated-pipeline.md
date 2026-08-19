@@ -508,7 +508,7 @@ omission.
 ### `src/data/pipeline/` internals
 
 - **`context.py` — `PipelineContext`**: `data_root`, `local_index_dir`, `ssh_target`, `key_file`,
-  `staging_dir`, `temp_dir`, `grid_id`, dask settings, and the persistent-session registry (Selenium
+  `grid_id`, dask settings, and the persistent-session registry (Selenium
   sessions for EOG/GLASS) lifted from the download side's `WorkflowContext` — the preprocess side's context
   never had this and didn't need it until sources merged.
 - **`config.py` — `SourceConfig`**: an explicit dataclass with named fields plus a `raw: Mapping` escape

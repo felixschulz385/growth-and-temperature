@@ -17,6 +17,15 @@ _NOISY_GEO_LOGGERS = (
     "rasterio._base",
 )
 
+#: Library loggers that emit DEBUG-level noise unrelated to this codebase's
+#: own progress (e.g. numcodecs re-announcing its whole codec registry on
+#: every import) -- kept quiet even under --debug so debug mode stays useful
+#: for this codebase's own logs instead of being drowned out.
+_NOISY_LIB_LOGGERS = (
+    "numcodecs",
+    "zarr",
+)
+
 
 class _RasterioWarpNoiseFilter(logging.Filter):
     """Filter out known noisy Rasterio/GDAL debug messages."""
@@ -75,6 +84,10 @@ def setup_logging(
     # Keep rasterio/GDAL chatter quiet even in debug mode so package debug logs remain usable.
     for name in _NOISY_GEO_LOGGERS:
         logging.getLogger(name).setLevel(logging.ERROR)
+
+    # Same idea for other noisy library loggers (see _NOISY_LIB_LOGGERS docstring).
+    for name in _NOISY_LIB_LOGGERS:
+        logging.getLogger(name).setLevel(logging.WARNING)
 
     rasterio_env_logger = logging.getLogger("rasterio._env")
     for log_filter in rasterio_env_logger.filters[:]:

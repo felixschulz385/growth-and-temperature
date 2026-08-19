@@ -22,6 +22,7 @@ from src.data.assemble.constants import (
     LONGITUDE_COORD,
     EXCLUDED_VARIABLES,
 )
+from src.data.assemble.parquet_raster import _partitioned_parquet_files, is_tiled_parquet_dataset
 from src.data.assemble.utils import (
     add_derived_pixel_id_columns,
     make_pixel_ids,
@@ -46,46 +47,54 @@ def uses_geometry_aggregation(assembly_config: Dict[str, Any]) -> bool:
     )
 
 
-def get_dataset_columns_from_zarr(
-    zarr_path: str,
+def get_dataset_columns(
+    dataset_path: str,
     columns: Optional[List[str]] = None,
     column_prefix: str = '',
 ) -> List[str]:
     """
-    Get column names from a zarr file.
-    
+    Get column (data variable) names from a GRID-stage dataset, dispatching on
+    format: a Zarr store or a `run_tiled_prepare`-produced tiled-parquet
+    directory (see `src.data.assemble.parquet_raster`).
+
     Args:
-        zarr_path: Path to zarr file
+        dataset_path: Path to the dataset (Zarr store or tiled-parquet directory)
         columns: Optional list of specific columns to select
         column_prefix: Prefix to apply to column names
-        
+
     Returns:
         List of column names (with prefix applied if specified)
     """
     try:
-        # Open zarr to inspect variables (don't load data)
-        ds = xr.open_zarr(zarr_path, consolidated=False, chunks='auto')
-        
-        # Get all data variables (exclude coordinates and excluded vars)
-        all_vars = [var for var in ds.data_vars.keys() if var not in EXCLUDED_VARIABLES]
-        
+        if is_tiled_parquet_dataset(dataset_path):
+            part_files = _partitioned_parquet_files(dataset_path)
+            schema_names = pq.ParquetFile(part_files[0]).schema_arrow.names
+            all_vars = [
+                c for c in schema_names
+                if c not in EXCLUDED_VARIABLES and c not in ("cell_id", "year")
+            ]
+        else:
+            # Open zarr to inspect variables (don't load data)
+            ds = xr.open_zarr(dataset_path, consolidated=False, chunks='auto')
+            all_vars = [var for var in ds.data_vars.keys() if var not in EXCLUDED_VARIABLES]
+            ds.close()
+
         # Filter to requested columns if specified
         if columns:
             selected_vars = [var for var in columns if var in all_vars]
         else:
             selected_vars = all_vars
-        
+
         # Apply prefix
         if column_prefix:
             prefixed_vars = [f"{column_prefix}{var}" for var in selected_vars]
         else:
             prefixed_vars = selected_vars
-        
-        ds.close()
+
         return prefixed_vars
-        
+
     except Exception as e:
-        logger.warning(f"Failed to load columns from {zarr_path}: {e}")
+        logger.warning(f"Failed to load columns from {dataset_path}: {e}")
         return []
 
 
@@ -200,20 +209,20 @@ class TileProcessor:
         for dataset_name, dataset_config in datasets_config.items():
             if dataset_config.get('join_on'):
                 continue  # handled by _load_join_tables instead
-            zarr_path = dataset_config.get('path')
-            if not zarr_path:
+            dataset_path = dataset_config.get('path')
+            if not dataset_path:
                 logger.warning(f"No path specified for dataset '{dataset_name}'")
                 continue
-                
-            if not os.path.exists(zarr_path):
-                logger.warning(f"Dataset path does not exist: {zarr_path}")
+
+            if not os.path.exists(dataset_path):
+                logger.warning(f"Dataset path does not exist: {dataset_path}")
                 continue
-            
-            # Get columns from zarr file
+
+            # Get columns from the dataset (zarr store or tiled-parquet directory)
             columns = dataset_config.get('columns')
             column_prefix = dataset_config.get('column_prefix', '')
-            
-            dataset_cols = get_dataset_columns_from_zarr(zarr_path, columns, column_prefix)
+
+            dataset_cols = get_dataset_columns(dataset_path, columns, column_prefix)
             
             if dataset_cols:
                 self.column_order_map[dataset_name] = dataset_cols
@@ -627,6 +636,15 @@ class TileProcessor:
                 f"all_index_cols: {self.all_index_cols}, combined: {list(combined.columns)}, df: {list(df.columns)}"
             )
             return combined
+
+        # _duckdb_join has no pd.merge-style _x/_y suffixing for colliding
+        # non-key column names -- drop any non-merge column `df` also
+        # provides from `combined` first so the two frames never collide.
+        df_cols = [col for col in df.columns if col not in merge_cols]
+        cols_to_drop = [col for col in df_cols if col in combined.columns]
+        if cols_to_drop:
+            logger.debug(f"Tile [{ix}, {iy}]: {dataset_name} - dropping existing columns: {cols_to_drop}")
+            combined = combined.drop(columns=cols_to_drop)
 
         rows_before = len(combined)
         combined = self._duckdb_join(combined, df, merge_cols, how="outer")

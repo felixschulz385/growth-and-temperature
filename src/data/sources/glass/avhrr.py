@@ -13,11 +13,10 @@ FETCH   -- static per-(year, day) target list, attempt-and-log, no crawl/
            global file per day, no tile dimension.
 PREPARE -- one annual zarr per year with annual+monthly LST statistics
            (mean/median/std/max/min/rolling/threshold counts/valid-count),
-           then GLASS's own bespoke tiled reprojection onto the canonical
-           EPSG:4326 geobox (32px-halo pad, "mode" resampling), region-
-           written into one shared multi-year zarr. Does not use the shared
-           `SpatialProcessor` -- this bespoke path predates it and is kept
-           as-is (unlike GLASS-MODIS, which now does use it).
+           then tiled reprojection onto the canonical EPSG:4326 geobox
+           (32px-halo pad, "mode" resampling) via the shared
+           `SpatialProcessor`/`run_tiled_prepare` driver, same as
+           GLASS-MODIS.
 """
 
 from __future__ import annotations
@@ -66,9 +65,9 @@ class GlassAvhrrSource(DataSource):
     FETCH   -- crawl + download the configured `base_url` directory tree.
     PREPARE -- one annual zarr per year with annual+monthly LST statistics
                (mean/median/std/max/min/rolling/threshold counts/valid-
-               count). GRID -- chunked tile-by-tile reprojection onto the
-               canonical EPSG:4326 geobox, region-written into one shared
-               multi-year zarr. Does not use the shared `SpatialProcessor`.
+               count), then tiled reprojection onto the canonical EPSG:4326
+               geobox via the shared `SpatialProcessor`/`run_tiled_prepare`
+               driver, region-written into one shared multi-year zarr.
     """
 
     ID = "glass_avhrr"
@@ -670,12 +669,14 @@ class GlassAvhrrSource(DataSource):
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor
-        from src.data.sources.steps import is_complete
 
-        if not self.cfg.override and is_complete(target):
-            logger.info("Skipping PREPARE -- already complete: %s", target.output_path)
-            return True
-
+        # No top-level `is_complete(target)` short-circuit here: `target`'s
+        # marker can already exist from a prior run while `years_available`
+        # (freshly discovered below) has since grown with newly-fetched
+        # years. `run_tiled_prepare` has its own finer-grained per-unit
+        # status tracking (see its docstring) that cheaply skips units
+        # already complete and only processes new ones, so it's always safe
+        # and correct to call it rather than trusting the coarse marker.
         years_available = sorted(target.meta["years_available"])
         group_keys = tuple(target.meta["group_keys"])
         groups = self._group_daily_files(TargetSelection(keys=group_keys))
@@ -718,7 +719,20 @@ class GlassAvhrrSource(DataSource):
             bbox = clip_lon180(tile.geobox.pad(32, 32).extent).to_crs(ds.rio.crs).boundingbox
             clipped_ds = ds.sel(y=slice(bbox.bottom, bbox.top), x=slice(bbox.left, bbox.right)).compute()
             if clipped_ds.sizes.get("x", 0) == 0 or clipped_ds.sizes.get("y", 0) == 0:
-                return None
+                # This tile falls outside the raw year's spatial coverage --
+                # a legitimate tile state (e.g. edge of the source's extent),
+                # not a fetch failure. Return a NaN-filled dataset on
+                # tile.geobox instead of None so run_tiled_prepare doesn't
+                # record it as a retryable failure and permanently block
+                # mark_complete (same convention as ecoregions/gadm/
+                # snl_mining's _rasterize_tile).
+                dim_y, dim_x = tile.geobox.dims
+                return xr.Dataset(
+                    {
+                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
+                        for var in ds.data_vars
+                    }
+                )
 
             int_vars = [key for key, val in clipped_ds.dtypes.items() if np.issubdtype(val, np.integer)]
             if int_vars:

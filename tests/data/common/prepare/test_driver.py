@@ -68,9 +68,7 @@ def test_run_tiled_prepare_fills_every_tile_and_marks_complete(tmp_path, target_
         target_geobox=target_geobox,
         processor=processor,
         raw_getter=_always_returns_full_extent,
-        target_dims=target_geobox.dimensions,
         tile_size=4,
-        packaging_attrs={},
     )
     assert ok is True
     assert os.path.exists(marker_path(output_path))
@@ -87,8 +85,7 @@ def test_second_run_is_a_noop_skips_completed_units(tmp_path, target_geobox, pro
     getter = _make_getter()
     kwargs = dict(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
-        processor=processor, raw_getter=getter, target_dims=target_geobox.dimensions, tile_size=4,
-        packaging_attrs={},
+        processor=processor, raw_getter=getter, tile_size=4,
     )
     assert run_tiled_prepare(**kwargs) is True
     n_calls_after_first = len(getter.calls)
@@ -103,8 +100,7 @@ def test_failure_in_one_tile_records_status_and_returns_false(tmp_path, target_g
 
     ok = run_tiled_prepare(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
-        processor=processor, raw_getter=getter, target_dims=target_geobox.dimensions, tile_size=4,
-        packaging_attrs={},
+        processor=processor, raw_getter=getter, tile_size=4,
     )
     assert ok is False
     assert not os.path.exists(marker_path(output_path))  # not complete -- one tile still missing
@@ -121,7 +117,7 @@ def test_retry_after_failure_succeeds_and_completes(tmp_path, target_geobox, pro
     getter = _make_getter(fail_units={fail_unit})
     kwargs = dict(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
-        processor=processor, target_dims=target_geobox.dimensions, tile_size=4, packaging_attrs={},
+        processor=processor, tile_size=4,
     )
     assert run_tiled_prepare(raw_getter=getter, **kwargs) is False
 
@@ -137,7 +133,7 @@ def test_processing_version_bump_forces_reprocessing(tmp_path, target_geobox, pr
     getter_v1 = _make_getter()
     common = dict(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
-        processor=processor, target_dims=target_geobox.dimensions, tile_size=4, packaging_attrs={},
+        processor=processor, tile_size=4,
     )
     assert run_tiled_prepare(raw_getter=getter_v1, processing_version="1", **common) is True
 
@@ -154,8 +150,7 @@ def test_run_tiled_prepare_refuses_concurrent_invocation(tmp_path, target_geobox
     try:
         ok = run_tiled_prepare(
             output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
-            processor=processor, raw_getter=_always_returns_full_extent, target_dims=target_geobox.dimensions,
-            tile_size=4, packaging_attrs={},
+            processor=processor, raw_getter=_always_returns_full_extent, tile_size=4,
         )
         assert ok is False
     finally:
@@ -223,13 +218,49 @@ def test_run_tiled_prepare_reproject_false_uses_raw_getter_output_as_is(tmp_path
     assert len(df) == tile_size * tile_size
 
 
+def test_run_tiled_prepare_logs_per_unit_progress_and_a_final_summary(tmp_path, target_geobox, processor, caplog):
+    import logging
+
+    output_path = str(tmp_path / "output")
+    with caplog.at_level(logging.INFO, logger="src.data.common.prepare.driver"):
+        ok = run_tiled_prepare(
+            output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
+            processor=processor, raw_getter=_always_returns_full_extent, tile_size=4,
+        )
+    assert ok is True
+
+    messages = [r.message for r in caplog.records]
+    assert any("4 unit(s) to check" in m for m in messages)
+    per_unit = [m for m in messages if "[1/4]" in m or "[2/4]" in m or "[3/4]" in m or "[4/4]" in m]
+    assert len(per_unit) == 4
+    assert any("4 processed, 0 already complete, 0 failed/unavailable" in m for m in messages)
+
+
+def test_run_tiled_prepare_second_run_logs_already_complete_not_reprocessed(tmp_path, target_geobox, processor, caplog):
+    import logging
+
+    output_path = str(tmp_path / "output")
+    kwargs = dict(
+        output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
+        processor=processor, raw_getter=_always_returns_full_extent, tile_size=4,
+    )
+    run_tiled_prepare(**kwargs)
+
+    caplog.clear()
+    with caplog.at_level(logging.INFO, logger="src.data.common.prepare.driver"):
+        ok = run_tiled_prepare(**kwargs)
+    assert ok is True
+
+    messages = [r.message for r in caplog.records]
+    assert any("0 processed, 4 already complete, 0 failed/unavailable" in m for m in messages)
+
+
 def test_prepare_status_counts_after_partial_failure(tmp_path, target_geobox, processor):
     output_path = str(tmp_path / "output")
     getter = _make_getter(fail_units={(2020, "0000_0000")})
     run_tiled_prepare(
         output_path=output_path, years=[2020], variables=["value"], target_geobox=target_geobox,
-        processor=processor, raw_getter=getter, target_dims=target_geobox.dimensions, tile_size=4,
-        packaging_attrs={}, max_attempts=5,
+        processor=processor, raw_getter=getter, tile_size=4, max_attempts=5,
     )
     counts = prepare_status(output_path, [2020], target_geobox, tile_size=4)
     assert counts == {"complete": 3, "outstanding": 1, "unavailable": 0}
