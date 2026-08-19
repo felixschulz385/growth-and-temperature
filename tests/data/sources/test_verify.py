@@ -217,14 +217,15 @@ def test_partitioned_table_no_data_columns_fails_when_no_expected_vars_given(tmp
     assert "no data columns" in result.detail
 
 
-def test_partitioned_table_no_part_files_falls_through_to_existence_only(tmp_path):
-    # An empty directory with no zarr metadata and no parquet parts -- not
-    # actually one of the shapes this checker knows how to open.
+def test_empty_directory_with_no_zarr_or_parquet_content_fails(tmp_path):
+    # An empty directory with no zarr metadata and no parquet parts -- a
+    # broken/interrupted run_tiled_prepare output, not a legitimate
+    # unrecognized format, so this must not verify as ok.
     path = str(tmp_path / "empty_dir")
     os.makedirs(path, exist_ok=True)
     result = verify_grid_output(path)
-    assert result.ok is True
-    assert "existence-only" in result.detail
+    assert result.ok is False
+    assert "empty" in result.detail
 
 
 def test_partitioned_table_all_nan_sample_fails(tmp_path):

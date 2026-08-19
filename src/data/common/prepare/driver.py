@@ -83,15 +83,11 @@ def run_tiled_prepare(
     target_geobox,
     processor: Any,
     raw_getter: "Callable[[tiling.Tile, Optional[int]], Optional[Any]]",
-    target_dims: tuple[str, str] = (),
     tile_size: int = tiling.DEFAULT_TILE_SIZE,
     reproject: bool = True,
     preprocess_func: "Optional[Callable[[Any], Any]]" = None,
     dst_nodata: Optional[float] = None,
     resampling: str = "nearest",
-    dtype: str = "float32",
-    packaging_attrs: Optional[dict] = None,
-    sample_attrs: Optional[dict] = None,
     processing_version: str = "1",
     override: bool = False,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -134,11 +130,7 @@ def run_tiled_prepare(
     Output is `cell_id`-keyed parquet, one self-contained part per unit
     (`processor.process_tile_region`), not a Zarr store -- so there is no
     shared skeleton to bootstrap before the tile loop (each unit's own
-    `os.makedirs` creates whatever directories it needs). `dtype`,
-    `packaging_attrs`, `sample_attrs`, and `target_dims` are accepted but
-    unused: kept so every existing caller's keyword arguments (acag/esacci/
-    ntl_harm/eog) still work unchanged; they were Zarr-skeleton/region-write-
-    only concerns.
+    `os.makedirs` creates whatever directories it needs).
     """
     status_dir = status_dir_for(output_path)
     lock_path = os.path.join(status_dir, "prepare.lock")

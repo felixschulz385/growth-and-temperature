@@ -594,7 +594,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
-        dim_y, dim_x = target_geobox.dimensions
 
         with self._dask_client() as client:
             if client is None:
@@ -614,9 +613,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                         cache[year] = self._load_year(source_file, year)
                     return cache[year]
 
-                sample_ds = load_year(years[0])
-                sample_attrs = dict(sample_ds.attrs) if sample_ds is not None else {}
-
                 return run_tiled_prepare(
                     output_path=target.output_path,
                     years=years,
@@ -624,11 +620,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                     target_geobox=target_geobox,
                     processor=processor,
                     raw_getter=lambda tile, year: load_year(year),
-                    target_dims=(dim_y, dim_x),
                     tile_size=self.tile_size,
                     resampling=self.resampling,
-                    dtype="uint16",
-                    sample_attrs=sample_attrs,
                     processing_version=self.PROCESSING_VERSION,
                     override=self.cfg.override,
                 )

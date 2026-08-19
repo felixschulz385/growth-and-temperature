@@ -36,7 +36,6 @@ class PipelineContext:
         dask_threads: Optional[int] = None,
         dask_memory_limit: Optional[str] = None,
         dashboard_port: int = DEFAULT_DASHBOARD_PORT,
-        staging_dir: Optional[str] = None,
     ):
         self.data_root = data_root
         self.local_index_dir = str(Path(local_index_dir).expanduser().resolve()) if local_index_dir else None
@@ -54,12 +53,6 @@ class PipelineContext:
         self.dask_threads = dask_threads
         self.dask_memory_limit = dask_memory_limit
         self.dashboard_port = dashboard_port
-
-        self.staging_dir = staging_dir or (
-            str(Path(self.local_index_dir) / "staging") if self.local_index_dir else None
-        )
-        if self.staging_dir:
-            Path(self.staging_dir).mkdir(parents=True, exist_ok=True)
 
         self._persistent_sessions: dict[str, Any] = {}
         self._session_locks: dict[str, threading.RLock] = {}

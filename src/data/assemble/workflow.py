@@ -21,6 +21,7 @@ from src.data.common.dask.client import DaskClientContextManager
 from src.data.assemble.config import (
     derive_data_root,
     apply_cli_overrides,
+    resolve_dataset_paths,
     validate_assembly_config,
 )
 from src.data.assemble.loaders import (
@@ -94,7 +95,8 @@ def _run_geometry_assembly(
         land_mask_ds = None
         if processing_config.get("apply_land_mask", False):
             land_mask_path = processing_config.get("land_mask_path")
-            land_mask_ds = load_land_mask(hpc_root, land_mask_path)
+            tile_size = processing_config.get("tile_size", DEFAULT_TILE_SIZE)
+            land_mask_ds = load_land_mask(hpc_root, target_geobox, tile_size, land_mask_path)
             if land_mask_ds is not None:
                 land_mask_ds = prepare_land_mask(land_mask_ds)
 
@@ -251,29 +253,35 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         full_config: Full configuration dictionary (optional, for HPC settings)
     """
     logger.info(f"Starting assembly: {assembly_config.get('description', 'Unknown')}")
-    
+
+    # Derive local project data root early (best-effort, not fatal here -- the
+    # original missing-data_root check further down still owns that) so
+    # `resolve_dataset_paths` can fill in any dataset's `path` from `data_path`/
+    # `family` before `validate_assembly_config` checks that `path` exists.
+    data_root = derive_data_root(assembly_config, full_config)
+    if data_root:
+        resolve_dataset_paths(assembly_config, data_root)
+
     # Validate configuration
     errors = validate_assembly_config(assembly_config)
     if errors:
         for error in errors:
             logger.error(f"Configuration error: {error}")
         raise ValueError(f"Assembly configuration invalid: {len(errors)} error(s) -- see log above.")
-    
+
     output_path = assembly_config['output_path']
     processing_config = assembly_config.get('processing', {})
     spatial_partition = processing_config.get("spatial_partition", "grid")
 
     os.makedirs(output_path, exist_ok=True)
     logger.info(f"Output will be written to: {output_path}")
-    
-    # Derive local project data root from configuration
-    data_root = derive_data_root(assembly_config, full_config)
+
     if not data_root:
         logger.error("data_root must be specified in config or derivable from runtime settings")
         return
-    
+
     logger.info(f"Using data_root: {data_root}")
-    
+
     # Get target geobox and adjust tile size for reprojection
     target_geobox = get_or_create_geobox(data_root)
 
@@ -315,7 +323,9 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         land_mask_ds = None
         if processing_config.get('apply_land_mask', False):
             land_mask_path = processing_config.get('land_mask_path')
-            land_mask_ds = load_land_mask(data_root, land_mask_path)
+            land_mask_ds = load_land_mask(
+                data_root, target_geobox, processing_config['tile_size'], land_mask_path
+            )
             if land_mask_ds is not None:
                 land_mask_ds = prepare_land_mask(land_mask_ds)
         

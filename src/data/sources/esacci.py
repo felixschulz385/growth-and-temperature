@@ -326,7 +326,6 @@ class EsacciSource(DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
-        dim_y, dim_x = target_geobox.dimensions
 
         with self._dask_client() as client:
             if client is None:
@@ -346,11 +345,8 @@ class EsacciSource(DataSource):
                         cache[year] = self._load_nc_as_dataset(source_file, year)
                     return cache[year]
 
-                sample_ds = load_year(years[0])
-                sample_attrs = dict(sample_ds.attrs) if sample_ds is not None else {}
-
                 # ESA CCI LC is categorical -- always nearest (run_tiled_prepare's
-                # own default), 0 as nodata, no scale/offset packaging.
+                # own default), 0 as nodata.
                 return run_tiled_prepare(
                     output_path=target.output_path,
                     years=years,
@@ -358,12 +354,8 @@ class EsacciSource(DataSource):
                     target_geobox=target_geobox,
                     processor=processor,
                     raw_getter=lambda tile, year: load_year(year),
-                    target_dims=(dim_y, dim_x),
                     tile_size=self.tile_size,
                     dst_nodata=0,
-                    packaging_attrs={},
-                    dtype="uint16",
-                    sample_attrs=sample_attrs,
                     processing_version=self.PROCESSING_VERSION,
                     override=self.cfg.override,
                 )

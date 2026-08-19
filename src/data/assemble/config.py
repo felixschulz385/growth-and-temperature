@@ -19,6 +19,7 @@ from src.data.assemble.constants import (
     DEFAULT_WORKER_FRACTION,
 )
 from src.data.assemble.grid_shake import normalize_grid_shake_offsets
+from src.data.sources import layout
 from src.data.sources.verify import verify_grid_output
 
 logger = logging.getLogger(__name__)
@@ -133,6 +134,31 @@ def derive_data_root(assembly_config: Dict[str, Any], full_config: Optional[Dict
 def derive_hpc_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """Backward-compatible alias for older callers."""
     return derive_data_root(assembly_config, full_config)
+
+
+def resolve_dataset_paths(assembly_config: Dict[str, Any], data_root: str) -> None:
+    """Resolve each dataset's `path` from `data_path`+`family` (+ optional
+    `grid_id`) when `path` isn't given explicitly, via
+    `src.data.sources.layout.grid_store_path` -- the same helper every
+    migrated PREPARE source uses to compute its own GRID-stage output
+    directory, so an assembly config can point at a source's output by name
+    instead of hand-pasting a path that silently drifts out of sync when that
+    source's layout changes. Mutates `assembly_config['datasets']` in place.
+
+    A dataset config with an explicit `path` is left untouched (escape hatch
+    for one-off/manual paths, e.g. join_on tables, land masks, or anything
+    outside the standard GRID layout).
+    """
+    for name, cfg in assembly_config.get('datasets', {}).items():
+        if cfg.get('path'):
+            continue
+        data_path = cfg.get('data_path')
+        family = cfg.get('family')
+        if not data_path or not family:
+            continue  # validate_assembly_config reports the resulting missing 'path'
+        grid_id = cfg.get('grid_id', layout.LEGACY_GRID_ID)
+        cfg['path'] = layout.grid_store_path(data_root, data_path, grid_id=grid_id, family=family, suffix="")
+        logger.debug(f"Dataset '{name}': resolved path from data_path/family -> {cfg['path']}")
 
 
 def apply_cli_overrides(assembly_config: Dict[str, Any], cli_overrides: Dict[str, Any]) -> None:
