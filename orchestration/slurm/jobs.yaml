@@ -155,8 +155,8 @@ jobs:
     source: osm
     step: prepare
     partition: scicore
-    time: "00:30:00"
-    qos: 30min
+    time: "06:00:00"
+    qos: 6hours
     cpus: 8
     mem: 64G
     mem_fraction: 0.9
