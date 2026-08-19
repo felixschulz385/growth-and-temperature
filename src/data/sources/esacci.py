@@ -337,10 +337,19 @@ class EsacciSource(DataSource):
                 target_geobox=target_geobox,
             )
             with processor.setup_dask_config():
+                # run_tiled_prepare walks units years-major (all tiles for a
+                # year before the next year starts), so only the current
+                # year's full-globe raster ever needs to be resident -- evict
+                # the previous one on each year change to avoid retaining one
+                # ~8GB dataset per year for the whole run.
                 cache: Dict[int, Optional[xr.Dataset]] = {}
 
                 def load_year(year: int) -> Optional[xr.Dataset]:
                     if year not in cache:
+                        for old_year, old_ds in list(cache.items()):
+                            if old_ds is not None:
+                                old_ds.close()
+                            del cache[old_year]
                         source_file = self._resolve_raw_path(raw_files[year])
                         cache[year] = self._load_nc_as_dataset(source_file, year)
                     return cache[year]

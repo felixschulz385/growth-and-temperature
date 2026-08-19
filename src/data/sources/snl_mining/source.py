@@ -339,10 +339,20 @@ class SnlMiningSource(DataSource):
                     # count family -- the float32 price-shock family is on a
                     # different physical scale (a sum of ln-prices, not a
                     # count). verify.py supports one value_range per target,
-                    # so scope it by dtype here; the excluded (float32)
-                    # variables still get the unconditional "sample isn't
-                    # entirely NaN" check.
+                    # so scope it by dtype here.
                     range_vars=tuple(v for v in self.output_variables if self.buffer_tables[v][3] == "uint16"),
+                    # The float32 price-shock variables are nonzero only
+                    # where a mine of a *priced* commodity (12 of ~49 seen in
+                    # commodity_shares -- see commodities.py's
+                    # WORLD_BANK_COLUMNS) exists in a *priced* year -- a
+                    # strict, geographically clustered subset of an already
+                    # sparse mine-count variable. A bounded stride/part-file
+                    # verification sample can legitimately land on all-NaN
+                    # for these even when the dataset as a whole has plenty
+                    # of valid values, so they're exempt from the "sample
+                    # isn't entirely NaN" check (still get it if config
+                    # explicitly narrows sparse_vars).
+                    sparse_vars=tuple(v for v in self.output_variables if self.buffer_tables[v][3] != "uint16"),
                 ),
             )
         ]

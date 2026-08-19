@@ -35,14 +35,15 @@ def verification_meta(
     expected_vars: Sequence[str] | None = None,
     value_range: tuple[float, float] | None = None,
     range_vars: Sequence[str] | None = None,
+    sparse_vars: Sequence[str] | None = None,
 ) -> dict:
-    """Build the `expected_vars`/`value_range`/`range_vars` `StepTarget.meta`
-    entries for one source's GRID target, letting that source's own
-    `verification:` config block (in e.g. orchestration/configs/data.yaml)
-    override the Python-side defaults passed in by the caller -- so a
-    deployment can loosen/tighten a range or variable list per source
-    without a code change, while every source still works out of the box
-    with no `verification:` block at all.
+    """Build the `expected_vars`/`value_range`/`range_vars`/`sparse_vars`
+    `StepTarget.meta` entries for one source's GRID target, letting that
+    source's own `verification:` config block (in e.g.
+    orchestration/configs/data.yaml) override the Python-side defaults passed
+    in by the caller -- so a deployment can loosen/tighten a range or
+    variable list per source without a code change, while every source still
+    works out of the box with no `verification:` block at all.
 
     *raw* is a source's `SourceConfig.raw` (the source's own config dict).
     Config shape:
@@ -70,6 +71,10 @@ def verification_meta(
     rv = cfg["range_vars"] if "range_vars" in cfg else range_vars
     if rv is not None:
         result["range_vars"] = tuple(rv)
+
+    sv = cfg["sparse_vars"] if "sparse_vars" in cfg else sparse_vars
+    if sv is not None:
+        result["sparse_vars"] = tuple(sv)
 
     return result
 
@@ -116,6 +121,7 @@ def _params_fingerprint(
     expected_vars: Sequence[str] | None,
     value_range: tuple[float, float] | None,
     range_vars: Sequence[str] | None,
+    sparse_vars: Sequence[str] | None,
 ) -> str:
     """Cache entries must be scoped to *both* the output's own state and the
     parameters it was checked against -- two callers checking the same store
@@ -127,6 +133,7 @@ def _params_fingerprint(
             "expected_vars": list(expected_vars) if expected_vars else None,
             "value_range": list(value_range) if value_range else None,
             "range_vars": list(range_vars) if range_vars else None,
+            "sparse_vars": list(sparse_vars) if sparse_vars else None,
         },
         sort_keys=True,
     )
@@ -171,6 +178,7 @@ def verify_grid_output(
     expected_vars: Sequence[str] | None = None,
     value_range: tuple[float, float] | None = None,
     range_vars: Sequence[str] | None = None,
+    sparse_vars: Sequence[str] | None = None,
     force: bool = False,
 ) -> VerificationResult:
     """Verify a GRID-stage (or assembly-input) output at *path*, using a
@@ -194,17 +202,31 @@ def verify_grid_output(
     absolute-Kelvin `mean`/`max`/`min` alongside a `std` spread that isn't on
     the same scale), so a real value outside the *absolute* range doesn't
     make an unrelated variable look like a false failure.
+
+    *sparse_vars* exempts named variables from the "sample isn't entirely
+    nodata/NaN" check (still applied to every other `expected_var`
+    unconditionally, unlike the range check). For a variable that's nonzero
+    on only a small, geographically clustered fraction of the domain (e.g.
+    a price-shock term that's only defined where a mine of a *priced*
+    commodity exists in a *priced* year -- a strict subset of an already
+    sparse mine-count variable), even the full-extent `_stride_sample` /
+    bounded part-file sample can legitimately land on all-NaN while the
+    dataset as a whole has plenty of valid values elsewhere; for those,
+    "sample empty" isn't evidence of a broken PREPARE run the way it is for
+    a denser variable.
     """
     if not os.path.exists(path):
         return VerificationResult(False, f"output path does not exist: {path}")
 
-    fingerprint = _fingerprint(path) + "|" + _params_fingerprint(expected_vars, value_range, range_vars)
+    fingerprint = _fingerprint(path) + "|" + _params_fingerprint(expected_vars, value_range, range_vars, sparse_vars)
     if not force:
         cached = _read_cached(path, fingerprint)
         if cached is not None:
             return cached
 
-    result = _run_verification(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
+    result = _run_verification(
+        path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars, sparse_vars=sparse_vars
+    )
     _write_cache(path, fingerprint, result)
     return result
 
@@ -229,22 +251,35 @@ def _run_verification(
     expected_vars: Sequence[str] | None,
     value_range: tuple[float, float] | None,
     range_vars: Sequence[str] | None,
+    sparse_vars: Sequence[str] | None,
 ) -> VerificationResult:
     try:
         if path.endswith(".parquet"):
             return _verify_table(path, expected_vars=expected_vars)
         if os.path.isdir(path):
             if _is_zarr_store(path):
-                return _verify_zarr(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
+                return _verify_zarr(
+                    path,
+                    expected_vars=expected_vars,
+                    value_range=value_range,
+                    range_vars=range_vars,
+                    sparse_vars=sparse_vars,
+                )
             part_files = _partitioned_parquet_files(path)
             if part_files:
                 return _verify_partitioned_table(
-                    part_files, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars
+                    part_files,
+                    expected_vars=expected_vars,
+                    value_range=value_range,
+                    range_vars=range_vars,
+                    sparse_vars=sparse_vars,
                 )
             if not os.listdir(path):
                 return VerificationResult(False, f"{path} is empty")
         if path.lower().endswith((".tif", ".tiff")):
-            return _verify_geotiff(path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars)
+            return _verify_geotiff(
+                path, expected_vars=expected_vars, value_range=value_range, range_vars=range_vars, sparse_vars=sparse_vars
+            )
     except Exception as exc:  # noqa: BLE001 -- verification must never crash the caller
         return VerificationResult(False, f"failed to open/read {path}: {exc}")
 
@@ -291,13 +326,20 @@ def _stride_sample(da, target_size: int = 200_000, max_chunks_per_dim: int = 4):
     return da.isel(indexers).compute()
 
 
-def _check_sample_range(values, *, value_range: tuple[float, float] | None, label: str):
+def _check_sample_range(values, *, value_range: tuple[float, float] | None, label: str, allow_empty: bool = False):
     """Shared finite/range check for one variable's/band's sample. Returns a
-    `VerificationResult` on failure, `None` if the sample is fine."""
+    `VerificationResult` on failure, `None` if the sample is fine.
+
+    *allow_empty* skips the "entirely nodata/NaN" failure for a variable
+    declared `sparse_vars` (see `verify_grid_output`) -- an all-NaN *sample*
+    isn't meaningful evidence of a broken run for a variable that's only
+    ever nonzero on a small fraction of the domain to begin with."""
     import numpy as np
 
     finite = values[np.isfinite(values)]
     if finite.size == 0:
+        if allow_empty:
+            return None
         return VerificationResult(False, f"{label}: sample is entirely nodata/NaN")
     if value_range is not None:
         lo, hi = value_range
@@ -318,6 +360,7 @@ def _verify_zarr(
     expected_vars: Sequence[str] | None,
     value_range: tuple[float, float] | None,
     range_vars: Sequence[str] | None,
+    sparse_vars: Sequence[str] | None,
 ) -> VerificationResult:
     import numpy as np
     import xarray as xr
@@ -346,12 +389,16 @@ def _verify_zarr(
             return VerificationResult(False, "no CRS found (neither rio.crs nor a 'crs' attr)")
 
         range_var_set = set(range_vars) if range_vars is not None else None
+        sparse_var_set = set(sparse_vars) if sparse_vars is not None else set()
         for var in check_vars:
             sample = _stride_sample(ds[var])
             values = np.asarray(sample.values, dtype="float64").ravel()
             applies_range = range_var_set is None or var in range_var_set
             failure = _check_sample_range(
-                values, value_range=value_range if applies_range else None, label=f"variable '{var}'"
+                values,
+                value_range=value_range if applies_range else None,
+                label=f"variable '{var}'",
+                allow_empty=var in sparse_var_set,
             )
             if failure is not None:
                 return failure
@@ -366,6 +413,7 @@ def _verify_geotiff(
     expected_vars: Sequence[str] | None,
     value_range: tuple[float, float] | None,
     range_vars: Sequence[str] | None,
+    sparse_vars: Sequence[str] | None,
 ) -> VerificationResult:
     import numpy as np
     import rioxarray  # noqa: F401 -- registers the .rio accessor
@@ -376,7 +424,7 @@ def _verify_geotiff(
             return VerificationResult(False, "no CRS found on GeoTIFF")
         sample = _stride_sample(da)
         values = np.asarray(sample.values, dtype="float64").ravel()
-        failure = _check_sample_range(values, value_range=value_range, label="sample")
+        failure = _check_sample_range(values, value_range=value_range, label="sample", allow_empty=bool(sparse_vars))
         if failure is not None:
             return failure
         return VerificationResult(True, "ok: sampled values sane")
@@ -404,6 +452,7 @@ def _verify_partitioned_table(
     expected_vars: Sequence[str] | None,
     value_range: tuple[float, float] | None,
     range_vars: Sequence[str] | None,
+    sparse_vars: Sequence[str] | None,
 ) -> VerificationResult:
     """Verify a `run_tiled_prepare`-produced output: a directory of
     `cell_id`-keyed parquet parts (`ix=<row>/iy=<col>/part[-<year>].parquet`),
@@ -448,11 +497,15 @@ def _verify_partitioned_table(
     sample_df = pd.concat([pd.read_parquet(f, columns=check_cols) for f in picked], ignore_index=True)
 
     range_var_set = set(range_vars) if range_vars is not None else None
+    sparse_var_set = set(sparse_vars) if sparse_vars is not None else set()
     for col in check_cols:
         values = pd.to_numeric(sample_df[col], errors="coerce").to_numpy(dtype="float64")
         applies_range = range_var_set is None or col in range_var_set
         failure = _check_sample_range(
-            values, value_range=value_range if applies_range else None, label=f"column '{col}'"
+            values,
+            value_range=value_range if applies_range else None,
+            label=f"column '{col}'",
+            allow_empty=col in sparse_var_set,
         )
         if failure is not None:
             return failure

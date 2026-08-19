@@ -245,6 +245,7 @@ class DataSource(abc.ABC):
             expected_vars=target.meta.get("expected_vars"),
             value_range=target.meta.get("value_range"),
             range_vars=target.meta.get("range_vars"),
+            sparse_vars=target.meta.get("sparse_vars"),
         )
 
     @staticmethod
