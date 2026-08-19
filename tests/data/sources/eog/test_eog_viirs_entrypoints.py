@@ -1,8 +1,9 @@
 """EogSource's VIIRS annual-composite entrypoint discovery (module docstring
 in src/data/sources/eog/source.py): hardcoded year range (2012-2021), one
-`average_masked` file per year selected out of a flat directory that also
-contains other variants and intermediate/rolling reprocessing periods.
-DMSP/DVNL keep the plain (has_entrypoints=False) whole-directory crawl.
+`average_masked` file per year selected out of that year's own subdirectory,
+which also contains other variants and intermediate/rolling reprocessing
+periods. DMSP/DVNL keep the plain (has_entrypoints=False) whole-directory
+crawl.
 """
 
 import pytest
@@ -24,6 +25,17 @@ def _no_real_eog_credentials_file(monkeypatch, tmp_path):
     from src.data.sources.eog import credentials as eog_credentials
 
     monkeypatch.setattr(eog_credentials, "DEFAULT_CREDENTIALS_PATH", tmp_path / "unused-eog-credentials.json")
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep_between_year_crawls(monkeypatch):
+    # _viirs_annual_listing() throttles its 10 real page loads with
+    # time.sleep(1 + random()) (source.py) -- not needed against a mocked
+    # _list_single_directory in these tests, and would otherwise cost every
+    # test here several real seconds for no reason.
+    from src.data.sources.eog import source as eog_source
+
+    monkeypatch.setattr(eog_source.time, "sleep", lambda _seconds: None)
 
 
 def _make_source(tmp_path, source_type="viirs", **raw):
@@ -78,6 +90,8 @@ def test_viirs_annual_listing_selects_masked_variant_and_end_of_year_period(tmp_
     source = _make_source(tmp_path, "viirs")
     monkeypatch.setattr(source, "_init_selenium_driver", lambda: None)
     monkeypatch.setattr(source, "_close_selenium_driver", lambda: None)
+    # Every year's subdirectory happens to contain the same mixed listing --
+    # each year's own end_month/end_year filter picks its own file out of it.
     monkeypatch.setattr(source, "_list_single_directory", lambda url: _fake_entries(_DIRECTORY_HREFS))
 
     listing = source._viirs_annual_listing()
@@ -97,7 +111,7 @@ def test_viirs_annual_listing_ignores_years_outside_hardcoded_range(tmp_path, mo
     assert source._viirs_annual_listing() == {}
 
 
-def test_viirs_annual_listing_is_cached_across_years_in_one_process(tmp_path, monkeypatch):
+def test_viirs_annual_listing_crawls_each_years_subdirectory_once(tmp_path, monkeypatch):
     source = _make_source(tmp_path, "viirs")
     calls = []
     monkeypatch.setattr(source, "_init_selenium_driver", lambda: None)
@@ -112,7 +126,12 @@ def test_viirs_annual_listing_is_cached_across_years_in_one_process(tmp_path, mo
     list(source.list_remote_files({"year": 2012}))
     list(source.list_remote_files({"year": 2013}))
 
-    assert len(calls) == 1  # one crawl serves every year, not one per year
+    # One page load per year in the hardcoded range (2012-2021), not one per
+    # requested year -- and the cache means a second request for an
+    # already-crawled year adds no further calls.
+    assert len(calls) == 10
+    assert calls[0].endswith("/2012/")
+    assert calls[1].endswith("/2013/")
 
 
 def test_viirs_annual_listing_warns_and_keeps_first_on_multiple_matches(tmp_path, monkeypatch, caplog):
@@ -145,6 +164,40 @@ def test_list_remote_files_yields_only_requested_year(tmp_path, monkeypatch):
 
     results_2015 = list(source.list_remote_files({"year": 2015}))
     assert results_2015 == []
+
+
+# --- bare-year naming scheme (2013 on -- no month-range period) ------------
+
+
+def test_viirs_annual_listing_matches_bare_year_naming_scheme(tmp_path, monkeypatch):
+    # Live site behavior (not just a hypothetical): 2012 is named with a
+    # month-range period ("201204-201212"), but 2013 on drop the period
+    # entirely and use a bare calendar year, also switching the config
+    # token from "vcmcfg" to "vcmslcfg" partway through.
+    source = _make_source(tmp_path, "viirs")
+    monkeypatch.setattr(source, "_init_selenium_driver", lambda: None)
+    monkeypatch.setattr(source, "_close_selenium_driver", lambda: None)
+    bare_year_hrefs = [
+        "VNL_v21_npp_2013_global_vcmcfg_c202205302300.average.dat.tif.gz",
+        "VNL_v21_npp_2013_global_vcmcfg_c202205302300.average_masked.dat.tif.gz",
+        "VNL_v21_npp_2014_global_vcmslcfg_c202205302300.average_masked.dat.tif.gz",
+    ]
+    monkeypatch.setattr(source, "_list_single_directory", lambda url: _fake_entries(bare_year_hrefs))
+
+    listing = source._viirs_annual_listing()
+
+    assert set(listing) == {2013, 2014}
+    assert listing[2013][0][0] == bare_year_hrefs[1]
+    assert listing[2014][0][0] == bare_year_hrefs[2]
+
+
+def test_filename_to_entrypoint_handles_both_naming_schemes(tmp_path):
+    source = _make_source(tmp_path, "viirs")
+    period_named = "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average_masked.dat.tif.gz"
+    bare_year_named = "VNL_v21_npp_2014_global_vcmslcfg_c202205302300.average_masked.dat.tif.gz"
+
+    assert source.filename_to_entrypoint(period_named) == {"year": 2012}
+    assert source.filename_to_entrypoint(bare_year_named) == {"year": 2014}
 
 
 def test_list_remote_files_falls_back_to_recursive_crawl_for_dmsp(tmp_path, monkeypatch):

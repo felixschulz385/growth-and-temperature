@@ -34,10 +34,11 @@ Now derived from `cfg.source_id` directly, the same authoritative signal
 (`data_source_kind`).
 
 **VIIRS annual composites: hardcoded year range, per-year discovery, not a
-full recursive crawl.** `eogdata.mines.edu/nighttime_light/annual/v21/` is
-one flat directory mixing the canonical one-per-calendar-year composites
-with intermediate/rolling reprocessing periods (e.g. a `201204-201303`
-entry alongside `201204-201212`) and, per file, several product variants
+full recursive crawl.** `eogdata.mines.edu/nighttime_light/annual/v21/` lists
+one subdirectory per year (`2012/`, `2013/`, ...); each year's subdirectory
+mixes that year's canonical composite with intermediate/rolling reprocessing
+periods (e.g. a `201204-201303` entry alongside `201204-201212`) and, per
+file, several product variants
 (`average`/`average_masked`/`cf_cvg`/`cvg`/`lit_mask`/`maximum`/`median`/
 `median_masked`/`minimum`). The old whole-directory recursive crawl
 (`_CrawlerMixin.list_remote_files()`, still used for DMSP) had no variant
@@ -78,9 +79,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 import re
 import tempfile
+import time
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import pandas as pd
 import xarray as xr
@@ -136,11 +140,23 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     #: also present in the same directory.
     VIIRS_VARIANT = "average_masked"
 
-    #: e.g. "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average_masked.dat.tif.gz"
-    #: -- verified live against eogdata.mines.edu/nighttime_light/annual/v21/.
+    #: Two live naming schemes, confirmed against eogdata.mines.edu/
+    #: nighttime_light/annual/v21/<year>/: 2012 (the product's first,
+    #: partial year -- VIIRS only launched in 2011/started this composite
+    #: series in April 2012) is named with a month-range period, e.g.
+    #: "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average_masked.dat.tif.gz";
+    #: every year since (2013 on) drops the period entirely and uses a bare
+    #: calendar year instead, e.g.
+    #: "VNL_v21_npp_2013_global_vcmcfg_c202205302300.average_masked.dat.tif.gz"
+    #: (also switching from "vcmcfg" to "vcmslcfg" partway through -- already
+    #: covered by the `\w+` config-token wildcard below). Matched via two
+    #: alternative groups: `start_year`/`start_month`/`end_year`/`end_month`
+    #: for the period form, `year` for the bare-year form -- exactly one
+    #: alternative's groups are populated per match.
     _VIIRS_FILENAME_RE = re.compile(
-        r"VNL_v\d+_\w+_(?P<start_year>\d{4})(?P<start_month>\d{2})-"
-        r"(?P<end_year>\d{4})(?P<end_month>\d{2})_global_\w+_c\d+"
+        r"VNL_v\d+_\w+_"
+        r"(?:(?P<start_year>\d{4})(?P<start_month>\d{2})-(?P<end_year>\d{4})(?P<end_month>\d{2})|(?P<year>\d{4}))"
+        r"_global_\w+_c\d+"
         r"\.(?P<variant>[a-z_]+)\.dat\.tif(?:\.gz)?$"
     )
 
@@ -212,19 +228,33 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
 
     # get_file_hash: inherited from DataSource (src/data/sources/base.py).
 
+    @staticmethod
+    def _viirs_match_year(match: "re.Match") -> Optional[int]:
+        """The canonical calendar year a `_VIIRS_FILENAME_RE` match names --
+        `year` for the bare-year naming (2013 on), `end_year` (only if the
+        period ends in December -- the canonical annual composite, not a
+        rolling/intermediate one) for the older month-range naming (2012).
+        `None` if neither applies (rolling period, wrong month, etc.)."""
+        if match.group("year"):
+            return int(match.group("year"))
+        if match.group("end_month") == "12":
+            return int(match.group("end_year"))
+        return None
+
     def filename_to_entrypoint(self, relative_path: str) -> Optional[Dict[str, Any]]:
         """`None` for DMSP/DVNL (old EOGDataSource: entrypoints not used).
-        VIIRS annual composites: the year is the filename's own `end_year`
-        group, same regex `_viirs_annual_listing()` matches against -- lets
-        `data summary` map an already-downloaded local file back to its year
-        without needing a live crawl (`_summarize_fetch()`'s
+        VIIRS annual composites: the year is `_viirs_match_year()`'s reading
+        of the filename, same regex `_viirs_annual_listing()` matches
+        against -- lets `data summary` map an already-downloaded local file
+        back to its year without needing a live crawl (`_summarize_fetch()`'s
         cached_required_files()-is-empty fallback)."""
         if self.source_type != "viirs_annual":
             return None
         match = self._VIIRS_FILENAME_RE.search(os.path.basename(relative_path))
         if not match:
             return None
-        return {"year": int(match.group("end_year"))}
+        year = self._viirs_match_year(match)
+        return {"year": year} if year is not None else None
 
     @property
     def has_entrypoints(self) -> bool:
@@ -257,37 +287,47 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         yield from self._viirs_annual_listing().get(year, [])
 
     def _viirs_annual_listing(self) -> Dict[int, List[Tuple[str, str]]]:
-        """One Selenium page load of `base_url` (`_CrawlerMixin.
+        """One Selenium page load per year subdirectory (`_CrawlerMixin.
         _list_single_directory()` -- non-recursive, no `file_extensions`
-        filter of its own), parsed and filtered here for `VIIRS_VARIANT`
-        entries whose period ends in December of their own start year (the
-        canonical annual composite -- excludes intermediate/rolling
-        reprocessing periods that live in the same directory, e.g.
-        `201204-201303`). Cached on `self` so every year in
-        `get_all_entrypoints()` shares one crawl/login instead of ten."""
+        filter of its own): `base_url` itself (`_list_single_directory()`
+        called there) lists only the year folders (`2012/`, `2013/`, ...,
+        confirmed live), each of which mixes the canonical one-per-calendar-
+        year composite with intermediate/rolling reprocessing periods (e.g.
+        a `201204-201303` entry alongside `201204-201212`) and, per file,
+        several product variants (average/cf_cvg/median/...) -- filtered
+        here for `VIIRS_VARIANT` entries whose period ends in December of
+        their own folder's year. All year directories are crawled in one
+        Selenium session/login and the combined result cached on `self` so
+        every year in `get_all_entrypoints()` shares that one login instead
+        of ten. Requests are throttled the same way `_CrawlerMixin.crawl()`
+        throttles its own recursive page loads (`time.sleep(1 + random())`
+        between requests), out of the same courtesy that crawler already
+        extends."""
         if self._viirs_listing_cache is not None:
             return self._viirs_listing_cache
 
         listing: Dict[int, List[Tuple[str, str]]] = {}
         start, end = self.VIIRS_YEAR_RANGE
+        base = self.base_url if self.base_url.endswith("/") else self.base_url + "/"
         self._init_selenium_driver()
         try:
-            entries = self._list_single_directory(self.base_url)
+            for i, year in enumerate(range(start, end + 1)):
+                if i > 0:
+                    time.sleep(1 + random.random())
+                year_url = urljoin(base, f"{year}/")
+                entries = self._list_single_directory(year_url)
+                logger.debug("EOG VIIRS %d: %s -- %d raw href(s)", year, year_url, len(entries))
+                for href, full_url in entries:
+                    match = self._VIIRS_FILENAME_RE.search(href)
+                    if not match:
+                        continue
+                    if match.group("variant") != self.VIIRS_VARIANT:
+                        continue
+                    if self._viirs_match_year(match) != year:
+                        continue
+                    listing.setdefault(year, []).append((href, full_url))
         finally:
             self._close_selenium_driver()
-
-        for href, full_url in entries:
-            match = self._VIIRS_FILENAME_RE.search(href)
-            if not match:
-                continue
-            if match.group("variant") != self.VIIRS_VARIANT:
-                continue
-            if match.group("end_month") != "12":
-                continue
-            year = int(match.group("end_year"))
-            if not (start <= year <= end):
-                continue
-            listing.setdefault(year, []).append((href, full_url))
 
         for year, matches in listing.items():
             if len(matches) > 1:

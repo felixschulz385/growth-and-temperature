@@ -408,19 +408,27 @@ def _verify_partitioned_table(
     not a single file -- so unlike `_verify_table`, this reads a bounded
     sample of *files*, not one file's own row sample.
 
-    Row-count and column presence come cheaply from each file's own parquet
-    footer metadata (no data read). The value-range check reads a stride
-    sample of up to 8 part files spread across the *entire* file list (same
-    "spread across the extent, bound the file count" spirit as
+    Column presence and the row-count sanity check both come from the same
+    bounded sample of up to 8 part files spread across the *entire* file
+    list (same "spread across the extent, bound the file count" spirit as
     `_stride_sample` -- one tile is not representative of a globally sparse
     or regionally-biased source any more than one chunk was for a zarr
-    store), same `range_vars` narrowing `_verify_zarr` supports.
+    store), same `range_vars` narrowing `_verify_zarr` supports. Deliberately
+    does *not* open every part file's footer for an exact total -- on a
+    tiled source with thousands of parts that turned a cache-miss
+    verification into the dominant cost of `data summary` (each footer read
+    is its own filesystem round-trip on network-mounted storage), for a
+    total-row-count figure this check only ever used to decide "zero vs.
+    nonzero". A sample that's entirely empty already fails the check below.
     """
     import numpy as np
     import pandas as pd
     import pyarrow.parquet as pq
 
-    schema_names = set(pq.ParquetFile(part_files[0]).schema_arrow.names)
+    n_pick = min(8, len(part_files))
+    picked = [part_files[i] for i in np.linspace(0, len(part_files) - 1, n_pick, dtype=int)]
+
+    schema_names = set(pq.ParquetFile(picked[0]).schema_arrow.names)
     if expected_vars:
         missing = [v for v in expected_vars if v not in schema_names]
         if missing:
@@ -431,12 +439,10 @@ def _verify_partitioned_table(
         if not check_cols:
             return VerificationResult(False, "no data columns found (only cell_id/year)")
 
-    total_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in part_files)
-    if total_rows == 0:
-        return VerificationResult(False, "table has zero rows across all part files")
+    sample_rows = sum(pq.ParquetFile(f).metadata.num_rows for f in picked)
+    if sample_rows == 0:
+        return VerificationResult(False, f"sampled part file(s) have zero rows ({len(picked)}/{len(part_files)} checked)")
 
-    n_pick = min(8, len(part_files))
-    picked = [part_files[i] for i in np.linspace(0, len(part_files) - 1, n_pick, dtype=int)]
     sample_df = pd.concat([pd.read_parquet(f, columns=check_cols) for f in picked], ignore_index=True)
 
     range_var_set = set(range_vars) if range_vars is not None else None
@@ -452,5 +458,5 @@ def _verify_partitioned_table(
     return VerificationResult(
         True,
         f"ok: {len(check_cols)} column(s) sampled across {len(picked)}/{len(part_files)} part file(s), "
-        f"{total_rows} row(s), values sane",
+        f"{sample_rows} row(s) in sample, values sane",
     )

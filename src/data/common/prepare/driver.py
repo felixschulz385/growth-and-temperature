@@ -20,7 +20,10 @@ unit's own status sidecar (`complete`/`retrying`/`unavailable`, via
 they live in) tracks per-unit progress across resumed runs; the output's
 `Completion.MARKER` sibling (`steps.mark_complete`) is only written once
 every declared unit for this output is `complete`, so a partially-filled
-zarr is never read as finished by a downstream consumer.
+zarr is never read as finished by a downstream consumer -- and only
+re-written on a run that actually processed at least one unit, so a no-op
+re-run over an already-complete output doesn't bump the marker's mtime and
+falsely invalidate `src.data.sources.verify`'s marker-mtime-keyed cache.
 """
 
 from __future__ import annotations
@@ -32,7 +35,7 @@ from typing import Any, Callable, Optional, Sequence
 
 from src.data.common import lockfile, statusfile, tiling
 from src.data.common.fetch.manifest import DEFAULT_MAX_ATTEMPTS, STATUS_UNAVAILABLE, clear_failure, record_failure
-from src.data.sources.steps import mark_complete
+from src.data.sources.steps import mark_complete, marker_path
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +151,7 @@ def run_tiled_prepare(
     try:
         with lockfile.held(lock_path):
             all_ok = True
+            any_processed = False
             for unit in units:
                 unit_status_path = statusfile.status_path(status_dir, unit.unit_id)
                 existing = statusfile.read(unit_status_path)
@@ -162,6 +166,7 @@ def run_tiled_prepare(
                     ):
                         continue
 
+                any_processed = True
                 try:
                     source_ds = raw_getter(unit.tile, unit.year)
                 except Exception as exc:  # noqa: BLE001 -- one unit's failure must not abort the whole run
@@ -197,7 +202,14 @@ def run_tiled_prepare(
                     record_failure(status_dir, unit.unit_id, "process_tile_region failed", max_attempts=max_attempts)
                     all_ok = False
 
-            if all_ok:
+            if all_ok and (any_processed or not os.path.exists(marker_path(output_path))):
+                # Only touch the marker's mtime when this run actually did
+                # something (or the marker is missing outright) -- an
+                # already-complete output that every unit skipped this run
+                # must not look "freshly written" to verify.py's
+                # marker-mtime fingerprint, or a no-op nightly re-run would
+                # bust the verification cache and force `data summary` to
+                # pay a full re-verify for output that hasn't changed.
                 mark_complete(output_path)
             return all_ok
     except lockfile.LockHeldError:

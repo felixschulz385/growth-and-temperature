@@ -35,7 +35,9 @@ AUTO_TRANSFER_DEFAULT_SOURCES = frozenset(
         "acag",
         "esacci",
         "ntl_harm",
-        "eog",
+        "eog_dmsp",
+        "eog_viirs",
+        "eog_dvnl",
     }
 )
 

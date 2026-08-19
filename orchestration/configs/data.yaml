@@ -278,6 +278,13 @@ sources:
     data_path: "eog/viirs"
     year_range: [2012, 2021]  # VIIRS data availability period
 
+    # EogSource.download_async (src/data/sources/eog/source.py) drives every
+    # download through one shared `self._driver` Selenium instance -- more
+    # than one concurrent download races on that same driver's init/close
+    # and in-flight download-directory polling.
+    download:
+      max_concurrent_downloads: 1
+
     # VIIRS radiance is continuous and can spike much higher over cities/flares.
     verification:
       expected_vars: ["viirs_annual"]
