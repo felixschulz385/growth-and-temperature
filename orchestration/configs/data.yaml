@@ -285,10 +285,11 @@ sources:
     download:
       max_concurrent_downloads: 1
 
-    # VIIRS radiance is continuous and can spike much higher over cities/flares.
+    # VIIRS radiance is continuous and can spike much higher over cities/flares
+    # (matches the ntl_harm bound below, which is derived from this source).
     verification:
       expected_vars: ["viirs_annual"]
-      value_range: [0, 1000]
+      value_range: [0, 2000]
 
   # EOG DVNL -- disabled for now, not run by the pipeline. Left commented
   # rather than deleted so it can be re-enabled by uncommenting
