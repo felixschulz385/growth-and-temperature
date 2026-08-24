@@ -581,6 +581,27 @@ def handle_run(args: argparse.Namespace) -> None:
     individual push failed to deliver.
     """
     setup_logging(args.log_level, debug=args.debug)
+
+    slurm_only_flags = [
+        ("--chain", getattr(args, "chain", False)),
+        ("--dry-run", getattr(args, "dry_run", False)),
+        ("--slurm-time", getattr(args, "slurm_time", None)),
+        ("--slurm-mem", getattr(args, "slurm_mem", None)),
+        ("--slurm-cpus", getattr(args, "slurm_cpus", None)),
+        ("--slurm-qos", getattr(args, "slurm_qos", None)),
+        ("--slurm-partition", getattr(args, "slurm_partition", None)),
+    ]
+    if not getattr(args, "slurm", False):
+        used = [name for name, val in slurm_only_flags if val]
+        if used:
+            logger.error("%s only make sense together with --slurm", ", ".join(used))
+            raise SystemExit(1)
+    if getattr(args, "slurm", False):
+        from src.cli.data.slurm import submit as submit_slurm
+
+        submit_slurm(args)
+        return
+
     step = PipelineStep(args.step)
     source, _ = _build(args, step)
     if args.override:

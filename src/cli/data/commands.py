@@ -139,6 +139,20 @@ def register(top_subparsers: argparse._SubParsersAction) -> None:
         "--dashboard-port", type=int, default=DEFAULT_DASHBOARD_PORT,
         help=f"Dask dashboard port (default: {DEFAULT_DASHBOARD_PORT})",
     )
+    # SLURM submission (src/cli/data/slurm.py) -- resource defaults come from
+    # orchestration/configs/slurm_jobs.yaml, overridable per invocation below.
+    run_p.add_argument("--slurm", action="store_true", help="Submit as a SLURM job (sbatch) instead of running locally")
+    run_p.add_argument(
+        "--chain", action="store_true",
+        help="With --slurm, submit this source's full dependency chain starting at --step "
+             "(sbatch --dependency=afterok), pulling in REQUIRES prerequisites",
+    )
+    run_p.add_argument("--slurm-time", help="Override this job's SLURM --time (default: slurm_jobs.yaml)")
+    run_p.add_argument("--slurm-mem", help="Override this job's SLURM --mem (default: slurm_jobs.yaml)")
+    run_p.add_argument("--slurm-cpus", type=int, help="Override this job's SLURM --cpus-per-task (default: slurm_jobs.yaml)")
+    run_p.add_argument("--slurm-qos", help="Override this job's SLURM --qos (default: slurm_jobs.yaml)")
+    run_p.add_argument("--slurm-partition", help="Override this job's SLURM --partition (default: slurm_jobs.yaml)")
+    run_p.add_argument("--dry-run", action="store_true", help="With --slurm, print the sbatch command(s) instead of submitting")
     run_p.set_defaults(func=handle_run)
 
     # ── transfer ───────────────────────────────────────────────────────────

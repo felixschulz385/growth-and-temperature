@@ -1,35 +1,31 @@
-# Parameter table for orchestration/slurm/generate_slurm_scripts.py.
+# Per-source SLURM resource defaults for `data run --slurm` (src/cli/data/slurm.py).
 #
-# docs/design/09-integrated-pipeline.md §9: `stage`/`subsource` are retired
-# in favour of `step` (fetch|prepare|grid, matching the new `data run`
-# CLI) and per-source ids (the misc split gives osm/gadm/country_classifications
-# their own entries instead of `source: misc, subsource: ...`). `host: egress`
-# (default `slurm`) folds the previously-hand-maintained
-# orchestration/scripts/modis-ingest-annual.sh into this generator -- MODIS's
-# FETCH step needs outbound internet egress to Planetary Computer, which
-# scicore's SLURM compute nodes may not have, so it runs wherever that access
-# exists and pushes results via `transfer_after`.
+# `data run --source X --step Y --slurm` looks up the (source, step) entry
+# below for its #SBATCH resources, submitting via `sbatch --wrap="..."`
+# (docs/design/09-integrated-pipeline.md §9: `step` is fetch|prepare|grid,
+# matching the `data run` CLI). Any of `--slurm-time`/`--slurm-mem`/
+# `--slurm-cpus`/`--slurm-qos`/`--slurm-partition` overrides that entry's
+# value for a single invocation. `--chain` walks a source's own
+# fetch->prepare->grid order plus `REQUIRES` prerequisites
+# (src/data/sources/registry.py) to submit a whole dependency chain with
+# `sbatch --dependency=afterok:...`, the same DAG logic the old
+# `submit_chain.py` used, now folded into `src/cli/data/slurm.py`.
 #
-# To add/change a job, edit here and regenerate:
-#   python orchestration/slurm/generate_slurm_scripts.py
-# To check for drift (e.g. a generated .sh got hand-edited) without writing:
-#   python orchestration/slurm/generate_slurm_scripts.py --check
-#
-# Resource fields (time/qos/partition/cpus/mem/mem_fraction) are transcribed
-# from each script's prior committed value -- they encode real per-source
-# tuning (e.g. glass_modis's 7-day prepare job, berman_mining's bigmem/30min
-# job) and were preserved exactly, not guessed.
+# Resource fields (time/qos/partition/cpus/mem/mem_fraction) encode real
+# per-source tuning (e.g. glass_modis's 7-day prepare job, berman_mining's
+# bigmem/30min job) transcribed from this table's predecessor
+# (orchestration/slurm/jobs.yaml) -- preserved exactly, not guessed.
 #
 # FETCH steps are deliberately not covered here -- no download-family SLURM
-# script has ever existed in this repo (fetch/download runs manually), and
-# this refactor does not introduce one.
-#
-# Scripts NOT covered here (left as hand-maintained, standalone files):
-# assemble_create.sh, assemble_update.sh, analysis.sh, compress.sh,
-# rechunk-zarr.sh, validate-backbone-subset.sh, migrate-legacy-layout.sh,
-# clean-prepare-scratch.sh.
-# demean_modis.sh is dead (docs/design/04-ingest.md §6's `assemble demean`
-# finding) and removed in migration step 10's cutover, not generated here.
+# job has ever existed in this repo (fetch/download runs manually or, for
+# MODIS, via the hand-maintained orchestration/scripts/modis-fetch.sh on an
+# egress-capable host -- see that script and docs/design/08-hpc-transfer.md).
+
+cluster:
+  conda_hook: /scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda
+  python_bin: /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python
+  project_root: /scicore/home/meiera/schulz0022/projects/growth-and-temperature
+  scratch_prefix: /scratch/schulz0022
 
 jobs:
   # acag's PREPARE now does the tiled reprojection work directly (the
@@ -226,14 +222,8 @@ jobs:
     temp_dir_prefix: snl_mining
     extra_args: ["--override"]
 
-  - name: modis-fetch
-    log_key: modis
-    source: modis
-    step: fetch
-    host: egress
-    simple: true
-    transfer_after: fetch
-
+  # modis's FETCH step is not a SLURM job -- see this file's header comment
+  # and orchestration/scripts/modis-fetch.sh.
   - name: modis-prepare
     log_key: modis
     source: modis
@@ -249,8 +239,8 @@ jobs:
   # tile/year subset -- see its own comment there) resolves to ModisSource
   # too but never had its own PREPARE job. FETCH is unaffected -- it's the
   # same egress/manual `data run --source modis_robustness_11a1 --step
-  # fetch` path modis-fetch.sh documents, just not SLURM-generated (no
-  # source-specific script needed there, unlike PREPARE). Resources copied
+  # fetch` path modis-fetch.sh documents, just no PREPARE entry of its own
+  # here until now. Resources copied
   # from modis-prepare as a conservative starting point (not transcribed
   # from a prior committed script); the robustness arm is a handful of
   # tiles/years, so this is likely over-provisioned and can be right-sized

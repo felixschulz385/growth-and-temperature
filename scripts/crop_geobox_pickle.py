@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Crop a pickled GeoBox to a small window.
 
-Extracted from orchestration/slurm/validate-hard-gate-acag.sh's original
+Extracted from orchestration/scripts/validate-hard-gate-acag.sh's original
 inline snippet once a second hard-gate pilot (GADM) needed the same crop
 logic -- one shared, tested implementation instead of two copies that could
 silently drift (the exact class of bug jobs.yaml's consolidation fixed

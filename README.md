@@ -64,10 +64,15 @@ python run.py assemble create --config orchestration/configs/data.yaml --source 
 
 ### HPC Processing
 ```bash
-# Submit SLURM jobs for large-scale processing
-sbatch orchestration/slurm/glass-modis-preprocess-annual.sh
-sbatch orchestration/slurm/eog-dvnl-preprocess-tabular.sh
-sbatch orchestration/slurm/assemble_create.sh
+# Submit a single (source, step) as a SLURM job (resource defaults from
+# orchestration/configs/slurm_jobs.yaml, overridable with --slurm-time/-mem/-cpus/-qos/-partition)
+python run.py data run --source glass_modis --step prepare --slurm
+
+# Submit a source's full dependency chain (REQUIRES prerequisites included)
+python run.py data run --source glass_modis --step prepare --slurm --chain
+
+# Preview the sbatch command(s) without submitting
+python run.py data run --source glass_modis --step prepare --slurm --chain --dry-run
 ```
 
 ## 🏗️ System Architecture
@@ -79,7 +84,7 @@ sbatch orchestration/slurm/assemble_create.sh
 
 ### Key Features
 - **Unified Interface**: Single `run.py` script for all operations
-- **SLURM Integration**: Pre-configured HPC job scripts
+- **SLURM Integration**: `data run --slurm` submits jobs directly (`orchestration/configs/slurm_jobs.yaml` resource defaults)
 - **Scalable Processing**: Dask-based parallel processing
 - **Data Standards**: Chunked Zarr format for efficient I/O
 
