@@ -72,6 +72,7 @@ class GlassAvhrrSource(DataSource):
 
     ID = "glass_avhrr"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    DEFAULT_TRANSFER_MODE = "auto"
 
     BUCKET_NAME = "growthandheat"
     AVHRR_PATH_PREFIX = "glass/LST/AVHRR/0.05D/"

@@ -116,6 +116,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     ID = "eog"
     ALIASES = ("eog_dmsp", "eog_viirs", "eog_dvnl")
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    DEFAULT_TRANSFER_MODE = "auto"
 
     DATA_SOURCE_NAME = "eog"  # matches old EOGDataSource: literally "eog", not per-alias
     STATIC_ENTRYPOINTS = True  # get_all_entrypoints() below is VIIRS_YEAR_RANGE-derived, no network call

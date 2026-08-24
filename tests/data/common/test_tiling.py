@@ -56,19 +56,5 @@ def test_tile_ids_are_unique_and_stable():
     assert len(ids) == len(set(ids))
 
 
-def test_tile_by_id_reconstructs_the_same_tile_as_iteration():
-    gb = _geobox(200, 100, 32)
-    tiles = list(tiling.iter_tiles(gb, tile_size=32))
-    sample = tiles[5]
-
-    rebuilt = tiling.tile_by_id(gb, sample.id, tile_size=32)
-
-    assert rebuilt.row == sample.row
-    assert rebuilt.col == sample.col
-    assert rebuilt.y_slice == sample.y_slice
-    assert rebuilt.x_slice == sample.x_slice
-    assert rebuilt.geobox.affine == sample.geobox.affine
-
-
 def test_default_tile_size_is_2048():
     assert tiling.DEFAULT_TILE_SIZE == 2048

@@ -9,6 +9,7 @@ import time
 import logging
 import subprocess
 import platform
+import shlex
 import shutil
 from pathlib import Path
 from typing import List, Dict, Any, Union, Tuple, Optional
@@ -167,6 +168,36 @@ class HPCClient:
             logger.error(f"Error checking if file exists: {e}")
             return False
 
+    def _check_paths(self, remote_paths: List[str], test_flag: str, *, log_label: str) -> Dict[str, bool]:
+        if not remote_paths:
+            return {}
+
+        resolved = {}
+        for path in remote_paths:
+            if not path.startswith("/") and self.base_path:
+                resolved[path] = f"{self.base_path}/{path}"
+            else:
+                resolved[path] = path
+
+        script = " ; ".join(
+            f"if [ {test_flag} {shlex.quote(full)} ]; then echo 'EXISTS:{i}'; else echo 'MISSING:{i}'; fi"
+            for i, full in enumerate(resolved.values())
+        )
+        success, stdout, stderr = self.execute_command(script)
+        if not success:
+            logger.debug(f"Command failed to check {log_label} existence: {stderr}")
+            return {path: False for path in remote_paths}
+
+        orig_paths = list(resolved.keys())
+        results = {path: False for path in remote_paths}
+        for line in stdout.splitlines():
+            line = line.strip()
+            if line.startswith("EXISTS:"):
+                results[orig_paths[int(line[len("EXISTS:"):])]] = True
+            elif line.startswith("MISSING:"):
+                results[orig_paths[int(line[len("MISSING:"):])]] = False
+        return results
+
     def check_files_exist(self, remote_paths: List[str]) -> Dict[str, bool]:
         """Check existence of multiple remote files in one round trip.
 
@@ -177,33 +208,7 @@ class HPCClient:
         repeated `check_file_exists` calls (each paying its own SSH
         handshake) should use this instead.
         """
-        if not remote_paths:
-            return {}
-
-        resolved = {}
-        for path in remote_paths:
-            if not path.startswith("/") and self.base_path:
-                resolved[path] = f"{self.base_path}/{path}"
-            else:
-                resolved[path] = path
-
-        script = " ; ".join(
-            f"if [ -f '{full}' ]; then echo 'EXISTS:{orig}'; else echo 'MISSING:{orig}'; fi"
-            for orig, full in resolved.items()
-        )
-        success, stdout, stderr = self.execute_command(script)
-        if not success:
-            logger.debug(f"Command failed to check file existence: {stderr}")
-            return {path: False for path in remote_paths}
-
-        results = {path: False for path in remote_paths}
-        for line in stdout.splitlines():
-            line = line.strip()
-            if line.startswith("EXISTS:"):
-                results[line[len("EXISTS:"):]] = True
-            elif line.startswith("MISSING:"):
-                results[line[len("MISSING:"):]] = False
-        return results
+        return self._check_paths(remote_paths, "-f", log_label="file")
 
     def check_paths_exist(self, remote_paths: List[str]) -> Dict[str, bool]:
         """Existence check for a mix of files and directories, in one round
@@ -211,33 +216,7 @@ class HPCClient:
         an already-pushed Zarr store) as missing even when it's fully
         present, so callers that need to skip already-transferred
         directory-shaped output must use this (`[ -e ... ]`) instead."""
-        if not remote_paths:
-            return {}
-
-        resolved = {}
-        for path in remote_paths:
-            if not path.startswith("/") and self.base_path:
-                resolved[path] = f"{self.base_path}/{path}"
-            else:
-                resolved[path] = path
-
-        script = " ; ".join(
-            f"if [ -e '{full}' ]; then echo 'EXISTS:{orig}'; else echo 'MISSING:{orig}'; fi"
-            for orig, full in resolved.items()
-        )
-        success, stdout, stderr = self.execute_command(script)
-        if not success:
-            logger.debug(f"Command failed to check path existence: {stderr}")
-            return {path: False for path in remote_paths}
-
-        results = {path: False for path in remote_paths}
-        for line in stdout.splitlines():
-            line = line.strip()
-            if line.startswith("EXISTS:"):
-                results[line[len("EXISTS:"):]] = True
-            elif line.startswith("MISSING:"):
-                results[line[len("MISSING:"):]] = False
-        return results
+        return self._check_paths(remote_paths, "-e", log_label="path")
 
     def get_file_info(self, remote_path: str) -> Dict[str, Any]:
         """

@@ -109,6 +109,10 @@ def render_wrap_command(job: dict, cluster: dict, args: argparse.Namespace) -> s
     ]
     if args.override:
         run_parts.append("--override")
+    if getattr(args, "years", None):
+        run_parts.append(f"--years {args.years[0]} {args.years[1]}")
+    if getattr(args, "keys", None):
+        run_parts.append("--key " + " ".join(shlex.quote(k) for k in args.keys))
     run_parts.extend(job.get("extra_args", []))
     if not simple:
         run_parts += [
@@ -165,7 +169,11 @@ def _submit_one(job: dict, cluster: dict, args: argparse.Namespace, *, deps: lis
         return f"<{job['name']}-id>"
 
     os.makedirs(log_dir, exist_ok=True)
-    result = subprocess.run(argv, capture_output=True, text=True, cwd=REPO_ROOT, check=True)
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, cwd=REPO_ROOT, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: sbatch failed for {job['name']}: {e.stderr.strip()}", file=sys.stderr)
+        raise SystemExit(1) from e
     job_id = result.stdout.strip()
     suffix = f" (deps: {deps})" if deps else ""
     print(f"Submitted {job['name']} -> job {job_id}{suffix}")
@@ -224,9 +232,13 @@ def job_dependencies(job: dict, chain: list[dict], job_ids: dict[str, str]) -> l
     if prior_same_source and prior_same_source[-1]["name"] in job_ids:
         deps.append(job_ids[prior_same_source[-1]["name"]])
 
+    by_source_step = _jobs_by_source_step(chain)
     job_step = PipelineStep(job["step"])
     for requires_id, requires_step in registry.resolve(job["source"]).requires_for(job_step):
-        requires_job_name = f"{requires_id}-{requires_step.value}"
+        requires_job = by_source_step.get((requires_id, requires_step.value))
+        if requires_job is None:
+            continue
+        requires_job_name = requires_job["name"]
         if requires_job_name in job_ids and job_ids[requires_job_name] not in deps:
             deps.append(job_ids[requires_job_name])
 
@@ -253,7 +265,16 @@ def submit(args: argparse.Namespace) -> None:
         for job in chain:
             deps = job_dependencies(job, chain, job_ids)
             resolved = _apply_resource_overrides(job, args) if (job["source"], job["step"]) == (args.source, args.step) else job
-            job_ids[job["name"]] = _submit_one(resolved, cluster, args, deps=deps, dry_run=args.dry_run)
+            try:
+                job_ids[job["name"]] = _submit_one(resolved, cluster, args, deps=deps, dry_run=args.dry_run)
+            except SystemExit:
+                if job_ids:
+                    print(
+                        f"NOTE: {len(job_ids)} earlier job(s) in this chain were already submitted "
+                        f"and are unaffected: {', '.join(job_ids.values())}",
+                        file=sys.stderr,
+                    )
+                raise
         return
 
     job = find_job(jobs, args.source, args.step)

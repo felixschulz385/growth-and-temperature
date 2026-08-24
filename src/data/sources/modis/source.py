@@ -142,6 +142,7 @@ class ModisSource(DataSource):
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    DEFAULT_TRANSFER_MODE = "auto"
     #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
     PROCESSING_VERSION = "1-tiled"
 
@@ -295,8 +296,8 @@ class ModisSource(DataSource):
         from src.data.common.fetch.manifest import resolve_fetch_listing
 
         stage1_root = self.output_root(PipelineStep.FETCH)
-        # `transfer_mode=auto` (default for MODIS -- src.data.common.fetch
-        # .transfer_mode.AUTO_TRANSFER_DEFAULT_SOURCES): each tile-year's
+        # `transfer_mode=auto` (default for MODIS -- ModisSource
+        # .DEFAULT_TRANSFER_MODE above): each tile-year's
         # local .tif gets pushed to HPC right after FETCH and isn't kept
         # around indefinitely, so a bare local os.path.exists() would make
         # an already-pushed, locally-pruned tile look outstanding forever.

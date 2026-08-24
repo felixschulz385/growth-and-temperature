@@ -56,27 +56,44 @@ def _is_stale(info: dict, staleness_seconds: float) -> bool:
     return age > staleness_seconds
 
 
+def _write_payload(path: str) -> None:
+    payload = {"pid": os.getpid(), "hostname": socket.gethostname(), "acquired_at": datetime.now(timezone.utc).isoformat()}
+    fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        json.dump(payload, fh)
+
+
 def acquire(path: str, *, staleness_seconds: float = DEFAULT_STALENESS_SECONDS) -> None:
     """Claim *path* as this process's lock, stealing it first if it's stale.
-    Raises `LockHeldError` if another live, non-stale process holds it."""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    if os.path.exists(path):
-        try:
-            with open(path, encoding="utf-8") as fh:
-                info = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            info = {}
-        if not _is_stale(info, staleness_seconds):
-            raise LockHeldError(
-                f"{path} is held by pid={info.get('pid')} on host={info.get('hostname')} "
-                f"since {info.get('acquired_at')}"
-            )
+    Raises `LockHeldError` if another live, non-stale process holds it.
 
-    payload = {"pid": os.getpid(), "hostname": socket.gethostname(), "acquired_at": datetime.now(timezone.utc).isoformat()}
-    tmp_path = path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as fh:
-        json.dump(payload, fh)
-    os.replace(tmp_path, path)
+    Uses O_CREAT|O_EXCL for the actual claim so two processes racing to
+    acquire a not-yet-existing lock can't both succeed; only the (much
+    narrower) steal-a-stale-lock path still has a check-then-write gap.
+    """
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        _write_payload(path)
+        return
+    except FileExistsError:
+        pass
+
+    try:
+        with open(path, encoding="utf-8") as fh:
+            info = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        info = {}
+    if not _is_stale(info, staleness_seconds):
+        raise LockHeldError(
+            f"{path} is held by pid={info.get('pid')} on host={info.get('hostname')} "
+            f"since {info.get('acquired_at')}"
+        )
+
+    release(path)
+    try:
+        _write_payload(path)
+    except FileExistsError as e:
+        raise LockHeldError(f"{path} was re-acquired by another process while stealing a stale lock") from e
 
 
 def release(path: str) -> None:

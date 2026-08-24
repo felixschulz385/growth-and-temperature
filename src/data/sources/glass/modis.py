@@ -258,6 +258,7 @@ class GlassModisSource(DataSource):
 
     ID = "glass_modis"
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    DEFAULT_TRANSFER_MODE = "auto"
 
     DATA_SOURCE_NAME = "glass"
 

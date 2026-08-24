@@ -54,6 +54,7 @@ class NtlHarmSource(DataSource):
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "ntl_harm"
+    DEFAULT_TRANSFER_MODE = "auto"
     has_entrypoints = True
     STATIC_ENTRYPOINTS = True  # get_all_entrypoints() below is cfg.year_range-derived, no network call
     RAW_LISTING_DEPTH = 1  # flat filename, see list_remote_files() below
