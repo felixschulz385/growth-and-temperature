@@ -7,6 +7,7 @@ import os
 import numpy as np
 import pytest
 import rasterio
+import yaml
 from odc.geo.geobox import GeoBox
 from rasterio.transform import from_bounds
 
@@ -105,6 +106,60 @@ def test_execute_prepare_handles_slightly_misaligned_adjacent_tiles(tmp_path, mo
     assert len(parts) == 4
     df = pd.concat(pd.read_parquet(p) for p in parts)
     assert np.all(np.isfinite(df["lst_night_mean"].values))
+
+
+def test_clamped_bbox_avoids_antimeridian_wrap_at_real_grid_corner_tile():
+    """Real production failure (2026-08-25): `GeoBox.from_bbox` pixel-snaps
+    a requested bbox's edges slightly *outside* the mathematically valid
+    domain of a periodic (longitude-wrapping) CRS like EASE6933 -- the real
+    canonical grid's own left edge sits ~470m past the true minimum x. Left
+    unclamped, reprojecting a grid-corner tile's padded bbox to MODIS's
+    sinusoidal CRS silently wraps to the opposite side of the world instead
+    of erroring: confirmed live, tile `0000_0000`'s naive bbox matched
+    104 of 282 fetched land tiles (spanning nearly the whole sinusoidal
+    domain) instead of a geographically-plausible handful. This exercises
+    the real canonical grid and the exact clamping arithmetic
+    `ModisSource._execute_prepare`'s `raw_getter` uses, without running a
+    full (slow) PREPARE pass -- docs/design/13-prepare-memory-parallelism.md.
+    """
+    from odc.geo.geom import box
+
+    from src.data.common.geobox.canonical import canonical_ease_geobox
+    from src.data.common import tiling
+    from src.data.sources.modis import tiles as modis_util
+
+    target_geobox = canonical_ease_geobox()
+    tile = list(tiling.iter_tiles(target_geobox, tile_size=2048))[0]
+    assert tile.id == "0000_0000"
+
+    padded_bbox = tile.geobox.pad(32, 32).extent.boundingbox
+    naive_sinu = tile.geobox.pad(32, 32).extent.to_crs(modis_util.SINUSOIDAL_PROJ4).boundingbox
+    naive_width_km = (naive_sinu.right - naive_sinu.left) / 1000
+    assert naive_width_km > 20_000  # reproduces the bug: spans most of the sinusoidal domain
+
+    grid_bbox = target_geobox.extent.boundingbox
+    margin = 2 * abs(target_geobox.resolution.x)
+    clamped_left = max(padded_bbox.left, grid_bbox.left + margin)
+    clamped_bottom = max(padded_bbox.bottom, grid_bbox.bottom + margin)
+    clamped_right = min(padded_bbox.right, grid_bbox.right - margin)
+    clamped_top = min(padded_bbox.top, grid_bbox.top - margin)
+    assert clamped_left < clamped_right and clamped_bottom < clamped_top
+
+    clamped = box(clamped_left, clamped_bottom, clamped_right, clamped_top, crs=tile.geobox.crs)
+    fixed_sinu = clamped.to_crs(modis_util.SINUSOIDAL_PROJ4).boundingbox
+    fixed_width_km = (fixed_sinu.right - fixed_sinu.left) / 1000
+    assert fixed_width_km < 10_000  # a geographically plausible width for one output tile
+
+    with open("orchestration/configs/data.yaml") as f:
+        land_tiles = yaml.safe_load(f)["sources"]["modis"]["land_tiles"]
+    overlap_count = sum(
+        1
+        for t in land_tiles
+        for h, v in [(int(t[1:3]), int(t[4:6]))]
+        for x0, y0, x1, y1 in [modis_util.tile_bounds_m(h, v)]
+        if x1 >= fixed_sinu.left and x0 <= fixed_sinu.right and y1 >= fixed_sinu.bottom and y0 <= fixed_sinu.top
+    )
+    assert overlap_count < 30  # was 104/282 before the fix
 
 
 def test_execute_prepare_reuses_one_years_mosaic_at_a_time(tmp_path, monkeypatch):

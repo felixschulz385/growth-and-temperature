@@ -674,6 +674,7 @@ class ModisSource(DataSource):
         return ds.rio.write_crs(da.rio.crs)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
+        from odc.geo.geom import box
         from rioxarray.merge import merge_datasets
 
         from src.data.common.geobox import get_or_create_canonical_geobox
@@ -761,7 +762,40 @@ class ModisSource(DataSource):
                 logger.error("No stage-1 tiles for year %d at %s", year, os.path.join(stage1_root, str(year)))
                 return None
 
-            bbox = tile.geobox.pad(32, 32).extent.to_crs(source_crs).boundingbox
+            # Clamp the padded tile's bbox to the canonical grid's own
+            # valid extent (with a small resolution-scaled safety margin)
+            # before reprojecting to the source CRS. `GeoBox.from_bbox`
+            # pixel-snaps the grid's own edges slightly *outside* the
+            # mathematically valid domain of a periodic (longitude-
+            # wrapping) CRS like EASE6933 (confirmed empirically: ~470m
+            # past the true edge for the canonical grid) -- and
+            # reprojecting an out-of-domain coordinate on such a CRS
+            # silently wraps to the opposite side of the world instead of
+            # erroring. Left unclamped, an edge-column/edge-row tile's
+            # padded bbox, naively reprojected, spans nearly the WHOLE
+            # sinusoidal domain instead of the narrow band actually
+            # covered (confirmed: matched 104/282 fetched tiles instead of
+            # ~14 -- docs/design/13-prepare-memory-parallelism.md). Only
+            # ever clamps the grid's own 2 edge columns/rows; every
+            # interior tile's padded bbox already sits well inside the
+            # valid domain, so this is a no-op there.
+            grid_bbox = target_geobox.extent.boundingbox
+            margin = 2 * abs(target_geobox.resolution.x)
+            padded_bbox = tile.geobox.pad(32, 32).extent.boundingbox
+            clamped_left = max(padded_bbox.left, grid_bbox.left + margin)
+            clamped_bottom = max(padded_bbox.bottom, grid_bbox.bottom + margin)
+            clamped_right = min(padded_bbox.right, grid_bbox.right - margin)
+            clamped_top = min(padded_bbox.top, grid_bbox.top - margin)
+            # Fall back to the unclamped bbox if the margin would degenerate
+            # it (e.g. a target grid far smaller than the margin itself,
+            # only ever seen in tests against a synthetic tiny grid) --
+            # clamping is purely a defensive no-op for interior tiles
+            # anyway, never required for correctness there.
+            if clamped_left < clamped_right and clamped_bottom < clamped_top:
+                extent = box(clamped_left, clamped_bottom, clamped_right, clamped_top, crs=tile.geobox.crs)
+            else:
+                extent = tile.geobox.pad(32, 32).extent
+            bbox = extent.to_crs(source_crs).boundingbox
             overlapping = [
                 path
                 for path, bounds in index

@@ -111,3 +111,36 @@ def test_execute_prepare_handles_slightly_misaligned_adjacent_tiles(tmp_path, mo
     assert len(parts) == 4
     df = pd.concat(pd.read_parquet(p) for p in parts)
     assert np.all(np.isfinite(df["mean"].values))
+
+
+def test_clamped_bbox_avoids_antimeridian_wrap_at_real_grid_corner_tile():
+    """Same real production failure as ModisSource's identical test
+    (tests/data/sources/modis/test_modis_prepare.py) -- `GlassModisSource
+    ._execute_prepare`'s `raw_getter` uses the identical clamping logic, so
+    this pins that this source's own wiring of the fix behaves the same
+    way against the real canonical grid, not just the shared math
+    (docs/design/13-prepare-memory-parallelism.md)."""
+    from odc.geo.geom import box
+
+    from src.data.common.geobox.canonical import canonical_ease_geobox
+    from src.data.common import tiling
+    from src.data.sources.modis import tiles as modis_util
+
+    target_geobox = canonical_ease_geobox()
+    tile = list(tiling.iter_tiles(target_geobox, tile_size=2048))[0]
+
+    padded_bbox = tile.geobox.pad(32, 32).extent.boundingbox
+    naive_sinu = tile.geobox.pad(32, 32).extent.to_crs(modis_util.SINUSOIDAL_PROJ4).boundingbox
+    assert (naive_sinu.right - naive_sinu.left) / 1000 > 20_000
+
+    grid_bbox = target_geobox.extent.boundingbox
+    margin = 2 * abs(target_geobox.resolution.x)
+    clamped_left = max(padded_bbox.left, grid_bbox.left + margin)
+    clamped_bottom = max(padded_bbox.bottom, grid_bbox.bottom + margin)
+    clamped_right = min(padded_bbox.right, grid_bbox.right - margin)
+    clamped_top = min(padded_bbox.top, grid_bbox.top - margin)
+    assert clamped_left < clamped_right and clamped_bottom < clamped_top
+
+    clamped = box(clamped_left, clamped_bottom, clamped_right, clamped_top, crs=tile.geobox.crs)
+    fixed_sinu = clamped.to_crs(modis_util.SINUSOIDAL_PROJ4).boundingbox
+    assert (fixed_sinu.right - fixed_sinu.left) / 1000 < 10_000

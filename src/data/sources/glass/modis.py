@@ -834,6 +834,7 @@ class GlassModisSource(DataSource):
         return ds.rio.write_crs(da_.rio.crs)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
+        from odc.geo.geom import box
         from rioxarray.merge import merge_datasets
 
         from src.data.common.geobox import get_target_geobox
@@ -900,7 +901,23 @@ class GlassModisSource(DataSource):
                 logger.error("No stage-1 tiles for year %d at %s", year, os.path.join(stage1_root, str(year)))
                 return None
 
-            bbox = tile.geobox.pad(32, 32).extent.to_crs(source_crs).boundingbox
+            # Clamp the padded tile's bbox to the target grid's own valid
+            # extent before reprojecting to the source CRS -- see
+            # ModisSource._execute_prepare's identical comment
+            # (src/data/sources/modis/source.py) for the full rationale
+            # (docs/design/13-prepare-memory-parallelism.md).
+            grid_bbox = target_geobox.extent.boundingbox
+            margin = 2 * abs(target_geobox.resolution.x)
+            padded_bbox = tile.geobox.pad(32, 32).extent.boundingbox
+            clamped_left = max(padded_bbox.left, grid_bbox.left + margin)
+            clamped_bottom = max(padded_bbox.bottom, grid_bbox.bottom + margin)
+            clamped_right = min(padded_bbox.right, grid_bbox.right - margin)
+            clamped_top = min(padded_bbox.top, grid_bbox.top - margin)
+            if clamped_left < clamped_right and clamped_bottom < clamped_top:
+                extent = box(clamped_left, clamped_bottom, clamped_right, clamped_top, crs=tile.geobox.crs)
+            else:
+                extent = tile.geobox.pad(32, 32).extent
+            bbox = extent.to_crs(source_crs).boundingbox
             overlapping = [
                 path
                 for path, bounds in index

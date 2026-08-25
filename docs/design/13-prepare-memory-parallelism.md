@@ -210,6 +210,49 @@ patterns worth checking across every PREPARE-capable source, not just MODIS:
       overlapping bounds and asserting `_execute_prepare` succeeds with finite output (would have
       raised under the old `combine_by_coords` path). Full `tests/data` suite: 734 passed.
 
+## Resolved (continued, 7)
+
+- [x] **MODIS / GLASS-MODIS: canonical-grid-edge tile bbox silently wraps the antimeridian, matching
+      ~100+ irrelevant source tiles instead of a handful — fixed (2026-08-25).** Surfaced immediately
+      after "Resolved (continued, 6)" shipped, via the new `DEBUG` logging (`driver.py`'s per-unit
+      trace lines) added to diagnose an apparently-stalled real run: `tile 0000_0000 year 2002 overlaps
+      104 source tile(s)` — the grid's corner tile, instead of the expected handful. Root cause (found
+      via direct `pyproj`/`odc.geo` point-transform experiments, not guessing): `GeoBox.from_bbox`
+      pixel-snaps a requested bbox's edges to whole pixels, and for the canonical EASE6933 grid this
+      pushes the grid's own left/bottom edges ~470m *past* the mathematically valid domain of this
+      periodic (longitude-wrapping) CRS (confirmed: `x=-17,367,530.445` reprojects to exactly
+      `lon=-180.000` at every latitude tested; `x=-17,368,000`, only 470m more negative, reprojects to
+      `lon=+179.995` — flips to the *opposite* side of the world instead of erroring). Every grid-edge
+      canonical tile's padded bbox (`tile.geobox.pad(32, 32)`) therefore reprojects to a sinusoidal
+      bbox spanning nearly the whole domain instead of the true ~1700-2100km-wide band actually
+      covered, matching essentially every fetched tile in the overlap filter (some are legitimately
+      false positives from the buggy near-global span; `rioxarray.merge`/`sel_bbox` would still have
+      produced correct final pixel values, since GDAL's warp ignores irrelevant source pixels — but at
+      severe, likely-OOM-risking cost: `merge_datasets` builds its output canvas from the union of
+      *all* matched tiles' bounds, and for 104 tiles scattered across most of the sinusoidal domain
+      that canvas approaches global-raster size).
+      Two false starts before finding the real fix, worth recording: (1) `odc.geo.geom.clip_lon180`/
+      `chop_along_antimeridian` — both designed for numeric-noise "a point moved just past ±180" cases,
+      no-ops here since the tile's true footprint (once wrapped) is genuinely, not just numerically,
+      on the far side; (2) clamping to `target_geobox.extent.boundingbox` (the *discretized*, already
+      pixel-snapped grid edge) — still wraps, since the discretized edge is itself already past the
+      true valid domain; the fix needed a small *additional* safety margin inward from the discretized
+      edge, not just clamping to it.
+      **Fix**: in `raw_getter`, clamp the padded tile's bbox to `target_geobox.extent.boundingbox`
+      with a `2 * abs(resolution.x)`-sized inward safety margin *before* reprojecting to the source
+      CRS — cheap, general (works for any target grid, not MODIS/EASE-specific), and a no-op for every
+      interior tile (only the grid's 2 edge columns/rows ever get clamped). Falls back to the unclamped
+      bbox if the margin would degenerate it entirely (only possible against a target grid far smaller
+      than the margin itself — seen only in one test against a synthetic tiny grid, never in production
+      scale). Verified: corner tile's overlap count dropped from 104/282 to 14/282 (last-column tile:
+      to 16/282) — both geographically plausible given the tile spans multiple latitude rows near a
+      grid edge.
+      New tests: `test_modis_prepare.py`/`test_glass_modis_prepare.py`'s
+      `test_clamped_bbox_avoids_antimeridian_wrap_at_real_grid_corner_tile` — exercise the real
+      canonical grid's actual pixel-snap discrepancy directly (fast, pure geometry math; a full
+      `_execute_prepare` round-trip against the real 119-tile grid was also verified to catch the bug
+      but takes minutes, too slow for the suite). Full `tests/data` suite: 736 passed.
+
 ## Outstanding
 
 - [ ] **MODIS FETCH: per-tile grid alignment (deferred root-cause fix for "Resolved (continued, 6)").**
