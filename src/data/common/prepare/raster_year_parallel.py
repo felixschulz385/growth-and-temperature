@@ -56,6 +56,16 @@ from src.data.sources.steps import mark_complete, marker_path
 
 logger = logging.getLogger(__name__)
 
+# GDAL's own block cache defaults to 5% of the *node's* total RAM, computed
+# independently by each worker process, invisible to Python's/Dask's memory
+# tracker -- surfaces in worker logs as unbounded "unmanaged memory" growth
+# over a run's many sequential raster/netCDF opens, not a Python-heap leak.
+# Confirmed as the real cause of MODIS's worker-restart-thrashing on a live
+# SLURM run after `modis/parallel_prepare.py` went into production
+# (docs/design/13-prepare-memory-parallelism.md); bounding it here too since
+# these four sources open rasters/netCDFs from worker processes the same way.
+os.environ.setdefault("GDAL_CACHEMAX", "512")
+
 
 @functools.lru_cache(maxsize=4)
 def _load_year_cached(

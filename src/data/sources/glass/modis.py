@@ -825,7 +825,18 @@ class GlassModisSource(DataSource):
             data_vars[name] = band_da
 
         ds = xr.Dataset(data_vars)
-        return ds.rio.write_crs(da_.rio.crs)
+        ds = ds.rio.write_crs(da_.rio.crs)
+        # Materialize fully and close the underlying GDAL file handle --
+        # see ModisSource._read_annual_geotiff's identical fix
+        # (src/data/sources/modis/source.py) for why: `da_` would otherwise
+        # stay open for as long as this Dataset is cached by
+        # _read_source_tile_cached's per-worker LRU, and GDAL's own
+        # (unbounded, per-process) block cache accumulates across the many
+        # sequential opens one long-lived worker does over a full run
+        # (docs/design/13-prepare-memory-parallelism.md).
+        ds = ds.load()
+        da_.close()
+        return ds
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox

@@ -37,6 +37,16 @@ from src.data.sources.steps import mark_complete, marker_path
 
 logger = logging.getLogger(__name__)
 
+# GDAL's own block cache defaults to 5% of the *node's* total RAM, computed
+# independently by each worker process, invisible to Python's/Dask's memory
+# tracker -- surfaces in worker logs as unbounded "unmanaged memory" growth
+# over a run's many sequential raster opens, not a Python-heap leak
+# (docs/design/13-prepare-memory-parallelism.md). Bounding it here (module
+# import time, once per worker process, before any raster is opened) is
+# cheap insurance -- 512MB is generous for this module's per-unit reads
+# (a handful of ~50MB MODIS source tiles at a time).
+os.environ.setdefault("GDAL_CACHEMAX", "512")
+
 
 # functools.lru_cache-decorated module-level functions keep their cache in
 # each worker process's own memory, persisting across every unit that

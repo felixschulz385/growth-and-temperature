@@ -665,7 +665,22 @@ class ModisSource(DataSource):
             data_vars[name] = band_da
 
         ds = xr.Dataset(data_vars)
-        return ds.rio.write_crs(da.rio.crs)
+        ds = ds.rio.write_crs(da.rio.crs)
+        # Materialize fully and close the underlying GDAL file handle --
+        # `da` (opened without `chunks=`, so its per-band views in `ds` stay
+        # lazily backed by an open rasterio/GDAL dataset) would otherwise
+        # stay open for as long as this Dataset is cached by
+        # _read_source_tile_cached's per-worker LRU
+        # (modis/parallel_prepare.py). GDAL's own block cache defaults to
+        # 5% of the *node's* total RAM, computed independently per worker
+        # process and never bounded anywhere in this repo -- across the
+        # many sequential opens one long-lived worker does over a full run,
+        # that accumulates as memory invisible to Dask's tracker ("unmanaged
+        # memory" in worker logs), not the ~50MB/tile the LRU's maxsize
+        # alone would suggest (docs/design/13-prepare-memory-parallelism.md).
+        ds = ds.load()
+        da.close()
+        return ds
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_or_create_canonical_geobox

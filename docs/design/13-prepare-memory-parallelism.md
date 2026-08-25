@@ -99,6 +99,30 @@ patterns worth checking across every PREPARE-capable source, not just MODIS:
       pure shapely/numpy and never touched dask. No behavior change, just stops reserving SLURM job
       memory for a cluster that structurally could never be used in this code path.
 
+## Resolved (continued, 3)
+
+- [x] **GDAL's own native block cache, unbounded per worker process — fixed (2026-08-25).** Surfaced
+      on the first real production MODIS PREPARE run after `parallel_prepare.py` went live: all 4
+      workers repeatedly climbed to ~34GB RSS ("Unmanaged memory... 30GB", worker paused, then the
+      nanny killing/restarting it for exceeding 95% of its 38GiB budget), over and over, throughout
+      the run — much more than the LRU caches' `maxsize` alone would suggest (a handful of ~50MB MODIS
+      tiles). Root cause: `ModisSource`/`GlassModisSource._read_annual_geotiff` opened each source
+      GeoTIFF via `rxr.open_rasterio(path, masked=True)` (no `chunks=`) and never closed the underlying
+      rasterio/GDAL file handle — it stayed open for as long as `_read_source_tile_cached`'s per-worker
+      LRU entry lived. GDAL's block cache defaults to 5% of the *node's total* RAM, computed
+      independently by each worker process and never bounded anywhere in this repo (confirmed via
+      `grep -rn "GDAL_CACHEMAX\|rasterio.Env" src/` — zero hits) — across the thousands of sequential
+      opens one long-lived worker does over a full run, that native (non-Python-tracked) cache
+      accumulates and shows up exactly as "unmanaged memory" in worker logs, not a Python-heap leak.
+      Fixed two ways: (1) `_read_annual_geotiff` now calls `.load()` on the constructed Dataset and
+      explicitly `.close()`s the source `DataArray` before returning, so an LRU eviction actually
+      releases the GDAL handle instead of just dropping a Python reference to a still-open one; (2)
+      both `modis/parallel_prepare.py` and `raster_year_parallel.py` now set
+      `os.environ.setdefault("GDAL_CACHEMAX", "512")` at module-import time (once per worker process,
+      before any raster is opened) as a hard ceiling independent of node RAM size — applied to the
+      esacci/eog/ntl_harm/acag dispatcher too, since they open rasters/netCDFs from worker processes
+      the same way and would very plausibly hit the same failure once run at real production scale.
+
 ## Confirmed fine / not applicable
 
 - [x] **glass_avhrr** (`src/data/sources/glass/avhrr.py:704-721`) — `year_ds()` opens via
