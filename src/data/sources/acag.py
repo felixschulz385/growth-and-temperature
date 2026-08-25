@@ -262,7 +262,7 @@ class AcagSource(DataSource):
         ]
 
     @staticmethod
-    def _load_nc_as_dataset(file_path: str, year: int, temp_dir: str = "", _extra: Any = None) -> Optional[xr.Dataset]:
+    def _load_nc_as_dataset(file_path: str, year: int) -> Optional[xr.Dataset]:
         if not os.path.exists(file_path):
             logger.error("File not found: %s", file_path)
             return None
@@ -321,7 +321,8 @@ class AcagSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
-        from src.data.common.prepare.raster_year_parallel import run_tiled_prepare_dask_year_major
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -333,27 +334,64 @@ class AcagSource(DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
-        raw_files_resolved = {year: self._resolve_raw_path(raw_files[year]) for year in years}
 
         with self._dask_client() as client:
             if client is None:
                 return False
-            return run_tiled_prepare_dask_year_major(
-                client=client,
-                load_year_fn=AcagSource._load_nc_as_dataset,
-                raw_files_resolved=raw_files_resolved,
-                y_dim="latitude",
-                x_dim="longitude",
-                variable_name="pm25",
-                output_path=target.output_path,
-                years=years,
-                target_geobox=target_geobox,
+            processor = SpatialProcessor(
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
-                tile_size=self.tile_size,
-                processing_version=self.PROCESSING_VERSION,
-                override=self.cfg.override,
+                dask_client=client,
+                target_geobox=target_geobox,
             )
+            with processor.setup_dask_config():
+                # run_tiled_prepare walks units years-major, so only one
+                # year's lazy (dask-backed) Dataset needs to stay open at
+                # once -- evict the previous one on each year change.
+                # raw_getter clips to each tile's own bbox and computes only
+                # that (docs/design/13-prepare-memory-parallelism.md),
+                # instead of reprojecting the whole eagerly-materialized
+                # global raster once per tile.
+                cache: Dict[int, Optional[xr.Dataset]] = {}
+
+                def year_ds(year: int) -> Optional[xr.Dataset]:
+                    if year not in cache:
+                        for old_year, old_ds in list(cache.items()):
+                            if old_ds is not None:
+                                old_ds.close()
+                            del cache[old_year]
+                        source_file = self._resolve_raw_path(raw_files[year])
+                        cache[year] = AcagSource._load_nc_as_dataset(source_file, year)
+                    return cache[year]
+
+                def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+                    ds = year_ds(year)
+                    if ds is None:
+                        return None
+                    bbox = tile.geobox.pad(32, 32).extent.to_crs(ds.rio.crs).boundingbox
+                    clipped = sel_bbox(ds, bbox, y_dim="latitude", x_dim="longitude")
+                    if clipped.sizes.get("latitude", 0) == 0 or clipped.sizes.get("longitude", 0) == 0:
+                        # Tile falls outside this year's raster coverage --
+                        # legitimate tile state, not a fetch failure.
+                        # NaN-fill on tile.geobox instead of None, same
+                        # convention as MODIS/ESA-CCI/AVHRR's own raw_getter.
+                        dim_y, dim_x = tile.geobox.dims
+                        return xr.Dataset(
+                            {"pm25": ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))}
+                        )
+                    return clipped.compute()
+
+                return run_tiled_prepare(
+                    output_path=target.output_path,
+                    years=years,
+                    variables=["pm25"],
+                    target_geobox=target_geobox,
+                    processor=processor,
+                    raw_getter=raw_getter,
+                    tile_size=self.tile_size,
+                    processing_version=self.PROCESSING_VERSION,
+                    override=self.cfg.override,
+                )
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 

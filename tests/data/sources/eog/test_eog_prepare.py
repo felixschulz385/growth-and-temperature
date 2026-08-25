@@ -1,11 +1,7 @@
-"""EogSource._execute_prepare: lazy per-tile clip (sel_bbox), routed through
-Dask's worker processes (run_tiled_prepare_dask_year_major) instead of the
-old single-process serial loop -- see
-docs/design/13-prepare-memory-parallelism.md. A `.gz`-wrapped source's
-decompressed temp file is deliberately left on disk rather than cleaned up
-(no safe point to delete it under concurrent worker access -- see that
-module's docstring), so this test checks it's written with a PID-unique
-name under the source's own temp_dir rather than asserting it gets removed.
+"""EogSource._execute_prepare: lazy per-tile clip (sel_bbox) instead of
+eagerly `.load()`ing the whole annual global raster, and deferred
+`.gz`-temp-file cleanup (owned by the year cache's eviction, not
+`_load_year` itself) -- see docs/design/13-prepare-memory-parallelism.md.
 """
 
 import gzip
@@ -90,7 +86,7 @@ def test_execute_prepare_clips_per_tile_and_writes_real_output(tmp_path):
     assert (df["dmsp"] == 5.0).all()
 
 
-def test_execute_prepare_handles_gz_wrapped_source(tmp_path):
+def test_execute_prepare_handles_gz_wrapped_source_and_cleans_up_temp_file(tmp_path):
     source, ctx = _make_source(tmp_path, year_range=[2020, 2020])
     raw_root = source.output_root(PipelineStep.FETCH)
     tif_path = os.path.join(raw_root, "eog_dmsp_2020.tif")
@@ -118,13 +114,9 @@ def test_execute_prepare_handles_gz_wrapped_source(tmp_path):
     df = pd.concat(pd.read_parquet(p) for p in parts)
     assert (df["dmsp"] == 7.0).all()
 
-    # Decompressed to a fresh, PID-unique temp path under the source's own
-    # temp_dir per worker that touched this year (deliberately not cleaned
-    # up -- see module docstring in
-    # src/data/common/prepare/raster_year_parallel.py), not colliding with
-    # the fixed `local_file[:-3]` path the old single-process code used to
-    # write and then delete. Bounded by worker count (here: at most 4), not
-    # by tile count.
-    leftover = [f for f in os.listdir(source.temp_dir) if f.endswith(".tif")]
-    assert 1 <= len(leftover) <= 4
-    assert "eog_dmsp_2020.tif" not in leftover
+    # The decompressed temp file (written alongside the .gz source, in
+    # raw_root) must not survive past the run -- evict_cache() removes it
+    # once every tile for that year has been computed, single-process so no
+    # race against a concurrent reader.
+    leftover = [f for f in os.listdir(raw_root) if f.endswith(".tif")]
+    assert leftover == []

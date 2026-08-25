@@ -57,7 +57,7 @@ import dataclasses
 import logging
 import os
 import tempfile
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -648,10 +648,15 @@ class ModisSource(DataSource):
 
     @staticmethod
     def _read_annual_geotiff(path: str, year: int) -> xr.Dataset:
+        """Stays dask-backed (`chunks=True`) -- the caller `xr.combine_by_coords`s
+        every tile for a year into one lazy mosaic and only `.compute()`s
+        after clipping to one output tile's bbox (`sel_bbox`), so this never
+        eagerly reads a whole source GeoTIFF, let alone a whole year of them
+        (docs/design/13-prepare-memory-parallelism.md)."""
         import rasterio
         import rioxarray as rxr
 
-        da = rxr.open_rasterio(path, masked=True)
+        da = rxr.open_rasterio(path, masked=True, chunks=True)
         with rasterio.open(path) as src:
             descriptions = src.descriptions
 
@@ -665,58 +670,103 @@ class ModisSource(DataSource):
             data_vars[name] = band_da
 
         ds = xr.Dataset(data_vars)
-        ds = ds.rio.write_crs(da.rio.crs)
-        # Materialize fully and close the underlying GDAL file handle --
-        # `da` (opened without `chunks=`, so its per-band views in `ds` stay
-        # lazily backed by an open rasterio/GDAL dataset) would otherwise
-        # stay open for as long as this Dataset is cached by
-        # _read_source_tile_cached's per-worker LRU
-        # (modis/parallel_prepare.py). GDAL's own block cache defaults to
-        # 5% of the *node's* total RAM, computed independently per worker
-        # process and never bounded anywhere in this repo -- across the
-        # many sequential opens one long-lived worker does over a full run,
-        # that accumulates as memory invisible to Dask's tracker ("unmanaged
-        # memory" in worker logs), not the ~50MB/tile the LRU's maxsize
-        # alone would suggest (docs/design/13-prepare-memory-parallelism.md).
-        ds = ds.load()
-        da.close()
-        return ds
+        return ds.rio.write_crs(da.rio.crs)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_or_create_canonical_geobox
-        from src.data.sources.modis.parallel_prepare import run_tiled_prepare_dask
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
 
         # No top-level `is_complete(target)` short-circuit here: `target`'s
         # marker can already exist from a prior run while `target.meta["years"]`
         # (freshly discovered by `_discover_prepare`) has since grown with
-        # newly-fetched years. `run_tiled_prepare_dask` has its own
-        # finer-grained per-unit status tracking (see its docstring) that
-        # cheaply skips units already complete and only processes new ones,
-        # so it's always safe and correct to call it rather than trusting
-        # the coarse marker.
+        # newly-fetched years. `run_tiled_prepare` has its own finer-grained
+        # per-unit status tracking (see its docstring) that cheaply skips
+        # units already complete and only processes new ones, so it's
+        # always safe and correct to call it rather than trusting the
+        # coarse marker.
         stage1_root = self.output_root(PipelineStep.FETCH)
         years = target.meta["years"]
+
+        # One year's *lazy* (dask-chunked, not yet materialized) mosaic
+        # built at a time -- run_tiled_prepare walks units years-major, so
+        # at most one year's mosaic graph is ever open here. Building it is
+        # cheap regardless of tile count: xr.combine_by_coords over
+        # chunks=True-opened tiles only assembles a task graph, no pixel
+        # data is read. raw_getter clips that graph to one output tile's
+        # bbox via sel_bbox() and only then .compute()s -- the actual
+        # chunk reads that triggers are distributed across the (small)
+        # Dask cluster and released immediately after; reprojection and the
+        # parquet write then run serially in this process, against regular
+        # (not worker) memory (docs/design/13-prepare-memory-parallelism.md,
+        # same pattern as glass_avhrr's raw_getter).
+        mosaic_cache: Dict[int, Optional[xr.Dataset]] = {}
+
+        def year_mosaic(year: int) -> Optional[xr.Dataset]:
+            if year not in mosaic_cache:
+                mosaic_cache.clear()
+                year_dir = os.path.join(stage1_root, str(year))
+                tile_files = sorted(
+                    os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
+                ) if os.path.isdir(year_dir) else []
+                if not tile_files:
+                    logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
+                    mosaic_cache[year] = None
+                    return None
+                datasets = [ModisSource._read_annual_geotiff(f, year) for f in tile_files]
+                mosaic = datasets[0] if len(datasets) == 1 else xr.combine_by_coords(
+                    datasets, combine_attrs="override"
+                )
+                if mosaic.rio.crs is None:
+                    mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
+                mosaic_cache[year] = mosaic
+            return mosaic_cache[year]
+
+        def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+            mosaic = year_mosaic(year)
+            if mosaic is None:
+                return None
+            bbox = tile.geobox.pad(32, 32).extent.to_crs(mosaic.rio.crs).boundingbox
+            clipped = sel_bbox(mosaic, bbox, y_dim="y", x_dim="x")
+            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
+                # This tile falls outside the mosaic's spatial coverage --
+                # a legitimate tile state, not a fetch failure. Return a
+                # NaN-filled dataset on tile.geobox instead of None so
+                # run_tiled_prepare doesn't record it as a retryable
+                # failure and permanently block mark_complete (same
+                # convention as ecoregions/gadm/snl_mining's
+                # _rasterize_tile).
+                dim_y, dim_x = tile.geobox.dims
+                return xr.Dataset(
+                    {
+                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
+                        for var in mosaic.data_vars
+                    }
+                )
+            return clipped.compute()
 
         try:
             with self._dask_client() as client:
                 cache_path = os.path.join(self.ctx.data_root, "canonical_geobox.pkl")
                 target_geobox = get_or_create_canonical_geobox(cache_path)
 
-                return run_tiled_prepare_dask(
-                    client=client,
-                    read_tile_fn=ModisSource._read_annual_geotiff,
-                    stage1_root=stage1_root,
-                    output_path=target.output_path,
-                    years=years,
-                    target_geobox=target_geobox,
-                    hpc_root=self.ctx.data_root,
-                    temp_dir=self.temp_dir,
-                    tile_size=self.tile_size,
-                    resampling=SPATIAL_RESAMPLING,
-                    dst_nodata=float("nan"),
-                    processing_version=self.PROCESSING_VERSION,
-                    override=self.cfg.override,
+                spatial_processor = SpatialProcessor(
+                    hpc_root=self.ctx.data_root, temp_dir=self.temp_dir, dask_client=client, target_geobox=target_geobox
                 )
+
+                with spatial_processor.setup_dask_config():
+                    return run_tiled_prepare(
+                        output_path=target.output_path,
+                        years=years,
+                        target_geobox=target_geobox,
+                        processor=spatial_processor,
+                        raw_getter=raw_getter,
+                        tile_size=self.tile_size,
+                        resampling=SPATIAL_RESAMPLING,
+                        dst_nodata=float("nan"),
+                        processing_version=self.PROCESSING_VERSION,
+                        override=self.cfg.override,
+                    )
         except Exception:
             logger.exception("Error in MODIS spatial processing for years %s.", years)
             return False

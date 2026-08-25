@@ -142,13 +142,21 @@ def test_execute_prepare_writes_a_real_reprojected_tiled_output(tmp_path, monkey
     assert np.all(np.isfinite(df[source.VARIABLE_NAME].values))
 
 
-def test_execute_prepare_handles_zip_wrapped_source(tmp_path, monkeypatch):
-    """`_load_year`'s zip-extract temp dir is deliberately never deleted (no
-    safe point to do so under concurrent worker access -- see
-    src/data/common/prepare/raster_year_parallel.py's module docstring), so
-    this only checks the pipeline still produces correct output through a
-    real Dask client, not that the dir gets cleaned up."""
+def test_execute_prepare_handles_zip_wrapped_source_and_cleans_up_extract_dir(tmp_path, monkeypatch):
+    """`_load_year`'s zip-extract temp dir must survive until every tile for
+    that year has been clipped and computed (deferred to the year cache's
+    eviction, not deleted inside `_load_year` itself) -- see
+    docs/design/13-prepare-memory-parallelism.md."""
+    import tempfile as tempfile_module
     import zipfile
+
+    def _extract_dirs():
+        return {
+            d for d in os.listdir(tempfile_module.gettempdir())
+            if d.startswith("ntl_harm_extract_") and os.path.isdir(os.path.join(tempfile_module.gettempdir(), d))
+        }
+
+    pre_existing = _extract_dirs()
 
     source, ctx = _make_source(tmp_path, tile_size=4)
     os.makedirs(source.output_root(PipelineStep.FETCH), exist_ok=True)
@@ -173,3 +181,5 @@ def test_execute_prepare_handles_zip_wrapped_source(tmp_path, monkeypatch):
     parts = sorted(glob.glob(os.path.join(target.output_path, "ix=*", "iy=*", "part-2020.parquet")))
     df = pd.concat(pd.read_parquet(p) for p in parts)
     assert np.all(np.isfinite(df[source.VARIABLE_NAME].values))
+
+    assert _extract_dirs() - pre_existing == set()

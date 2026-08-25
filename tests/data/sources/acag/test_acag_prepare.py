@@ -1,15 +1,11 @@
-"""AcagSource._execute_prepare: lazy per-tile clip (sel_bbox) routed through
-Dask's worker processes (run_tiled_prepare_dask_year_major) instead of the
-old single-process serial loop -- see
+"""AcagSource._execute_prepare: lazy per-tile clip (sel_bbox) via a lazy
+per-year Dataset + the shared serial run_tiled_prepare driver -- see
 docs/design/13-prepare-memory-parallelism.md. `_load_nc_as_dataset` opens
 via `driver="HDF5"` (real ACAG files are netCDF/HDF5), which isn't easy to
-fabricate in a unit test -- monkeypatched (as a plain 3-arg function,
-matching the now-`@staticmethod` signature `(file_path, year, temp_dir)`) to
-return a synthetic dask-backed Dataset shaped like a real read (chunked,
-EPSG:4326, `latitude`/`longitude` dims) instead, same approach as
-tests/data/sources/esacci/test_esacci_prepare.py. Uses the source's real
-(small, local) Dask client -- not a stub -- since `client.submit` now needs
-an actual `distributed.Client`.
+fabricate in a unit test -- monkeypatched to return a synthetic dask-backed
+Dataset shaped like a real read (chunked, EPSG:4326, `latitude`/`longitude`
+dims) instead, same approach as
+tests/data/sources/esacci/test_esacci_prepare.py.
 """
 
 import os

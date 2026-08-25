@@ -567,38 +567,29 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             )
         ]
 
-    @staticmethod
-    def _load_year(file_path: str, year: int, temp_dir: str, source_type: str) -> Optional[xr.Dataset]:
-        """Stays dask-backed (`chunks="auto"`), not `.load()`'d, so the
-        caller can clip to one output tile's bbox via `sel_bbox()` before
-        compute()ing (docs/design/13-prepare-memory-parallelism.md). Runs
-        inside a Dask worker process behind a bounded per-worker cache
-        (`run_tiled_prepare_dask_year_major`) -- for a `.gz`-wrapped source,
-        the decompressed temp file is deliberately never deleted here (see
-        that module's docstring for why: no safe point to delete it without
-        risking a race against another in-flight task on the same worker
-        still reading it). Decompresses to a fresh, PID-unique temp path
-        (not a fixed `file_path`-derived one) since multiple worker
-        *processes* may now decompress the same `.gz` source concurrently --
-        a fixed shared path would race two workers' writes against each
-        other, unlike the old single-process caller."""
-        import tempfile
-
+    def _load_year(self, file_path: str, year: int) -> Optional[Tuple[xr.Dataset, Optional[str]]]:
+        """Returns `(dataset, uncompressed_temp_path_or_None)` -- stays
+        dask-backed (`chunks="auto"`), not `.load()`'d, so the caller can
+        clip to one output tile's bbox via `sel_bbox()` before compute()ing
+        (docs/design/13-prepare-memory-parallelism.md). For a `.gz`-wrapped
+        source, the decompressed temp file must stay on disk until every
+        tile for this year has been computed against it -- the caller (see
+        `_execute_prepare`'s `year_ds()`/cache eviction) owns deleting it,
+        only once this year's Dataset is evicted from its cache, not here."""
         import rioxarray as rxr
 
+        uncompressed_file_to_delete = None
         try:
             local_file = file_path
             if file_path.endswith(".gz"):
                 import gzip
                 import shutil
 
-                fd, uncompressed = tempfile.mkstemp(
-                    suffix="_" + os.path.basename(local_file)[:-3], prefix=f"eog_{os.getpid()}_", dir=temp_dir or None
-                )
-                os.close(fd)
+                uncompressed = local_file[:-3]
                 with gzip.open(local_file, "rb") as f_in, open(uncompressed, "wb") as f_out:
                     shutil.copyfileobj(f_in, f_out)
                 local_file = uncompressed
+                uncompressed_file_to_delete = uncompressed
 
             if not os.path.exists(local_file):
                 logger.error("File does not exist: %s", local_file)
@@ -608,19 +599,21 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             da = da.expand_dims(dim={"time": 1}).assign_coords({"time": [pd.Timestamp(f"{year}-12-31")]})
 
             attrs = {}
-            if source_type == "dmsp":
+            if self.source_type == "dmsp":
                 filename = os.path.basename(file_path)
                 match = re.search(r"F(\d+)(\d{4})", filename)
                 if match:
                     attrs["satellite"] = f"F{match.group(1)}"
 
-            ds = da.to_dataset(name=source_type)
+            ds = da.to_dataset(name=self.source_type)
             ds = ds.assign_attrs(**attrs)
             if ds.rio.crs is None:
                 ds = ds.rio.write_crs(4326)
-            return ds
+            return ds, uncompressed_file_to_delete
         except Exception:
             logger.exception("Error processing file %s.", file_path)
+            if uncompressed_file_to_delete and os.path.exists(uncompressed_file_to_delete):
+                os.remove(uncompressed_file_to_delete)
             return None
 
     def _output_path(self) -> str:
@@ -634,7 +627,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
-        from src.data.common.prepare.raster_year_parallel import run_tiled_prepare_dask_year_major
+        from src.data.common.prepare.driver import run_tiled_prepare
+        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -646,29 +640,77 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
-        raw_files_resolved = {year: self._resolve_source_file_path(raw_files[year]) for year in years}
 
         with self._dask_client() as client:
             if client is None:
                 return False
-            return run_tiled_prepare_dask_year_major(
-                client=client,
-                load_year_fn=EogSource._load_year,
-                load_year_extra=self.source_type,
-                raw_files_resolved=raw_files_resolved,
-                y_dim="y",
-                x_dim="x",
-                variable_name=self.source_type,
-                output_path=target.output_path,
-                years=years,
-                target_geobox=target_geobox,
+            processor = SpatialProcessor(
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
-                tile_size=self.tile_size,
-                resampling=self.resampling,
-                processing_version=self.PROCESSING_VERSION,
-                override=self.cfg.override,
+                dask_client=client,
+                target_geobox=target_geobox,
             )
+            with processor.setup_dask_config():
+                # run_tiled_prepare walks units years-major, so only one
+                # year's lazy Dataset (and, if `.gz`-wrapped, its
+                # decompressed temp file) needs to stay alive at once --
+                # evict_cache() below closes/removes the previous year's on
+                # each year change. raw_getter clips to each tile's own bbox
+                # and computes only that (docs/design/13-prepare-memory-
+                # parallelism.md), instead of the whole annual global
+                # raster this used to eagerly `.load()`.
+                cache: Dict[int, Optional[Tuple[xr.Dataset, Optional[str]]]] = {}
+
+                def evict_cache() -> None:
+                    for old_year, old_entry in list(cache.items()):
+                        if old_entry is not None:
+                            old_ds, old_tmp = old_entry
+                            old_ds.close()
+                            if old_tmp and os.path.exists(old_tmp):
+                                os.remove(old_tmp)
+                        del cache[old_year]
+
+                def year_ds(year: int) -> Optional[xr.Dataset]:
+                    if year not in cache:
+                        evict_cache()
+                        source_file = self._resolve_source_file_path(raw_files[year])
+                        cache[year] = self._load_year(source_file, year)
+                    entry = cache[year]
+                    return entry[0] if entry is not None else None
+
+                def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+                    ds = year_ds(year)
+                    if ds is None:
+                        return None
+                    bbox = tile.geobox.pad(32, 32).extent.to_crs(ds.rio.crs).boundingbox
+                    clipped = sel_bbox(ds, bbox, y_dim="y", x_dim="x")
+                    if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
+                        # Tile falls outside this year's raster coverage --
+                        # legitimate tile state (e.g. poleward of VIIRS/
+                        # DMSP's own extent), not a fetch failure. NaN-fill
+                        # on tile.geobox instead of None, same convention as
+                        # MODIS/ESA-CCI/AVHRR's own raw_getter.
+                        dim_y, dim_x = tile.geobox.dims
+                        return xr.Dataset(
+                            {self.source_type: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))}
+                        )
+                    return clipped.compute()
+
+                try:
+                    return run_tiled_prepare(
+                        output_path=target.output_path,
+                        years=years,
+                        variables=[self.source_type],
+                        target_geobox=target_geobox,
+                        processor=processor,
+                        raw_getter=raw_getter,
+                        tile_size=self.tile_size,
+                        resampling=self.resampling,
+                        processing_version=self.PROCESSING_VERSION,
+                        override=self.cfg.override,
+                    )
+                finally:
+                    evict_cache()
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 
