@@ -479,7 +479,9 @@ class SpatialProcessor:
                 effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
                 if effective_nodata is not None:
                     reproj_kwargs["dst_nodata"] = effective_nodata
+                logger.debug("process_tile_region: reprojecting tile %s", getattr(tile, "id", "?"))
                 reprojected_ds = xr_reproject(source_ds, tile.geobox, **reproj_kwargs)
+                logger.debug("process_tile_region: reproject done for tile %s", getattr(tile, "id", "?"))
             else:
                 reprojected_ds = source_ds
 

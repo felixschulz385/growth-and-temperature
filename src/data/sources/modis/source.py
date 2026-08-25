@@ -711,6 +711,7 @@ class ModisSource(DataSource):
             if year not in tile_index_cache:
                 import rasterio as _rasterio
 
+                logger.debug("MODIS PREPARE: building tile index for year %d", year)
                 year_dir = os.path.join(stage1_root, str(year))
                 index = []
                 crs = None
@@ -724,6 +725,7 @@ class ModisSource(DataSource):
                             if crs is None:
                                 crs = src.crs
                 tile_index_cache[year] = (index, crs)
+                logger.debug("MODIS PREPARE: year %d index built, %d tile(s)", year, len(index))
             return tile_index_cache[year]
 
         # Bounded LRU of individual (not merged) per-source-tile Datasets --
@@ -739,6 +741,7 @@ class ModisSource(DataSource):
             if path in source_tile_cache:
                 source_tile_cache.move_to_end(path)
                 return source_tile_cache[path]
+            logger.debug("MODIS PREPARE: reading source tile %s", path)
             ds = ModisSource._read_annual_geotiff(path, year)
             # merge_datasets (rioxarray) only supports 2D/3D arrays -- drop
             # the size-1 time/band dims _read_annual_geotiff adds; nothing
@@ -787,6 +790,7 @@ class ModisSource(DataSource):
                     }
                 )
 
+            logger.debug("MODIS PREPARE: tile %s year %d overlaps %d source tile(s)", tile.id, year, len(overlapping))
             datasets = [read_source_tile(path, year) for path in overlapping]
             merged = datasets[0] if len(datasets) == 1 else merge_datasets(datasets)
             if merged.rio.crs is None:

@@ -170,6 +170,7 @@ def run_tiled_prepare(
 
                 any_processed = True
                 unit_started = time.monotonic()
+                logger.debug("PREPARE %s: [%d/%d] unit %s starting (raw_getter)", output_path, i, total_units, unit.unit_id)
                 try:
                     source_ds = raw_getter(unit.tile, unit.year)
                 except Exception as exc:  # noqa: BLE001 -- one unit's failure must not abort the whole run
@@ -187,6 +188,10 @@ def run_tiled_prepare(
                     failed += 1
                     continue
 
+                logger.debug(
+                    "PREPARE %s: [%d/%d] unit %s raw_getter done in %.1fs, starting process_tile_region",
+                    output_path, i, total_units, unit.unit_id, time.monotonic() - unit_started,
+                )
                 ok = processor.process_tile_region(
                     source_ds,
                     output_path,
