@@ -57,7 +57,8 @@ import dataclasses
 import logging
 import os
 import tempfile
-from typing import Dict, List, Optional
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -673,6 +674,8 @@ class ModisSource(DataSource):
         return ds.rio.write_crs(da.rio.crs)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
+        from rioxarray.merge import merge_datasets
+
         from src.data.common.geobox import get_or_create_canonical_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
         from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
@@ -688,62 +691,116 @@ class ModisSource(DataSource):
         stage1_root = self.output_root(PipelineStep.FETCH)
         years = target.meta["years"]
 
-        # One year's *lazy* (dask-chunked, not yet materialized) mosaic
-        # built at a time -- run_tiled_prepare walks units years-major, so
-        # at most one year's mosaic graph is ever open here. Building it is
-        # cheap regardless of tile count: xr.combine_by_coords over
-        # chunks=True-opened tiles only assembles a task graph, no pixel
-        # data is read. raw_getter clips that graph to one output tile's
-        # bbox via sel_bbox() and only then .compute()s -- the actual
-        # chunk reads that triggers are distributed across the (small)
-        # Dask cluster and released immediately after; reprojection and the
-        # parquet write then run serially in this process, against regular
-        # (not worker) memory (docs/design/13-prepare-memory-parallelism.md,
-        # same pattern as glass_avhrr's raw_getter).
-        mosaic_cache: Dict[int, Optional[xr.Dataset]] = {}
+        # Per-year index of (file, bounds) plus that year's shared CRS -- a
+        # `rasterio.open()` header read (bounds/crs/transform only, no pixel
+        # data decoded) is enough to know which files overlap a given
+        # tile's bbox, so building this index never touches raster array
+        # data. NOT `xr.combine_by_coords` over the whole year: MODIS FETCH
+        # (`_load_tile_year`) pins `crs=`/`resolution=` but not an explicit
+        # per-tile geobox, so each fetched tile's actual pixel grid is
+        # snapped independently from whichever STAC items matched -- two
+        # geographically-adjacent tiles can end up a fraction of a pixel
+        # out of alignment, and `combine_by_coords` requires exact
+        # non-overlapping coordinate labels, raising "duplicate values"
+        # the moment it meets a real (if tiny) overlap. `rioxarray.merge`
+        # merges by actual georeferencing instead, tolerating exactly this
+        # (docs/design/13-prepare-memory-parallelism.md).
+        tile_index_cache: Dict[int, Tuple[List[Tuple[str, Any]], Any]] = {}
 
-        def year_mosaic(year: int) -> Optional[xr.Dataset]:
-            if year not in mosaic_cache:
-                mosaic_cache.clear()
+        def year_tile_index(year: int) -> Tuple[List[Tuple[str, Any]], Any]:
+            if year not in tile_index_cache:
+                import rasterio as _rasterio
+
                 year_dir = os.path.join(stage1_root, str(year))
-                tile_files = sorted(
-                    os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
-                ) if os.path.isdir(year_dir) else []
-                if not tile_files:
-                    logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
-                    mosaic_cache[year] = None
-                    return None
-                datasets = [ModisSource._read_annual_geotiff(f, year) for f in tile_files]
-                mosaic = datasets[0] if len(datasets) == 1 else xr.combine_by_coords(
-                    datasets, combine_attrs="override"
-                )
-                if mosaic.rio.crs is None:
-                    mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
-                mosaic_cache[year] = mosaic
-            return mosaic_cache[year]
+                index = []
+                crs = None
+                if os.path.isdir(year_dir):
+                    for f in sorted(os.listdir(year_dir)):
+                        if not f.endswith(".tif"):
+                            continue
+                        path = os.path.join(year_dir, f)
+                        with _rasterio.open(path) as src:
+                            index.append((path, src.bounds))
+                            if crs is None:
+                                crs = src.crs
+                tile_index_cache[year] = (index, crs)
+            return tile_index_cache[year]
+
+        # Bounded LRU of individual (not merged) per-source-tile Datasets --
+        # `raw_getter` below is called once per canonical PREPARE tile, and
+        # neighbouring PREPARE tiles frequently need the same handful of
+        # MODIS source tiles, so caching avoids re-reading the same GeoTIFF
+        # repeatedly. Bounded size keeps memory to at most a few source
+        # tiles regardless of how many PREPARE tiles are processed.
+        SOURCE_TILE_CACHE_SIZE = 16
+        source_tile_cache: "OrderedDict[str, xr.Dataset]" = OrderedDict()
+
+        def read_source_tile(path: str, year: int) -> xr.Dataset:
+            if path in source_tile_cache:
+                source_tile_cache.move_to_end(path)
+                return source_tile_cache[path]
+            ds = ModisSource._read_annual_geotiff(path, year)
+            # merge_datasets (rioxarray) only supports 2D/3D arrays -- drop
+            # the size-1 time/band dims _read_annual_geotiff adds; nothing
+            # downstream (process_tile_region, the NaN-fill fallback below)
+            # needs them.
+            squeeze_dims = [d for d in ("time", "band") if d in ds.dims]
+            if squeeze_dims:
+                ds = ds.squeeze(squeeze_dims, drop=True)
+            source_tile_cache[path] = ds
+            if len(source_tile_cache) > SOURCE_TILE_CACHE_SIZE:
+                source_tile_cache.popitem(last=False)
+            return ds
 
         def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
-            mosaic = year_mosaic(year)
-            if mosaic is None:
+            index, source_crs = year_tile_index(year)
+            if not index:
+                logger.error("No stage-1 tiles for year %d at %s", year, os.path.join(stage1_root, str(year)))
                 return None
-            bbox = tile.geobox.pad(32, 32).extent.to_crs(mosaic.rio.crs).boundingbox
-            clipped = sel_bbox(mosaic, bbox, y_dim="y", x_dim="x")
-            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
-                # This tile falls outside the mosaic's spatial coverage --
-                # a legitimate tile state, not a fetch failure. Return a
+
+            bbox = tile.geobox.pad(32, 32).extent.to_crs(source_crs).boundingbox
+            overlapping = [
+                path
+                for path, bounds in index
+                if bounds.right >= bbox.left
+                and bounds.left <= bbox.right
+                and bounds.top >= bbox.bottom
+                and bounds.bottom <= bbox.top
+            ]
+
+            dim_y, dim_x = tile.geobox.dims
+            if not overlapping:
+                # This tile falls outside the year's fetched coverage -- a
+                # legitimate tile state, not a fetch failure. Return a
                 # NaN-filled dataset on tile.geobox instead of None so
                 # run_tiled_prepare doesn't record it as a retryable
                 # failure and permanently block mark_complete (same
                 # convention as ecoregions/gadm/snl_mining's
-                # _rasterize_tile).
-                dim_y, dim_x = tile.geobox.dims
+                # _rasterize_tile). Var names come from one arbitrary
+                # already-fetched tile (cheap via the bounded cache), not
+                # from a full mosaic.
+                sample = read_source_tile(index[0][0], year)
                 return xr.Dataset(
                     {
                         var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
-                        for var in mosaic.data_vars
+                        for var in sample.data_vars
                     }
                 )
-            return clipped.compute()
+
+            datasets = [read_source_tile(path, year) for path in overlapping]
+            merged = datasets[0] if len(datasets) == 1 else merge_datasets(datasets)
+            if merged.rio.crs is None:
+                merged = merged.rio.write_crs(source_crs)
+
+            clipped = sel_bbox(merged, bbox, y_dim="y", x_dim="x")
+            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
+                return xr.Dataset(
+                    {
+                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
+                        for var in merged.data_vars
+                    }
+                )
+            return clipped
 
         try:
             with self._dask_client() as client:

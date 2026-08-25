@@ -168,6 +168,61 @@ patterns worth checking across every PREPARE-capable source, not just MODIS:
       `.gz`/`.zip` tests back to asserting the temp file/dir *is* cleaned up (rather than deliberately
       leaked) — full `tests/data` suite (732 passed) confirms no behavior regressions.
 
+## Resolved (continued, 6)
+
+- [x] **MODIS / GLASS-MODIS `xr.combine_by_coords` "duplicate values" crash on real tile overlap —
+      fixed (2026-08-25).** The lazy-mosaic rework in "Resolved (continued, 4)" fixed the memory
+      problem but immediately hit a real correctness bug on the very next production run: `year_mosaic`
+      combined every fetched tile for a year via `xr.combine_by_coords`, which failed with
+      `ValueError: cannot reindex or align along dimension 'x' because the (pandas) index has
+      duplicate values` for year 2002 (MODIS Aqua's partial commissioning year), on every canonical
+      tile. Root cause: `_load_tile_year` (`modis/source.py`) pins `crs=`/`resolution=` in
+      `odc.stac.load()` but never an explicit per-tile `geobox=` — each fetched tile's actual pixel
+      grid is auto-derived from whichever STAC items matched that tile's own query, not snapped to one
+      shared canonical grid, so two genuinely-adjacent tiles' pixel grids can end up a fraction of a
+      pixel out of alignment. `combine_by_coords` requires exact non-overlapping coordinate labels and
+      has no tolerance for this; it's a general-purpose xarray label-alignment tool, not built for
+      merging real georeferenced raster tiles. This is a pre-existing FETCH-side characteristic, not
+      something introduced by any of today's changes — it was never exercised before because earlier
+      PREPARE designs either OOM'd before ever completing a full-year combine, or (yesterday's per-unit
+      dispatch version) only ever combined small overlap-filtered subsets, never enough distinct pairs
+      at once to hit a colliding pair.
+      Two fixes were on the table: (a) root-cause — pin an explicit per-tile geobox in FETCH, the more
+      "correct" fix but requiring every already-fetched MODIS tile (20+ years × 282 tiles) to be
+      re-fetched from Planetary Computer to be consistent; (b) defensive — merge tiles by their actual
+      georeferencing instead of by coordinate-label matching, tolerating the misalignment, no re-fetch
+      needed. **Went with (b)**, explicitly deferring (a) as a separate, larger decision. Implementation:
+      - Reintroduced the per-year `(file, bounds)` index (a cheap `rasterio.open()` header read, no
+        pixel data touched) and a bounded per-run LRU (`SOURCE_TILE_CACHE_SIZE = 16`) of individual
+        source-tile Datasets, so `raw_getter` only reads/merges the handful of tiles actually
+        overlapping each canonical PREPARE tile's bbox — not the whole year at once (this also
+        restores the original OOM fix's memory bound, on top of fixing the correctness bug).
+      - Swapped `xr.combine_by_coords` for `rioxarray.merge.merge_datasets` (backed by
+        `rasterio.merge.merge`) for the actual tile combination when more than one overlapping tile is
+        found — verified empirically (`python -c ...` against synthetic overlapping arrays) that it
+        merges cleanly where `combine_by_coords` raises. `merge_datasets` only supports 2D/3D arrays,
+        so each source tile's size-1 `time`/`band` dims are squeezed off before merging (nothing
+        downstream needs them).
+      - Still `sel_bbox()`-clips the merged result to the tile's own bbox afterward, same as before —
+        `merge_datasets` returns the union of the overlapping tiles' extents, not just what's needed.
+      New tests: `test_modis_prepare.py::test_execute_prepare_handles_slightly_misaligned_adjacent_tiles`
+      and the identical `test_glass_modis_prepare.py` case, each writing two tiles with deliberately
+      overlapping bounds and asserting `_execute_prepare` succeeds with finite output (would have
+      raised under the old `combine_by_coords` path). Full `tests/data` suite: 734 passed.
+
+## Outstanding
+
+- [ ] **MODIS FETCH: per-tile grid alignment (deferred root-cause fix for "Resolved (continued, 6)").**
+      `_load_tile_year` should pin an explicit per-tile `geobox=` (built from
+      `modis_util.tile_bounds_m(h, v)` + `RESOLUTION_1KM_M`) instead of letting `odc.stac.load()`
+      auto-derive each tile's extent from its own matched STAC items, guaranteeing adjacent tiles align
+      pixel-for-pixel. Deferred because it likely requires re-fetching every already-fetched MODIS tile
+      (20+ years × 282 tiles) from Planetary Computer to be consistent with newly-fetched ones — a
+      large, slow, costly operation needing explicit sign-off, not something to trigger opportunistically.
+      The `rioxarray.merge`-based defensive fix already shipped makes this non-urgent (PREPARE now
+      tolerates the misalignment), so this is a correctness/precision improvement to pick up later, not
+      a blocker.
+
 **Net result of "Resolved (continued, 3)" through "(continued, 5)"**: every tiled-raster PREPARE
 source (MODIS, GLASS-MODIS, glass_avhrr, esacci, eog, ntl_harm, acag) now shares one architecture —
 open lazily, clip via `sel_bbox()`, `.compute()` through the active Dask client (which distributes

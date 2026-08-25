@@ -65,6 +65,48 @@ def test_execute_prepare_writes_real_tiled_parquet_output(tmp_path, monkeypatch)
     assert (df["lst_night_mean"] == 290.0).all()
 
 
+def test_execute_prepare_handles_slightly_misaligned_adjacent_tiles(tmp_path, monkeypatch):
+    """Real production failure (2026-08-25): MODIS FETCH pins `crs=`/
+    `resolution=` per tile but not an explicit shared geobox, so two
+    genuinely-adjacent tiles' pixel grids can end up a fraction of a pixel
+    out of alignment -- `xr.combine_by_coords` requires exact
+    non-overlapping coordinate labels and raised "duplicate values" the
+    moment it met this. `rioxarray.merge` (now used instead) merges by
+    actual georeferencing and tolerates it
+    (docs/design/13-prepare-memory-parallelism.md)."""
+    source, ctx = _make_source(tmp_path, year_range=[2019, 2019])
+    # Two tiles whose nominal bounds overlap by a sliver (unlike real
+    # adjacent-but-misaligned tiles, deliberately exaggerated here so an
+    # 8x8-pixel fixture still reproduces a genuine coordinate collision).
+    _write_tile_tif(
+        os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h18v04.tif"),
+        1.0, ["lst_night_mean"], bounds=(-1, -1, 0.1, 1),
+    )
+    _write_tile_tif(
+        os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h19v04.tif"),
+        2.0, ["lst_night_mean"], bounds=(-0.1, -1, 1, 1),
+    )
+
+    fake_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5)  # 4x4, 2x2 tiles @ size 2
+    import src.data.common.geobox as geobox_module
+
+    monkeypatch.setattr(geobox_module, "get_or_create_canonical_geobox", lambda cache_path: fake_geobox)
+    source.tile_size = 2
+
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
+    target = targets[0]
+
+    assert source._execute_prepare(target) is True
+
+    import pandas as pd
+    from pathlib import Path
+
+    parts = sorted(Path(target.output_path).glob("ix=*/iy=*/part-*.parquet"))
+    assert len(parts) == 4
+    df = pd.concat(pd.read_parquet(p) for p in parts)
+    assert np.all(np.isfinite(df["lst_night_mean"].values))
+
+
 def test_execute_prepare_reuses_one_years_mosaic_at_a_time(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path, year_range=[2019, 2020])
     _write_tile_tif(
