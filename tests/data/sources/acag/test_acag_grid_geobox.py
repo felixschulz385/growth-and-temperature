@@ -31,8 +31,8 @@ class _FakeGeobox:
 
 
 class _SpyRunTiledPrepare:
-    """Records the kwargs `run_tiled_prepare` was called with; never
-    touches dask/xarray/zarr."""
+    """Records the kwargs `run_tiled_prepare_dask_year_major` was called
+    with; never touches dask/xarray/zarr."""
 
     captured_kwargs = None
 
@@ -50,10 +50,10 @@ def _make_source(tmp_path, grid_id):
 
 
 def _run_execute_prepare(tmp_path, grid_id, fake_geobox, monkeypatch):
-    import src.data.common.prepare.driver as driver_module
+    import src.data.common.prepare.raster_year_parallel as parallel_module
 
     source, ctx = _make_source(tmp_path, grid_id)
-    monkeypatch.setattr(driver_module, "run_tiled_prepare", _SpyRunTiledPrepare())
+    monkeypatch.setattr(parallel_module, "run_tiled_prepare_dask_year_major", _SpyRunTiledPrepare())
     monkeypatch.setattr(geobox_module, "get_target_geobox", lambda passed_ctx: fake_geobox)
     monkeypatch.setattr(type(source), "_dask_client", lambda self: contextlib.nullcontext("fake-client"))
 

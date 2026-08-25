@@ -17,6 +17,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
+import numpy as np
 import pandas as pd
 import requests
 import rioxarray as rxr
@@ -260,12 +261,17 @@ class AcagSource(DataSource):
             )
         ]
 
-    def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
+    @staticmethod
+    def _load_nc_as_dataset(file_path: str, year: int, temp_dir: str = "", _extra: Any = None) -> Optional[xr.Dataset]:
         if not os.path.exists(file_path):
             logger.error("File not found: %s", file_path)
             return None
         try:
-            data = rxr.open_rasterio(file_path, decode_coords="all", mask_and_scale=True, driver="HDF5")
+            # chunks="auto" -- stays dask-backed; the caller clips to one
+            # output tile's bbox via sel_bbox() before compute()ing, so this
+            # whole-year global raster is never eagerly materialized
+            # (docs/design/13-prepare-memory-parallelism.md).
+            data = rxr.open_rasterio(file_path, decode_coords="all", mask_and_scale=True, driver="HDF5", chunks="auto")
             if "band" in data.dims and data.sizes.get("band", 1) > 1:
                 data = data.isel(band=0)
             ds = data.to_dataset(name="pm25")
@@ -315,8 +321,7 @@ class AcagSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
-        from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.common.prepare.raster_year_parallel import run_tiled_prepare_dask_year_major
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -328,36 +333,27 @@ class AcagSource(DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
+        raw_files_resolved = {year: self._resolve_raw_path(raw_files[year]) for year in years}
 
         with self._dask_client() as client:
             if client is None:
                 return False
-            processor = SpatialProcessor(
+            return run_tiled_prepare_dask_year_major(
+                client=client,
+                load_year_fn=AcagSource._load_nc_as_dataset,
+                raw_files_resolved=raw_files_resolved,
+                y_dim="latitude",
+                x_dim="longitude",
+                variable_name="pm25",
+                output_path=target.output_path,
+                years=years,
+                target_geobox=target_geobox,
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
-                dask_client=client,
-                target_geobox=target_geobox,
+                tile_size=self.tile_size,
+                processing_version=self.PROCESSING_VERSION,
+                override=self.cfg.override,
             )
-            with processor.setup_dask_config():
-                cache: Dict[int, Optional[xr.Dataset]] = {}
-
-                def load_year(year: int) -> Optional[xr.Dataset]:
-                    if year not in cache:
-                        source_file = self._resolve_raw_path(raw_files[year])
-                        cache[year] = self._load_nc_as_dataset(source_file, year)
-                    return cache[year]
-
-                return run_tiled_prepare(
-                    output_path=target.output_path,
-                    years=years,
-                    variables=["pm25"],
-                    target_geobox=target_geobox,
-                    processor=processor,
-                    raw_getter=lambda tile, year: load_year(year),
-                    tile_size=self.tile_size,
-                    processing_version=self.PROCESSING_VERSION,
-                    override=self.cfg.override,
-                )
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 

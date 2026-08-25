@@ -55,6 +55,32 @@ def write_crs_and_grid_mapping_encoding(ds: xr.Dataset, geobox, base_encoding: D
     return ds, encoding
 
 
+def sel_bbox(ds: xr.Dataset, bbox, y_dim: str = "y", x_dim: str = "x") -> xr.Dataset:
+    """Slice *ds* to *bbox* (an `odc.geo` `BoundingBox`-like object with
+    `left`/`right`/`top`/`bottom`) along *y_dim*/*x_dim*, without assuming
+    which direction either coordinate runs.
+
+    A plain `ds.sel(y=slice(bbox.top, bbox.bottom))` silently returns an
+    empty selection if the dataset's `y` coordinate happens to run the other
+    way (ascending south-to-north instead of the more common descending
+    north-to-south, or vice versa for `x`/longitude) -- `xarray.sel`'s slice
+    direction must match the index's own direction. Checking each
+    coordinate's own first-vs-last value once here, rather than assuming a
+    convention per source, is what lets a lazy per-tile `.sel(...).compute()`
+    clip (the fix for materializing a whole source raster before clipping to
+    one output tile -- see `docs/design/13-prepare-memory-parallelism.md`)
+    be shared across sources without each one guessing its own axis order.
+    """
+    y_vals, x_vals = ds[y_dim].values, ds[x_dim].values
+    y_slice = (
+        slice(bbox.bottom, bbox.top) if len(y_vals) > 1 and y_vals[0] < y_vals[-1] else slice(bbox.top, bbox.bottom)
+    )
+    x_slice = (
+        slice(bbox.left, bbox.right) if len(x_vals) > 1 and x_vals[0] < x_vals[-1] else slice(bbox.right, bbox.left)
+    )
+    return ds.sel({y_dim: y_slice, x_dim: x_slice})
+
+
 def reproject_for_tile_overlap(gdf, target_crs):
     """Reproject *gdf* to *target_crs* before testing per-tile overlap via a
     plain shapely `.intersects()`/`gdf.sindex.query()` against tile bounds

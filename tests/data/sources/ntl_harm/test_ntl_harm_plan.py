@@ -9,7 +9,6 @@ full raw-file -> tiled zarr path against a real (synthetic) raster instead
 of mocks.
 """
 
-import contextlib
 import os
 
 import numpy as np
@@ -123,7 +122,6 @@ def test_execute_prepare_writes_a_real_reprojected_tiled_output(tmp_path, monkey
 
     target_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.25)  # 8x8, 2x2 tiles @ size 4
     monkeypatch.setattr(geobox_module, "get_target_geobox", lambda passed_ctx: target_geobox)
-    monkeypatch.setattr(type(source), "_dask_client", lambda self: contextlib.nullcontext("fake-client"))
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert len(targets) == 1
@@ -141,4 +139,37 @@ def test_execute_prepare_writes_a_real_reprojected_tiled_output(tmp_path, monkey
     assert len(parts) == 4  # 2x2 tile grid at tile_size=4 on an 8x8 geobox
     df = pd.concat(pd.read_parquet(p) for p in parts)
     assert len(df) == 64  # 8x8 pixels total
+    assert np.all(np.isfinite(df[source.VARIABLE_NAME].values))
+
+
+def test_execute_prepare_handles_zip_wrapped_source(tmp_path, monkeypatch):
+    """`_load_year`'s zip-extract temp dir is deliberately never deleted (no
+    safe point to do so under concurrent worker access -- see
+    src/data/common/prepare/raster_year_parallel.py's module docstring), so
+    this only checks the pipeline still produces correct output through a
+    real Dask client, not that the dir gets cleaned up."""
+    import zipfile
+
+    source, ctx = _make_source(tmp_path, tile_size=4)
+    os.makedirs(source.output_root(PipelineStep.FETCH), exist_ok=True)
+    tif_path = os.path.join(tmp_path, "harmonized_2020.tif")
+    _write_sample_geotiff(tif_path, size=8, value=1234.0)
+    zip_path = os.path.join(source.output_root(PipelineStep.FETCH), "harmonized_2020.zip")
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.write(tif_path, arcname="harmonized_2020.tif")
+
+    target_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.25)  # 8x8, 2x2 tiles @ size 4
+    monkeypatch.setattr(geobox_module, "get_target_geobox", lambda passed_ctx: target_geobox)
+
+    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
+    target = targets[0]
+
+    assert source._execute_prepare(target) is True
+
+    import glob
+
+    import pandas as pd
+
+    parts = sorted(glob.glob(os.path.join(target.output_path, "ix=*", "iy=*", "part-2020.parquet")))
+    df = pd.concat(pd.read_parquet(p) for p in parts)
     assert np.all(np.isfinite(df[source.VARIABLE_NAME].values))

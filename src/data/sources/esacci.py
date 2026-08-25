@@ -245,7 +245,8 @@ class EsacciSource(DataSource):
             )
         ]
 
-    def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
+    @staticmethod
+    def _load_nc_as_dataset(file_path: str, year: int, temp_dir: str, _extra: Any = None) -> Optional[xr.Dataset]:
         if not os.path.exists(file_path):
             logger.error("File not found: %s", file_path)
             return None
@@ -255,7 +256,7 @@ class EsacciSource(DataSource):
                     nc_name = next((n for n in z.namelist() if n.endswith(".nc")), None)
                     if nc_name is None:
                         raise ValueError(f"No .nc entry found inside zip: {file_path}")
-                    tmp_nc_path = os.path.join(self.temp_dir, f"esacci_{year}_{os.path.basename(nc_name)}")
+                    tmp_nc_path = os.path.join(temp_dir, f"esacci_{year}_{os.path.basename(nc_name)}")
                     with z.open(nc_name) as f_in, open(tmp_nc_path, "wb") as f_out:
                         shutil.copyfileobj(f_in, f_out)
                 nc_path = tmp_nc_path
@@ -295,10 +296,18 @@ class EsacciSource(DataSource):
             ds = ds.rio.write_crs("EPSG:4326")
             ds.attrs["source_year"] = year
             ds.attrs["source_file"] = os.path.basename(file_path)
-            # Materialize now: `nc_path` may be a temp file this method's
-            # own logic doesn't clean up on the same schedule as a lazy
-            # dask read would need it to stay alive.
-            return ds.load()
+            # Stays dask-backed (chunks="auto" above) -- the caller clips to
+            # one output tile's bbox via sel_bbox() before compute()ing, so
+            # only that small region is ever materialized, not this whole
+            # ~8GB-per-year global raster (docs/design/13-prepare-memory-
+            # parallelism.md). Runs inside a Dask worker process behind a
+            # bounded per-worker cache (run_tiled_prepare_dask_year_major),
+            # so repeated calls for the same (file_path, year) on the same
+            # worker reuse this same `ds` rather than re-extracting
+            # `tmp_nc_path`; that temp file is never explicitly deleted
+            # (a pre-existing leak, not introduced here -- left for the
+            # OS/job's own scratch-dir cleanup).
+            return ds
         except Exception:
             logger.exception("Error loading %s.", file_path)
             return None
@@ -314,8 +323,7 @@ class EsacciSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
-        from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.common.prepare.raster_year_parallel import run_tiled_prepare_dask_year_major
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -327,48 +335,34 @@ class EsacciSource(DataSource):
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
+        raw_files_resolved = {year: self._resolve_raw_path(raw_files[year]) for year in years}
 
         with self._dask_client() as client:
             if client is None:
                 return False
-            processor = SpatialProcessor(
+            # ESA CCI LC is categorical -- always nearest (this dispatcher's
+            # own default), 0 as nodata. A missing clip (tile outside
+            # coverage) is logged as an error, not NaN-filled -- ESA CCI is
+            # a genuinely global product with no legitimate gaps.
+            return run_tiled_prepare_dask_year_major(
+                client=client,
+                load_year_fn=EsacciSource._load_nc_as_dataset,
+                raw_files_resolved=raw_files_resolved,
+                y_dim="latitude",
+                x_dim="longitude",
+                variable_name="lccs_class",
+                nan_fill_on_empty=False,
+                clip_antimeridian=True,
+                output_path=target.output_path,
+                years=years,
+                target_geobox=target_geobox,
                 hpc_root=self.ctx.data_root,
                 temp_dir=self.temp_dir,
-                dask_client=client,
-                target_geobox=target_geobox,
+                tile_size=self.tile_size,
+                dst_nodata=0,
+                processing_version=self.PROCESSING_VERSION,
+                override=self.cfg.override,
             )
-            with processor.setup_dask_config():
-                # run_tiled_prepare walks units years-major (all tiles for a
-                # year before the next year starts), so only the current
-                # year's full-globe raster ever needs to be resident -- evict
-                # the previous one on each year change to avoid retaining one
-                # ~8GB dataset per year for the whole run.
-                cache: Dict[int, Optional[xr.Dataset]] = {}
-
-                def load_year(year: int) -> Optional[xr.Dataset]:
-                    if year not in cache:
-                        for old_year, old_ds in list(cache.items()):
-                            if old_ds is not None:
-                                old_ds.close()
-                            del cache[old_year]
-                        source_file = self._resolve_raw_path(raw_files[year])
-                        cache[year] = self._load_nc_as_dataset(source_file, year)
-                    return cache[year]
-
-                # ESA CCI LC is categorical -- always nearest (run_tiled_prepare's
-                # own default), 0 as nodata.
-                return run_tiled_prepare(
-                    output_path=target.output_path,
-                    years=years,
-                    variables=["lccs_class"],
-                    target_geobox=target_geobox,
-                    processor=processor,
-                    raw_getter=lambda tile, year: load_year(year),
-                    tile_size=self.tile_size,
-                    dst_nodata=0,
-                    processing_version=self.PROCESSING_VERSION,
-                    override=self.cfg.override,
-                )
 
     # _dask_client: inherited from DataSource (src/data/sources/base.py).
 
