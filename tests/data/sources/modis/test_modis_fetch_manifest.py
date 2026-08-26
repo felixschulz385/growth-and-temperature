@@ -59,7 +59,7 @@ def _fake_dataset_with_one_corrupted_pixel() -> xr.Dataset:
 def test_execute_fetch_writes_output_and_clears_any_prior_failure_status(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path)
     monkeypatch.setattr(source, "_search_items", lambda tile, year: ["fake-item"])
-    monkeypatch.setattr(source, "_load_tile_year", lambda items: _fake_dataset())
+    monkeypatch.setattr(source, "_load_tile_year", lambda items, tile: _fake_dataset())
 
     targets = source.plan(PipelineStep.FETCH, TargetSelection())
     assert len(targets) == 1
@@ -81,7 +81,7 @@ def test_execute_fetch_excludes_a_physically_impossible_pixel_despite_good_qc(tm
 
     source, ctx = _make_source(tmp_path)
     monkeypatch.setattr(source, "_search_items", lambda tile, year: ["fake-item"])
-    monkeypatch.setattr(source, "_load_tile_year", lambda items: _fake_dataset_with_one_corrupted_pixel())
+    monkeypatch.setattr(source, "_load_tile_year", lambda items, tile: _fake_dataset_with_one_corrupted_pixel())
 
     targets = source.plan(PipelineStep.FETCH, TargetSelection())
     target = targets[0]
@@ -114,7 +114,7 @@ def test_main_variant_writes_lst_stats_and_valid_counts_only(tmp_path, monkeypat
     source, _ = _make_source(tmp_path, source_id="modis")
     assert source.variant == "main"
     monkeypatch.setattr(source, "_search_items", lambda tile, year: ["fake-item"])
-    monkeypatch.setattr(source, "_load_tile_year", lambda items: _fake_dataset_with_extended_bands())
+    monkeypatch.setattr(source, "_load_tile_year", lambda items, tile: _fake_dataset_with_extended_bands())
 
     target = source.plan(PipelineStep.FETCH, TargetSelection())[0]
     assert source.execute(target) is True
@@ -133,7 +133,7 @@ def test_extended_variant_writes_emissivity_and_view_bands_only(tmp_path, monkey
     source, _ = _make_source(tmp_path, source_id="modis_extended")
     assert source.variant == "extended"
     monkeypatch.setattr(source, "_search_items", lambda tile, year: ["fake-item"])
-    monkeypatch.setattr(source, "_load_tile_year", lambda items: _fake_dataset_with_extended_bands())
+    monkeypatch.setattr(source, "_load_tile_year", lambda items, tile: _fake_dataset_with_extended_bands())
 
     target = source.plan(PipelineStep.FETCH, TargetSelection())[0]
     assert source.execute(target) is True
@@ -186,7 +186,7 @@ def test_execute_fetch_retried_after_failure_can_succeed(tmp_path, monkeypatch):
 
     source2, _ = _make_source(tmp_path)
     monkeypatch.setattr(source2, "_search_items", lambda tile, year: ["fake-item"])
-    monkeypatch.setattr(source2, "_load_tile_year", lambda items: _fake_dataset())
+    monkeypatch.setattr(source2, "_load_tile_year", lambda items, tile: _fake_dataset())
     targets2 = source2.plan(PipelineStep.FETCH, TargetSelection())
     assert source2.execute(targets2[0]) is True
     source2.close()

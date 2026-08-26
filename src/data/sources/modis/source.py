@@ -401,13 +401,64 @@ class ModisSource(DataSource):
         return self._stac_client
 
     def _tile_bbox_4326(self, tile: str) -> List[float]:
+        """Real production failure (2026-08-26): reprojecting only the 4
+        sinusoidal tile corners and taking a naive min/max silently broke
+        for high-latitude tiles (v=2/v=3 rows) -- a poleward corner's true
+        longitude can exceed +/-180 degrees, and pyproj wraps it to the
+        opposite sign (e.g. -184.8 -> +175.2), so the corner set straddled
+        both signs and `min`/`max` produced a bbox spanning nearly the
+        whole globe. That fed straight into `_search_items`'s STAC query,
+        which then matched items across most of that latitude row instead
+        of just the one tile (`docs/design/13-prepare-memory-parallelism.md`).
+        Fixed by sampling many points along the tile's boundary (the
+        extremal longitude for a near-polar tile can fall mid-edge, not at
+        a corner) and unwrapping them by continuity around the tile's own
+        center longitude before taking min/max, instead of trusting each
+        point's independently-wrapped sign.
+
+        This bbox only needs to be a reasonable superset of the tile's true
+        footprint -- `_load_tile_year`'s explicit `geobox=` constrains the
+        actually *written* data to the tile's exact bounds regardless of
+        how broad this search bbox is, so an imprecise (over-wide) result
+        here is a search-efficiency concern, not a correctness one.
+        """
         from pyproj import Transformer
 
         h, v = int(tile[1:3]), int(tile[4:6])
         x0, y0, x1, y1 = modis_util.tile_bounds_m(h, v)
         transformer = Transformer.from_crs(modis_util.SINUSOIDAL_PROJ4, "EPSG:4326", always_xy=True)
-        lons, lats = transformer.transform([x0, x1, x0, x1], [y0, y0, y1, y1])
-        return [min(lons), min(lats), max(lons), max(lats)]
+
+        n = 20
+        xs: List[float] = []
+        ys: List[float] = []
+        for i in range(n + 1):
+            t = i / n
+            xs += [x0 + t * (x1 - x0), x0 + t * (x1 - x0), x0, x1]
+            ys += [y0, y1, y0 + t * (y1 - y0), y0 + t * (y1 - y0)]
+        lons, lats = transformer.transform(xs, ys)
+        (center_lon,), _ = transformer.transform([(x0 + x1) / 2], [(y0 + y1) / 2])
+
+        unwrapped = [
+            lon + 360 if lon - center_lon < -180 else (lon - 360 if lon - center_lon > 180 else lon)
+            for lon in lons
+        ]
+        lon_min, lon_max = min(unwrapped), max(unwrapped)
+
+        if lon_max - lon_min >= 360:
+            # Genuinely spans the whole globe -- only possible right at a
+            # pole -- so a full-longitude bbox is the correct search area.
+            lon_min, lon_max = -180.0, 180.0
+        else:
+            if lon_min < -180:
+                lon_min, lon_max = lon_min + 360, lon_max + 360
+            if lon_max > 180:
+                # Crosses the antimeridian: STAC represents that with
+                # min_lon > max_lon, which isn't universally supported by
+                # search backends, so widen to the full range instead --
+                # over-fetching here is only a perf cost (see docstring).
+                lon_min, lon_max = -180.0, 180.0
+
+        return [lon_min, min(lats), lon_max, max(lats)]
 
     def _search_items(self, tile: str, year: int) -> list:
         client = self._get_stac_client()
@@ -451,8 +502,9 @@ class ModisSource(DataSource):
                 filtered.append(item)
         return filtered
 
-    def _load_tile_year(self, items: list) -> Optional[xr.Dataset]:
+    def _load_tile_year(self, items: list, tile: str) -> Optional[xr.Dataset]:
         import odc.stac
+        from odc.geo.geobox import GeoBox
 
         # odc.stac.load() (default kwargs, no `dtype=`/`groupby=` scale
         # processing requested) does NOT auto-apply STAC-declared
@@ -464,20 +516,28 @@ class ModisSource(DataSource):
         # not a double-application bug.
         assets = self.band_spec["assets"]
         bands = [spec["name"] for spec in assets.values()]
-        # `crs=`/`resolution=` pinned explicitly: odc-stac otherwise
-        # auto-guesses both from each item's STAC `proj` extension fields,
-        # which some items lack entirely (observed 2026-08-17 -- items with
-        # no `platform` property either, so likely a batch with generally
-        # incomplete metadata) and then raises
-        # `ValueError("Failed to auto-guess CRS/resolution.")` outright
-        # instead of degrading gracefully. `crs=` alone isn't enough --
-        # odc-stac still tries to auto-derive resolution from item metadata
-        # when resolution is left unset, and hits the same error. The
-        # sinusoidal grid and its 1km pixel size are fixed and already known
-        # here (`_tile_bbox_4326`/`RESOLUTION_1KM_M`), so there's nothing to
-        # guess.
+        # `geobox=` pinned explicitly to this tile's own known sinusoidal
+        # bounds (not `crs=`/`resolution=` alone): odc-stac otherwise
+        # auto-guesses the output window from whichever items the STAC
+        # search actually returned, which some items lack `proj` metadata
+        # for entirely (observed 2026-08-17, raising
+        # "Failed to auto-guess CRS/resolution." outright) -- and, more
+        # importantly, `_tile_bbox_4326`'s search bbox is deliberately
+        # allowed to be an over-wide superset of the tile for high-latitude
+        # tiles (see its docstring), so an over-inclusive STAC search used
+        # to translate directly into an oversized *written* GeoTIFF
+        # spanning most of a latitude row instead of just this tile
+        # (real production failure, 2026-08-26,
+        # docs/design/13-prepare-memory-parallelism.md). Pinning `geobox=`
+        # here forces the output window to exactly this tile's bounds
+        # regardless of how many (or which) items matched the search.
+        h, v = int(tile[1:3]), int(tile[4:6])
+        x0, y0, x1, y1 = modis_util.tile_bounds_m(h, v)
+        tile_geobox = GeoBox.from_bbox(
+            (x0, y0, x1, y1), crs=modis_util.SINUSOIDAL_PROJ4, resolution=modis_util.RESOLUTION_1KM_M
+        )
         ds = odc.stac.load(
-            items, bands=bands, crs=modis_util.SINUSOIDAL_PROJ4, resolution=modis_util.RESOLUTION_1KM_M,
+            items, bands=bands, geobox=tile_geobox,
             chunks={"time": 1, "x": 2400, "y": 2400}, resampling="nearest",
         )
         if not ds.data_vars:
@@ -514,7 +574,7 @@ class ModisSource(DataSource):
             manifest.record_failure(status_dir, target.key, "no STAC items found")
             return False
 
-        ds = self._load_tile_year(items)
+        ds = self._load_tile_year(items, tile)
         if ds is None or "lst" not in ds.data_vars or "qc" not in ds.data_vars:
             logger.error("Failed to load required bands for tile=%s year=%d", tile, year)
             manifest.record_failure(status_dir, target.key, "failed to load required bands")
@@ -742,10 +802,11 @@ class ModisSource(DataSource):
         # `rasterio.open()` header read (bounds/crs/transform only, no pixel
         # data decoded) is enough to know which files overlap a given
         # tile's bbox, so building this index never touches raster array
-        # data. NOT `xr.combine_by_coords` over the whole year: MODIS FETCH
-        # (`_load_tile_year`) pins `crs=`/`resolution=` but not an explicit
-        # per-tile geobox, so each fetched tile's actual pixel grid is
-        # snapped independently from whichever STAC items matched -- two
+        # data. NOT `xr.combine_by_coords` over the whole year: files
+        # fetched before `_load_tile_year` started pinning an explicit
+        # per-tile `geobox=` (docs/design/13-prepare-memory-parallelism.md,
+        # 2026-08-26 fix) have each tile's actual pixel grid snapped
+        # independently from whichever STAC items matched -- two
         # geographically-adjacent tiles can end up a fraction of a pixel
         # out of alignment, and `combine_by_coords` requires exact
         # non-overlapping coordinate labels, raising "duplicate values"
