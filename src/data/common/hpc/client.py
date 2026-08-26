@@ -540,15 +540,20 @@ class HPCClient:
             full_remote_path = remote_path
         
         logger.info(f"PowerShell upload: {local_path} -> {full_remote_path}")
-        
+
         try:
             # Ensure remote directory exists using the relative path (ensure_directory handles base_path)
             remote_dir = os.path.dirname(remote_path)
             if remote_dir:
                 self.ensure_directory(remote_dir)
-            
-            # Build PowerShell command using scp
-            ps_cmd = ["powershell", "-Command"]
+
+            # Build PowerShell command using scp. -NoProfile: this is an ad
+            # hoc scp wrapper, not an interactive shell -- loading the
+            # user's profile is unnecessary and fragile (e.g. a broken conda
+            # auto-activate hook there can abort the whole -Command script
+            # before scp even runs, misreporting a profile error as a
+            # transfer failure).
+            ps_cmd = ["powershell", "-NoProfile", "-Command"]
 
             # Construct the SCP command
             scp_cmd = f"scp {self._scp_non_interactive_opts()}"
@@ -621,8 +626,9 @@ class HPCClient:
             if local_dir:
                 os.makedirs(local_dir, exist_ok=True)
             
-            # Build PowerShell command using scp
-            ps_cmd = ["powershell", "-Command"]
+            # Build PowerShell command using scp. -NoProfile: see
+            # _powershell_upload's identical comment.
+            ps_cmd = ["powershell", "-NoProfile", "-Command"]
 
             # Construct the SCP command
             scp_cmd = f"scp {self._scp_non_interactive_opts()}"
