@@ -285,10 +285,11 @@ sources:
     download:
       max_concurrent_downloads: 1
 
-    # VIIRS radiance is continuous and can spike much higher over cities/flares.
+    # VIIRS radiance is continuous and can spike much higher over cities/flares
+    # (matches the ntl_harm bound below, which is derived from this source).
     verification:
       expected_vars: ["viirs_annual"]
-      value_range: [0, 1000]
+      value_range: [0, 2000]
 
   # EOG DVNL -- disabled for now, not run by the pipeline. Left commented
   # rather than deleted so it can be re-enabled by uncommenting
@@ -315,8 +316,6 @@ sources:
     download:
       batch_size: 50
       max_concurrent_downloads: 1
-      tar_max_files: 40
-      tar_max_size_mb: 2000
       timeout: 600  # 10 minutes for large files
 
     verification:
@@ -356,8 +355,6 @@ sources:
     download:
       batch_size: 2
       max_concurrent_downloads: 1
-      tar_max_files: 2
-      tar_max_size_mb: 100
       timeout: 600
 
     verification:
@@ -376,8 +373,6 @@ sources:
     download:
       batch_size: 2
       max_concurrent_downloads: 1
-      tar_max_files: 2
-      tar_max_size_mb: 100
       timeout: 600
 
     # No verification block by default: expected_vars (GID_0, GID_1, ...) is
@@ -409,8 +404,6 @@ sources:
     download:
       batch_size: 2
       max_concurrent_downloads: 1
-      tar_max_files: 2
-      tar_max_size_mb: 100
       timeout: 600
 
     # No verification block by default: realm_id/biome_id/eco_id have no
@@ -436,8 +429,6 @@ sources:
     download:
       batch_size: 2
       max_concurrent_downloads: 1
-      tar_max_files: 2
-      tar_max_size_mb: 100
       timeout: 600
 
     # value_cols vary by which of hdi/worldbank were available at PREPARE
@@ -473,8 +464,6 @@ sources:
   #   download:
   #     batch_size: 1
   #     max_concurrent_downloads: 1
-  #     tar_max_files: 5
-  #     tar_max_size_mb: 500
   #     timeout: 60
 
   # World Bank Pink Sheet commodity prices -- FETCH + PREPARE only (no GRID,

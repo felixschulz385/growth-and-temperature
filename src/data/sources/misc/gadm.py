@@ -269,35 +269,36 @@ class GadmSource(ConfiguredFilesFetchMixin, DataSource):
             logger.error("GADM rasterization requires an ADM_0/GID_0 level file")
             return False
 
-        with self._dask_client() as client:
-            dashboard_link = getattr(client, "dashboard_link", None)
-            if dashboard_link:
-                logger.info("Created Dask client for GADM rasterization: %s", dashboard_link)
+        # No Dask client here (docs/design/13-prepare-memory-parallelism.md):
+        # `_rasterize_tile` is pure shapely/numpy, `run_tiled_prepare`'s
+        # per-unit loop is single-process/serial, and `processor` below is
+        # never constructed with `dask_client=` -- a `LocalCluster` created
+        # here would reserve SLURM job memory a rasterization pass
+        # structurally can never use.
+        geobox = get_target_geobox(self.ctx)
 
-            geobox = get_target_geobox(self.ctx)
+        # Reproject once, up front -- _rasterize_tile's per-tile overlap
+        # pre-filter compares each level's geometries directly against a
+        # tile_polygon built in the *target* geobox's CRS via plain
+        # shapely `.intersects()`, which never reprojects itself. See
+        # reproject_for_tile_overlap()'s docstring for why skipping this
+        # silently produces ~100%-null GRID output with no exception
+        # (the bug this line fixes, commit f653033).
+        level_gdfs = {gid_col: reproject_for_tile_overlap(gdf, geobox.crs) for gid_col, gdf in level_gdfs.items()}
 
-            # Reproject once, up front -- _rasterize_tile's per-tile overlap
-            # pre-filter compares each level's geometries directly against a
-            # tile_polygon built in the *target* geobox's CRS via plain
-            # shapely `.intersects()`, which never reprojects itself. See
-            # reproject_for_tile_overlap()'s docstring for why skipping this
-            # silently produces ~100%-null GRID output with no exception
-            # (the bug this line fixes, commit f653033).
-            level_gdfs = {gid_col: reproject_for_tile_overlap(gdf, geobox.crs) for gid_col, gdf in level_gdfs.items()}
-
-            processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
-            ok = run_tiled_prepare(
-                output_path=output_path,
-                years=None,
-                target_geobox=geobox,
-                processor=processor,
-                raw_getter=lambda tile, year: self._rasterize_tile(level_gdfs, level_code_to_id, tile),
-                reproject=False,
-                processing_version=self.PROCESSING_VERSION,
-                override=self.cfg.override,
-            )
-            if not ok:
-                return False
+        processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
+        ok = run_tiled_prepare(
+            output_path=output_path,
+            years=None,
+            target_geobox=geobox,
+            processor=processor,
+            raw_getter=lambda tile, year: self._rasterize_tile(level_gdfs, level_code_to_id, tile),
+            reproject=False,
+            processing_version=self.PROCESSING_VERSION,
+            override=self.cfg.override,
+        )
+        if not ok:
+            return False
 
         # ADM_AGG, not the CRS_AGG grid-store directory -- these sidecars
         # are read via gid_mapping_path() above, which looks in the ADM_AGG

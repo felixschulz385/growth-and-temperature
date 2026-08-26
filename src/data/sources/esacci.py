@@ -65,6 +65,7 @@ class EsacciSource(DataSource):
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
 
     DATA_SOURCE_NAME = "esacci"
+    DEFAULT_TRANSFER_MODE = "auto"
     has_entrypoints = True
     STATIC_ENTRYPOINTS = True  # get_all_entrypoints() is cfg.year_range-derived, no network call
     RAW_LISTING_DEPTH = 2  # <year>/<file>, see list_remote_files() below
@@ -244,7 +245,8 @@ class EsacciSource(DataSource):
             )
         ]
 
-    def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
+    @staticmethod
+    def _load_nc_as_dataset(file_path: str, year: int, temp_dir: str) -> Optional[xr.Dataset]:
         if not os.path.exists(file_path):
             logger.error("File not found: %s", file_path)
             return None
@@ -254,7 +256,7 @@ class EsacciSource(DataSource):
                     nc_name = next((n for n in z.namelist() if n.endswith(".nc")), None)
                     if nc_name is None:
                         raise ValueError(f"No .nc entry found inside zip: {file_path}")
-                    tmp_nc_path = os.path.join(self.temp_dir, f"esacci_{year}_{os.path.basename(nc_name)}")
+                    tmp_nc_path = os.path.join(temp_dir, f"esacci_{year}_{os.path.basename(nc_name)}")
                     with z.open(nc_name) as f_in, open(tmp_nc_path, "wb") as f_out:
                         shutil.copyfileobj(f_in, f_out)
                 nc_path = tmp_nc_path
@@ -294,10 +296,16 @@ class EsacciSource(DataSource):
             ds = ds.rio.write_crs("EPSG:4326")
             ds.attrs["source_year"] = year
             ds.attrs["source_file"] = os.path.basename(file_path)
-            # Materialize now: `nc_path` may be a temp file this method's
-            # own logic doesn't clean up on the same schedule as a lazy
-            # dask read would need it to stay alive.
-            return ds.load()
+            # Stays dask-backed (chunks="auto" above) -- the caller clips to
+            # one output tile's bbox via sel_bbox() before compute()ing, so
+            # only that small region is ever materialized, not this whole
+            # ~8GB-per-year global raster (docs/design/13-prepare-memory-
+            # parallelism.md). `nc_path` (the extracted temp file, when the
+            # source was zip-wrapped) stays valid for as long as `ds` is
+            # kept alive -- the caller's year-keyed cache closes it on year
+            # change, by which point every tile for that year has already
+            # been clipped and computed.
+            return ds
         except Exception:
             logger.exception("Error loading %s.", file_path)
             return None
@@ -312,9 +320,11 @@ class EsacciSource(DataSource):
         )
 
     def _execute_prepare(self, target: StepTarget) -> bool:
+        from odc.geo.geom import clip_lon180
+
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -338,21 +348,38 @@ class EsacciSource(DataSource):
             )
             with processor.setup_dask_config():
                 # run_tiled_prepare walks units years-major (all tiles for a
-                # year before the next year starts), so only the current
-                # year's full-globe raster ever needs to be resident -- evict
-                # the previous one on each year change to avoid retaining one
-                # ~8GB dataset per year for the whole run.
+                # year before the next year starts), so only one year's lazy
+                # (dask-backed, not yet materialized) Dataset handle ever
+                # needs to stay open -- evict/close the previous one on each
+                # year change. raw_getter below clips to each tile's own
+                # bbox and computes only that, so the ~8GB-per-year global
+                # raster this used to eagerly `.load()` is never resident at
+                # all now (docs/design/13-prepare-memory-parallelism.md).
                 cache: Dict[int, Optional[xr.Dataset]] = {}
 
-                def load_year(year: int) -> Optional[xr.Dataset]:
+                def year_ds(year: int) -> Optional[xr.Dataset]:
                     if year not in cache:
                         for old_year, old_ds in list(cache.items()):
                             if old_ds is not None:
                                 old_ds.close()
                             del cache[old_year]
                         source_file = self._resolve_raw_path(raw_files[year])
-                        cache[year] = self._load_nc_as_dataset(source_file, year)
+                        cache[year] = EsacciSource._load_nc_as_dataset(source_file, year, self.temp_dir)
                     return cache[year]
+
+                def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+                    ds = year_ds(year)
+                    if ds is None:
+                        return None
+                    bbox = clip_lon180(tile.geobox.pad(32, 32).extent).to_crs(ds.rio.crs).boundingbox
+                    clipped = sel_bbox(ds, bbox, y_dim="latitude", x_dim="longitude")
+                    if clipped.sizes.get("latitude", 0) == 0 or clipped.sizes.get("longitude", 0) == 0:
+                        logger.error(
+                            "Tile %s falls outside ESA CCI LC's coverage for year %d -- unexpected for a "
+                            "global product", getattr(tile, "id", "?"), year,
+                        )
+                        return None
+                    return clipped.compute()
 
                 # ESA CCI LC is categorical -- always nearest (run_tiled_prepare's
                 # own default), 0 as nodata.
@@ -362,7 +389,7 @@ class EsacciSource(DataSource):
                     variables=["lccs_class"],
                     target_geobox=target_geobox,
                     processor=processor,
-                    raw_getter=lambda tile, year: load_year(year),
+                    raw_getter=raw_getter,
                     tile_size=self.tile_size,
                     dst_nodata=0,
                     processing_version=self.PROCESSING_VERSION,

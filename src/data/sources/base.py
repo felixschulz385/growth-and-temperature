@@ -88,6 +88,14 @@ class DataSource(abc.ABC):
     #: ecoregions' FETCH isn't gated on gadm just because ecoregions' GRID
     #: needs it (docs/design/09-integrated-pipeline.md §2).
     REQUIRES: ClassVar[tuple[tuple[PipelineStep, str, PipelineStep], ...]] = ()
+    #: "auto" (push FETCH output to HPC immediately, judge "already fetched"
+    #: against the HPC target) or "manual" (local-disk-is-truth, explicit
+    #: `data transfer` only) -- see `src.data.common.fetch.transfer_mode`.
+    #: Declared per-class, next to `has_entrypoints`, so a new high-disk-usage
+    #: source's author sets this where they're already required to look,
+    #: instead of separately discovering and editing a central registry of
+    #: source ids. A `sources.<id>.transfer_mode` config override still wins.
+    DEFAULT_TRANSFER_MODE: ClassVar[str] = "manual"
 
     def __init__(self, ctx: "PipelineContext", cfg: "SourceConfig"):
         self.ctx = ctx

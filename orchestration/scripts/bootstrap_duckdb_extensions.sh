@@ -11,7 +11,7 @@
 # later SLURM job -- see snl_mining's DuckDB usage
 # (src/data/sources/snl_mining/source.py, src/data/preprocess/sources/
 # snl_mining.py, scripts/compare_step_output.py's compare_duckdb) and
-# orchestration/slurm/validate-hard-gate-snl_mining.sh, which is what
+# orchestration/scripts/validate-hard-gate-snl_mining.sh, which is what
 # surfaced this gap when run for real (`IOException: ... Connection timed
 # out` trying to download the spatial extension from a compute node).
 set -euo pipefail

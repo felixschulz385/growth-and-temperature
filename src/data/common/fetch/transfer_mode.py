@@ -10,41 +10,21 @@ presence to decide what's still outstanding would make an already-pushed,
 locally-pruned file look outstanding forever. `manual` sources keep the
 local-disk-is-truth default (`src/data/common/fetch/manifest.py`'s
 `resolve_fetch_listing()`/`src/data/common/fetch/driver.py`'s `run_fetch()`).
+
+The default itself is declared per-source-class
+(`DataSource.DEFAULT_TRANSFER_MODE`, `src/data/sources/base.py`) rather than
+here, so a new high-disk-usage source's author sets it where they're already
+required to look (next to `has_entrypoints`) instead of separately
+discovering and editing a central registry of source ids.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-#: Sources that default to "auto" unless a config explicitly overrides
-#: `transfer_mode` -- the high-disk-usage raster sources, where keeping
-#: every fetched file on local disk indefinitely isn't practical. Matched
-#: against `source.cfg.source_id` (the config key the source was created
-#: under, e.g. "glass_modis"/"modis_robustness_11a1"), not `source.ID` --
-#: several ids here (glass_modis/glass_avhrr) share one class/`.ID` value
-#: ("glass"), so `.ID` alone can't distinguish them.
-AUTO_TRANSFER_DEFAULT_SOURCES = frozenset(
-    {
-        "modis",
-        "modis_lst",
-        "modis_robustness_11a1",
-        "modis_extended",
-        "glass_modis",
-        "glass_ta_modis",
-        "glass_avhrr",
-        "acag",
-        "esacci",
-        "ntl_harm",
-        "eog_dmsp",
-        "eog_viirs",
-        "eog_dvnl",
-    }
-)
-
 
 def resolve_transfer_mode(source: Any) -> str:
-    """`sources.<id>.transfer_mode` if configured, else the default implied
-    by whether this source's config id is in `AUTO_TRANSFER_DEFAULT_SOURCES`."""
-    source_id = getattr(source.cfg, "source_id", None) or getattr(source, "ID", None)
-    default_mode = "auto" if (source_id and source_id.lower() in AUTO_TRANSFER_DEFAULT_SOURCES) else "manual"
-    return source.cfg.raw.get("transfer_mode", default_mode)
+    """`sources.<id>.transfer_mode` if configured, else *source*'s class-level
+    `DEFAULT_TRANSFER_MODE`."""
+    configured = source.cfg.raw.get("transfer_mode")
+    return configured if configured is not None else source.DEFAULT_TRANSFER_MODE

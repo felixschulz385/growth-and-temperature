@@ -88,15 +88,18 @@ def _download_batch(
     return asyncio.run(_download_batch_async(source, batch, raw_root, max_concurrent))
 
 
-def _push_one(pusher: Any, ctx: Any, raw_root: str, req: manifest.RequiredFile) -> None:
+def _push_one(pusher: Any, ctx: Any, raw_root: str, req: manifest.RequiredFile) -> bool:
     """Push *req*'s just-downloaded file to HPC immediately -- the golden
     invariant every FETCH transfer path relies on (`DataSource
     .transfer_units()`'s docstring): a local FETCH path's remote counterpart
     is always that same path relative to `ctx.data_root`, mirrored under the
-    HPC target's own base path. A push failure here is logged, not raised --
-    the file did genuinely download; `_maybe_auto_transfer()`'s end-of-run
-    batched pass (`src/cli/data/handlers.py`) or a manual `data transfer`
-    will pick up anything missed."""
+    HPC target's own base path. A push failure here doesn't undo the
+    download (the file did genuinely download, so it's not re-queued via
+    `record_failure`) -- `_maybe_auto_transfer()`'s end-of-run batched pass
+    (`src/cli/data/handlers.py`) or a manual `data transfer` will pick up
+    anything missed. The caller still needs to know it happened, though, so
+    it can surface in the run's overall success/failure signal instead of
+    silently vanishing after a warning log line."""
     from src.data.common.hpc.push import PushUnit
 
     local_path = os.path.join(raw_root, req.relative_path)
@@ -104,6 +107,8 @@ def _push_one(pusher: Any, ctx: Any, raw_root: str, req: manifest.RequiredFile) 
     result = pusher.push_unit(PushUnit(unit_id=req.unit_id, local_path=local_path, remote_path=remote_path))
     if not result.ok:
         logger.warning("Auto-transfer failed for %s: %s", req.relative_path, result.error)
+        return False
+    return True
 
 
 def run_fetch(
@@ -169,22 +174,23 @@ def run_fetch(
             logger.info("Fetch complete for %s: nothing outstanding", source_id)
             return True
 
-        total_downloaded = total_failed = 0
+        total_downloaded = total_failed = total_push_failed = 0
         for i in range(0, len(plan.outstanding), batch_size):
             batch = plan.outstanding[i : i + batch_size]
             for req, ok, error in _download_batch(source, batch, raw_root, max_concurrent_downloads):
                 if ok:
                     manifest.clear_failure(raw_root, req.unit_id)
                     total_downloaded += 1
-                    if pusher is not None:
-                        _push_one(pusher, ctx, raw_root, req)
+                    if pusher is not None and not _push_one(pusher, ctx, raw_root, req):
+                        total_push_failed += 1
                 else:
                     manifest.record_failure(raw_root, req.unit_id, error or "unknown error", max_attempts=max_attempts)
                     total_failed += 1
 
         logger.info(
-            "Fetch complete for %s: %d downloaded, %d failed", source_id, total_downloaded, total_failed,
+            "Fetch complete for %s: %d downloaded, %d failed, %d push failed",
+            source_id, total_downloaded, total_failed, total_push_failed,
         )
-        return total_failed == 0
+        return total_failed == 0 and total_push_failed == 0
     finally:
         lockfile.release(lock_path)

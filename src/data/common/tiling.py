@@ -69,14 +69,3 @@ def iter_tiles(target_geobox, tile_size: int = DEFAULT_TILE_SIZE) -> Iterator[Ti
             idx = (row, col)
             y_slice, x_slice = tiles.roi[idx]
             yield Tile(row=row, col=col, geobox=tiles[idx], y_slice=y_slice, x_slice=x_slice)
-
-
-def tile_by_id(target_geobox, tile_id: str, tile_size: int = DEFAULT_TILE_SIZE) -> Tile:
-    """Reconstruct one `Tile` from its `id` without iterating the whole grid --
-    used by the PREPARE execution loop to resume a single outstanding unit."""
-    row_str, col_str = tile_id.split("_")
-    row, col = int(row_str), int(col_str)
-    tiles = build_tile_grid(target_geobox, tile_size)
-    idx = (row, col)
-    y_slice, x_slice = tiles.roi[idx]
-    return Tile(row=row, col=col, geobox=tiles[idx], y_slice=y_slice, x_slice=x_slice)

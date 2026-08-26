@@ -15,11 +15,11 @@
 # against expected coefficient behaviour -- that needs src/analysis/ wiring).
 #
 # Usage:
-#   sbatch orchestration/slurm/validate-backbone-subset.sh
+#   sbatch orchestration/scripts/validate-backbone-subset.sh
 #       -> synthetic mode: no real data needed, just confirms the pinned
 #          "src" environment (environment.yml) runs the pipeline on this node.
 #
-#   sbatch orchestration/slurm/validate-backbone-subset.sh \
+#   sbatch orchestration/scripts/validate-backbone-subset.sh \
 #       /path/to/eog_ease6933.zarr DNB_BRDF_Corrected_NTL "" "2020 2021"
 #       -> real mode, once `run.py data run --source eog --step grid` has
 #          been run with orchestration/configs/data.yaml's `pipeline.grid`

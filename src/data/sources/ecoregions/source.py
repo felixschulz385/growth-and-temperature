@@ -500,33 +500,34 @@ class EcoregionsSource(ConfiguredFilesFetchMixin, DataSource):
             col: {code: i + 1 for i, code in enumerate(sorted(gdf[col].unique()))} for col in CLASS_COLUMNS
         }
 
-        with self._dask_client() as client:
-            dashboard_link = getattr(client, "dashboard_link", None)
-            if dashboard_link:
-                logger.info("Created Dask client for ecoregions rasterization: %s", dashboard_link)
+        # No Dask client here (docs/design/13-prepare-memory-parallelism.md):
+        # `_rasterize_tile` is pure shapely/numpy, `run_tiled_prepare`'s
+        # per-unit loop is single-process/serial, and `processor` below is
+        # never constructed with `dask_client=` -- a `LocalCluster` created
+        # here would reserve SLURM job memory a rasterization pass
+        # structurally can never use.
+        geobox = get_target_geobox(self.ctx)
 
-            geobox = get_target_geobox(self.ctx)
+        # Reproject once, up front -- same CRS-mismatch pitfall gadm hit
+        # (commit f653033): the per-tile overlap prefilter compares raw
+        # geometries against a tile polygon already in the target
+        # geobox's CRS, with no reprojection of its own. See
+        # reproject_for_tile_overlap()'s docstring for details.
+        gdf = reproject_for_tile_overlap(gdf, geobox.crs)
 
-            # Reproject once, up front -- same CRS-mismatch pitfall gadm hit
-            # (commit f653033): the per-tile overlap prefilter compares raw
-            # geometries against a tile polygon already in the target
-            # geobox's CRS, with no reprojection of its own. See
-            # reproject_for_tile_overlap()'s docstring for details.
-            gdf = reproject_for_tile_overlap(gdf, geobox.crs)
-
-            processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
-            ok = run_tiled_prepare(
-                output_path=target.output_path,
-                years=None,
-                target_geobox=geobox,
-                processor=processor,
-                raw_getter=lambda tile, year: self._rasterize_tile(gdf, code_to_id, tile),
-                reproject=False,
-                processing_version=self.PROCESSING_VERSION,
-                override=self.cfg.override,
-            )
-            if not ok:
-                return False
+        processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox)
+        ok = run_tiled_prepare(
+            output_path=target.output_path,
+            years=None,
+            target_geobox=geobox,
+            processor=processor,
+            raw_getter=lambda tile, year: self._rasterize_tile(gdf, code_to_id, tile),
+            reproject=False,
+            processing_version=self.PROCESSING_VERSION,
+            override=self.cfg.override,
+        )
+        if not ok:
+            return False
 
         output_dir = os.path.dirname(target.output_path)
         os.makedirs(output_dir, exist_ok=True)

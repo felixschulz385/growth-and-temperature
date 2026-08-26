@@ -17,6 +17,7 @@ from src.data.pipeline.context import PipelineContext
 class _FakeSource:
     ID = "fake"
     has_entrypoints = False
+    DEFAULT_TRANSFER_MODE = "manual"
 
     def __init__(self, ctx, cfg, files, *, fail_urls=()):
         self.ctx = ctx
@@ -236,7 +237,7 @@ def test_run_fetch_stays_local_only_when_transfer_mode_manual_even_with_ssh_targ
     ctx = PipelineContext(
         data_root=str(tmp_path / "data_root"), local_index_dir=str(tmp_path / "index"), ssh_target="user@host:base"
     )
-    cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})  # "fake" isn't an auto-transfer default
+    cfg = SourceConfig.from_dict("fake", {"data_path": "fake"})  # _FakeSource.DEFAULT_TRANSFER_MODE == "manual"
     source = _FakeSource(ctx, cfg, [("a.nc", "https://x/a.nc")])
 
     assert run_fetch(source) is True

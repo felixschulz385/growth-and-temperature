@@ -98,7 +98,7 @@
 # fails with ENOBUFS/worker-churn, rerun with a smaller --dask-threads.
 #
 # Usage:
-#   sbatch orchestration/slurm/validate-hard-gate-acag.sh [YEAR] [WINDOW_PX]
+#   sbatch orchestration/scripts/validate-hard-gate-acag.sh [YEAR] [WINDOW_PX]
 #   (YEAR defaults to 2020 -- picked because it matches ACAG's "GL"-prefixed
 #   naming convention; 2000's entry is anomalously "EU"-tagged, avoid it.
 #   WINDOW_PX defaults to 300 -- centered, so ~150px in from the grid's

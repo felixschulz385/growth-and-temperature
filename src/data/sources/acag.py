@@ -17,6 +17,7 @@ import tempfile
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
+import numpy as np
 import pandas as pd
 import requests
 import rioxarray as rxr
@@ -47,6 +48,7 @@ class AcagSource(DataSource):
 
     # -- RemoteFileCatalog contract (src/data/sources/base.py) --------------
     DATA_SOURCE_NAME = "acag"
+    DEFAULT_TRANSFER_MODE = "auto"
     has_entrypoints = True
     STATIC_ENTRYPOINTS = True  # get_all_entrypoints() derives from the static KNOWN_FILES list, no network call
     RAW_LISTING_DEPTH = 3  # GL/Annual/<file>, see KNOWN_FILES below
@@ -259,12 +261,17 @@ class AcagSource(DataSource):
             )
         ]
 
-    def _load_nc_as_dataset(self, file_path: str, year: int) -> Optional[xr.Dataset]:
+    @staticmethod
+    def _load_nc_as_dataset(file_path: str, year: int) -> Optional[xr.Dataset]:
         if not os.path.exists(file_path):
             logger.error("File not found: %s", file_path)
             return None
         try:
-            data = rxr.open_rasterio(file_path, decode_coords="all", mask_and_scale=True, driver="HDF5")
+            # chunks="auto" -- stays dask-backed; the caller clips to one
+            # output tile's bbox via sel_bbox() before compute()ing, so this
+            # whole-year global raster is never eagerly materialized
+            # (docs/design/13-prepare-memory-parallelism.md).
+            data = rxr.open_rasterio(file_path, decode_coords="all", mask_and_scale=True, driver="HDF5", chunks="auto")
             if "band" in data.dims and data.sizes.get("band", 1) > 1:
                 data = data.isel(band=0)
             ds = data.to_dataset(name="pm25")
@@ -315,7 +322,7 @@ class AcagSource(DataSource):
     def _execute_prepare(self, target: StepTarget) -> bool:
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -338,13 +345,41 @@ class AcagSource(DataSource):
                 target_geobox=target_geobox,
             )
             with processor.setup_dask_config():
+                # run_tiled_prepare walks units years-major, so only one
+                # year's lazy (dask-backed) Dataset needs to stay open at
+                # once -- evict the previous one on each year change.
+                # raw_getter clips to each tile's own bbox and computes only
+                # that (docs/design/13-prepare-memory-parallelism.md),
+                # instead of reprojecting the whole eagerly-materialized
+                # global raster once per tile.
                 cache: Dict[int, Optional[xr.Dataset]] = {}
 
-                def load_year(year: int) -> Optional[xr.Dataset]:
+                def year_ds(year: int) -> Optional[xr.Dataset]:
                     if year not in cache:
+                        for old_year, old_ds in list(cache.items()):
+                            if old_ds is not None:
+                                old_ds.close()
+                            del cache[old_year]
                         source_file = self._resolve_raw_path(raw_files[year])
-                        cache[year] = self._load_nc_as_dataset(source_file, year)
+                        cache[year] = AcagSource._load_nc_as_dataset(source_file, year)
                     return cache[year]
+
+                def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
+                    ds = year_ds(year)
+                    if ds is None:
+                        return None
+                    bbox = tile.geobox.pad(32, 32).extent.to_crs(ds.rio.crs).boundingbox
+                    clipped = sel_bbox(ds, bbox, y_dim="latitude", x_dim="longitude")
+                    if clipped.sizes.get("latitude", 0) == 0 or clipped.sizes.get("longitude", 0) == 0:
+                        # Tile falls outside this year's raster coverage --
+                        # legitimate tile state, not a fetch failure.
+                        # NaN-fill on tile.geobox instead of None, same
+                        # convention as MODIS/ESA-CCI/AVHRR's own raw_getter.
+                        dim_y, dim_x = tile.geobox.dims
+                        return xr.Dataset(
+                            {"pm25": ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))}
+                        )
+                    return clipped.compute()
 
                 return run_tiled_prepare(
                     output_path=target.output_path,
@@ -352,7 +387,7 @@ class AcagSource(DataSource):
                     variables=["pm25"],
                     target_geobox=target_geobox,
                     processor=processor,
-                    raw_getter=lambda tile, year: load_year(year),
+                    raw_getter=raw_getter,
                     tile_size=self.tile_size,
                     processing_version=self.PROCESSING_VERSION,
                     override=self.cfg.override,

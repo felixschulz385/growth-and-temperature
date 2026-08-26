@@ -3,7 +3,7 @@ source's existing `RemoteFileCatalog` surface
 (`has_entrypoints`/`list_remote_files`/`get_all_entrypoints`/`get_file_hash`,
 `src.data.sources.base`) completely unchanged.
 
-Entrypoint-based sources (`has_entrypoints=True`: esacci/acag/ntl_harm/glass)
+Entrypoint-based sources (`has_entrypoints=True`: esacci/acag/ntl_harm/eog)
 crawl one directory listing per entrypoint (e.g. one per year) -- expensive
 enough that re-doing it on every `data fetch` call would be wasteful. Each
 entrypoint's file listing is cached to a small JSON sidecar
@@ -51,7 +51,7 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
     Entrypoint sources: see module docstring for the caching behavior."""
     get_hash = source.get_file_hash
 
-    if not getattr(source, "has_entrypoints", False):
+    if not source.has_entrypoints:
         pairs = list(source.list_remote_files())
         if pairs:
             cache_path = statusfile.status_path(status_dir, _FLAT_CACHE_KEY, subdir=ENTRYPOINT_CACHE_SUBDIR)
@@ -70,7 +70,10 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
                 pairs = list(source.list_remote_files(entrypoint))
             except Exception:
                 logger.exception("Error crawling entrypoint %s -- will retry next run", entrypoint)
-                continue
+                fallback = statusfile.read(cache_path)
+                if fallback is None:
+                    continue
+                pairs = fallback["files"]
             if pairs:
                 statusfile.write(cache_path, {"files": pairs})
                 manifest.clear_failure(status_dir, key)
@@ -104,7 +107,7 @@ def cached_required_files(source: Any, status_dir: str) -> "list[RequiredFile] |
     missing.
     """
     get_hash = source.get_file_hash
-    if not getattr(source, "has_entrypoints", False):
+    if not source.has_entrypoints:
         cache_path = statusfile.status_path(status_dir, _FLAT_CACHE_KEY, subdir=ENTRYPOINT_CACHE_SUBDIR)
         cached = statusfile.read(cache_path)
         if cached is None:
@@ -147,11 +150,11 @@ def cached_entrypoint_counts(
     `entrypoint_key()`). The full target list itself
     (`source.get_all_entrypoints()`) only gets called for sources that
     declare `STATIC_ENTRYPOINTS = True` -- i.e. verified network-free
-    (esacci/glass/acag/eog/ntl_harm are all `year_range`-derived); a future
+    (esacci/acag/eog/ntl_harm are all `year_range`-derived); a future
     entrypoint source whose `get_all_entrypoints()` genuinely needs a live
     call (not declaring the flag) gets `None` here instead, letting the
     caller fall back further."""
-    if not getattr(source, "has_entrypoints", False) or not getattr(source, "STATIC_ENTRYPOINTS", False):
+    if not source.has_entrypoints or not getattr(source, "STATIC_ENTRYPOINTS", False):
         return None
     entrypoints = source.get_all_entrypoints()
     if not entrypoints:

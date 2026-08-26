@@ -56,8 +56,10 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 import tempfile
-from typing import Any, Dict, List, Optional
+from collections import OrderedDict
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -74,6 +76,53 @@ from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetS
 from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
+
+
+def _trim_edge_overlap(datasets: List[xr.Dataset]) -> List[xr.Dataset]:
+    """Trims genuine multi-pixel overlap between adjacent source tiles
+    before `xr.combine_by_coords`, which requires disjoint coordinate
+    labels and cannot tolerate any real overlap (unlike the pixel-snapping
+    done just before this call, which only fixes fractional-pixel
+    misalignment). On the strict MODIS/GLASS-MODIS h/v tile grid, any real
+    overlap between two tiles is always a full-height or full-width
+    boundary strip (they share an edge, not a corner), so for each tile
+    (processed in order) this drops the rows/columns already claimed by an
+    earlier tile, leaving no coordinate collisions
+    (docs/design/13-prepare-memory-parallelism.md)."""
+    claimed_bounds: List[Tuple[float, float, float, float]] = []  # (xmin, xmax, ymin, ymax)
+    trimmed = []
+    for ds in datasets:
+        x = ds["x"].values
+        y = ds["y"].values
+        x_mask = np.ones(x.shape, dtype=bool)
+        y_mask = np.ones(y.shape, dtype=bool)
+        xmin, xmax = float(x.min()), float(x.max())
+        ymin, ymax = float(y.min()), float(y.max())
+        for cxmin, cxmax, cymin, cymax in claimed_bounds:
+            ov_xmin, ov_xmax = max(xmin, cxmin), min(xmax, cxmax)
+            ov_ymin, ov_ymax = max(ymin, cymin), min(ymax, cymax)
+            if ov_xmin > ov_xmax or ov_ymin > ov_ymax:
+                continue  # no overlap with this already-claimed tile
+            if ov_ymin <= ymin and ov_ymax >= ymax:
+                x_mask &= ~((x >= ov_xmin) & (x <= ov_xmax))
+            elif ov_xmin <= xmin and ov_xmax >= xmax:
+                y_mask &= ~((y >= ov_ymin) & (y <= ov_ymax))
+            else:
+                # Genuine 2D corner overlap -- shouldn't happen on a
+                # strict h/v grid; drop the intersecting block along both
+                # axes from this (later) tile so no duplicates remain.
+                x_mask &= ~((x >= ov_xmin) & (x <= ov_xmax))
+                y_mask &= ~((y >= ov_ymin) & (y <= ov_ymax))
+        if not x_mask.all() or not y_mask.all():
+            ds = ds.isel(x=x_mask, y=y_mask)
+        if ds.sizes.get("x", 0) and ds.sizes.get("y", 0):
+            trimmed.append(ds)
+            claimed_bounds.append(
+                (float(ds["x"].values.min()), float(ds["x"].values.max()),
+                 float(ds["y"].values.min()), float(ds["y"].values.max()))
+            )
+    return trimmed
+
 
 BAND_SPECS = {
     # view_angle/view_time fill+offset confirmed against Table 11 ("The SDSs
@@ -142,6 +191,7 @@ class ModisSource(DataSource):
     ID = "modis"
     ALIASES = ("modis_lst", "modis_robustness_11a1")
     STEPS = (PipelineStep.FETCH, PipelineStep.PREPARE)
+    DEFAULT_TRANSFER_MODE = "auto"
     #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
     PROCESSING_VERSION = "1-tiled"
 
@@ -295,8 +345,8 @@ class ModisSource(DataSource):
         from src.data.common.fetch.manifest import resolve_fetch_listing
 
         stage1_root = self.output_root(PipelineStep.FETCH)
-        # `transfer_mode=auto` (default for MODIS -- src.data.common.fetch
-        # .transfer_mode.AUTO_TRANSFER_DEFAULT_SOURCES): each tile-year's
+        # `transfer_mode=auto` (default for MODIS -- ModisSource
+        # .DEFAULT_TRANSFER_MODE above): each tile-year's
         # local .tif gets pushed to HPC right after FETCH and isn't kept
         # around indefinitely, so a bare local os.path.exists() would make
         # an already-pushed, locally-pruned tile look outstanding forever.
@@ -352,13 +402,64 @@ class ModisSource(DataSource):
         return self._stac_client
 
     def _tile_bbox_4326(self, tile: str) -> List[float]:
+        """Real production failure (2026-08-26): reprojecting only the 4
+        sinusoidal tile corners and taking a naive min/max silently broke
+        for high-latitude tiles (v=2/v=3 rows) -- a poleward corner's true
+        longitude can exceed +/-180 degrees, and pyproj wraps it to the
+        opposite sign (e.g. -184.8 -> +175.2), so the corner set straddled
+        both signs and `min`/`max` produced a bbox spanning nearly the
+        whole globe. That fed straight into `_search_items`'s STAC query,
+        which then matched items across most of that latitude row instead
+        of just the one tile (`docs/design/13-prepare-memory-parallelism.md`).
+        Fixed by sampling many points along the tile's boundary (the
+        extremal longitude for a near-polar tile can fall mid-edge, not at
+        a corner) and unwrapping them by continuity around the tile's own
+        center longitude before taking min/max, instead of trusting each
+        point's independently-wrapped sign.
+
+        This bbox only needs to be a reasonable superset of the tile's true
+        footprint -- `_load_tile_year`'s explicit `geobox=` constrains the
+        actually *written* data to the tile's exact bounds regardless of
+        how broad this search bbox is, so an imprecise (over-wide) result
+        here is a search-efficiency concern, not a correctness one.
+        """
         from pyproj import Transformer
 
         h, v = int(tile[1:3]), int(tile[4:6])
         x0, y0, x1, y1 = modis_util.tile_bounds_m(h, v)
         transformer = Transformer.from_crs(modis_util.SINUSOIDAL_PROJ4, "EPSG:4326", always_xy=True)
-        lons, lats = transformer.transform([x0, x1, x0, x1], [y0, y0, y1, y1])
-        return [min(lons), min(lats), max(lons), max(lats)]
+
+        n = 20
+        xs: List[float] = []
+        ys: List[float] = []
+        for i in range(n + 1):
+            t = i / n
+            xs += [x0 + t * (x1 - x0), x0 + t * (x1 - x0), x0, x1]
+            ys += [y0, y1, y0 + t * (y1 - y0), y0 + t * (y1 - y0)]
+        lons, lats = transformer.transform(xs, ys)
+        (center_lon,), _ = transformer.transform([(x0 + x1) / 2], [(y0 + y1) / 2])
+
+        unwrapped = [
+            lon + 360 if lon - center_lon < -180 else (lon - 360 if lon - center_lon > 180 else lon)
+            for lon in lons
+        ]
+        lon_min, lon_max = min(unwrapped), max(unwrapped)
+
+        if lon_max - lon_min >= 360:
+            # Genuinely spans the whole globe -- only possible right at a
+            # pole -- so a full-longitude bbox is the correct search area.
+            lon_min, lon_max = -180.0, 180.0
+        else:
+            if lon_min < -180:
+                lon_min, lon_max = lon_min + 360, lon_max + 360
+            if lon_max > 180:
+                # Crosses the antimeridian: STAC represents that with
+                # min_lon > max_lon, which isn't universally supported by
+                # search backends, so widen to the full range instead --
+                # over-fetching here is only a perf cost (see docstring).
+                lon_min, lon_max = -180.0, 180.0
+
+        return [lon_min, min(lats), lon_max, max(lats)]
 
     def _search_items(self, tile: str, year: int) -> list:
         client = self._get_stac_client()
@@ -400,10 +501,48 @@ class ModisSource(DataSource):
             include = id_ok if not platform_value else platform_ok
             if include:
                 filtered.append(item)
-        return filtered
 
-    def _load_tile_year(self, items: list) -> Optional[xr.Dataset]:
+        # Tile-identity filter: the bbox search above only needs to be a
+        # reasonable superset of this tile (`_tile_bbox_4326`'s docstring),
+        # and real MODIS granule footprints routinely spill a little past
+        # their own tile's edge, so `search()` often also returns items
+        # belonging to NEIGHBOURING h/v tiles -- confirmed empirically
+        # (2026-08-26): most fetched tiles came out ~3x their true
+        # 1200x1200 km size before `_load_tile_year`'s `geobox=` fix,
+        # consistent with a roughly 3x3 neighbourhood of tiles' items all
+        # getting swept into one load. `geobox=` already guarantees a
+        # correct *written* tile regardless, but dropping neighbour items
+        # here avoids downloading/decoding them at all
+        # (docs/design/13-prepare-memory-parallelism.md). Confirmed live
+        # against the Planetary Computer STAC API (2026-08-26): items carry
+        # `modis:horizontal-tile`/`modis:vertical-tile` integer properties;
+        # falls back to parsing the `h##v##` segment out of `item.id`
+        # (standard MODIS granule-id format, e.g.
+        # "MYD21A2.A2026209.h35v10.061.2026218165459") for the same
+        # incomplete-metadata batches the platform-property fallback above
+        # exists for. If neither is available, keeps the item rather than
+        # risking dropping real data -- `geobox=` makes that just a minor
+        # efficiency cost, never a correctness one.
+        target_h, target_v = int(tile[1:3]), int(tile[4:6])
+        id_tile_re = re.compile(r"\.h(\d{2})v(\d{2})\.")
+        tile_filtered = []
+        for item in filtered:
+            h = item.properties.get("modis:horizontal-tile")
+            v = item.properties.get("modis:vertical-tile")
+            if h is None or v is None:
+                m = id_tile_re.search(item.id)
+                if m:
+                    h, v = int(m.group(1)), int(m.group(2))
+            if h is None or v is None:
+                logger.debug("STAC item %s: no tile-id property or parseable id -- keeping", item.id)
+                tile_filtered.append(item)
+            elif int(h) == target_h and int(v) == target_v:
+                tile_filtered.append(item)
+        return tile_filtered
+
+    def _load_tile_year(self, items: list, tile: str) -> Optional[xr.Dataset]:
         import odc.stac
+        from odc.geo.geobox import GeoBox
 
         # odc.stac.load() (default kwargs, no `dtype=`/`groupby=` scale
         # processing requested) does NOT auto-apply STAC-declared
@@ -415,20 +554,28 @@ class ModisSource(DataSource):
         # not a double-application bug.
         assets = self.band_spec["assets"]
         bands = [spec["name"] for spec in assets.values()]
-        # `crs=`/`resolution=` pinned explicitly: odc-stac otherwise
-        # auto-guesses both from each item's STAC `proj` extension fields,
-        # which some items lack entirely (observed 2026-08-17 -- items with
-        # no `platform` property either, so likely a batch with generally
-        # incomplete metadata) and then raises
-        # `ValueError("Failed to auto-guess CRS/resolution.")` outright
-        # instead of degrading gracefully. `crs=` alone isn't enough --
-        # odc-stac still tries to auto-derive resolution from item metadata
-        # when resolution is left unset, and hits the same error. The
-        # sinusoidal grid and its 1km pixel size are fixed and already known
-        # here (`_tile_bbox_4326`/`RESOLUTION_1KM_M`), so there's nothing to
-        # guess.
+        # `geobox=` pinned explicitly to this tile's own known sinusoidal
+        # bounds (not `crs=`/`resolution=` alone): odc-stac otherwise
+        # auto-guesses the output window from whichever items the STAC
+        # search actually returned, which some items lack `proj` metadata
+        # for entirely (observed 2026-08-17, raising
+        # "Failed to auto-guess CRS/resolution." outright) -- and, more
+        # importantly, `_tile_bbox_4326`'s search bbox is deliberately
+        # allowed to be an over-wide superset of the tile for high-latitude
+        # tiles (see its docstring), so an over-inclusive STAC search used
+        # to translate directly into an oversized *written* GeoTIFF
+        # spanning most of a latitude row instead of just this tile
+        # (real production failure, 2026-08-26,
+        # docs/design/13-prepare-memory-parallelism.md). Pinning `geobox=`
+        # here forces the output window to exactly this tile's bounds
+        # regardless of how many (or which) items matched the search.
+        h, v = int(tile[1:3]), int(tile[4:6])
+        x0, y0, x1, y1 = modis_util.tile_bounds_m(h, v)
+        tile_geobox = GeoBox.from_bbox(
+            (x0, y0, x1, y1), crs=modis_util.SINUSOIDAL_PROJ4, resolution=modis_util.RESOLUTION_1KM_M
+        )
         ds = odc.stac.load(
-            items, bands=bands, crs=modis_util.SINUSOIDAL_PROJ4, resolution=modis_util.RESOLUTION_1KM_M,
+            items, bands=bands, geobox=tile_geobox,
             chunks={"time": 1, "x": 2400, "y": 2400}, resampling="nearest",
         )
         if not ds.data_vars:
@@ -465,7 +612,7 @@ class ModisSource(DataSource):
             manifest.record_failure(status_dir, target.key, "no STAC items found")
             return False
 
-        ds = self._load_tile_year(items)
+        ds = self._load_tile_year(items, tile)
         if ds is None or "lst" not in ds.data_vars or "qc" not in ds.data_vars:
             logger.error("Failed to load required bands for tile=%s year=%d", tile, year)
             manifest.record_failure(status_dir, target.key, "failed to load required bands")
@@ -645,11 +792,17 @@ class ModisSource(DataSource):
             )
         ]
 
-    def _read_annual_geotiff(self, path: str, year: int) -> xr.Dataset:
+    @staticmethod
+    def _read_annual_geotiff(path: str, year: int) -> xr.Dataset:
+        """Stays dask-backed (`chunks=True`) -- the caller `xr.combine_by_coords`s
+        every tile for a year into one lazy mosaic and only `.compute()`s
+        after clipping to one output tile's bbox (`sel_bbox`), so this never
+        eagerly reads a whole source GeoTIFF, let alone a whole year of them
+        (docs/design/13-prepare-memory-parallelism.md)."""
         import rasterio
         import rioxarray as rxr
 
-        da = rxr.open_rasterio(path, masked=True)
+        da = rxr.open_rasterio(path, masked=True, chunks=True)
         with rasterio.open(path) as src:
             descriptions = src.descriptions
 
@@ -665,14 +818,12 @@ class ModisSource(DataSource):
         ds = xr.Dataset(data_vars)
         return ds.rio.write_crs(da.rio.crs)
 
-    def _mosaic_tiles(self, tile_files: List[str], year: int) -> xr.Dataset:
-        datasets = [self._read_annual_geotiff(f, year) for f in tile_files]
-        return xr.combine_by_coords(datasets, combine_attrs="override")
-
     def _execute_prepare(self, target: StepTarget) -> bool:
+        from odc.geo.geom import box
+
         from src.data.common.geobox import get_or_create_canonical_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor
+        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
 
         # No top-level `is_complete(target)` short-circuit here: `target`'s
         # marker can already exist from a prior run while `target.meta["years"]`
@@ -685,45 +836,183 @@ class ModisSource(DataSource):
         stage1_root = self.output_root(PipelineStep.FETCH)
         years = target.meta["years"]
 
-        # One year's mosaic memoized at a time -- `run_tiled_prepare` iterates
-        # (year, tile) year-major, so at most one year's full-mosaic Dataset
-        # is ever held in memory (same pattern as GlassAvhrrSource._execute_prepare).
-        mosaic_cache: Dict[int, xr.Dataset] = {}
+        # Per-year index of (file, bounds) plus that year's shared CRS -- a
+        # `rasterio.open()` header read (bounds/crs/transform only, no pixel
+        # data decoded) is enough to know which files overlap a given
+        # tile's bbox, so building this index never touches raster array
+        # data. NOT `xr.combine_by_coords` over the whole year: files
+        # fetched before `_load_tile_year` started pinning an explicit
+        # per-tile `geobox=` (docs/design/13-prepare-memory-parallelism.md,
+        # 2026-08-26 fix) have each tile's actual pixel grid snapped
+        # independently from whichever STAC items matched -- two
+        # geographically-adjacent tiles can end up a fraction of a pixel
+        # out of alignment, and `combine_by_coords` requires exact
+        # non-overlapping coordinate labels, raising "duplicate values"
+        # the moment it meets a real (if tiny) overlap. Snapping x/y coords
+        # to the nearest whole pixel before combining (mirroring the old
+        # GlassPreprocessor._aggregate_year_files, which snapped to whole
+        # metres for its metre-scale sinusoidal/EASE data and never hit
+        # this) erases that sub-pixel misalignment so `combine_by_coords`
+        # sees genuinely-matching labels again
+        # (docs/design/13-prepare-memory-parallelism.md).
+        tile_index_cache: Dict[int, Tuple[List[Tuple[str, Any]], Any]] = {}
 
-        def year_mosaic(year: int) -> Optional[xr.Dataset]:
-            if year not in mosaic_cache:
-                mosaic_cache.clear()
+        def year_tile_index(year: int) -> Tuple[List[Tuple[str, Any]], Any]:
+            if year not in tile_index_cache:
+                import rasterio as _rasterio
+
+                logger.debug("MODIS PREPARE: building tile index for year %d", year)
                 year_dir = os.path.join(stage1_root, str(year))
-                tile_files = sorted(
-                    os.path.join(year_dir, f) for f in os.listdir(year_dir) if f.endswith(".tif")
-                ) if os.path.isdir(year_dir) else []
-                if not tile_files:
-                    logger.error("No stage-1 tiles for year %d at %s", year, year_dir)
-                    return None
-                mosaic = self._mosaic_tiles(tile_files, year)
-                if mosaic.rio.crs is None:
-                    mosaic = mosaic.rio.write_crs(modis_util.SINUSOIDAL_PROJ4)
-                mosaic_cache[year] = mosaic
-            return mosaic_cache[year]
+                index = []
+                crs = None
+                if os.path.isdir(year_dir):
+                    for f in sorted(os.listdir(year_dir)):
+                        if not f.endswith(".tif"):
+                            continue
+                        path = os.path.join(year_dir, f)
+                        with _rasterio.open(path) as src:
+                            index.append((path, src.bounds))
+                            if crs is None:
+                                crs = src.crs
+                tile_index_cache[year] = (index, crs)
+                logger.debug("MODIS PREPARE: year %d index built, %d tile(s)", year, len(index))
+            return tile_index_cache[year]
+
+        # Bounded LRU of individual (not merged) per-source-tile Datasets --
+        # `raw_getter` below is called once per canonical PREPARE tile, and
+        # neighbouring PREPARE tiles frequently need the same handful of
+        # MODIS source tiles, so caching avoids re-reading the same GeoTIFF
+        # repeatedly. Bounded size keeps memory to at most a few source
+        # tiles regardless of how many PREPARE tiles are processed.
+        SOURCE_TILE_CACHE_SIZE = 16
+        source_tile_cache: "OrderedDict[str, xr.Dataset]" = OrderedDict()
+
+        def read_source_tile(path: str, year: int) -> xr.Dataset:
+            if path in source_tile_cache:
+                source_tile_cache.move_to_end(path)
+                return source_tile_cache[path]
+            logger.debug("MODIS PREPARE: reading source tile %s", path)
+            ds = ModisSource._read_annual_geotiff(path, year)
+            # Drop the size-1 time/band dims _read_annual_geotiff adds --
+            # nothing downstream (process_tile_region, the NaN-fill
+            # fallback below, combine_by_coords) needs them.
+            squeeze_dims = [d for d in ("time", "band") if d in ds.dims]
+            if squeeze_dims:
+                ds = ds.squeeze(squeeze_dims, drop=True)
+            source_tile_cache[path] = ds
+            if len(source_tile_cache) > SOURCE_TILE_CACHE_SIZE:
+                source_tile_cache.popitem(last=False)
+            return ds
 
         def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
-            mosaic = year_mosaic(year)
-            if mosaic is None:
+            index, source_crs = year_tile_index(year)
+            if not index:
+                logger.error("No stage-1 tiles for year %d at %s", year, os.path.join(stage1_root, str(year)))
                 return None
-            bbox = tile.geobox.pad(32, 32).extent.to_crs(mosaic.rio.crs).boundingbox
-            clipped = mosaic.sel(y=slice(bbox.top, bbox.bottom), x=slice(bbox.left, bbox.right))
-            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
-                # This tile falls outside the mosaic's spatial coverage -- a
+
+            # Clamp the padded tile's bbox to the canonical grid's own
+            # valid extent (with a small resolution-scaled safety margin)
+            # before reprojecting to the source CRS. `GeoBox.from_bbox`
+            # pixel-snaps the grid's own edges slightly *outside* the
+            # mathematically valid domain of a periodic (longitude-
+            # wrapping) CRS like EASE6933 (confirmed empirically: ~470m
+            # past the true edge for the canonical grid) -- and
+            # reprojecting an out-of-domain coordinate on such a CRS
+            # silently wraps to the opposite side of the world instead of
+            # erroring. Left unclamped, an edge-column/edge-row tile's
+            # padded bbox, naively reprojected, spans nearly the WHOLE
+            # sinusoidal domain instead of the narrow band actually
+            # covered (confirmed: matched 104/282 fetched tiles instead of
+            # ~14 -- docs/design/13-prepare-memory-parallelism.md). Only
+            # ever clamps the grid's own 2 edge columns/rows; every
+            # interior tile's padded bbox already sits well inside the
+            # valid domain, so this is a no-op there.
+            grid_bbox = target_geobox.extent.boundingbox
+            margin = 2 * abs(target_geobox.resolution.x)
+            padded_bbox = tile.geobox.pad(32, 32).extent.boundingbox
+            clamped_left = max(padded_bbox.left, grid_bbox.left + margin)
+            clamped_bottom = max(padded_bbox.bottom, grid_bbox.bottom + margin)
+            clamped_right = min(padded_bbox.right, grid_bbox.right - margin)
+            clamped_top = min(padded_bbox.top, grid_bbox.top - margin)
+            # Fall back to the unclamped bbox if the margin would degenerate
+            # it (e.g. a target grid far smaller than the margin itself,
+            # only ever seen in tests against a synthetic tiny grid) --
+            # clamping is purely a defensive no-op for interior tiles
+            # anyway, never required for correctness there.
+            if clamped_left < clamped_right and clamped_bottom < clamped_top:
+                extent = box(clamped_left, clamped_bottom, clamped_right, clamped_top, crs=tile.geobox.crs)
+            else:
+                extent = tile.geobox.pad(32, 32).extent
+            bbox = extent.to_crs(source_crs).boundingbox
+            overlapping = [
+                path
+                for path, bounds in index
+                if bounds.right >= bbox.left
+                and bounds.left <= bbox.right
+                and bounds.top >= bbox.bottom
+                and bounds.bottom <= bbox.top
+            ]
+
+            dim_y, dim_x = tile.geobox.dims
+            if not overlapping:
+                # This tile falls outside the year's fetched coverage -- a
                 # legitimate tile state, not a fetch failure. Return a
                 # NaN-filled dataset on tile.geobox instead of None so
-                # run_tiled_prepare doesn't record it as a retryable failure
-                # and permanently block mark_complete (same convention as
-                # ecoregions/gadm/snl_mining's _rasterize_tile).
-                dim_y, dim_x = tile.geobox.dims
+                # run_tiled_prepare doesn't record it as a retryable
+                # failure and permanently block mark_complete (same
+                # convention as ecoregions/gadm/snl_mining's
+                # _rasterize_tile). Var names come from one arbitrary
+                # already-fetched tile (cheap via the bounded cache), not
+                # from a full mosaic.
+                sample = read_source_tile(index[0][0], year)
                 return xr.Dataset(
                     {
                         var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
-                        for var in mosaic.data_vars
+                        for var in sample.data_vars
+                    }
+                )
+
+            logger.debug("MODIS PREPARE: tile %s year %d overlaps %d source tile(s)", tile.id, year, len(overlapping))
+            datasets = [read_source_tile(path, year) for path in overlapping]
+            if len(datasets) == 1:
+                merged = datasets[0]
+            else:
+                logger.debug(
+                    "MODIS PREPARE: combining %d source tile(s) for tile %s year %d",
+                    len(datasets), tile.id, year,
+                )
+                # Snap x/y to the nearest whole pixel (using the source
+                # data's own resolution, not a hardcoded unit -- see the
+                # comment above `year_tile_index` for why) before
+                # combining: erases the sub-pixel misalignment that
+                # otherwise makes `combine_by_coords` see (non-existent)
+                # duplicate labels.
+                res_x = abs(float(datasets[0]["x"].values[1] - datasets[0]["x"].values[0]))
+                res_y = abs(float(datasets[0]["y"].values[1] - datasets[0]["y"].values[0]))
+                aligned = [
+                    ds.assign_coords(
+                        x=np.round(ds["x"].values / res_x) * res_x,
+                        y=np.round(ds["y"].values / res_y) * res_y,
+                    )
+                    for ds in datasets
+                ]
+                trimmed = _trim_edge_overlap(aligned)
+                if len(trimmed) < len(aligned):
+                    logger.debug(
+                        "MODIS PREPARE: trimmed overlap, %d of %d source tile(s) remain for tile %s year %d",
+                        len(trimmed), len(aligned), tile.id, year,
+                    )
+                merged = xr.combine_by_coords(trimmed, combine_attrs="drop_conflicts", join="outer")
+                logger.debug("MODIS PREPARE: combine done for tile %s year %d", tile.id, year)
+            if merged.rio.crs is None:
+                merged = merged.rio.write_crs(source_crs)
+
+            clipped = sel_bbox(merged, bbox, y_dim="y", x_dim="x")
+            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
+                return xr.Dataset(
+                    {
+                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
+                        for var in merged.data_vars
                     }
                 )
             return clipped
