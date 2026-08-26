@@ -197,3 +197,46 @@ def test_execute_fetch_retried_after_failure_can_succeed(tmp_path, monkeypatch):
     status_dir = source.output_root(PipelineStep.FETCH)
     # Cleared by the successful retry, not left stuck 'retrying'.
     assert statusfile.read(statusfile.status_path(status_dir, target.key)) is None
+
+
+class _FakeStacItem:
+    def __init__(self, item_id, platform="aqua", h=None, v=None):
+        self.id = item_id
+        self.properties = {"platform": platform}
+        if h is not None:
+            self.properties["modis:horizontal-tile"] = h
+        if v is not None:
+            self.properties["modis:vertical-tile"] = v
+
+
+def test_search_items_filters_out_neighbouring_tiles(tmp_path, monkeypatch):
+    """Real production symptom (2026-08-26): the STAC search bbox is
+    deliberately allowed to be a loose superset of one tile
+    (`_tile_bbox_4326`'s docstring), so `search()` routinely also returns
+    items belonging to NEIGHBOURING h/v tiles -- most fetched tiles came
+    out ~3x their true size before this filter + `_load_tile_year`'s
+    `geobox=` fix. `_search_items` drops non-matching-tile items using the
+    STAC-reported `modis:horizontal-tile`/`modis:vertical-tile` properties,
+    falling back to parsing the `h##v##` segment out of `item.id` for items
+    missing those properties, and keeping an item outright if neither is
+    available (docs/design/13-prepare-memory-parallelism.md)."""
+    source, ctx = _make_source(tmp_path, tiles=("h08v05",))
+
+    matching = _FakeStacItem("MYD21A2.A2019001.h08v05.061.2019010000000", h=8, v=5)
+    neighbour = _FakeStacItem("MYD21A2.A2019001.h09v05.061.2019010000000", h=9, v=5)
+    id_only_matching = _FakeStacItem("MYD21A2.A2019001.h08v05.061.2019010000001")
+    id_only_neighbour = _FakeStacItem("MYD21A2.A2019001.h07v05.061.2019010000001")
+    no_tile_info = _FakeStacItem("some-other-id-format")
+
+    class _FakeSearch:
+        def items(self):
+            return [matching, neighbour, id_only_matching, id_only_neighbour, no_tile_info]
+
+    class _FakeClient:
+        def search(self, **kwargs):
+            return _FakeSearch()
+
+    monkeypatch.setattr(source, "_get_stac_client", lambda: _FakeClient())
+
+    result = source._search_items("h08v05", 2019)
+    assert result == [matching, id_only_matching, no_tile_info]

@@ -56,6 +56,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 import os
+import re
 import tempfile
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
@@ -500,7 +501,44 @@ class ModisSource(DataSource):
             include = id_ok if not platform_value else platform_ok
             if include:
                 filtered.append(item)
-        return filtered
+
+        # Tile-identity filter: the bbox search above only needs to be a
+        # reasonable superset of this tile (`_tile_bbox_4326`'s docstring),
+        # and real MODIS granule footprints routinely spill a little past
+        # their own tile's edge, so `search()` often also returns items
+        # belonging to NEIGHBOURING h/v tiles -- confirmed empirically
+        # (2026-08-26): most fetched tiles came out ~3x their true
+        # 1200x1200 km size before `_load_tile_year`'s `geobox=` fix,
+        # consistent with a roughly 3x3 neighbourhood of tiles' items all
+        # getting swept into one load. `geobox=` already guarantees a
+        # correct *written* tile regardless, but dropping neighbour items
+        # here avoids downloading/decoding them at all
+        # (docs/design/13-prepare-memory-parallelism.md). Confirmed live
+        # against the Planetary Computer STAC API (2026-08-26): items carry
+        # `modis:horizontal-tile`/`modis:vertical-tile` integer properties;
+        # falls back to parsing the `h##v##` segment out of `item.id`
+        # (standard MODIS granule-id format, e.g.
+        # "MYD21A2.A2026209.h35v10.061.2026218165459") for the same
+        # incomplete-metadata batches the platform-property fallback above
+        # exists for. If neither is available, keeps the item rather than
+        # risking dropping real data -- `geobox=` makes that just a minor
+        # efficiency cost, never a correctness one.
+        target_h, target_v = int(tile[1:3]), int(tile[4:6])
+        id_tile_re = re.compile(r"\.h(\d{2})v(\d{2})\.")
+        tile_filtered = []
+        for item in filtered:
+            h = item.properties.get("modis:horizontal-tile")
+            v = item.properties.get("modis:vertical-tile")
+            if h is None or v is None:
+                m = id_tile_re.search(item.id)
+                if m:
+                    h, v = int(m.group(1)), int(m.group(2))
+            if h is None or v is None:
+                logger.debug("STAC item %s: no tile-id property or parseable id -- keeping", item.id)
+                tile_filtered.append(item)
+            elif int(h) == target_h and int(v) == target_v:
+                tile_filtered.append(item)
+        return tile_filtered
 
     def _load_tile_year(self, items: list, tile: str) -> Optional[xr.Dataset]:
         import odc.stac
