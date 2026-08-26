@@ -68,6 +68,44 @@ from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
 
+
+def _trim_edge_overlap(datasets: List[xr.Dataset]) -> List[xr.Dataset]:
+    """Trims genuine multi-pixel overlap between adjacent source tiles
+    before `xr.combine_by_coords` -- see ModisSource's identical helper
+    (src/data/sources/modis/source.py) for the full rationale
+    (docs/design/13-prepare-memory-parallelism.md)."""
+    claimed_bounds: List[Tuple[float, float, float, float]] = []  # (xmin, xmax, ymin, ymax)
+    trimmed = []
+    for ds in datasets:
+        x = ds["x"].values
+        y = ds["y"].values
+        x_mask = np.ones(x.shape, dtype=bool)
+        y_mask = np.ones(y.shape, dtype=bool)
+        xmin, xmax = float(x.min()), float(x.max())
+        ymin, ymax = float(y.min()), float(y.max())
+        for cxmin, cxmax, cymin, cymax in claimed_bounds:
+            ov_xmin, ov_xmax = max(xmin, cxmin), min(xmax, cxmax)
+            ov_ymin, ov_ymax = max(ymin, cymin), min(ymax, cymax)
+            if ov_xmin > ov_xmax or ov_ymin > ov_ymax:
+                continue
+            if ov_ymin <= ymin and ov_ymax >= ymax:
+                x_mask &= ~((x >= ov_xmin) & (x <= ov_xmax))
+            elif ov_xmin <= xmin and ov_xmax >= xmax:
+                y_mask &= ~((y >= ov_ymin) & (y <= ov_ymax))
+            else:
+                x_mask &= ~((x >= ov_xmin) & (x <= ov_xmax))
+                y_mask &= ~((y >= ov_ymin) & (y <= ov_ymax))
+        if not x_mask.all() or not y_mask.all():
+            ds = ds.isel(x=x_mask, y=y_mask)
+        if ds.sizes.get("x", 0) and ds.sizes.get("y", 0):
+            trimmed.append(ds)
+            claimed_bounds.append(
+                (float(ds["x"].values.min()), float(ds["x"].values.max()),
+                 float(ds["y"].values.min()), float(ds["y"].values.max()))
+            )
+    return trimmed
+
+
 #: Per-variant constants (docs/design/12-glass-modis-rebuild.md §1/§4):
 #: `path_prefix` keys this variant's whole raw/prepared tree (mirroring
 #: `GlassSource.path_prefix`, replacing `cfg.data_path`); `band_names` is
@@ -972,7 +1010,13 @@ class GlassModisSource(DataSource):
                     )
                     for ds in datasets
                 ]
-                merged = xr.combine_by_coords(aligned, combine_attrs="drop_conflicts", join="outer")
+                trimmed = _trim_edge_overlap(aligned)
+                if len(trimmed) < len(aligned):
+                    logger.debug(
+                        "GLASS-MODIS PREPARE: trimmed overlap, %d of %d source tile(s) remain for tile %s year %d",
+                        len(trimmed), len(aligned), tile.id, year,
+                    )
+                merged = xr.combine_by_coords(trimmed, combine_attrs="drop_conflicts", join="outer")
                 logger.debug("GLASS-MODIS PREPARE: combine done for tile %s year %d", tile.id, year)
             if merged.rio.crs is None:
                 merged = merged.rio.write_crs(source_crs)

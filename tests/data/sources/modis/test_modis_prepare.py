@@ -11,9 +11,11 @@ import yaml
 from odc.geo.geobox import GeoBox
 from rasterio.transform import from_bounds
 
+import xarray as xr
+
 from src.data.pipeline.config import SourceConfig
 from src.data.pipeline.context import PipelineContext
-from src.data.sources.modis.source import ModisSource
+from src.data.sources.modis.source import ModisSource, _trim_edge_overlap
 from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetSelection, marker_path
 
 
@@ -160,6 +162,37 @@ def test_clamped_bbox_avoids_antimeridian_wrap_at_real_grid_corner_tile():
         if x1 >= fixed_sinu.left and x0 <= fixed_sinu.right and y1 >= fixed_sinu.bottom and y0 <= fixed_sinu.top
     )
     assert overlap_count < 30  # was 104/282 before the fix
+
+
+def test_trim_edge_overlap_resolves_real_multi_pixel_boundary_overlap():
+    """Real production failure (2026-08-26): after pixel-snapping fixes
+    sub-pixel misalignment, `xr.combine_by_coords` still crashed with
+    "duplicate values" combining 37 real tiles for tile 0000_0001/year
+    2002 -- genuine multi-pixel overlap between adjacent h/v tiles
+    sharing a boundary column, which snapping alone can't fix.
+    `_trim_edge_overlap` trims that shared full-height boundary strip off
+    the later tile before combining (docs/design/13-prepare-memory-parallelism.md)."""
+
+    def make_tile(x_vals, y_vals, value):
+        data = np.full((len(y_vals), len(x_vals)), value, dtype=np.float32)
+        return xr.Dataset({"v": (("y", "x"), data)}, coords={"x": x_vals, "y": y_vals})
+
+    y_vals = np.arange(5, dtype=float)
+    # Three tiles in a row sharing full-height 2-column boundary overlaps
+    # with their neighbours -- the standard MODIS/GLASS-MODIS h/v grid
+    # overlap pattern, not a partial corner overlap.
+    tile0 = make_tile(np.arange(0, 10, dtype=float), y_vals, 0.0)
+    tile1 = make_tile(np.arange(8, 18, dtype=float), y_vals, 1.0)
+    tile2 = make_tile(np.arange(16, 26, dtype=float), y_vals, 2.0)
+
+    trimmed = _trim_edge_overlap([tile0, tile1, tile2])
+    merged = xr.combine_by_coords(trimmed, combine_attrs="drop_conflicts", join="outer")
+
+    assert not merged["x"].to_index().has_duplicates
+    assert not merged["y"].to_index().has_duplicates
+    assert merged.sizes["x"] == 26  # 0..25 inclusive, no gaps or double-counted columns
+    assert merged.sizes["y"] == 5
+    assert np.isfinite(merged["v"].values).all()
 
 
 def test_execute_prepare_reuses_one_years_mosaic_at_a_time(tmp_path, monkeypatch):
