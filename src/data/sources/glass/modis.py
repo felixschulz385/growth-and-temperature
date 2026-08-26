@@ -947,7 +947,15 @@ class GlassModisSource(DataSource):
                 )
 
             datasets = [read_source_tile(path, year) for path in overlapping]
-            merged = datasets[0] if len(datasets) == 1 else merge_datasets(datasets)
+            if len(datasets) == 1:
+                merged = datasets[0]
+            else:
+                logger.debug(
+                    "GLASS-MODIS PREPARE: merging %d source tile(s) for tile %s year %d",
+                    len(datasets), tile.id, year,
+                )
+                merged = merge_datasets(datasets)
+                logger.debug("GLASS-MODIS PREPARE: merge done for tile %s year %d", tile.id, year)
             if merged.rio.crs is None:
                 merged = merged.rio.write_crs(source_crs)
 
