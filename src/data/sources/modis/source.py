@@ -675,7 +675,6 @@ class ModisSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from odc.geo.geom import box
-        from rioxarray.merge import merge_datasets
 
         from src.data.common.geobox import get_or_create_canonical_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
@@ -703,8 +702,12 @@ class ModisSource(DataSource):
         # geographically-adjacent tiles can end up a fraction of a pixel
         # out of alignment, and `combine_by_coords` requires exact
         # non-overlapping coordinate labels, raising "duplicate values"
-        # the moment it meets a real (if tiny) overlap. `rioxarray.merge`
-        # merges by actual georeferencing instead, tolerating exactly this
+        # the moment it meets a real (if tiny) overlap. Snapping x/y coords
+        # to the nearest whole pixel before combining (mirroring the old
+        # GlassPreprocessor._aggregate_year_files, which snapped to whole
+        # metres for its metre-scale sinusoidal/EASE data and never hit
+        # this) erases that sub-pixel misalignment so `combine_by_coords`
+        # sees genuinely-matching labels again
         # (docs/design/13-prepare-memory-parallelism.md).
         tile_index_cache: Dict[int, Tuple[List[Tuple[str, Any]], Any]] = {}
 
@@ -744,10 +747,9 @@ class ModisSource(DataSource):
                 return source_tile_cache[path]
             logger.debug("MODIS PREPARE: reading source tile %s", path)
             ds = ModisSource._read_annual_geotiff(path, year)
-            # merge_datasets (rioxarray) only supports 2D/3D arrays -- drop
-            # the size-1 time/band dims _read_annual_geotiff adds; nothing
-            # downstream (process_tile_region, the NaN-fill fallback below)
-            # needs them.
+            # Drop the size-1 time/band dims _read_annual_geotiff adds --
+            # nothing downstream (process_tile_region, the NaN-fill
+            # fallback below, combine_by_coords) needs them.
             squeeze_dims = [d for d in ("time", "band") if d in ds.dims]
             if squeeze_dims:
                 ds = ds.squeeze(squeeze_dims, drop=True)
@@ -829,9 +831,27 @@ class ModisSource(DataSource):
             if len(datasets) == 1:
                 merged = datasets[0]
             else:
-                logger.debug("MODIS PREPARE: merging %d source tile(s) for tile %s year %d", len(datasets), tile.id, year)
-                merged = merge_datasets(datasets)
-                logger.debug("MODIS PREPARE: merge done for tile %s year %d", tile.id, year)
+                logger.debug(
+                    "MODIS PREPARE: combining %d source tile(s) for tile %s year %d",
+                    len(datasets), tile.id, year,
+                )
+                # Snap x/y to the nearest whole pixel (using the source
+                # data's own resolution, not a hardcoded unit -- see the
+                # comment above `year_tile_index` for why) before
+                # combining: erases the sub-pixel misalignment that
+                # otherwise makes `combine_by_coords` see (non-existent)
+                # duplicate labels.
+                res_x = abs(float(datasets[0]["x"].values[1] - datasets[0]["x"].values[0]))
+                res_y = abs(float(datasets[0]["y"].values[1] - datasets[0]["y"].values[0]))
+                aligned = [
+                    ds.assign_coords(
+                        x=np.round(ds["x"].values / res_x) * res_x,
+                        y=np.round(ds["y"].values / res_y) * res_y,
+                    )
+                    for ds in datasets
+                ]
+                merged = xr.combine_by_coords(aligned, combine_attrs="drop_conflicts", join="outer")
+                logger.debug("MODIS PREPARE: combine done for tile %s year %d", tile.id, year)
             if merged.rio.crs is None:
                 merged = merged.rio.write_crs(source_crs)
 

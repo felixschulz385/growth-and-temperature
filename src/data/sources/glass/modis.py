@@ -835,7 +835,6 @@ class GlassModisSource(DataSource):
 
     def _execute_prepare(self, target: StepTarget) -> bool:
         from odc.geo.geom import box
-        from rioxarray.merge import merge_datasets
 
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
@@ -853,8 +852,8 @@ class GlassModisSource(DataSource):
         years = target.meta["years"]
 
         # Per-year index of (file, bounds) plus that year's shared CRS, and
-        # `rioxarray.merge.merge_datasets` (not `xr.combine_by_coords`) to
-        # combine overlapping source tiles -- see ModisSource
+        # `xr.combine_by_coords` (with x/y coords snapped to whole metres
+        # first) to combine overlapping source tiles -- see ModisSource
         # ._execute_prepare's identical comment (src/data/sources/modis/
         # source.py) for the full rationale
         # (docs/design/13-prepare-memory-parallelism.md).
@@ -864,6 +863,7 @@ class GlassModisSource(DataSource):
             if year not in tile_index_cache:
                 import rasterio as _rasterio
 
+                logger.debug("GLASS-MODIS PREPARE: building tile index for year %d", year)
                 year_dir = os.path.join(stage1_root, str(year))
                 index = []
                 crs = None
@@ -877,6 +877,7 @@ class GlassModisSource(DataSource):
                             if crs is None:
                                 crs = src.crs
                 tile_index_cache[year] = (index, crs)
+                logger.debug("GLASS-MODIS PREPARE: year %d index built, %d tile(s)", year, len(index))
             return tile_index_cache[year]
 
         SOURCE_TILE_CACHE_SIZE = 16
@@ -886,6 +887,7 @@ class GlassModisSource(DataSource):
             if path in source_tile_cache:
                 source_tile_cache.move_to_end(path)
                 return source_tile_cache[path]
+            logger.debug("GLASS-MODIS PREPARE: reading source tile %s", path)
             ds = GlassModisSource._read_annual_geotiff(path, year)
             squeeze_dims = [d for d in ("time", "band") if d in ds.dims]
             if squeeze_dims:
@@ -946,16 +948,32 @@ class GlassModisSource(DataSource):
                     }
                 )
 
+            logger.debug(
+                "GLASS-MODIS PREPARE: tile %s year %d overlaps %d source tile(s)", tile.id, year, len(overlapping)
+            )
             datasets = [read_source_tile(path, year) for path in overlapping]
             if len(datasets) == 1:
                 merged = datasets[0]
             else:
                 logger.debug(
-                    "GLASS-MODIS PREPARE: merging %d source tile(s) for tile %s year %d",
+                    "GLASS-MODIS PREPARE: combining %d source tile(s) for tile %s year %d",
                     len(datasets), tile.id, year,
                 )
-                merged = merge_datasets(datasets)
-                logger.debug("GLASS-MODIS PREPARE: merge done for tile %s year %d", tile.id, year)
+                # Snap x/y to the nearest whole pixel (using the source
+                # data's own resolution) before combining -- erases the
+                # sub-pixel misalignment that otherwise makes
+                # `combine_by_coords` see (non-existent) duplicate labels.
+                res_x = abs(float(datasets[0]["x"].values[1] - datasets[0]["x"].values[0]))
+                res_y = abs(float(datasets[0]["y"].values[1] - datasets[0]["y"].values[0]))
+                aligned = [
+                    ds.assign_coords(
+                        x=np.round(ds["x"].values / res_x) * res_x,
+                        y=np.round(ds["y"].values / res_y) * res_y,
+                    )
+                    for ds in datasets
+                ]
+                merged = xr.combine_by_coords(aligned, combine_attrs="drop_conflicts", join="outer")
+                logger.debug("GLASS-MODIS PREPARE: combine done for tile %s year %d", tile.id, year)
             if merged.rio.crs is None:
                 merged = merged.rio.write_crs(source_crs)
 
