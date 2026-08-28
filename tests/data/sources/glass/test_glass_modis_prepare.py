@@ -1,10 +1,12 @@
 """GlassModisSource._execute_prepare wiring onto the shared run_tiled_prepare
-driver: ctx.grid_id threading, year-major mosaic memoization, and a real
-tiled parquet write."""
+driver: ctx.grid_id threading, per-source-tile reproject + first-wins overlay
+(`src.data.common.prepare.sinusoidal_mosaic`), and a real tiled parquet write."""
 
 import os
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import rasterio
 from odc.geo.geobox import GeoBox
 from rasterio.transform import from_bounds
@@ -42,20 +44,25 @@ def _write_tile_tif(path, size=8, bounds=(-1, -1, 1, 1), value=290.0):
             dst.set_band_description(i, name)
 
 
+def _patch_target_geobox(monkeypatch, geobox, capture=None):
+    import src.data.common.geobox as geobox_module
+
+    def fake(passed_ctx):
+        if capture is not None:
+            capture["ctx"] = passed_ctx
+        return geobox
+
+    monkeypatch.setattr(geobox_module, "get_target_geobox", fake)
+
+
 def test_execute_prepare_threads_ctx_grid_id_and_writes_real_tiled_parquet(tmp_path, monkeypatch):
     source, ctx = _make_source(tmp_path, grid_id="ease6933")
     _write_tile_tif(os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h08v05.tif"))
 
-    fake_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5)  # 4x4, 2x2 tiles @ size 2
     captured = {}
-
-    import src.data.common.geobox as geobox_module
-
-    def fake_get_target_geobox(passed_ctx):
-        captured["ctx"] = passed_ctx
-        return fake_geobox
-
-    monkeypatch.setattr(geobox_module, "get_target_geobox", fake_get_target_geobox)
+    _patch_target_geobox(
+        monkeypatch, GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5), capture=captured
+    )
     source.tile_size = 2
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
@@ -66,9 +73,6 @@ def test_execute_prepare_threads_ctx_grid_id_and_writes_real_tiled_parquet(tmp_p
     assert captured["ctx"] is ctx
     assert os.path.exists(marker_path(target.output_path))
 
-    import pandas as pd
-    from pathlib import Path
-
     parts = sorted(Path(target.output_path).glob("ix=*/iy=*/part-*.parquet"))
     assert len(parts) == 4  # 2x2 tile grid x 1 year
     df = pd.concat(pd.read_parquet(p) for p in parts)
@@ -76,13 +80,13 @@ def test_execute_prepare_threads_ctx_grid_id_and_writes_real_tiled_parquet(tmp_p
     assert (df["mean"] == 290.0).all()
 
 
-def test_execute_prepare_handles_slightly_misaligned_adjacent_tiles(tmp_path, monkeypatch):
-    """Same real production failure as ModisSource's identical test
-    (tests/data/sources/modis/test_modis_prepare.py) -- two genuinely
-    adjacent tiles whose independently-fetched pixel grids overlap by a
-    sliver used to crash `xr.combine_by_coords` with "duplicate values";
-    `rioxarray.merge` (now used instead) tolerates it
-    (docs/design/13-prepare-memory-parallelism.md)."""
+def test_execute_prepare_overlays_adjacent_source_tiles(tmp_path, monkeypatch):
+    """Two genuinely-adjacent source tiles whose independently-fetched pixel
+    grids overlap by a sliver used to crash `xr.combine_by_coords` with
+    "duplicate values". Each source tile is now reprojected onto the output
+    grid individually and overlaid first-wins, so sub-pixel misalignment
+    between source tiles can never collide
+    (docs/design/15-modis-prepare-2002-tile-failures.md)."""
     source, ctx = _make_source(tmp_path, grid_id="ease6933", land_tiles=["h08v05", "h09v05"])
     _write_tile_tif(
         os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h08v05.tif"),
@@ -93,32 +97,48 @@ def test_execute_prepare_handles_slightly_misaligned_adjacent_tiles(tmp_path, mo
         bounds=(-0.1, -1, 1, 1), value=2.0,
     )
 
-    fake_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5)  # 4x4, 2x2 tiles @ size 2
-    import src.data.common.geobox as geobox_module
-
-    monkeypatch.setattr(geobox_module, "get_target_geobox", lambda passed_ctx: fake_geobox)
+    _patch_target_geobox(monkeypatch, GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5))
     source.tile_size = 2
 
-    targets = source.plan(PipelineStep.PREPARE, TargetSelection())
-    target = targets[0]
-
+    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
     assert source._execute_prepare(target) is True
-
-    import pandas as pd
-    from pathlib import Path
 
     parts = sorted(Path(target.output_path).glob("ix=*/iy=*/part-*.parquet"))
     assert len(parts) == 4
     df = pd.concat(pd.read_parquet(p) for p in parts)
-    assert np.all(np.isfinite(df["mean"].values))
+    vals = df["mean"].values
+    assert np.all(np.isfinite(vals))
+    assert set(np.unique(vals)) == {1.0, 2.0}
+
+
+def test_execute_prepare_partial_coverage_writes_nan_tiles_and_completes(tmp_path, monkeypatch):
+    """An output tile with no overlapping source tile is a legitimate state
+    (georegistered all-NaN dataset on `tile.geobox`, unit `complete`), on
+    the legacy EPSG:4326 target grid whose canvas dims are
+    latitude/longitude (docs/design/15-modis-prepare-2002-tile-failures.md B1)."""
+    source, ctx = _make_source(tmp_path)  # default grid_id="legacy_4326"
+    _write_tile_tif(
+        os.path.join(source.output_root(PipelineStep.FETCH), "2019", "h20v05.tif"),
+        bounds=(20, 20, 40, 40), value=290.0,
+    )
+    _patch_target_geobox(monkeypatch, GeoBox.from_bbox((-40, -40, 40, 40), crs="EPSG:4326", resolution=1.0))
+    source.tile_size = 20  # 4x4 tiles
+
+    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
+    assert source._execute_prepare(target) is True
+    assert os.path.exists(marker_path(target.output_path))
+
+    parts = sorted(Path(target.output_path).glob("ix=*/iy=*/part-*.parquet"))
+    assert len(parts) == 16
+    per_tile_allnan = [bool(np.isnan(pd.read_parquet(p)["mean"].values).all()) for p in parts]
+    assert any(per_tile_allnan) and not all(per_tile_allnan)
 
 
 def test_clamped_bbox_avoids_antimeridian_wrap_at_real_grid_corner_tile():
     """Same real production failure as ModisSource's identical test
-    (tests/data/sources/modis/test_modis_prepare.py) -- `GlassModisSource
-    ._execute_prepare`'s `raw_getter` uses the identical clamping logic, so
-    this pins that this source's own wiring of the fix behaves the same
-    way against the real canonical grid, not just the shared math
+    (tests/data/sources/modis/test_modis_prepare.py) -- `sinusoidal_mosaic`'s
+    `raw_getter` uses the identical clamping logic, so this pins that this
+    source's own wiring behaves the same way against the real canonical grid
     (docs/design/13-prepare-memory-parallelism.md)."""
     from odc.geo.geom import box
 

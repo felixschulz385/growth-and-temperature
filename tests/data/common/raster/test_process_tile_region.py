@@ -100,3 +100,28 @@ def test_process_tile_region_two_tiles_produce_two_independent_files(tmp_path):
     assert len(parts) == 2
     dfs = [pd.read_parquet(p) for p in parts]
     assert set(dfs[0]["cell_id"]).isdisjoint(set(dfs[1]["cell_id"]))
+
+
+def test_process_tile_region_reproject_false_tabulates_georegistered_nan_canvas(tmp_path):
+    """`reproject=False` (MODIS/GLASS-MODIS) path: a georegistered all-NaN
+    `xr_zeros(tile.geobox)` canvas is written straight to parquet, one row
+    per pixel, NaN preserved -- no `xr_reproject` call."""
+    from odc.geo.xr import xr_zeros
+
+    target_geobox = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.25)
+    tile_size, year = 4, 2020
+    full_width = target_geobox.shape.x
+    processor = SpatialProcessor(hpc_root=str(tmp_path))
+    output_path = tmp_path / "output"
+
+    tile = next(iter(tiling.iter_tiles(target_geobox, tile_size=tile_size)))
+    canvas = xr.Dataset({"lst": xr.full_like(xr_zeros(tile.geobox, "float32"), np.nan)})
+    assert processor.process_tile_region(canvas, str(output_path), tile, year, full_width, reproject=False)
+
+    df = pd.read_parquet(output_path / f"ix={tile.row}" / f"iy={tile.col}" / f"part-{year}.parquet")
+    h, w = tile.geobox.shape
+    assert len(df) == h * w
+    assert df["lst"].isna().all()
+    assert set(df["cell_id"]) == set(
+        encode_cell_ids(tile.y_slice.start, tile.x_slice.start, tile.geobox, full_width).reshape(-1).tolist()
+    )

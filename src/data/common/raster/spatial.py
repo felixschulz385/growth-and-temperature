@@ -461,9 +461,13 @@ class SpatialProcessor:
         `reproject=True` (default) reprojects `source_ds` onto `tile.geobox`
         via `xr_reproject` (raster resampling). Pass `reproject=False` for a
         source whose `raw_getter` already produced `source_ds` directly on
-        `tile.geobox` -- e.g. vector polygon rasterization done inside the
-        raw-getter itself -- in which case `source_ds` is used as-is and
-        `resampling`/`dst_nodata` are not applied.
+        `tile.geobox` -- vector polygon rasterization done inside the
+        raw-getter (gadm/osm/ecoregions/snl_mining), or the sinusoidal
+        raster sources (MODIS/GLASS-MODIS) which now reproject each source
+        tile onto `tile.geobox` themselves and overlay
+        (`src.data.common.prepare.sinusoidal_mosaic`) -- in which case
+        `source_ds` is used as-is and `resampling`/`dst_nodata` are not
+        applied.
 
         `full_width` is the *full* target grid's pixel width (e.g.
         `target_geobox.shape.x`), passed to
