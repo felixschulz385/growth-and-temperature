@@ -10,7 +10,6 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 
 import duckdb
-import geopandas as gpd
 import numpy as np
 import pandas as pd
 import xarray as xr
@@ -29,22 +28,8 @@ from src.data.assemble.utils import (
     normalize_derived_pixel_id_specs,
     winsorize,
 )
-from src.data.assemble.grid_shake import (
-    normalize_grid_shake_offsets,
-    shift_geobox_origin,
-)
 
 logger = logging.getLogger(__name__)
-
-
-def uses_geometry_aggregation(assembly_config: Dict[str, Any]) -> bool:
-    """Return True when the assembly writes geometry-level output instead of ix/iy pixel tiles."""
-    processing_config = assembly_config.get('processing', {})
-    return bool(
-        assembly_config.get('geometry_aggregator')
-        or assembly_config.get('geometry_source')
-        or processing_config.get('spatial_partition') == 'geometry'
-    )
 
 
 def get_dataset_columns(
@@ -117,16 +102,18 @@ class TileProcessor:
 
         Args:
             assembly_config: Assembly configuration
-            output_base_path: Base path for output files
-            target_geobox: Full assembly target geobox, used to detect whether
-                `processing.resolution` downsamples below the native/zarr resolution
-                (required for grid-shake; optional otherwise)
+            output_base_path: Base path for output files (already scoped to one
+                grid=<label>/shake=<label> variant)
+            target_geobox: The run's target geobox -- already coarsened to the
+                requested `--grid` resolution and already origin-shifted for the
+                requested `--shake` variant, if any. Grid-shake is a whole-run
+                origin shift now, not a per-column operation, so there is nothing
+                shake-specific to do here.
         """
         self.assembly_config = assembly_config
         self.output_base_path = output_base_path
         self.processing_config = assembly_config.get('processing', {})
         self.compression = self.processing_config.get('compression', 'snappy')
-        self.uses_geometry_aggregation = uses_geometry_aggregation(assembly_config)
         self.column_order_map = {}  # Track {dataset_name: [col1, col2, ...]}
         self.all_index_cols = self._get_all_index_cols()  # Cache all index columns
         # One in-memory DuckDB connection reused for every tile's merges --
@@ -137,36 +124,10 @@ class TileProcessor:
         self.derived_pixel_id_specs = normalize_derived_pixel_id_specs(
             self.processing_config.get("derived_pixel_ids")
         )
-        self.grid_shake_specs = normalize_grid_shake_offsets(
-            self.processing_config.get("grid_shake")
-        )
-
-        target_resolution = self.processing_config.get('resolution')
-        native_res = abs(target_geobox.resolution.x) if target_geobox is not None else None
-        self.grid_shake_active = bool(
-            self.grid_shake_specs
-            and target_resolution is not None
-            and native_res is not None
-            and (target_resolution - native_res) >= 1e-10
-        )
-        if self.grid_shake_specs and not self.grid_shake_active:
-            logger.warning(
-                "processing.grid_shake is configured but this assembly is not downsampling "
-                "(target resolution is not coarser than native resolution) -- shake columns "
-                "will not be produced."
-            )
 
         # Pre-build column order map from dataset configs (raster datasets only --
         # join_on datasets are handled below, never reprojected).
         self._build_column_order_map_from_config()
-        if self.grid_shake_active:
-            for dataset_name, cols in self.column_order_map.items():
-                shake_cols = [
-                    f"{col}__shake_{label}"
-                    for col in cols
-                    for label, _, _ in self.grid_shake_specs
-                ]
-                self.column_order_map[dataset_name] = cols + shake_cols
 
         # join_on datasets: small GID-keyed tables merged directly onto assembled
         # rows by an existing GID_N column (e.g. from gadm's own GID grid dataset),
@@ -185,11 +146,6 @@ class TileProcessor:
             logger.info(
                 "Derived pixel ID columns enabled: %s",
                 ", ".join(f"{name}@{resolution}" for name, resolution in self.derived_pixel_id_specs),
-            )
-        if self.grid_shake_active:
-            logger.info(
-                "Grid-shake enabled: %s",
-                ", ".join(f"{label}=({dx},{dy})" for label, dx, dy in self.grid_shake_specs),
             )
         if self.join_tables:
             logger.info(
@@ -309,26 +265,12 @@ class TileProcessor:
         
         # Create target resolution geobox if needed
         if target_resolution is not None and abs(native_res - target_resolution) >= 1e-10:
-            logger.debug(f"Will reproject from {native_res}° to {target_resolution}°")
+            logger.debug(f"Will reproject from {native_res} to {target_resolution} (target units)")
             target_geobox_zoomed = tile_geobox.zoom_to(resolution=target_resolution)
         else:
             target_geobox_zoomed = tile_geobox
-        
+
         return padded_tile_geobox, target_geobox_zoomed
-
-    def _get_shaken_geoboxes(self, target_geobox_zoomed) -> List[Tuple[str, Any]]:
-        """Build origin-shifted target geoboxes for the grid-shake robustness check.
-
-        Returns an empty list unless grid-shake is active (see __init__) -- i.e. unless
-        this assembly is downsampling below the native resolution and grid_shake is
-        configured.
-        """
-        if not self.grid_shake_active or target_geobox_zoomed is None:
-            return []
-        return [
-            (label, shift_geobox_origin(target_geobox_zoomed, dx, dy))
-            for label, dx, dy in self.grid_shake_specs
-        ]
 
     def _load_join_tables(self) -> Dict[str, Tuple[str, pd.DataFrame]]:
         """Load every `join_on`-configured dataset as a small in-memory table.
@@ -412,7 +354,6 @@ class TileProcessor:
         land_mask: Optional[xr.DataArray] = None,
         keep_spatial_coords: bool = False,
         include_pixel_id: bool = True,
-        shaken_geoboxes: Optional[List[Tuple[str, Any]]] = None,
     ) -> Optional[pd.DataFrame]:
         """
         Extract and process a single dataset tile.
@@ -421,17 +362,14 @@ class TileProcessor:
         1. Extract tile from padded bounds
         2. Apply winsorization if configured
         3. Apply land mask at native resolution (using xarray .where())
-        4. Reproject to target resolution if needed
-        5. Reproject to any grid-shake origin-shifted geoboxes (robustness check)
-        6. Assign pixel_id variable
-        7. Convert to DataFrame
-        8. Drop NaN rows
+        4. Reproject to the target geobox (already coarsened/origin-shifted for
+           the run's --grid / --shake variant)
+        5. Assign pixel_id variable
+        6. Convert to DataFrame
+        7. Drop NaN rows
 
         Args:
             land_mask: Optional boolean DataArray for masking pixels at native resolution (True=land, False=ocean)
-            shaken_geoboxes: Optional list of (label, geobox) pairs for the grid-shake
-                robustness check; each variable gets an extra `{var}__shake_{label}` column
-                reprojected onto that origin-shifted geobox (docs/design/04-ingest.md §6)
 
         Returns:
             DataFrame with pixel_id, or None if tile is empty
@@ -468,39 +406,16 @@ class TileProcessor:
                 for var in tile_ds.data_vars:
                     tile_ds[var] = tile_ds[var].where(land_mask)
             
-            # Reproject to target resolution if needed
-            pre_reproject_ds = tile_ds
+            # Reproject to the target geobox if it differs from native. The
+            # target geobox already carries the run's --grid coarsening and the
+            # --shake origin shift (applied once, up front, in run_assembly), so
+            # there is nothing shake-specific to do per column here.
             if target_geobox_zoomed is not None and hasattr(tile_ds, 'odc'):
                 tile_ds = tile_ds.odc.reproject(
                     target_geobox_zoomed,
                     resampling=resampling_method,
                     dst_nodata=np.nan
                 )
-
-            # Grid-shake robustness check: reproject the pre-reprojection (native-resolution)
-            # data onto each origin-shifted geobox and attach as extra columns. Each shake
-            # variant is independent -- a failure fills that column with NaN rather than
-            # dropping the tile, so every tile in a run keeps the same schema.
-            if shaken_geoboxes:
-                for label, shaken_geobox in shaken_geoboxes:
-                    try:
-                        shaken_ds = pre_reproject_ds.odc.reproject(
-                            shaken_geobox,
-                            resampling=resampling_method,
-                            dst_nodata=np.nan
-                        )
-                        for var in pre_reproject_ds.data_vars:
-                            tile_ds[f"{var}__shake_{label}"] = (tile_ds[var].dims, shaken_ds[var].values)
-                    except Exception as e:
-                        logger.warning(
-                            f"Tile [{ix}, {iy}]: grid-shake variant '{label}' failed, "
-                            f"filling with NaN: {e}"
-                        )
-                        for var in pre_reproject_ds.data_vars:
-                            tile_ds[f"{var}__shake_{label}"] = (
-                                tile_ds[var].dims,
-                                np.full(tile_ds[var].shape, np.nan, dtype="float32"),
-                            )
 
             # Assign pixel_id when requested for pixel-partitioned assemblies.
             if include_pixel_id:
@@ -901,12 +816,6 @@ class TileProcessor:
             True if tile was updated successfully, False otherwise
         """
         if not os.path.exists(output_file):
-            if self.uses_geometry_aggregation:
-                logger.error(
-                    f"Tile [{ix}, {iy}]: geometry-aggregated update should use the top-level parquet "
-                    f"update path, not ix/iy tile files"
-                )
-                return False
             logger.warning(f"Tile ix={ix}, iy={iy} does not exist, cannot update")
             return False
         
@@ -922,7 +831,6 @@ class TileProcessor:
         
         # Create geoboxes
         padded_tile_geobox, target_geobox_zoomed = self._create_tile_geoboxes(tile_geobox)
-        shaken_geoboxes = self._get_shaken_geoboxes(target_geobox_zoomed)
 
         # Create pixel IDs
         pixel_id_ds = make_pixel_ids(ix, iy, target_geobox_zoomed)
@@ -945,7 +853,6 @@ class TileProcessor:
         df = self._extract_dataset_tile(
             ds, dataset_config, ix, iy,
             padded_tile_geobox, target_geobox_zoomed, pixel_id_ds,
-            shaken_geoboxes=shaken_geoboxes,
         )
         
         if df is None or df.empty:
@@ -995,404 +902,6 @@ class TileProcessor:
         
         return True
 
-    def _get_geometry_output_path(self) -> str:
-        """Return the top-level parquet file used by geometry-aggregated assemblies."""
-        return os.path.join(self.output_base_path, "data.parquet")
-
-    def _get_geometry_update_output_path(self) -> str:
-        """Backward-compatible alias for the geometry output path."""
-        return self._get_geometry_output_path()
-
-    def _get_geometry_group_columns(self, dataset_config: Dict[str, Any], geometry_id_column: str) -> List[str]:
-        dataset_index_cols = dataset_config.get('index_cols', [geometry_id_column])
-        group_cols = [geometry_id_column]
-        for col in dataset_index_cols:
-            if col != geometry_id_column and col not in group_cols:
-                group_cols.append(col)
-        return group_cols
-
-    def _get_geometry_agg_func(self, dataset_config: Dict[str, Any]) -> str:
-        agg = str(dataset_config.get('geometry_agg', 'mean')).lower()
-        return {'avg': 'mean', 'average': 'mean', 'med': 'median'}.get(agg, agg)
-
-    def _can_preaggregate_geometry(self, agg_func: str) -> bool:
-        """Return True when a tile-level partial aggregation can be combined exactly."""
-        return agg_func in {'mean', 'sum', 'min', 'max', 'first', 'last', 'count'}
-
-    def _load_geometry_source(self) -> Tuple[gpd.GeoDataFrame, str]:
-        """Load geometry polygons for geometry-aggregated assemblies."""
-        geometry_source = self.assembly_config.get('geometry_source', {})
-        geometry_path = geometry_source.get('path')
-        geometry_id_column = geometry_source.get('id_column')
-
-        if not geometry_path or not geometry_id_column:
-            raise ValueError("Geometry-aggregated assembly requires geometry_source.path and geometry_source.id_column")
-
-        geometry_gdf = gpd.read_file(geometry_path)
-        if geometry_id_column not in geometry_gdf.columns:
-            raise ValueError(f"Geometry source missing id column '{geometry_id_column}'")
-
-        geometry_gdf = geometry_gdf[[geometry_id_column, 'geometry']].copy()
-        if geometry_gdf.crs is None:
-            geometry_gdf = geometry_gdf.set_crs("EPSG:4326")
-        else:
-            geometry_gdf = geometry_gdf.to_crs("EPSG:4326")
-        return geometry_gdf, geometry_id_column
-
-    def _create_geometry_grid_cell_dataframe(
-        self,
-        tile_df: pd.DataFrame,
-        dataset_config: Dict[str, Any],
-        geometry_gdf: gpd.GeoDataFrame,
-        geometry_id_column: str,
-        variable_cols: List[str],
-        ix: int,
-        iy: int,
-    ) -> Optional[pd.DataFrame]:
-        """Spatially join tile grid-cell rows to polygons and keep index/data columns."""
-        if tile_df is None or tile_df.empty:
-            return None
-
-        if LATITUDE_COORD not in tile_df.columns or LONGITUDE_COORD not in tile_df.columns:
-            raise ValueError("Geometry aggregation requires latitude/longitude columns in extracted tile data")
-
-        geometry_group_cols = self._get_geometry_group_columns(dataset_config, geometry_id_column)
-        data_cols = [
-            col for col in variable_cols
-            if col in tile_df.columns and col not in geometry_group_cols
-        ]
-        if not data_cols:
-            return None
-
-        points = gpd.GeoDataFrame(
-            tile_df,
-            geometry=gpd.points_from_xy(tile_df[LONGITUDE_COORD], tile_df[LATITUDE_COORD]),
-            crs="EPSG:4326",
-        )
-
-        joined = gpd.sjoin(
-            points,
-            geometry_gdf,
-            how='inner',
-            predicate='within',
-        ).drop(columns=['geometry', 'index_right'], errors='ignore')
-
-        if joined.empty:
-            logger.debug(f"Tile [{ix}, {iy}]: no geometry matches found for aggregated datasource")
-            return None
-
-        keep_cols = geometry_group_cols + data_cols
-        missing_group_cols = [col for col in geometry_group_cols if col not in joined.columns]
-        if missing_group_cols:
-            raise ValueError(
-                f"Geometry aggregation missing index columns after spatial join: {missing_group_cols}"
-            )
-
-        grid_cells = joined[keep_cols].copy()
-        logger.debug(
-            f"Tile [{ix}, {iy}]: joined {len(grid_cells)} grid-cell rows to geometry "
-            f"with columns {keep_cols}"
-        )
-        return grid_cells
-
-    def _preaggregate_geometry_tile_dataframe(
-        self,
-        grid_cell_df: pd.DataFrame,
-        geometry_group_cols: List[str],
-        data_cols: List[str],
-        agg_func: str,
-    ) -> pd.DataFrame:
-        """Reduce a tile's geometry-matched grid-cell rows before appending them."""
-        if agg_func == 'mean':
-            grouped = grid_cell_df.groupby(geometry_group_cols, dropna=False)
-            sums = grouped[data_cols].sum(min_count=1)
-            counts = grouped[data_cols].count()
-            sums.columns = [f"{col}__sum" for col in sums.columns]
-            counts.columns = [f"{col}__count" for col in counts.columns]
-            return pd.concat([sums, counts], axis=1).reset_index()
-
-        return (
-            grid_cell_df
-            .groupby(geometry_group_cols, dropna=False)[data_cols]
-            .agg(agg_func)
-            .reset_index()
-        )
-
-    def _finalize_geometry_preaggregation(
-        self,
-        tile_tables: List[pd.DataFrame],
-        geometry_group_cols: List[str],
-        data_cols: List[str],
-        agg_func: str,
-    ) -> pd.DataFrame:
-        """Combine pre-aggregated tile tables into final geometry-level datasource values."""
-        rows = pd.concat(tile_tables, ignore_index=True)
-
-        if agg_func == 'mean':
-            sum_cols = [f"{col}__sum" for col in data_cols]
-            count_cols = [f"{col}__count" for col in data_cols]
-            grouped = rows.groupby(geometry_group_cols, dropna=False)
-            summed = grouped[sum_cols + count_cols].sum(min_count=1).reset_index()
-            for col in data_cols:
-                summed[col] = summed[f"{col}__sum"] / summed[f"{col}__count"]
-            return summed[geometry_group_cols + data_cols]
-
-        if agg_func == 'count':
-            return (
-                rows
-                .groupby(geometry_group_cols, dropna=False)[data_cols]
-                .sum(min_count=1)
-                .reset_index()
-            )
-
-        return (
-            rows
-            .groupby(geometry_group_cols, dropna=False)[data_cols]
-            .agg(agg_func)
-            .reset_index()
-        )
-
-    def _aggregate_geometry_rows(
-        self,
-        grid_cell_tables: List[pd.DataFrame],
-        geometry_group_cols: List[str],
-        data_cols: List[str],
-        agg_func: str,
-    ) -> pd.DataFrame:
-        """Aggregate geometry rows, using tile pre-aggregation when exact for the aggregation."""
-        grid_cell_rows = pd.concat(grid_cell_tables, ignore_index=True)
-        return (
-            grid_cell_rows
-            .groupby(geometry_group_cols, dropna=False)[data_cols]
-            .agg(agg_func)
-            .reset_index()
-        )
-
-    def _build_geometry_dataset_table(
-        self,
-        dataset_name: str,
-        ds: xr.Dataset,
-        dataset_config: Dict[str, Any],
-        geometry_gdf: gpd.GeoDataFrame,
-        geometry_id_column: str,
-        land_mask_ds: Optional[xr.Dataset],
-        all_tiles: List[Tuple[int, int]],
-        target_geobox,
-    ) -> Tuple[Optional[pd.DataFrame], int, int]:
-        """Build one geometry-level datasource table from all grid-cell rows."""
-        from src.data.assemble.tiles import create_tile_geobox
-
-        geometry_group_cols = self._get_geometry_group_columns(dataset_config, geometry_id_column)
-        tile_size = self.processing_config.get('tile_size')
-        variable_cols = self.column_order_map.get(dataset_name, list(ds.data_vars.keys()))
-        agg_func = self._get_geometry_agg_func(dataset_config)
-        can_preaggregate = self._can_preaggregate_geometry(agg_func)
-        grid_cell_tables: List[pd.DataFrame] = []
-        preaggregated_tables: List[pd.DataFrame] = []
-        processed_count = 0
-        skipped_count = 0
-
-        for ix, iy in all_tiles:
-            logger.debug(f"Geometry aggregation for '{dataset_name}': processing tile ix={ix}, iy={iy}")
-            tile_geobox = create_tile_geobox(target_geobox, tile_size, ix, iy)
-            padded_tile_geobox, target_geobox_zoomed = self._create_tile_geoboxes(tile_geobox)
-
-            land_mask = self._load_land_mask_as_dataarray(
-                land_mask_ds, ix, iy, padded_tile_geobox, target_geobox_zoomed
-            )
-            if land_mask_ds is not None and land_mask is None:
-                logger.debug(
-                    f"Geometry aggregation tile [{ix}, {iy}] for '{dataset_name}': "
-                    f"skipped because no usable land-mask data was available"
-                )
-                skipped_count += 1
-                continue
-
-            df = self._extract_dataset_tile(
-                ds,
-                dataset_config,
-                ix,
-                iy,
-                padded_tile_geobox,
-                target_geobox_zoomed,
-                pixel_id_ds=None,
-                land_mask=land_mask,
-                keep_spatial_coords=True,
-                include_pixel_id=False,
-            )
-            if df is None or df.empty:
-                logger.debug(
-                    f"Geometry aggregation tile [{ix}, {iy}] for '{dataset_name}': no source rows extracted"
-                )
-                skipped_count += 1
-                continue
-
-            grid_cell_df = self._create_geometry_grid_cell_dataframe(
-                df, dataset_config, geometry_gdf, geometry_id_column, variable_cols, ix, iy
-            )
-            if grid_cell_df is None or grid_cell_df.empty:
-                logger.debug(
-                    f"Geometry aggregation tile [{ix}, {iy}] for '{dataset_name}': no joined grid-cell rows"
-                )
-                skipped_count += 1
-                continue
-
-            data_cols = [
-                col for col in variable_cols
-                if col in grid_cell_df.columns and col not in geometry_group_cols
-            ]
-            if not data_cols:
-                logger.debug(
-                    f"Geometry aggregation tile [{ix}, {iy}] for '{dataset_name}': no data columns"
-                )
-                skipped_count += 1
-                continue
-
-            if can_preaggregate:
-                tile_table = self._preaggregate_geometry_tile_dataframe(
-                    grid_cell_df, geometry_group_cols, data_cols, agg_func
-                )
-                preaggregated_tables.append(tile_table)
-                output_row_count = len(tile_table)
-            else:
-                grid_cell_tables.append(grid_cell_df)
-                output_row_count = len(grid_cell_df)
-
-            processed_count += 1
-            logger.info(
-                f"Geometry aggregation tile [{ix}, {iy}] for '{dataset_name}': "
-                f"{len(grid_cell_df)} grid-cell rows -> {output_row_count} "
-                f"{'pre-aggregated' if can_preaggregate else 'raw'} rows"
-            )
-
-        if not preaggregated_tables and not grid_cell_tables:
-            logger.warning(f"No geometry grid-cell rows produced for datasource '{dataset_name}'")
-            return None, processed_count, skipped_count
-
-        source_rows = pd.concat(preaggregated_tables or grid_cell_tables, ignore_index=True)
-        data_cols = [
-            col for col in variable_cols
-            if col in source_rows.columns and col not in geometry_group_cols
-        ]
-        if agg_func == 'mean' and can_preaggregate:
-            data_cols = [
-                col for col in variable_cols
-                if f"{col}__sum" in source_rows.columns and f"{col}__count" in source_rows.columns
-            ]
-        if not data_cols:
-            logger.warning(f"No data columns available for geometry datasource '{dataset_name}'")
-            return None, processed_count, skipped_count
-
-        if can_preaggregate:
-            aggregated = self._finalize_geometry_preaggregation(
-                preaggregated_tables, geometry_group_cols, data_cols, agg_func
-            )
-        else:
-            aggregated = self._aggregate_geometry_rows(
-                grid_cell_tables, geometry_group_cols, data_cols, agg_func
-            )
-        logger.info(
-            f"Geometry aggregation complete for '{dataset_name}': aggregated "
-            f"{len(source_rows)} {'pre-aggregated' if can_preaggregate else 'grid-cell'} rows "
-            f"to {len(aggregated)} rows using {geometry_group_cols}"
-        )
-        return aggregated, processed_count, skipped_count
-
-    def process_geometry_output(
-        self,
-        datasets: List[Tuple[str, xr.Dataset, Dict[str, Any]]],
-        land_mask_ds: Optional[xr.Dataset],
-        all_tiles: List[Tuple[int, int]],
-        target_geobox,
-    ) -> Tuple[int, int]:
-        """
-        Create or update geometry-aggregated output.
-
-        CREATE aggregates all configured datasources and writes the top-level table.
-        UPDATE aggregates the requested datasource and merges it into the existing table.
-        """
-        assembly_mode = self.processing_config.get('assembly_mode', 'create')
-        if not datasets:
-            raise ValueError("Geometry assembly requires at least one datasource to be loaded")
-        if assembly_mode == 'update' and len(datasets) != 1:
-            raise ValueError("Geometry update mode requires exactly one datasource to be loaded")
-
-        output_file = self._get_geometry_output_path()
-        if assembly_mode == 'update' and not os.path.exists(output_file):
-            raise FileNotFoundError(
-                f"Geometry-aggregated update target not found: {output_file}"
-            )
-        if assembly_mode == 'create' and os.path.exists(output_file) and not self.processing_config.get('overwrite', True):
-            logger.info(f"Geometry output already exists, skipping because overwrite=False: {output_file}")
-            return 0, len(all_tiles)
-
-        geometry_gdf, geometry_id_column = self._load_geometry_source()
-        dataset_tables: List[Tuple[str, pd.DataFrame]] = []
-        processed_count = 0
-        skipped_count = 0
-
-        for dataset_name, ds, dataset_config in datasets:
-            table, dataset_processed, dataset_skipped = self._build_geometry_dataset_table(
-                dataset_name,
-                ds,
-                dataset_config,
-                geometry_gdf,
-                geometry_id_column,
-                land_mask_ds,
-                all_tiles,
-                target_geobox,
-            )
-            processed_count += dataset_processed
-            skipped_count += dataset_skipped
-            if table is not None and not table.empty:
-                dataset_tables.append((dataset_name, table))
-
-        if not dataset_tables:
-            logger.warning("No geometry-level rows produced")
-            return 0, skipped_count
-
-        if assembly_mode == 'update':
-            dataset_name, _, dataset_config = datasets[0]
-            if len(dataset_tables) != 1:
-                raise ValueError("Geometry update mode requires exactly one datasource table")
-            existing_df = pd.read_parquet(output_file)
-            update_df = dataset_tables[0][1]
-            update_index_cols = self._get_geometry_group_columns(dataset_config, geometry_id_column)
-            merged = self._merge_update_table(
-                existing_df,
-                update_df,
-                update_index_cols,
-                f"Geometry update '{dataset_name}'",
-            )
-            if merged is None:
-                return 0, skipped_count
-        else:
-            dataset_order = [name for name, _ in dataset_tables]
-            merged = self._combine_dataset_tables(dataset_tables)
-            merged = self._reorder_columns(merged, self.all_index_cols, dataset_order)
-
-        os.makedirs(self.output_base_path, exist_ok=True)
-        merged.to_parquet(
-            output_file,
-            index=False,
-            compression=self.compression,
-            engine='pyarrow',
-        )
-        logger.info(
-            f"Geometry {assembly_mode} complete: wrote {len(merged)} rows to top-level table {output_file}"
-        )
-        return processed_count, skipped_count
-
-    def update_geometry_aggregated_output(
-        self,
-        datasets: List[Tuple[str, xr.Dataset, Dict[str, Any]]],
-        land_mask_ds: Optional[xr.Dataset],
-        all_tiles: List[Tuple[int, int]],
-        target_geobox,
-    ) -> Tuple[int, int]:
-        """Backward-compatible wrapper for the geometry update entry point."""
-        return self.process_geometry_output(datasets, land_mask_ds, all_tiles, target_geobox)
-    
     def _process_pixel_tile_create(
         self,
         datasets: List[Tuple[str, xr.Dataset, Dict[str, Any]]],
@@ -1417,7 +926,6 @@ class TileProcessor:
         """
         # Create geoboxes
         padded_tile_geobox, target_geobox_zoomed = self._create_tile_geoboxes(tile_geobox)
-        shaken_geoboxes = self._get_shaken_geoboxes(target_geobox_zoomed)
 
         # Create pixel IDs
         pixel_id_ds = make_pixel_ids(ix, iy, target_geobox_zoomed)
@@ -1445,7 +953,6 @@ class TileProcessor:
                 ds, dataset_config, ix, iy,
                 padded_tile_geobox, target_geobox_zoomed, pixel_id_ds,
                 land_mask=land_mask,
-                shaken_geoboxes=shaken_geoboxes,
             )
 
             # If no data, create skeleton with NaN columns
@@ -1534,16 +1041,10 @@ class TileProcessor:
             True if tile was processed successfully, False if no data
         """
         logger.debug(f"Processing tile ix={ix}, iy={iy}")
-        
+
         output_file = self._get_output_path(ix, iy)
         assembly_mode = self.processing_config.get('assembly_mode', 'create')
 
-        if self.uses_geometry_aggregation:
-            raise ValueError(
-                "Geometry-aggregated assemblies must use process_geometry_output, "
-                "not per-pixel tile processing"
-            )
-        
         # Route to appropriate mode handler
         if assembly_mode == 'update':
             return self._process_pixel_tile_update(

@@ -23,7 +23,7 @@
 
 cluster:
   conda_hook: /scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda
-  python_bin: /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python
+  python_bin: /scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python
   project_root: /scicore/home/meiera/schulz0022/projects/growth-and-temperature
   scratch_prefix: /scratch/schulz0022
 
@@ -314,3 +314,38 @@ jobs:
     cpus: 8
     mem: 128G
     simple: true
+
+# Per-grid SLURM resource defaults for `assemble create/update --slurm`
+# (src/cli/assemble/slurm.py). Keyed by the `--grid` label. A `--shake` preset
+# runs all its variants sequentially inside the one job, so budget `time`
+# accordingly. Any of --slurm-time/-mem/-cpus/-qos/-partition overrides a field
+# for a single invocation; a grid with no entry here needs all four given ad hoc.
+assembly_jobs:
+  - grid: "1km"
+    time: "1-00:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    partition: scicore
+  - grid: "5km"
+    time: "12:00:00"
+    qos: 1day
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.6
+    partition: scicore
+  - grid: "10km"
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 4
+    mem: 64G
+    mem_fraction: 0.6
+    partition: scicore
+  - grid: "25km"
+    time: "01:00:00"
+    qos: 30min
+    cpus: 4
+    mem: 32G
+    mem_fraction: 0.6
+    partition: scicore

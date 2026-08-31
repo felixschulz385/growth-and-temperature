@@ -33,23 +33,21 @@ def create_assembly_metadata(
     try:
         metadata_path = os.path.join(output_path, '_metadata.yaml')
         processing = assembly_config.get('processing', {})
-        spatial_partition = processing.get('spatial_partition', 'grid')
 
-        if spatial_partition == 'geometry':
-            partitioning = 'geometry aggregation'
-            description = 'Assembled dataset aggregated over geometries and written as parquet'
-        else:
-            partitioning = 'ix/iy tiles'
-            description = 'Assembled dataset in tile-partitioned parquet format with automatic scaling'
-        
         metadata_dict = {
             'assembly_config': assembly_config,
             'output_format': 'parquet',
-            'partitioning': partitioning,
-            'scaling': 'Applied during zarr read with mask_and_scale=True',
-            'description': description,
+            'partitioning': 'ix/iy tiles',
+            'scaling': 'Applied on grid-store read with mask_and_scale=True',
+            'description': 'Assembled pixel panel in tile-partitioned parquet format',
+            'grid_label': processing.get('grid_label'),
+            'resolution_m': processing.get('resolution'),
+            'shake_label': processing.get('shake_label'),
+            'shake_offset': processing.get('shake_offset'),
+            'sources': sorted(assembly_config.get('datasets', {}).keys()),
         }
-        
+
+        os.makedirs(output_path, exist_ok=True)
         with open(metadata_path, 'w') as f:
             yaml.dump(metadata_dict, f, default_flow_style=False)
         

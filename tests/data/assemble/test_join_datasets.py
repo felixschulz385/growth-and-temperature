@@ -165,21 +165,6 @@ def test_apply_join_tables_skips_when_gid_column_missing(tmp_path):
 # --- config validation -----------------------------------------------------
 
 
-def test_validate_assembly_config_rejects_join_on_with_geometry_partition(tmp_path):
-    table_path = tmp_path / "classifications.parquet"
-    _write_join_table(table_path, [{"GID_0": 1, "HDI_HI": True}])
-
-    config = {
-        "output_path": str(tmp_path / "out"),
-        "datasets": {"classifications": {"path": str(table_path), "join_on": "GID_0"}},
-        "processing": {"spatial_partition": "geometry"},
-        "geometry_source": {"path": str(tmp_path / "x.gpkg"), "id_column": "id"},
-        "geometry_aggregator": "pkg.module:function",
-    }
-    errors = validate_assembly_config(config)
-    assert any("join_on" in e and "geometry" in e for e in errors)
-
-
 def test_validate_assembly_config_rejects_non_string_join_on(tmp_path):
     table_path = tmp_path / "classifications.parquet"
     _write_join_table(table_path, [{"GID_0": 1, "HDI_HI": True}])

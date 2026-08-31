@@ -9,6 +9,7 @@ to. This module only builds the origin-shifted geoboxes; the actual re-reproject
 the existing `odc.reproject` call in `src.data.assemble.processors.TileProcessor`.
 """
 
+import re
 from typing import Any, Dict, List, Tuple, Union
 
 from affine import Affine
@@ -17,6 +18,55 @@ from odc.geo.geobox import GeoBox
 DEFAULT_GRID_SHAKE_PRESETS: Dict[str, List[Tuple[float, float]]] = {
     "quad": [(0.5, 0.0), (0.0, 0.5), (0.5, 0.5)],
 }
+
+#: Partition label for the un-shifted table (kept in sync with
+#: `src.data.assemble.constants.SHAKE_BASE_LABEL`, duplicated here to keep this
+#: module import-light).
+SHAKE_BASE_LABEL = "base"
+
+
+def resolve_shake_selection(
+    name: Union[str, None],
+) -> List[Tuple[str, float, float]]:
+    """Resolve a CLI ``--shake`` value into the ordered list of variants to build.
+
+    Each entry is ``(partition_label, dx_frac, dy_frac)`` -- one full assembly pass
+    per entry, writing ``shake=<partition_label>/`` under the grid's output root.
+
+    - ``None`` / ``"none"`` / ``""`` -> just the un-shifted table, ``[("base", 0, 0)]``.
+    - a preset name (e.g. ``"quad"``) -> the base table plus one ``s0``/``s1``/...
+      partition per offset in the preset.
+    - a single ``"s<N>"`` label -> only that one shifted partition (a cheap add-on
+      run that leaves ``shake=base`` untouched), where ``N`` indexes the ``"quad"``
+      preset's offsets.
+    """
+    if not name or str(name).lower() == "none":
+        return [(SHAKE_BASE_LABEL, 0.0, 0.0)]
+
+    name = str(name)
+
+    if name in DEFAULT_GRID_SHAKE_PRESETS:
+        offsets = DEFAULT_GRID_SHAKE_PRESETS[name]
+        return [(SHAKE_BASE_LABEL, 0.0, 0.0)] + [
+            (f"s{i}", float(dx), float(dy)) for i, (dx, dy) in enumerate(offsets)
+        ]
+
+    if re.fullmatch(r"s\d+", name):
+        index = int(name[1:])
+        preset = DEFAULT_GRID_SHAKE_PRESETS["quad"]
+        if index >= len(preset):
+            raise ValueError(
+                f"grid-shake label {name!r} is out of range for the 'quad' preset "
+                f"({len(preset)} offsets: s0..s{len(preset) - 1})"
+            )
+        dx, dy = preset[index]
+        return [(name, float(dx), float(dy))]
+
+    available = ", ".join(sorted(DEFAULT_GRID_SHAKE_PRESETS))
+    raise ValueError(
+        f"Unknown --shake value {name!r}. Use 'none', a preset ({available}), or an "
+        f"'s<N>' offset label."
+    )
 
 
 def normalize_grid_shake_offsets(

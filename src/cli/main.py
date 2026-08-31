@@ -5,8 +5,8 @@ Usage:
     python -m src.cli.main data list
     python -m src.cli.main data plan   --config cfg.yaml --source acag --step prepare
     python -m src.cli.main data run    --config cfg.yaml --source acag --step fetch
-    python -m src.cli.main assemble create --config cfg.yaml --source main
-    python -m src.cli.main assemble update --config cfg.yaml --source main --datasource ntl
+    python -m src.cli.main assemble create --config cfg.yaml --grid 10km --shake quad
+    python -m src.cli.main assemble update --config cfg.yaml --grid 10km --datasource ntl_harm
     python -m src.cli.main analysis run    --model my_model
     python -m src.cli.main analysis submit --tables table_main
     python -m src.cli.main analysis summary
@@ -49,8 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="""
 Examples:
   src data run        --config cfg.yaml --source acag --step fetch
-  src assemble create --config cfg.yaml --source main_panel
-  src assemble update --config cfg.yaml --source main_panel --datasource ntl
+  src assemble create --config cfg.yaml --grid 10km --shake quad
+  src assemble update --config cfg.yaml --grid 10km --datasource ntl_harm
   src analysis run    --model baseline_ols
   src analysis submit --tables table_main table_robustness
   src analysis summary

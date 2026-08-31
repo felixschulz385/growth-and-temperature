@@ -27,6 +27,11 @@ def _jobs():
         return yaml.safe_load(f)["jobs"]
 
 
+def _assembly_jobs():
+    with open(SLURM_JOBS_FILE) as f:
+        return yaml.safe_load(f).get("assembly_jobs", [])
+
+
 def _data_yaml_source_keys():
     with open(DATA_YAML_FILE) as f:
         data = yaml.safe_load(f) or {}
@@ -43,6 +48,28 @@ def test_cluster_block_has_required_paths():
         cluster = yaml.safe_load(f)["cluster"]
     for key in ("conda_hook", "python_bin", "project_root", "scratch_prefix"):
         assert cluster.get(key), f"cluster.{key} missing/empty"
+
+
+def test_cluster_python_bin_targets_the_gnt_env():
+    with open(SLURM_JOBS_FILE) as f:
+        cluster = yaml.safe_load(f)["cluster"]
+    assert cluster["python_bin"].endswith("/envs/gnt/bin/python")
+
+
+@pytest.mark.parametrize("job", _assembly_jobs(), ids=lambda j: j.get("grid", "?"))
+def test_assembly_job_is_well_shaped(job):
+    for key in ("grid", "time", "qos", "cpus", "mem"):
+        assert job.get(key), f"assembly_jobs entry for grid={job.get('grid')!r}: '{key}' missing/empty"
+
+
+def test_assembly_jobs_grids_are_known_labels():
+    from src.data.assemble.constants import GRID_RESOLUTIONS_M
+
+    grids = [j["grid"] for j in _assembly_jobs()]
+    assert grids, "no assembly_jobs entries defined"
+    assert len(grids) == len(set(grids)), "duplicate grid in assembly_jobs"
+    for g in grids:
+        assert g in GRID_RESOLUTIONS_M, f"assembly_jobs grid {g!r} not in GRID_RESOLUTIONS_M"
 
 
 @pytest.mark.parametrize("job", _jobs(), ids=lambda j: j["name"])

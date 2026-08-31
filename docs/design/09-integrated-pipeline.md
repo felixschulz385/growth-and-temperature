@@ -501,9 +501,18 @@ run.py data transfer     --config C --source S --step STEP [--direction push]
 
 **`assemble` and `analysis` stay separate CLI domains, deliberately.** The complaint this document answers
 is about an artificial split *within one source's lifecycle*. `assemble` has different cardinality
-(many-sources-in, one-panel-out), its own `assemble:` config keyed by output panel, and its own
+(many-sources-in, one-panel-out), its own single `assembly:` config block (a per-source merge-settings
+registry — every source in it is in every panel; there are no named assemblies), and its own
 `create`/`update` verbs — merging it would mean inventing a fake source. State this as a decision, not an
 omission.
+
+> **Update (assembly rework).** `assemble` no longer takes a `--source <named-assembly>`; the panel
+> always contains every source in `assembly.sources`. `assemble create --grid <label>` picks the output
+> resolution (metric EASE labels: `1km`…`25km`) via `get_target_geobox(ctx)` + downsampling reprojection,
+> and `--shake <preset|s<N>>` writes each grid-origin-shifted variant as a full, identical-schema sibling
+> table. On-disk layout: `<output_root>/grid=<label>/shake=<base|s0|s1|…>/ix=/iy=/data.parquet`. Assembly
+> is submittable with `assemble create --slurm` (per-grid resources in `slurm_jobs.yaml`'s
+> `assembly_jobs:`); the committed `orchestration/scripts/assemble_*.sh` wrappers are gone.
 
 ### `src/data/pipeline/` internals
 

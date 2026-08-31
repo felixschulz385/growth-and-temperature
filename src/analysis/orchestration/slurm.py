@@ -24,7 +24,7 @@ ONE_WEEK_SECONDS = 7 * 24 * 3600
 DEFAULT_CONDA_HOOK = (
     "/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook"
 )
-DEFAULT_CONDA_ENV = "src"
+DEFAULT_CONDA_ENV = "gnt"
 
 
 # ---------------------------------------------------------------------------

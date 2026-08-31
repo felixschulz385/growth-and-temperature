@@ -29,7 +29,7 @@
 #          store actually has a separate boolean mask variable to name.
 
 PROJECT_ROOT="/scicore/home/meiera/schulz0022/projects/growth-and-temperature"
-PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python"
+PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python"
 
 cd "$PROJECT_ROOT"
 mkdir -p "./log/maintenance/backbone_validate"
@@ -40,7 +40,7 @@ exec 2>&1
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate src
+conda activate gnt
 
 VARIABLE_ZARR="${1:-}"
 DATA_VAR="${2:-value}"

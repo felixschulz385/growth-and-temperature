@@ -127,7 +127,7 @@ def render_wrap_command(job: dict, cluster: dict, args: argparse.Namespace) -> s
     lines = [
         f'cd {cluster["project_root"]}',
         f'eval "$({cluster["conda_hook"]} shell.bash hook)"',
-        "conda activate src",
+        "conda activate gnt",
     ]
     if not simple:
         mem_fraction = job["mem_fraction"]

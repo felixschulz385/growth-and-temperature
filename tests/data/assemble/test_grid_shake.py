@@ -10,6 +10,7 @@ from src.data.assemble.config import validate_assembly_config
 from src.data.assemble.grid_shake import (
     DEFAULT_GRID_SHAKE_PRESETS,
     normalize_grid_shake_offsets,
+    resolve_shake_selection,
     shift_geobox_origin,
 )
 from src.data.assemble.processors import TileProcessor
@@ -112,22 +113,39 @@ def test_validate_assembly_config_rejects_bad_grid_shake():
     assert any("grid_shake" in e for e in errors)
 
 
-def test_validate_assembly_config_rejects_grid_shake_with_geometry_partition():
-    config = _base_assembly_config(grid_shake="quad", spatial_partition="geometry")
-    config["geometry_source"] = {"path": "/tmp/x.gpkg", "id_column": "id"}
-    config["geometry_aggregator"] = "pkg.module:function"
-    errors = validate_assembly_config(config)
-    assert any("spatial_partition='geometry'" in e for e in errors)
+# --- resolve_shake_selection ---------------------------------------------------
+
+
+def test_resolve_shake_selection_none_is_base_only():
+    assert resolve_shake_selection(None) == [("base", 0.0, 0.0)]
+    assert resolve_shake_selection("none") == [("base", 0.0, 0.0)]
+
+
+def test_resolve_shake_selection_preset_is_base_plus_offsets():
+    sel = resolve_shake_selection("quad")
+    assert [label for label, _, _ in sel] == ["base", "s0", "s1", "s2"]
+    assert [(dx, dy) for _, dx, dy in sel[1:]] == DEFAULT_GRID_SHAKE_PRESETS["quad"]
+
+
+def test_resolve_shake_selection_single_offset_label_is_that_partition_only():
+    assert resolve_shake_selection("s1") == [("s1", 0.0, 0.5)]
+
+
+def test_resolve_shake_selection_unknown_raises():
+    with pytest.raises(ValueError, match="Unknown --shake value"):
+        resolve_shake_selection("wobble")
+    with pytest.raises(ValueError, match="out of range"):
+        resolve_shake_selection("s9")
 
 
 # --- TileProcessor integration ----------------------------------------------
 
 
-def _make_processor(target_geobox, resolution, grid_shake="quad"):
+def _make_processor(target_geobox, resolution):
     assembly_config = {
         "output_path": "unused",
         "datasets": {},
-        "processing": {"resolution": resolution, "grid_shake": grid_shake},
+        "processing": {"resolution": resolution},
     }
     return TileProcessor(assembly_config, "unused", target_geobox=target_geobox)
 
@@ -146,87 +164,60 @@ def _make_padded_source_dataset(padded_geobox):
     return ds.odc.assign_crs(DEFAULT_CRS)
 
 
-def test_grid_shake_active_only_when_downsampling():
+def test_extract_dataset_tile_has_no_shake_columns():
+    """Grid-shake is now a whole-run origin shift, not a per-column operation --
+    a single pass produces exactly the source's own columns."""
     native_res = 0.01
     tile_geobox = _make_geobox(shape=16, resolution=native_res)
 
-    coarser = _make_processor(tile_geobox, resolution=0.04)
-    assert coarser.grid_shake_active is True
+    processor = _make_processor(tile_geobox, resolution=0.04)
+    padded_tile_geobox, target_geobox_zoomed = processor._create_tile_geoboxes(tile_geobox)
+    ds = _make_padded_source_dataset(padded_tile_geobox)
 
-    same_res = _make_processor(tile_geobox, resolution=native_res)
-    assert same_res.grid_shake_active is False
+    df = processor._extract_dataset_tile(
+        ds,
+        {"resampling": "average"},
+        ix=0,
+        iy=0,
+        padded_tile_geobox=padded_tile_geobox,
+        target_geobox_zoomed=target_geobox_zoomed,
+        pixel_id_ds=None,
+        include_pixel_id=False,
+    )
 
-    finer = _make_processor(tile_geobox, resolution=0.005)
-    assert finer.grid_shake_active is False
-
-    no_config = _make_processor(tile_geobox, resolution=0.04, grid_shake=None)
-    assert no_config.grid_shake_active is False
+    assert df is not None
+    assert "test_var" in df.columns
+    assert not any("__shake_" in col for col in df.columns)
 
 
-def test_extract_dataset_tile_produces_shake_columns():
+def test_origin_shift_changes_downsampled_values():
+    """A shifted target grid must actually produce different coarse-cell values --
+    this is what a shake=s* sibling table is."""
     native_res = 0.01
     target_res = 0.04
     tile_geobox = _make_geobox(shape=16, resolution=native_res)
 
     processor = _make_processor(tile_geobox, resolution=target_res)
     padded_tile_geobox, target_geobox_zoomed = processor._create_tile_geoboxes(tile_geobox)
-    shaken_geoboxes = processor._get_shaken_geoboxes(target_geobox_zoomed)
-    assert [label for label, _ in shaken_geoboxes] == ["0", "1", "2"]
-
     ds = _make_padded_source_dataset(padded_tile_geobox)
 
-    df = processor._extract_dataset_tile(
-        ds,
-        {"resampling": "average"},
+    common = dict(
+        dataset_config={"resampling": "average"},
         ix=0,
         iy=0,
         padded_tile_geobox=padded_tile_geobox,
-        target_geobox_zoomed=target_geobox_zoomed,
         pixel_id_ds=None,
         include_pixel_id=False,
-        shaken_geoboxes=shaken_geoboxes,
+    )
+    base_df = processor._extract_dataset_tile(ds=ds, target_geobox_zoomed=target_geobox_zoomed, **common)
+    shaken_df = processor._extract_dataset_tile(
+        ds=ds,
+        target_geobox_zoomed=shift_geobox_origin(target_geobox_zoomed, 0.5, 0.5),
+        **common,
     )
 
-    assert df is not None
-    for label in ("0", "1", "2"):
-        assert f"test_var__shake_{label}" in df.columns
-
-    base_rows = len(df)
-    for label in ("0", "1", "2"):
-        assert len(df[f"test_var__shake_{label}"].dropna()) > 0
-        assert len(df) == base_rows
-
-    # At least one shake variant must differ from the unshaken column somewhere --
-    # otherwise the origin shift silently had no effect.
-    differs = False
-    for label in ("0", "1", "2"):
-        shake_col = df[f"test_var__shake_{label}"]
-        if not np.allclose(shake_col.values, df["test_var"].values, equal_nan=True):
-            differs = True
-    assert differs
-
-
-def test_extract_dataset_tile_no_shake_columns_when_inactive():
-    native_res = 0.01
-    tile_geobox = _make_geobox(shape=16, resolution=native_res)
-
-    processor = _make_processor(tile_geobox, resolution=native_res)  # not downsampling
-    padded_tile_geobox, target_geobox_zoomed = processor._create_tile_geoboxes(tile_geobox)
-    shaken_geoboxes = processor._get_shaken_geoboxes(target_geobox_zoomed)
-    assert shaken_geoboxes == []
-
-    ds = _make_padded_source_dataset(padded_tile_geobox)
-    df = processor._extract_dataset_tile(
-        ds,
-        {"resampling": "average"},
-        ix=0,
-        iy=0,
-        padded_tile_geobox=padded_tile_geobox,
-        target_geobox_zoomed=target_geobox_zoomed,
-        pixel_id_ds=None,
-        include_pixel_id=False,
-        shaken_geoboxes=shaken_geoboxes,
+    assert base_df is not None and shaken_df is not None
+    assert len(base_df) == len(shaken_df)  # same schema / row count
+    assert not np.allclose(
+        base_df["test_var"].values, shaken_df["test_var"].values, equal_nan=True
     )
-
-    assert df is not None
-    assert not any(col.startswith("test_var__shake_") for col in df.columns)

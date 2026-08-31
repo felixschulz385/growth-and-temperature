@@ -154,6 +154,14 @@ robustness-check computation itself, which still needs to be built. Its hardcode
 resolutions (`"500m": 0.00417`, etc.) will also need a metric-CRS equivalent once the canonical grid
 is EPSG:6933.
 
+> **Update (assembly rework).** Grid-shake is now implemented in the assembly stage as a *whole-run
+> origin shift*, applied once to the target GeoBox (`grid_shake.shift_geobox_origin`) before tiling —
+> not as per-column `{var}__shake_N` reprojections. Each `assemble create --grid <coarse> --shake
+> <preset>` variant is a full, identical-schema pass written to its own sibling table under
+> `<output_root>/grid=<label>/shake=<base|s0|s1|…>/`. `shake=base` is always written; extra offsets
+> are independent add-on passes/jobs that never touch `base`. It stays gated on downsampling (a
+> native-resolution `--grid 1km` run ignores `--shake`).
+
 **`demean_columns`/`assemble demean`: confirmed dead/broken configuration, do not resurrect as-is.**
 `orchestration/configs/data.yaml` references `processing.demean_columns`, and the CLI has a `assemble
 demean` subcommand wired to call `src.data.assemble.demean.run_workflow_with_config` — but

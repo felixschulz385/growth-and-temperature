@@ -52,14 +52,17 @@ pip install -e .
 
 ### Basic Usage
 ```bash
-# Download data
-python run.py download --config orchestration/configs/data.yaml --source glass
+# Fetch + prepare a source (fetch/prepare/grid lifecycle)
+python run.py data run --config orchestration/configs/data.yaml --source glass_modis --step prepare
 
-# Process data
-python run.py preprocess --config orchestration/configs/data.yaml --source glass_modis --stage annual
+# Assemble the panel: every source in assembly.sources, on the chosen grid.
+# --grid picks the output resolution; --shake adds grid-origin robustness variants.
+python run.py assemble create --config orchestration/configs/data.yaml --grid 1km
+python run.py assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad
+# output: ${DATA_NOBACKUP}/assembled/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data.parquet
 
-# Assemble datasets
-python run.py assemble create --config orchestration/configs/data.yaml --source main_panel
+# Refresh one source in an already-built table
+python run.py assemble update --config orchestration/configs/data.yaml --grid 10km --datasource eog_viirs
 ```
 
 ### HPC Processing
@@ -73,6 +76,10 @@ python run.py data run --source glass_modis --step prepare --slurm --chain
 
 # Preview the sbatch command(s) without submitting
 python run.py data run --source glass_modis --step prepare --slurm --chain --dry-run
+
+# Submit an assembly run (per-grid resource defaults from slurm_jobs.yaml's assembly_jobs:)
+python run.py assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad --slurm
+python run.py assemble create --config orchestration/configs/data.yaml --grid 10km --slurm --dry-run
 ```
 
 ## 🏗️ System Architecture

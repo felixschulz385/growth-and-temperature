@@ -43,12 +43,34 @@ def _collect_dask_overrides(args: argparse.Namespace) -> dict:
     return overrides
 
 
-def _run_assembly_workflow(config: dict, source: str, cli_overrides: dict) -> None:
+def _guard_slurm_only_flags(args: argparse.Namespace) -> None:
+    """`--slurm-*` / `--dry-run` only make sense together with `--slurm`."""
+    if getattr(args, "slurm", False):
+        return
+    slurm_only = [
+        ("--dry-run", getattr(args, "dry_run", False)),
+        ("--slurm-time", getattr(args, "slurm_time", None)),
+        ("--slurm-mem", getattr(args, "slurm_mem", None)),
+        ("--slurm-cpus", getattr(args, "slurm_cpus", None)),
+        ("--slurm-qos", getattr(args, "slurm_qos", None)),
+        ("--slurm-partition", getattr(args, "slurm_partition", None)),
+    ]
+    used = [name for name, val in slurm_only if val]
+    if used:
+        logger.error("%s only make sense together with --slurm", ", ".join(used))
+        raise SystemExit(1)
+
+
+def _run_assembly_workflow(config: dict, cli_overrides: dict) -> None:
     config = config.copy()
-    config["assembly_name"] = source
     config["cli_overrides"] = cli_overrides
     mod = importlib.import_module("src.data.assemble.workflow")
-    logger.info(f"Running assembly workflow: {source}")
+    logger.info(
+        "Running assembly workflow: grid=%s shake=%s mode=%s",
+        cli_overrides.get("grid_label"),
+        cli_overrides.get("shake"),
+        cli_overrides.get("assembly_mode"),
+    )
     mod.run_workflow_with_config(config)
 
 
@@ -57,32 +79,53 @@ def _run_assembly_workflow(config: dict, source: str, cli_overrides: dict) -> No
 # ---------------------------------------------------------------------------
 
 def handle_create(args: argparse.Namespace) -> None:
-    """``assemble create`` — recreate all tiles."""
+    """``assemble create`` — build the panel for one grid (+ shake variants)."""
     setup_logging(args.log_level, debug=args.debug)
+    _guard_slurm_only_flags(args)
+
+    if getattr(args, "slurm", False):
+        from src.cli.assemble.slurm import submit as submit_slurm
+
+        submit_slurm(args)
+        return
+
     config = load_config_with_env_vars(args.config)
 
     cli_overrides = _collect_dask_overrides(args)
     cli_overrides["assembly_mode"] = "create"
-    logger.info("Assembly mode: CREATE (recreate all tiles)")
+    cli_overrides["grid_label"] = args.grid
+    cli_overrides["shake"] = args.shake
+    logger.info("Assembly mode: CREATE (grid=%s, shake=%s)", args.grid, args.shake)
 
     overwrite = getattr(args, "overwrite", None)
     if overwrite is not None:
         cli_overrides["overwrite"] = overwrite
         logger.info(f"Overriding overwrite from CLI: {overwrite}")
 
-    _run_assembly_workflow(config, args.source, cli_overrides)
+    _run_assembly_workflow(config, cli_overrides)
 
 
 def handle_update(args: argparse.Namespace) -> None:
-    """``assemble update`` — update existing tiles with a new datasource."""
+    """``assemble update`` — refresh one source in an existing assembled table."""
     setup_logging(args.log_level, debug=args.debug)
+    _guard_slurm_only_flags(args)
+
+    if getattr(args, "slurm", False):
+        from src.cli.assemble.slurm import submit as submit_slurm
+
+        submit_slurm(args)
+        return
+
     config = load_config_with_env_vars(args.config)
 
     cli_overrides = _collect_dask_overrides(args)
     cli_overrides["assembly_mode"] = "update"
     cli_overrides["datasource"] = args.datasource
-    logger.info(f"Assembly mode: UPDATE datasource '{args.datasource}'")
+    cli_overrides["grid_label"] = args.grid
+    cli_overrides["shake"] = args.shake
+    logger.info(
+        "Assembly mode: UPDATE datasource '%s' (grid=%s, shake=%s)",
+        args.datasource, args.grid, args.shake,
+    )
 
-    _run_assembly_workflow(config, args.source, cli_overrides)
-
-
+    _run_assembly_workflow(config, cli_overrides)

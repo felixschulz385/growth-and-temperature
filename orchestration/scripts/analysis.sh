@@ -14,7 +14,7 @@ MODEL=${1:?Usage: sbatch analysis.sh <model_name> [dataset_path]}
 export WD="/scicore/home/meiera/schulz0022/projects/growth-and-temperature"
 
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate src
+conda activate gnt
 
 # Determine duckreg version for structured log paths
 DUCKREG_VERSION=$(python -c "from duckreg._version import __version__; print(__version__)" 2>/dev/null || echo "unknown")

@@ -20,7 +20,7 @@ exec 2>&1
 
 # Activate conda environment
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate src
+conda activate gnt
 
 echo "$(date): Starting batch zarr rechunking job"
 echo "Base path: $BASE_PATH"
@@ -31,7 +31,7 @@ echo "Memory: ${SLURM_MEM_PER_NODE}MB"
 echo "Log file: $LOG_FILE"
 
 # Run the rechunking script for all annual zarr files
-/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python \
+/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python \
     "/scicore/home/meiera/schulz0022/projects/growth-and-temperature/scripts/rechunk_zarr.py" \
     --base-path "$BASE_PATH" \
     --chunk-size "$CHUNK_SIZE"
