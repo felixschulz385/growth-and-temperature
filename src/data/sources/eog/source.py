@@ -45,11 +45,13 @@ file, several product variants
 filter at all -- it would have queued every variant of every period for
 download, keyed only on `file_extensions`. `VIIRS_YEAR_RANGE` (2012-2021)
 is hardcoded rather than discovered (`get_all_entrypoints()`), each year
-mapped, per `data summary`/`data fetch`, to the one file whose period ends
-in December of that year (excludes the rolling/intermediate periods) and
-whose variant is `VIIRS_VARIANT` (`average_masked` -- the standard masked
-composite used in nightlights economics literature, not raw `average` or
-any of the coverage/min/max/median variants). The *exact* URL (with its
+mapped, per `data summary`/`data fetch`, to the file(s) whose period ends
+in December of that year (excludes the rolling/intermediate periods) for
+each variant in `VIIRS_VARIANTS` -- `average_masked` (the masked mean, the
+standard used in nightlights economics literature), plus `median_masked`
+and `cf_cvg`, which PREPARE lands as parallel columns
+(`viirs_annual` / `viirs_annual_median` / `viirs_annual_cf_cvg`, each
+resampled by its own method -- `VIIRS_RESAMPLING`). The *exact* URL (with its
 unpredictable `_c<timestamp>` processing-code suffix) is still discovered
 live, not templated -- `has_entrypoints=True` for this source_type routes
 through the same per-entrypoint listing cache
@@ -127,7 +129,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     #: Bumped whenever the raw-getter/reprojection logic here changes in a
     #: way that must invalidate every already-`complete` tile's status and
     #: force a full reprocess (`run_tiled_prepare`'s `processing_version`).
-    PROCESSING_VERSION = "2-tiled"
+    PROCESSING_VERSION = "3-viirs-multivar"
 
     #: VIIRS annual-composite years worth fetching (module docstring) --
     #: hardcoded rather than discovered, since the directory mixes canonical
@@ -136,11 +138,41 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     #: (see _viirs_annual_listing()).
     VIIRS_YEAR_RANGE = (2012, 2021)
 
-    #: The VNL product variant fetched -- masked composite (background/
-    #: fire/aurora-corrected), the standard used in nightlights economics
-    #: literature, not raw "average" or the coverage/min/max/median variants
-    #: also present in the same directory.
-    VIIRS_VARIANT = "average_masked"
+    #: The VNL product variants fetched, each landing as its own column in
+    #: the one `eog_viirs_annual` PREPARE output:
+    #:   * `average_masked` -> `viirs_annual`          (the masked mean
+    #:     composite -- background/fire/aurora-corrected; the standard used
+    #:     in nightlights economics literature). Reprojected by area-weighted
+    #:     `sum` (flux-conserving -- docs/design/04-ingest.md §1).
+    #:   * `median_masked`  -> `viirs_annual_median`   (per-pixel masked
+    #:     median radiance -- robust to transient bright nights). Reprojected
+    #:     by `average`; a per-pixel diagnostic, NOT a flux ring sum.
+    #:   * `cf_cvg`         -> `viirs_annual_cf_cvg`   (cloud-free coverage:
+    #:     the count of cloud-free observations feeding each pixel's
+    #:     composite -- an observation-density weight, not a day count).
+    #:     Reprojected by `average`; stored as float32.
+    VIIRS_VARIANTS = ("average_masked", "median_masked", "cf_cvg")
+
+    #: Which VNL variant produces which output column (see VIIRS_VARIANTS).
+    VIIRS_VARIANT_COLUMNS = {
+        "average_masked": "viirs_annual",
+        "median_masked": "viirs_annual_median",
+        "cf_cvg": "viirs_annual_cf_cvg",
+    }
+
+    #: The primary variant -- a year without this file is not preparable
+    #: (median/cf_cvg are NaN-filled if their file is missing, so every
+    #: year's parquet part keeps the same 3-column schema).
+    VIIRS_PRIMARY_VARIANT = "average_masked"
+
+    #: Per-column resampling for the multi-variant `viirs_annual` output,
+    #: threaded through `run_tiled_prepare` -> `process_tile_region` as a
+    #: `{variable: method}` map (SpatialProcessor.resample_map_for).
+    VIIRS_RESAMPLING = {
+        "viirs_annual": "sum",
+        "viirs_annual_median": "average",
+        "viirs_annual_cf_cvg": "average",
+    }
 
     #: Two live naming schemes, confirmed against eogdata.mines.edu/
     #: nighttime_light/annual/v21/<year>/: 2012 (the product's first,
@@ -171,7 +203,6 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         if not self.base_url:
             raise ValueError("'base_url' is required.")
         self.file_extensions: List[str] = cfg.raw.get("file_extensions") or [".tif", ".tgz", ".tar.gz", ".gz"]
-        self.resampling = cfg.raw.get("resampling", "sum")
 
         self._username, self._password = load_eog_credentials(cfg.raw.get("credentials_path"))
         if not self._username or not self._password:
@@ -186,6 +217,13 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         self.source_type = self._derive_source_type()
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"eog_{self.source_type}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
+
+        #: PREPARE resampling: VIIRS annual is the multi-variant output, so a
+        #: per-column `{variable: method}` map (see VIIRS_RESAMPLING); DMSP/
+        #: DVNL stay single-method. Either form is `verification`-style
+        #: overridable via `resampling:` in the source's config block.
+        default_resampling = self.VIIRS_RESAMPLING if self.source_type == "viirs_annual" else "sum"
+        self.resampling = cfg.raw.get("resampling", default_resampling)
 
         #: In-process cache for _viirs_annual_listing() -- populated by one
         #: crawl the first time any year's entrypoint is requested, reused
@@ -297,8 +335,10 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         year composite with intermediate/rolling reprocessing periods (e.g.
         a `201204-201303` entry alongside `201204-201212`) and, per file,
         several product variants (average/cf_cvg/median/...) -- filtered
-        here for `VIIRS_VARIANT` entries whose period ends in December of
-        their own folder's year. All year directories are crawled in one
+        here to the `VIIRS_VARIANTS` we ingest (mean/median/cf_cvg), each
+        entry whose period ends in December of its own folder's year. One
+        (href, url) per (year, variant); a duplicate (year, variant) keeps
+        the first. All year directories are crawled in one
         Selenium session/login and the combined result cached on `self` so
         every year in `get_all_entrypoints()` shares that one login instead
         of ten. Requests are throttled the same way `_CrawlerMixin.crawl()`
@@ -323,7 +363,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                     match = self._VIIRS_FILENAME_RE.search(href)
                     if not match:
                         continue
-                    if match.group("variant") != self.VIIRS_VARIANT:
+                    if match.group("variant") not in self.VIIRS_VARIANTS:
                         continue
                     if self._viirs_match_year(match) != year:
                         continue
@@ -332,12 +372,17 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             self._close_selenium_driver()
 
         for year, matches in listing.items():
-            if len(matches) > 1:
-                logger.warning(
-                    "Multiple %s candidates matched EOG VIIRS year %d: %s -- using the first",
-                    self.VIIRS_VARIANT, year, [m[0] for m in matches],
-                )
-                listing[year] = matches[:1]
+            seen: Dict[str, Tuple[str, str]] = {}
+            for href, full_url in matches:
+                variant = self._VIIRS_FILENAME_RE.search(href).group("variant")
+                if variant in seen:
+                    logger.warning(
+                        "Multiple EOG VIIRS %s candidates for year %d: %s -- using %s",
+                        variant, year, [m[0] for m in matches], seen[variant][0],
+                    )
+                    continue
+                seen[variant] = (href, full_url)
+            listing[year] = list(seen.values())
 
         self._viirs_listing_cache = listing
         return listing
@@ -521,9 +566,34 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             return file_path
         return os.path.join(self.output_root(PipelineStep.FETCH), file_path)
 
+    def _output_columns(self) -> Tuple[str, ...]:
+        """The data columns this source's PREPARE output carries. VIIRS
+        annual is multi-variant (mean/median/cf_cvg -- VIIRS_VARIANT_COLUMNS);
+        DMSP/DVNL are a single column named for the `source_type`."""
+        if self.source_type == "viirs_annual":
+            return tuple(self.VIIRS_VARIANT_COLUMNS[v] for v in self.VIIRS_VARIANTS)
+        return (self.source_type,)
+
+    @staticmethod
+    def _maybe_gunzip(local_file: str) -> Tuple[str, Optional[str]]:
+        """`(path_to_read, temp_to_delete_or_None)` -- decompresses a
+        `.gz`-wrapped raw file next to itself; the caller owns deleting the
+        returned temp only once the year's Dataset is evicted from cache
+        (docs/design/13-prepare-memory-parallelism.md)."""
+        if not local_file.endswith(".gz"):
+            return local_file, None
+        import gzip
+        import shutil
+
+        uncompressed = local_file[:-3]
+        with gzip.open(local_file, "rb") as f_in, open(uncompressed, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+        return uncompressed, uncompressed
+
     def _files_by_year(self) -> Dict[int, List[str]]:
         """Live crawl of FETCH's raw output directory: ground truth for
-        which years have a fetched file."""
+        which years have a fetched file (DMSP/DVNL -- one file per year).
+        VIIRS annual has its own variant-aware crawl below."""
         raw_root = self.output_root(PipelineStep.FETCH)
         if not os.path.isdir(raw_root):
             return {}
@@ -536,7 +606,40 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                     files_by_year.setdefault(year, []).append(rel)
         return files_by_year
 
+    def _viirs_files_by_year_variant(self) -> Dict[int, Dict[str, str]]:
+        """`{year: {variant: relpath}}` for the fetched VNL composites --
+        both the year and the product variant read off each filename via
+        `_VIIRS_FILENAME_RE` (a plain 4-digit-year scan cannot tell
+        `average_masked` from `median_masked` from `cf_cvg` for the same
+        year). A duplicate (year, variant) keeps the first, logs the rest."""
+        raw_root = self.output_root(PipelineStep.FETCH)
+        if not os.path.isdir(raw_root):
+            return {}
+        out: Dict[int, Dict[str, str]] = {}
+        for dirpath, _dirnames, filenames in os.walk(raw_root):
+            for fname in filenames:
+                match = self._VIIRS_FILENAME_RE.search(fname)
+                if not match:
+                    continue
+                year = self._viirs_match_year(match)
+                variant = match.group("variant")
+                if year is None or variant not in self.VIIRS_VARIANTS:
+                    continue
+                rel = os.path.relpath(os.path.join(dirpath, fname), raw_root)
+                slot = out.setdefault(year, {})
+                if variant in slot:
+                    logger.warning(
+                        "Multiple EOG VIIRS files for %d/%s: keeping %s, ignoring %s",
+                        year, variant, slot[variant], rel,
+                    )
+                    continue
+                slot[variant] = rel
+        return out
+
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
+        if self.source_type == "viirs_annual":
+            return self._plan_prepare_viirs(selection)
+
         files_by_year = self._files_by_year()
         years = sorted(
             year for year in files_by_year if selection.matches_year(year) and selection.matches_key(str(year))
@@ -567,30 +670,81 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             )
         ]
 
-    def _load_year(self, file_path: str, year: int) -> Optional[Tuple[xr.Dataset, Optional[str]]]:
-        """Returns `(dataset, uncompressed_temp_path_or_None)` -- stays
-        dask-backed (`chunks="auto"`), not `.load()`'d, so the caller can
-        clip to one output tile's bbox via `sel_bbox()` before compute()ing
-        (docs/design/13-prepare-memory-parallelism.md). For a `.gz`-wrapped
-        source, the decompressed temp file must stay on disk until every
-        tile for this year has been computed against it -- the caller (see
-        `_execute_prepare`'s `year_ds()`/cache eviction) owns deleting it,
-        only once this year's Dataset is evicted from its cache, not here."""
+    def _plan_prepare_viirs(self, selection: TargetSelection) -> List[StepTarget]:
+        """VIIRS annual: one PREPARE target carrying all `VIIRS_VARIANTS` as
+        parallel columns. A year is preparable iff its primary (mean) file
+        was fetched; a missing median/cf_cvg file is NaN-filled in
+        `_load_year` so every year's parquet part keeps the same schema."""
+        files = self._viirs_files_by_year_variant()
+        years = sorted(
+            year
+            for year, variants in files.items()
+            if self.VIIRS_PRIMARY_VARIANT in variants
+            and selection.matches_year(year)
+            and selection.matches_key(str(year))
+        )
+        if not years:
+            return []
+        raw_files = {year: files[year] for year in years}
+        for year in years:
+            missing = [v for v in self.VIIRS_VARIANTS if v not in raw_files[year]]
+            if missing:
+                logger.warning(
+                    "EOG VIIRS %d missing variant file(s) %s -- corresponding column(s) NaN-filled",
+                    year, missing,
+                )
+        columns = self._output_columns()
+        return [
+            StepTarget(
+                source_id=self.cfg.source_id,
+                step=PipelineStep.PREPARE,
+                key="all",
+                output_path=self._output_path(),
+                inputs=tuple(path for year in years for path in raw_files[year].values()),
+                completion=Completion.MARKER,
+                meta={
+                    "years": years,
+                    "raw_files": raw_files,
+                    **verify.verification_meta(
+                        self.cfg.raw,
+                        expected_vars=columns,
+                        # Post-`sum` onto 1 km EASE, a flare/industrial-core
+                        # cell reaches ~1e5-1e6 -- see the range-check note
+                        # in orchestration/configs/data.yaml. Only the two
+                        # radiance columns are range-checked; cf_cvg (an
+                        # observation count) is left out of range_vars.
+                        value_range=(0, 1_000_000),
+                        range_vars=("viirs_annual", "viirs_annual_median"),
+                    ),
+                },
+            )
+        ]
+
+    def _load_year(self, source: "str | Dict[str, str]", year: int) -> "Optional[Tuple[xr.Dataset, List[str]]]":
+        """Returns `(dataset, temp_files_to_delete)` -- stays dask-backed
+        (`chunks="auto"`), not `.load()`'d, so the caller can clip to one
+        output tile's bbox via `sel_bbox()` before compute()ing
+        (docs/design/13-prepare-memory-parallelism.md). Any `.gz`-decompressed
+        temp files must stay on disk until every tile for this year has been
+        computed against them -- the caller (`_execute_prepare`'s
+        `year_ds()`/`evict_cache()`) owns deleting them once this year's
+        Dataset leaves the cache, not here.
+
+        *source* is a `{variant: relpath}` map for VIIRS annual (one column
+        per variant), or a single relpath string for DMSP/DVNL.
+        """
+        if isinstance(source, dict):
+            return self._load_year_viirs(source, year)
+        return self._load_year_single(source, year)
+
+    def _load_year_single(self, file_path: str, year: int) -> "Optional[Tuple[xr.Dataset, List[str]]]":
         import rioxarray as rxr
 
-        uncompressed_file_to_delete = None
+        temps: List[str] = []
         try:
-            local_file = file_path
-            if file_path.endswith(".gz"):
-                import gzip
-                import shutil
-
-                uncompressed = local_file[:-3]
-                with gzip.open(local_file, "rb") as f_in, open(uncompressed, "wb") as f_out:
-                    shutil.copyfileobj(f_in, f_out)
-                local_file = uncompressed
-                uncompressed_file_to_delete = uncompressed
-
+            local_file, tmp = self._maybe_gunzip(self._resolve_source_file_path(file_path))
+            if tmp:
+                temps.append(tmp)
             if not os.path.exists(local_file):
                 logger.error("File does not exist: %s", local_file)
                 return None
@@ -609,11 +763,51 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             ds = ds.assign_attrs(**attrs)
             if ds.rio.crs is None:
                 ds = ds.rio.write_crs(4326)
-            return ds, uncompressed_file_to_delete
+            return ds, temps
         except Exception:
             logger.exception("Error processing file %s.", file_path)
-            if uncompressed_file_to_delete and os.path.exists(uncompressed_file_to_delete):
-                os.remove(uncompressed_file_to_delete)
+            for t in temps:
+                if os.path.exists(t):
+                    os.remove(t)
+            return None
+
+    def _load_year_viirs(self, paths: Dict[str, str], year: int) -> "Optional[Tuple[xr.Dataset, List[str]]]":
+        """One Dataset with a column per `VIIRS_VARIANTS` entry
+        (VIIRS_VARIANT_COLUMNS names them). A variant whose file wasn't
+        fetched is NaN-filled onto the primary (mean) grid so the merged
+        schema is stable across years."""
+        import rioxarray as rxr
+
+        temps: List[str] = []
+        try:
+            arrays: Dict[str, xr.DataArray] = {}
+            for variant, rel in paths.items():
+                local_file, tmp = self._maybe_gunzip(self._resolve_source_file_path(rel))
+                if tmp:
+                    temps.append(tmp)
+                if not os.path.exists(local_file):
+                    logger.error("EOG VIIRS file does not exist: %s", local_file)
+                    return None
+                da = rxr.open_rasterio(local_file, chunks="auto")
+                da = da.expand_dims(dim={"time": 1}).assign_coords({"time": [pd.Timestamp(f"{year}-12-31")]})
+                arrays[self.VIIRS_VARIANT_COLUMNS[variant]] = da
+
+            primary_col = self.VIIRS_VARIANT_COLUMNS[self.VIIRS_PRIMARY_VARIANT]
+            primary = arrays[primary_col]
+            for variant in self.VIIRS_VARIANTS:
+                col = self.VIIRS_VARIANT_COLUMNS[variant]
+                if col not in arrays:
+                    arrays[col] = xr.full_like(primary, np.nan, dtype="float32")
+
+            ds = xr.Dataset(arrays)
+            if ds.rio.crs is None:
+                ds = ds.rio.write_crs(4326)
+            return ds, temps
+        except Exception:
+            logger.exception("Error loading EOG VIIRS year %s", year)
+            for t in temps:
+                if os.path.exists(t):
+                    os.remove(t)
             return None
 
     def _output_path(self) -> str:
@@ -636,7 +830,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             return True
 
         years: List[int] = target.meta["years"]
-        raw_files: Dict[int, str] = target.meta["raw_files"]
+        # {year: relpath} for DMSP/DVNL, {year: {variant: relpath}} for VIIRS.
+        raw_files: Dict[int, Any] = target.meta["raw_files"]
         os.makedirs(os.path.dirname(target.output_path), exist_ok=True)
 
         target_geobox = get_target_geobox(self.ctx)
@@ -659,22 +854,23 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 # and computes only that (docs/design/13-prepare-memory-
                 # parallelism.md), instead of the whole annual global
                 # raster this used to eagerly `.load()`.
-                cache: Dict[int, Optional[Tuple[xr.Dataset, Optional[str]]]] = {}
+                cache: Dict[int, Optional[Tuple[xr.Dataset, List[str]]]] = {}
+                output_columns = self._output_columns()
 
                 def evict_cache() -> None:
                     for old_year, old_entry in list(cache.items()):
                         if old_entry is not None:
-                            old_ds, old_tmp = old_entry
+                            old_ds, old_tmps = old_entry
                             old_ds.close()
-                            if old_tmp and os.path.exists(old_tmp):
-                                os.remove(old_tmp)
+                            for old_tmp in old_tmps:
+                                if os.path.exists(old_tmp):
+                                    os.remove(old_tmp)
                         del cache[old_year]
 
                 def year_ds(year: int) -> Optional[xr.Dataset]:
                     if year not in cache:
                         evict_cache()
-                        source_file = self._resolve_source_file_path(raw_files[year])
-                        cache[year] = self._load_year(source_file, year)
+                        cache[year] = self._load_year(raw_files[year], year)
                     entry = cache[year]
                     return entry[0] if entry is not None else None
 
@@ -688,11 +884,14 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                         # Tile falls outside this year's raster coverage --
                         # legitimate tile state (e.g. poleward of VIIRS/
                         # DMSP's own extent), not a fetch failure. NaN-fill
-                        # on tile.geobox instead of None, same convention as
-                        # MODIS/ESA-CCI/AVHRR's own raw_getter.
+                        # every output column on tile.geobox instead of None,
+                        # same convention as MODIS/ESA-CCI/AVHRR's raw_getter.
                         dim_y, dim_x = tile.geobox.dims
                         return xr.Dataset(
-                            {self.source_type: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))}
+                            {
+                                col: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
+                                for col in output_columns
+                            }
                         )
                     return clipped.compute()
 
@@ -700,7 +899,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                     return run_tiled_prepare(
                         output_path=target.output_path,
                         years=years,
-                        variables=[self.source_type],
+                        variables=list(output_columns),
                         target_geobox=target_geobox,
                         processor=processor,
                         raw_getter=raw_getter,

@@ -1,9 +1,10 @@
 """EogSource's VIIRS annual-composite entrypoint discovery (module docstring
 in src/data/sources/eog/source.py): hardcoded year range (2012-2021), one
-`average_masked` file per year selected out of that year's own subdirectory,
-which also contains other variants and intermediate/rolling reprocessing
-periods. DMSP/DVNL keep the plain (has_entrypoints=False) whole-directory
-crawl.
+file per ingested variant (`average_masked`/`median_masked`/`cf_cvg` --
+EogSource.VIIRS_VARIANTS) per year, selected out of that year's own
+subdirectory, which also contains variants we don't ingest and
+intermediate/rolling reprocessing periods. DMSP/DVNL keep the plain
+(has_entrypoints=False) whole-directory crawl.
 """
 
 import pytest
@@ -67,15 +68,17 @@ def test_get_all_entrypoints_empty_for_dmsp_dvnl(tmp_path):
 
 
 _DIRECTORY_HREFS = [
-    # Canonical 2012 composite (end-of-year period, correct variant) -- kept.
+    # Canonical 2012 composite (end-of-year period), the three ingested
+    # variants -- all kept.
     "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average_masked.dat.tif.gz",
-    # Same period, wrong variant -- excluded.
-    "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average.dat.tif.gz",
+    "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.median_masked.dat.tif.gz",
     "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.cf_cvg.dat.tif.gz",
+    # Same period, a variant we don't ingest -- excluded.
+    "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average.dat.tif.gz",
     # Intermediate/rolling reprocessing period spanning into 2013 -- doesn't
     # end in December of its own start year, excluded regardless of variant.
     "VNL_v21_npp_201204-201303_global_vcmcfg_c202205302300.average_masked.dat.tif.gz",
-    # Canonical 2013 composite, correct variant -- kept.
+    # Canonical 2013 composite -- kept.
     "VNL_v21_npp_201301-201312_global_vcmcfg_c202205302301.average_masked.dat.tif.gz",
     # A file that isn't a VNL composite at all -- must not crash the regex match.
     "README.txt",
@@ -86,7 +89,7 @@ def _fake_entries(hrefs):
     return [(href, f"https://eogdata.mines.edu/nighttime_light/annual/v21/{href}") for href in hrefs]
 
 
-def test_viirs_annual_listing_selects_masked_variant_and_end_of_year_period(tmp_path, monkeypatch):
+def test_viirs_annual_listing_selects_ingested_variants_and_end_of_year_period(tmp_path, monkeypatch):
     source = _make_source(tmp_path, "viirs")
     monkeypatch.setattr(source, "_init_selenium_driver", lambda: None)
     monkeypatch.setattr(source, "_close_selenium_driver", lambda: None)
@@ -97,8 +100,14 @@ def test_viirs_annual_listing_selects_masked_variant_and_end_of_year_period(tmp_
     listing = source._viirs_annual_listing()
 
     assert set(listing) == {2012, 2013}
-    assert listing[2012] == [_fake_entries(_DIRECTORY_HREFS)[0]]
-    assert listing[2013] == [_fake_entries(_DIRECTORY_HREFS)[4]]
+    assert {href for href, _ in listing[2012]} == {
+        "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.average_masked.dat.tif.gz",
+        "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.median_masked.dat.tif.gz",
+        "VNL_v21_npp_201204-201212_global_vcmcfg_c202205302300.cf_cvg.dat.tif.gz",
+    }
+    assert [href for href, _ in listing[2013]] == [
+        "VNL_v21_npp_201301-201312_global_vcmcfg_c202205302301.average_masked.dat.tif.gz",
+    ]
 
 
 def test_viirs_annual_listing_ignores_years_outside_hardcoded_range(tmp_path, monkeypatch):
@@ -159,8 +168,8 @@ def test_list_remote_files_yields_only_requested_year(tmp_path, monkeypatch):
     monkeypatch.setattr(source, "_list_single_directory", lambda url: _fake_entries(_DIRECTORY_HREFS))
 
     results_2012 = list(source.list_remote_files({"year": 2012}))
-    assert len(results_2012) == 1
-    assert "201204-201212" in results_2012[0][0]
+    assert len(results_2012) == 3  # average_masked + median_masked + cf_cvg
+    assert all("201204-201212" in href for href, _ in results_2012)
 
     results_2015 = list(source.list_remote_files({"year": 2015}))
     assert results_2015 == []

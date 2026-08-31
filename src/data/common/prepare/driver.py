@@ -90,7 +90,7 @@ def run_tiled_prepare(
     reproject: bool = True,
     preprocess_func: "Optional[Callable[[Any], Any]]" = None,
     dst_nodata: Optional[float] = None,
-    resampling: str = "nearest",
+    resampling: "str | dict[str, str]" = "nearest",
     processing_version: str = "1",
     override: bool = False,
     max_attempts: int = DEFAULT_MAX_ATTEMPTS,
@@ -123,6 +123,13 @@ def run_tiled_prepare(
     `reproject=False` for a source whose `raw_getter` already rasterizes/
     produces its output directly on `tile.geobox` (e.g. vector polygon
     rasterization) -- the dataset is used as-is, no resampling applied.
+
+    *resampling* is either one method string for every variable, or a
+    ``{variable: method}`` dict (optional ``"*"`` fallback) forwarded to
+    `SpatialProcessor.process_tile_region` so a single PREPARE output can
+    carry columns resampled by different methods (e.g. a flux-conserving
+    ``"sum"`` radiance mean beside an ``"average"`` per-pixel median or
+    observation count).
 
     *processing_version* is a source-controlled cache-buster: bump it when a
     raw-getter or its processing logic changes in a way that must invalidate

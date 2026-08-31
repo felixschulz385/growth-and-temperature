@@ -285,11 +285,32 @@ sources:
     download:
       max_concurrent_downloads: 1
 
-    # VIIRS radiance is continuous and can spike much higher over cities/flares
-    # (matches the ntl_harm bound below, which is derived from this source).
+    # Three parallel columns (EogSource.VIIRS_VARIANTS):
+    #   viirs_annual         masked mean radiance, area-weighted "sum"
+    #   viirs_annual_median  masked median radiance, "average" (per-pixel)
+    #   viirs_annual_cf_cvg  cloud-free observation count, "average"
+    # After "sum" onto 1 km EASE, a gas-flare / industrial-core cell reaches
+    # ~1e5-1e6 nW/cm^2/sr -- 2000 was a city-scale bound that the flare tail
+    # sails past. Only the two radiance columns are range-checked; cf_cvg is
+    # a count, left out of range_vars.
     verification:
-      expected_vars: ["viirs_annual"]
-      value_range: [0, 2000]
+      expected_vars: ["viirs_annual", "viirs_annual_median", "viirs_annual_cf_cvg"]
+      value_range: [0, 1000000]
+      range_vars: ["viirs_annual", "viirs_annual_median"]
+
+  # EOG VIIRS gas flares -- distance-banded uint8 flag rasterized from the
+  # annual global gas-flare survey (src/data/sources/eog/flare.py). Standalone
+  # so downstream can drop it by simply not joining `eog_flare`.
+  eog_flare:
+    type: "eog_flare"
+    base_url: "https://eogdata.mines.edu/products/vnf/global_gas_flare.html"
+    data_path: "eog/flare"
+    year_range: [2012, 2021]  # match eog_viirs; 2012-2016 share the combined survey file
+
+    verification:
+      expected_vars: ["flare_band"]
+      value_range: [0, 3]
+      sparse_vars: ["flare_band"]
 
   # EOG DVNL -- disabled for now, not run by the pipeline. Left commented
   # rather than deleted so it can be re-enabled by uncommenting
@@ -612,6 +633,9 @@ assemble:
         data_path: "eog/viirs"
         family: "eog_viirs_annual"
         index_cols: ["pixel_id", "year"]
+        # viirs_annual_cf_cvg is also in the prepared store (an observation-
+        # density weight); add it here to carry it into the panel.
+        columns: ["viirs_annual", "viirs_annual_median"]
       dvnl:
         data_path: "eog/dvnl"
         family: "eog_viirs_dvnl"

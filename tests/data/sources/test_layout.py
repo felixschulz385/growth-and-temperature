@@ -98,6 +98,7 @@ def test_all_in_use_family_names_are_unique():
         "eog_dmsp",  # eog/source.py, source_type="dmsp"
         "eog_viirs_annual",  # eog/source.py, source_type="viirs_annual"
         "eog_viirs_dvnl",  # eog/source.py, source_type="viirs_dvnl"
+        "eog_flare",  # eog/flare.py
         "ntl_harm",  # ntl_harm.py
         "modis_lst_21a2",  # modis/source.py, product="21A2"
         "modis_lst_11a1",  # modis/source.py, product="11A1"
