@@ -275,6 +275,24 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: eog_viirs
 
+  # eog_flare's PREPARE rasterizes the annual gas-flare survey points onto
+  # the grid (reproject=False, no dask -- hence `simple: true`, like plad):
+  # per (tile, year) it filters a few thousand global points to the tile
+  # bbox and rasterizes two geodesic buffer rings + the points. Light on
+  # memory; the (tiles x 10 years) unit count is the only real cost.
+  # FETCH stays manual/egress-host (this file's header) -- scicore compute
+  # nodes have no outbound internet to scrape eogdata.mines.edu.
+  - name: eog-flare-prepare
+    log_key: eog_flare
+    source: eog_flare
+    step: prepare
+    partition: scicore
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 4
+    mem: 32G
+    simple: true
+
   # eog_dmsp/eog_dvnl disabled as sources (orchestration/configs/data.yaml)
   # -- left commented rather than deleted so they can be re-enabled by
   # uncommenting both this and the config block.

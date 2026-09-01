@@ -713,7 +713,11 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         both the year and the product variant read off each filename via
         `_VIIRS_FILENAME_RE` (a plain 4-digit-year scan cannot tell
         `average_masked` from `median_masked` from `cf_cvg` for the same
-        year). A duplicate (year, variant) keeps the first, logs the rest."""
+        year). A duplicate (year, variant) keeps the first (`os.walk` yields
+        the raw-root copy before any `<year>/` subdir copy): the *same*
+        filename found in two places is just a stray extra copy (DEBUG); two
+        *different* filenames claiming one (year, variant) is a real
+        ambiguity (WARNING)."""
         raw_root = self.output_root(PipelineStep.FETCH)
         if not os.path.isdir(raw_root):
             return {}
@@ -730,10 +734,15 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 rel = os.path.relpath(os.path.join(dirpath, fname), raw_root)
                 slot = out.setdefault(year, {})
                 if variant in slot:
-                    logger.warning(
-                        "Multiple EOG VIIRS files for %d/%s: keeping %s, ignoring %s",
-                        year, variant, slot[variant], rel,
-                    )
+                    if os.path.basename(slot[variant]) == fname:
+                        logger.debug(
+                            "EOG VIIRS %d/%s: extra copy at %s, using %s", year, variant, rel, slot[variant]
+                        )
+                    else:
+                        logger.warning(
+                            "Conflicting EOG VIIRS files for %d/%s: %s vs %s -- using the first",
+                            year, variant, slot[variant], rel,
+                        )
                     continue
                 slot[variant] = rel
         return out
