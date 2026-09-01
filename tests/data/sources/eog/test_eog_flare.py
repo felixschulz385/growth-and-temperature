@@ -21,10 +21,21 @@ def _make_source(tmp_path, grid_id="ease6933", **raw):
     return EogFlareSource(ctx, cfg), ctx
 
 
-def _write_raw(source, filename):
+def _write_raw(source, filename, *, with_points=True):
+    """Write a raw fetched xlsx. `with_points=True` gives it a real
+    Latitude/Longitude sheet so `_read_flare_points` accepts it; otherwise
+    a country-summary sheet with no coordinates."""
+    import pandas as pd
+
     raw_root = source.output_root(PipelineStep.FETCH)
     os.makedirs(raw_root, exist_ok=True)
-    open(os.path.join(raw_root, filename), "w").close()
+    path = os.path.join(raw_root, filename)
+    if with_points:
+        pd.DataFrame({"Latitude": [10.0, -5.0], "Longitude": [20.0, 30.0]}).to_excel(
+            path, index=False, engine="openpyxl"
+        )
+    else:
+        pd.DataFrame({"Country": ["IRQ"], "BCM": [1.0]}).to_excel(path, index=False, engine="openpyxl")
 
 
 _COMBINED = "VIIRS_Global_flaring_d.7_slope_0.029353_2012-2016_v20221211_web.xlsx"
@@ -85,6 +96,18 @@ def test_prepare_plan_empty_without_raw_files(tmp_path):
     assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
 
 
+def test_prepare_plan_remaps_a_coordinateless_year_to_a_neighbour(tmp_path):
+    source, _ = _make_source(tmp_path)
+    _write_raw(source, _annual(2017), with_points=True)
+    _write_raw(source, _annual(2018), with_points=False)  # country summary, no coords
+    _write_raw(source, _annual(2019), with_points=True)
+
+    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
+    assert target.meta["years"] == [2017, 2018, 2019]
+    assert target.meta["raw_files"][2018] == _annual(2017)  # nearest year with points
+    assert target.meta["raw_files"][2017] == _annual(2017)
+
+
 # --- rasterization ---------------------------------------------------
 
 def _first_tile(geobox, tile_size):
@@ -113,6 +136,81 @@ def test_rasterize_tile_bands_by_distance_from_flare_point(tmp_path, monkeypatch
     assert band[cy, cx + 1] == 2  # ~1 km away -> within 2 km ring
     assert band[cy, cx + 3] == 1  # ~3.3 km away -> within 5 km ring only
     assert band[0, 0] == 0  # tile corner, ~15 km away
+
+
+def test_load_flare_points_handles_a_banner_row_above_the_header(tmp_path):
+    import pandas as pd
+
+    path = tmp_path / "flare.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as xw:
+        pd.DataFrame(
+            [
+                ["VIIRS Global Gas Flare Survey 2020", None, None],
+                ["Latitude", "Longitude", "BCM"],
+                [10.0, 20.0, 0.1],
+                [-5.0, 30.0, 0.2],
+                [0.0, 0.0, 0.0],          # dropped (null island)
+                ["n/a", "n/a", "x"],       # dropped (non-numeric)
+            ]
+        ).to_excel(xw, index=False, header=False)
+
+    source, _ = _make_source(tmp_path)
+    pts = source._load_flare_points(str(path))
+    assert pts.tolist() == [[20.0, 10.0], [30.0, -5.0]]  # (lon, lat)
+
+
+def test_load_flare_points_picks_the_sheet_with_the_flare_list(tmp_path):
+    import pandas as pd
+
+    path = tmp_path / "flare_multisheet.xlsx"
+    with pd.ExcelWriter(path, engine="openpyxl") as xw:
+        pd.DataFrame({"note": ["methodology blurb"]}).to_excel(xw, sheet_name="README", index=False)
+        pd.DataFrame({"Lat_GMTCO": [1.0, 2.0], "Lon_GMTCO": [3.0, 4.0]}).to_excel(
+            xw, sheet_name="flares", index=False
+        )
+
+    source, _ = _make_source(tmp_path)
+    pts = source._load_flare_points(str(path))
+    assert sorted(pts.tolist()) == [[3.0, 1.0], [4.0, 2.0]]
+
+
+def test_read_flare_points_returns_none_for_a_country_summary_file(tmp_path):
+    import pandas as pd
+
+    # EOG's 2018 "_web.xlsx" is Country / ISO Code / BCM 2018 / Flare count 2018 --
+    # no coordinates.
+    path = tmp_path / "summary.xlsx"
+    pd.DataFrame(
+        {"Country": ["IRQ"], "ISO Code": ["IRQ"], "BCM 2018": [17.8], "Flare count 2018": [123]}
+    ).to_excel(path, index=False, engine="openpyxl")
+
+    source, _ = _make_source(tmp_path)
+    assert source._read_flare_points(str(path)) is None
+    with pytest.raises(ValueError, match="no flare coordinates"):
+        source._load_flare_points(str(path))
+
+
+def test_resolve_year_files_falls_back_to_the_nearest_year_with_points(tmp_path, monkeypatch):
+    source, _ = _make_source(tmp_path)
+    files = {y: f"{y}.xlsx" for y in (2016, 2017, 2018, 2019)}
+
+    # 2018's file has no coordinates; the others do.
+    monkeypatch.setattr(source, "_resolve_source_file_path", lambda p: p)
+    monkeypatch.setattr(
+        source, "_read_flare_points",
+        lambda p: None if p == "2018.xlsx" else np.array([[0.0, 0.0]]),
+    )
+    resolved = source._resolve_year_files(files)
+    assert resolved[2018] == "2017.xlsx"  # nearest; ties resolve to the earlier year
+    assert resolved[2017] == "2017.xlsx"
+    assert resolved[2019] == "2019.xlsx"
+
+
+def test_resolve_year_files_empty_when_no_file_has_points(tmp_path, monkeypatch):
+    source, _ = _make_source(tmp_path)
+    monkeypatch.setattr(source, "_resolve_source_file_path", lambda p: p)
+    monkeypatch.setattr(source, "_read_flare_points", lambda p: None)
+    assert source._resolve_year_files({2018: "a.xlsx", 2019: "b.xlsx"}) == {}
 
 
 def test_rasterize_tile_all_zero_when_no_flares_near(tmp_path, monkeypatch):

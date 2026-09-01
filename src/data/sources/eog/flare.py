@@ -118,8 +118,9 @@ class EogFlareSource(DataSource):
         self._links_cache: Optional[List[Tuple[str, str]]] = None
         self._links_cache_ts: Optional[float] = None
         self._links_cache_ttl = 3600
-        #: abs xlsx path -> (N, 2) float array of (lon, lat) flare points.
-        self._points_cache: Dict[str, np.ndarray] = {}
+        #: abs xlsx path -> (N, 2) (lon, lat) points, or None if the file
+        #: has no coordinates (a country-summary-only annual survey).
+        self._points_cache: Dict[str, Optional[np.ndarray]] = {}
 
     # ------------------------------------------------------------------
     # RemoteFileCatalog contract
@@ -279,8 +280,35 @@ class EogFlareSource(DataSource):
             suffix="",
         )
 
+    def _resolve_year_files(self, files_by_year: Dict[int, str]) -> Dict[int, str]:
+        """Map each year to an xlsx that actually contains flare *points*.
+        Some annual surveys ship only a country-level summary under the
+        expected name (e.g. 2018's `..._2018_web.xlsx` -- Country/ISO/BCM,
+        no coordinates); such a year falls back to the nearest year whose
+        file does have points (flares are persistent infrastructure, same
+        rationale as the 2012-2016 combined-file broadcast)."""
+        has_points = {
+            year: rel
+            for year, rel in files_by_year.items()
+            if self._read_flare_points(self._resolve_source_file_path(rel)) is not None
+        }
+        if not has_points:
+            return {}
+        resolved: Dict[int, str] = {}
+        for year, rel in files_by_year.items():
+            if year in has_points:
+                resolved[year] = rel
+                continue
+            donor = min(has_points, key=lambda y: (abs(y - year), y))
+            logger.warning(
+                "EOG flare %d: %s has no coordinates -- using %d's points instead",
+                year, os.path.basename(rel), donor,
+            )
+            resolved[year] = has_points[donor]
+        return resolved
+
     def _plan_prepare(self, selection: TargetSelection) -> List[StepTarget]:
-        files_by_year = self._raw_xlsx_by_year()
+        files_by_year = self._resolve_year_files(self._raw_xlsx_by_year())
         years = sorted(
             year
             for year in files_by_year
@@ -312,44 +340,78 @@ class EogFlareSource(DataSource):
             )
         ]
 
-    def _load_flare_points(self, xlsx_path: str) -> np.ndarray:
-        """`(N, 2)` array of `(lon, lat)` for one survey file, cached per
-        path (so the 2012-2016 combined file is parsed once). Column names
-        have drifted across survey versions -- matched case-insensitively on
-        a `lat`/`lon` substring."""
+    @staticmethod
+    def _looks_like(cell: Any, *needles: str) -> bool:
+        return isinstance(cell, str) and any(n in cell.strip().lower() for n in needles)
+
+    def _points_from_sheet(self, raw) -> Optional[np.ndarray]:
+        """`(N, 2)` `(lon, lat)` from one sheet read with `header=None`, or
+        `None` if it has no lat/lon header. Scans the first rows for the
+        header (survey files sometimes carry a title/banner row above it)."""
+        import pandas as pd
+
+        for hdr in range(min(len(raw), 8)):
+            row = list(raw.iloc[hdr])
+            lat_i = next((i for i, c in enumerate(row) if self._looks_like(c, "latitude", "lat")), None)
+            lon_i = next(
+                (i for i, c in enumerate(row) if self._looks_like(c, "longitude", "long", "lon")), None
+            )
+            if lat_i is None or lon_i is None or lat_i == lon_i:
+                continue
+            body = raw.iloc[hdr + 1 :]
+            lat = pd.to_numeric(body.iloc[:, lat_i], errors="coerce").to_numpy()
+            lon = pd.to_numeric(body.iloc[:, lon_i], errors="coerce").to_numpy()
+            ok = (
+                np.isfinite(lat) & np.isfinite(lon)
+                & (np.abs(lat) <= 90.0) & (np.abs(lon) <= 180.0)
+                & ~((lat == 0.0) & (lon == 0.0))
+            )
+            return np.column_stack([lon[ok], lat[ok]]).astype("float64")
+        return None
+
+    def _read_flare_points(self, xlsx_path: str) -> Optional[np.ndarray]:
+        """`(N, 2)` `(lon, lat)` for one survey file (cached per path), or
+        `None` if no sheet in it has coordinate columns at all -- some
+        annual surveys ship only a country-level summary under the expected
+        name. Column names, header-row position and sheet layout have all
+        drifted across versions, so every sheet is tried and the one with
+        the most valid points wins."""
         if xlsx_path in self._points_cache:
             return self._points_cache[xlsx_path]
 
         import pandas as pd
 
-        df = pd.read_excel(xlsx_path, engine="openpyxl")
-        cols = {str(c).strip().lower(): c for c in df.columns}
-
-        def _find(*needles: str) -> Optional[str]:
-            for lc, orig in cols.items():
-                if any(n in lc for n in needles):
-                    return orig
+        try:
+            sheets = pd.read_excel(xlsx_path, engine="openpyxl", sheet_name=None, header=None)
+        except Exception:
+            logger.warning("EOG flare %s: could not read workbook", os.path.basename(xlsx_path), exc_info=True)
+            self._points_cache[xlsx_path] = None
             return None
+        best: Optional[np.ndarray] = None
+        for raw in sheets.values():
+            pts = self._points_from_sheet(raw)
+            if pts is not None and (best is None or len(pts) > len(best)):
+                best = pts
 
-        lat_col = _find("latitude", "lat")
-        lon_col = _find("longitude", "lon")
-        if lat_col is None or lon_col is None:
-            raise ValueError(
-                f"{os.path.basename(xlsx_path)}: no lat/lon columns found in {list(df.columns)}"
+        if best is None:
+            logger.warning(
+                "EOG flare %s: no coordinate columns in any sheet (%s)",
+                os.path.basename(xlsx_path), list(sheets),
             )
+            self._points_cache[xlsx_path] = None
+            return None
+        logger.info("EOG flare %s: %d flare point(s)", os.path.basename(xlsx_path), len(best))
+        self._points_cache[xlsx_path] = best
+        return best
 
-        lat = pd.to_numeric(df[lat_col], errors="coerce").to_numpy()
-        lon = pd.to_numeric(df[lon_col], errors="coerce").to_numpy()
-        ok = (
-            np.isfinite(lat)
-            & np.isfinite(lon)
-            & (np.abs(lat) <= 90.0)
-            & (np.abs(lon) <= 180.0)
-            & ~((lat == 0.0) & (lon == 0.0))
-        )
-        pts = np.column_stack([lon[ok], lat[ok]]).astype("float64")
-        logger.info("EOG flare %s: %d flare point(s)", os.path.basename(xlsx_path), len(pts))
-        self._points_cache[xlsx_path] = pts
+    def _load_flare_points(self, xlsx_path: str) -> np.ndarray:
+        """Like `_read_flare_points` but raises if the file has no points --
+        used by `_rasterize_tile`, where `_plan_prepare`'s `_resolve_year_files`
+        has already remapped any coordinate-less year onto a good one, so a
+        `None` here is a real bug."""
+        pts = self._read_flare_points(xlsx_path)
+        if pts is None:
+            raise ValueError(f"{os.path.basename(xlsx_path)}: no flare coordinates")
         return pts
 
     def _geodesic_circle(self, lon: float, lat: float, radius_m: float):
