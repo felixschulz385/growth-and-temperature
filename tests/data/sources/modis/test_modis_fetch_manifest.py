@@ -36,7 +36,11 @@ def _fake_dataset() -> xr.Dataset:
         coords={"time": [pd.Timestamp("2019-06-01")]},
     )
     qc = xr.DataArray(np.zeros((1, 2, 2), dtype="uint8"), dims=("time", "y", "x"), coords={"time": lst.time})
-    return xr.Dataset({"lst": lst, "qc": qc})
+    # Day LST/QC -- distinct value (300.0) from night's 280.0 so day/night
+    # are visibly distinguishable in test assertions; "good" QC like night's.
+    lst_day = xr.DataArray(np.full((1, 2, 2), 300.0, dtype="float32"), dims=("time", "y", "x"), coords={"time": lst.time})
+    qc_day = xr.DataArray(np.zeros((1, 2, 2), dtype="uint8"), dims=("time", "y", "x"), coords={"time": lst.time})
+    return xr.Dataset({"lst": lst, "qc": qc, "lst_day": lst_day, "qc_day": qc_day})
 
 
 def _fake_dataset_with_one_corrupted_pixel() -> xr.Dataset:
@@ -53,7 +57,12 @@ def _fake_dataset_with_one_corrupted_pixel() -> xr.Dataset:
     lst = xr.DataArray(values[np.newaxis], dims=("time", "y", "x"), coords={"time": [pd.Timestamp("2019-06-01")]})
     qc_byte = 0b11 << 6
     qc = xr.DataArray(np.full((1, 2, 2), qc_byte, dtype="uint8"), dims=("time", "y", "x"), coords={"time": lst.time})
-    return xr.Dataset({"lst": lst, "qc": qc})
+    # Day LST/QC -- required by _execute_fetch's main-variant band check but
+    # not what this test exercises (that's the night-side impossible-value
+    # guard), so a plain "good" fixture like _fake_dataset()'s.
+    lst_day = xr.DataArray(np.full((1, 2, 2), 300.0, dtype="float32"), dims=("time", "y", "x"), coords={"time": lst.time})
+    qc_day = xr.DataArray(np.zeros((1, 2, 2), dtype="uint8"), dims=("time", "y", "x"), coords={"time": lst.time})
+    return xr.Dataset({"lst": lst, "qc": qc, "lst_day": lst_day, "qc_day": qc_day})
 
 
 def test_execute_fetch_writes_output_and_clears_any_prior_failure_status(tmp_path, monkeypatch):
@@ -124,9 +133,53 @@ def test_main_variant_writes_lst_stats_and_valid_counts_only(tmp_path, monkeypat
 
     with rasterio.open(target.output_path) as src:
         assert set(src.descriptions) == {
-            "lst_night_mean", "lst_night_median", "lst_night_sd", "lst_night_gt_heat", "lst_night_lt_cold",
+            "lst_night_mean", "lst_night_median", "lst_night_sd",
             "valid_period_count_annual", "valid_month_count_annual",
+            "lst_day_mean", "lst_day_median", "lst_day_sd",
+            "valid_period_count_day_annual", "valid_month_count_day_annual",
         }
+
+
+def _fake_dataset_with_distinct_day_night_bad_pixels() -> xr.Dataset:
+    # Night's bad pixel is (0, 1); day's is (1, 0) -- a different pixel, so
+    # a test can prove the two QC decodes are genuinely independent instead
+    # of one leaking into the other.
+    night_values = np.array([[280.0, 900.0], [280.0, 280.0]], dtype="float32")
+    day_values = np.array([[300.0, 300.0], [900.0, 300.0]], dtype="float32")
+    lst = xr.DataArray(
+        night_values[np.newaxis], dims=("time", "y", "x"), coords={"time": [pd.Timestamp("2019-06-01")]}
+    )
+    lst_day = xr.DataArray(day_values[np.newaxis], dims=("time", "y", "x"), coords={"time": lst.time})
+    qc_byte = 0b11 << 6  # "good" mandatory QA, best error category (21A2)
+    qc = xr.DataArray(np.full((1, 2, 2), qc_byte, dtype="uint8"), dims=("time", "y", "x"), coords={"time": lst.time})
+    qc_day = xr.DataArray(np.full((1, 2, 2), qc_byte, dtype="uint8"), dims=("time", "y", "x"), coords={"time": lst.time})
+    return xr.Dataset({"lst": lst, "qc": qc, "lst_day": lst_day, "qc_day": qc_day})
+
+
+def test_day_and_night_valid_masks_are_computed_independently(tmp_path, monkeypatch):
+    import rasterio
+
+    source, _ = _make_source(tmp_path, source_id="modis")
+    monkeypatch.setattr(source, "_search_items", lambda tile, year: ["fake-item"])
+    monkeypatch.setattr(source, "_load_tile_year", lambda items, tile: _fake_dataset_with_distinct_day_night_bad_pixels())
+
+    target = source.plan(PipelineStep.FETCH, TargetSelection())[0]
+    assert source.execute(target) is True
+    source.close()
+
+    with rasterio.open(target.output_path) as src:
+        night_band = list(src.descriptions).index("lst_night_mean") + 1
+        day_band = list(src.descriptions).index("lst_day_mean") + 1
+        lst_night = src.read(night_band)
+        lst_day = src.read(day_band)
+
+    # Night's impossible pixel (0, 1) is excluded from lst_night_mean but
+    # unaffected in lst_day_mean; day's impossible pixel (1, 0) is the
+    # reverse -- each mask only excludes its own bad pixel.
+    assert np.isnan(lst_night[0, 1])
+    assert lst_night[1, 0] == pytest.approx(280.0)
+    assert np.isnan(lst_day[1, 0])
+    assert lst_day[0, 1] == pytest.approx(300.0)
 
 
 def test_extended_variant_writes_emissivity_and_view_bands_only(tmp_path, monkeypatch):
@@ -210,12 +263,15 @@ class _FakeStacItem:
 
 
 def test_search_items_filters_out_neighbouring_tiles(tmp_path, monkeypatch):
-    """Real production symptom (2026-08-26): the STAC search bbox is
-    deliberately allowed to be a loose superset of one tile
-    (`_tile_bbox_4326`'s docstring), so `search()` routinely also returns
-    items belonging to NEIGHBOURING h/v tiles -- most fetched tiles came
-    out ~3x their true size before this filter + `_load_tile_year`'s
-    `geobox=` fix. `_search_items` drops non-matching-tile items using the
+    """`_search_items` asks the server for exactly one tile's items via a
+    CQL2 `filter` on `modis:horizontal-tile`/`modis:vertical-tile`
+    (confirmed live against Planetary Computer, 2026-08-26: 92 items in
+    0.8s vs. 4,692 items in 12.1s for the equivalent bbox search, verified
+    identical once platform-filtered) -- but this client-side filter stays
+    as defense-in-depth against a backend that doesn't honor `filter`, or
+    items whose tile properties are missing entirely (the `platform`
+    property has shown exactly that gap before, see the tripwire above this
+    filter in `_search_items`). Drops non-matching-tile items using the
     STAC-reported `modis:horizontal-tile`/`modis:vertical-tile` properties,
     falling back to parsing the `h##v##` segment out of `item.id` for items
     missing those properties, and keeping an item outright if neither is
@@ -240,3 +296,89 @@ def test_search_items_filters_out_neighbouring_tiles(tmp_path, monkeypatch):
 
     result = source._search_items("h08v05", 2019)
     assert result == [matching, id_only_matching, no_tile_info]
+
+
+def test_search_items_queries_by_cql2_tile_filter_not_bbox(tmp_path, monkeypatch):
+    """The actual STAC query should ask the server for this tile via a CQL2
+    `filter` on the collection's queryable `modis:horizontal-tile`/
+    `modis:vertical-tile` properties -- not a `bbox` (the old bbox approach
+    had to fall back to a full-globe search for any tile whose footprint
+    crosses the antimeridian, confirmed live against Planetary Computer,
+    2026-08-26)."""
+    source, ctx = _make_source(tmp_path, tiles=("h08v05",))
+
+    captured = {}
+
+    class _FakeSearch:
+        def items(self):
+            return []
+
+    class _FakeClient:
+        def search(self, **kwargs):
+            captured.update(kwargs)
+            return _FakeSearch()
+
+    monkeypatch.setattr(source, "_get_stac_client", lambda: _FakeClient())
+
+    source._search_items("h08v05", 2019)
+
+    assert "bbox" not in captured
+    assert captured["filter_lang"] == "cql2-json"
+    assert captured["filter"] == {
+        "op": "and",
+        "args": [
+            {"op": "=", "args": [{"property": "modis:horizontal-tile"}, 8]},
+            {"op": "=", "args": [{"property": "modis:vertical-tile"}, 5]},
+        ],
+    }
+
+
+def test_search_items_retries_transient_api_error_and_succeeds(tmp_path, monkeypatch):
+    """Planetary Computer intermittently returns a transient `APIError`
+    (observed: "The request exceeded the maximum allowed time") -- a single
+    hiccup must not permanently fail the (year, tile) target."""
+    from pystac_client.exceptions import APIError
+
+    source, ctx = _make_source(tmp_path, tiles=("h08v05",))
+    matching = _FakeStacItem("MYD21A2.A2019001.h08v05.061.2019010000000", h=8, v=5)
+
+    calls = {"n": 0}
+
+    class _FakeSearch:
+        def items(self):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise APIError("The request exceeded the maximum allowed time, please try again.")
+            return [matching]
+
+    class _FakeClient:
+        def search(self, **kwargs):
+            return _FakeSearch()
+
+    monkeypatch.setattr(source, "_get_stac_client", lambda: _FakeClient())
+    monkeypatch.setattr("src.data.sources.modis.source.time.sleep", lambda seconds: None)
+
+    result = source._search_items("h08v05", 2019)
+
+    assert result == [matching]
+    assert calls["n"] == 3
+
+
+def test_search_items_raises_after_exhausting_retries(tmp_path, monkeypatch):
+    from pystac_client.exceptions import APIError
+
+    source, ctx = _make_source(tmp_path, tiles=("h08v05",))
+
+    class _FakeSearch:
+        def items(self):
+            raise APIError("The request exceeded the maximum allowed time, please try again.")
+
+    class _FakeClient:
+        def search(self, **kwargs):
+            return _FakeSearch()
+
+    monkeypatch.setattr(source, "_get_stac_client", lambda: _FakeClient())
+    monkeypatch.setattr("src.data.sources.modis.source.time.sleep", lambda seconds: None)
+
+    with pytest.raises(APIError):
+        source._search_items("h08v05", 2019, max_retries=3)

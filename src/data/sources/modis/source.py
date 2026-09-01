@@ -58,6 +58,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from typing import List, Optional
 
 import numpy as np
@@ -91,6 +92,16 @@ BAND_SPECS = {
         "assets": {
             "lst": {"name": "LST_Night_1KM", "scale": 0.02, "offset": 0.0, "fill": 0},
             "qc": {"name": "QC_Night", "scale": None, "offset": None, "fill": None},
+            # Day counterparts (added 2026-08-26): scale confirmed identical
+            # to the night entries above via live STAC `raster:bands`
+            # metadata; offset/fill aren't exposed in that metadata, so
+            # they're assumed identical to the night entries per the same
+            # Table 11 this block's night values are confirmed against (day
+            # and night are the same SDS pair in the product spec) -- worth
+            # a quick double-check against the actual PDF before relying on
+            # it for production numbers, not blocking.
+            "lst_day": {"name": "LST_Day_1KM", "scale": 0.02, "offset": 0.0, "fill": 0},
+            "qc_day": {"name": "QC_Day", "scale": None, "offset": None, "fill": None},
             "emis_29": {"name": "Emis_29", "scale": 0.002, "offset": 0.49, "fill": 0},
             "emis_31": {"name": "Emis_31", "scale": 0.002, "offset": 0.49, "fill": 0},
             "emis_32": {"name": "Emis_32", "scale": 0.002, "offset": 0.49, "fill": 0},
@@ -115,6 +126,11 @@ BAND_SPECS = {
         "assets": {
             "lst": {"name": "LST_Night_1km", "scale": 0.02, "offset": 0.0, "fill": 0},
             "qc": {"name": "QC_Night", "scale": None, "offset": None, "fill": None},
+            # Day counterparts (added 2026-08-26) -- see the 21A2 block's
+            # identical comment above for the scale-confirmed/offset-fill-
+            # assumed rationale.
+            "lst_day": {"name": "LST_Day_1km", "scale": 0.02, "offset": 0.0, "fill": 0},
+            "qc_day": {"name": "QC_Day", "scale": None, "offset": None, "fill": None},
             "emis_31": {"name": "Emis_31", "scale": 0.002, "offset": 0.49, "fill": 0},
             "emis_32": {"name": "Emis_32", "scale": 0.002, "offset": 0.49, "fill": 0},
             "view_angle": {"name": "Night_view_angl", "scale": 1.0, "offset": -65.0, "fill": 255},
@@ -127,8 +143,14 @@ DEFAULT_STAC_URL = "https://planetarycomputer.microsoft.com/api/stac/v1"
 SPATIAL_RESAMPLING = "nearest"
 
 
-#: main variant's lst_night stats (month-weighted -- composite_annual_stats)
-MAIN_LST_STATS = ("mean", "median", "std", "valid_period_count", "valid_month_count", "count_above", "count_below")
+#: main variant's lst_night/lst_day stats (month-weighted -- composite_annual_stats).
+#: No "count_above"/"count_below" heat/cold-stress counts here (removed
+#: 2026-08-26): MODIS's 8-day compositing makes an extreme-value count
+#: unreliable (too coarse a temporal sample to catch real exceedances),
+#: unlike GLASS's own gt30C/lt0C (src/data/sources/glass/source.py), which
+#: is computed from finer-grained data and is the intended source for this
+#: metric instead.
+MAIN_LST_STATS = ("mean", "median", "std", "valid_period_count", "valid_month_count")
 #: extended variant's bands: everything besides lst_night itself, mean only.
 EXTENDED_VARS = ("emis_29", "emis_31", "emis_32", "view_angle", "view_time")
 
@@ -185,12 +207,6 @@ class ModisSource(DataSource):
         # value_range=(150, 350)) rather than inventing a second bound.
         self.lst_min_k = float(cfg.raw.get("lst_min_k", 150.0))
         self.lst_max_k = float(cfg.raw.get("lst_max_k", 350.0))
-        # count_above/count_below thresholds for the main variant's
-        # lst_night stats -- default lines mirror common night heat-health
-        # (25C) and freezing (0C) thresholds; GLASS's own gt30C/lt0C
-        # (src/data/sources/glass/source.py) is the naming precedent.
-        self.heat_stress_k = float(cfg.raw.get("heat_stress_k", 298.15))
-        self.cold_stress_k = float(cfg.raw.get("cold_stress_k", 273.15))
         self.stac_url = cfg.raw.get("stac_url", DEFAULT_STAC_URL)
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix="modis_processor_")
@@ -354,71 +370,63 @@ class ModisSource(DataSource):
             self._stac_client = pystac_client.Client.open(self.stac_url, modifier=planetary_computer.sign_inplace)
         return self._stac_client
 
-    def _tile_bbox_4326(self, tile: str) -> List[float]:
-        """Real production failure (2026-08-26): reprojecting only the 4
-        sinusoidal tile corners and taking a naive min/max silently broke
-        for high-latitude tiles (v=2/v=3 rows) -- a poleward corner's true
-        longitude can exceed +/-180 degrees, and pyproj wraps it to the
-        opposite sign (e.g. -184.8 -> +175.2), so the corner set straddled
-        both signs and `min`/`max` produced a bbox spanning nearly the
-        whole globe. That fed straight into `_search_items`'s STAC query,
-        which then matched items across most of that latitude row instead
-        of just the one tile (`docs/design/13-prepare-memory-parallelism.md`).
-        Fixed by sampling many points along the tile's boundary (the
-        extremal longitude for a near-polar tile can fall mid-edge, not at
-        a corner) and unwrapping them by continuity around the tile's own
-        center longitude before taking min/max, instead of trusting each
-        point's independently-wrapped sign.
+    def _search_items(self, tile: str, year: int, *, max_retries: int = 3, retry_backoff: float = 5.0) -> list:
+        """STAC item search, retried with exponential backoff.
 
-        This bbox only needs to be a reasonable superset of the tile's true
-        footprint -- `_load_tile_year`'s explicit `geobox=` constrains the
-        actually *written* data to the tile's exact bounds regardless of
-        how broad this search bbox is, so an imprecise (over-wide) result
-        here is a search-efficiency concern, not a correctness one.
+        Planetary Computer's API intermittently returns a transient error
+        (observed: "The request exceeded the maximum allowed time, please
+        try again") -- `pystac_client`'s `StacApiIO.request()` wraps every
+        failure mode (timeout, connection error, non-200 response) into
+        `APIError` uniformly (stac_api_io.py), so catching that one type
+        covers all of them. Previously this failed the whole (year, tile)
+        target on the first hiccup, indistinguishable from a real "no data"
+        or permanent-error case.
+
+        Filters server-side by exact tile identity (a CQL2 `filter` on the
+        collection's queryable `modis:horizontal-tile`/`modis:vertical-tile`
+        properties -- confirmed present via `GET .../queryables`, and this
+        collection's conformsTo advertises `item-search#filter`/basic-cql2)
+        instead of the bbox this used to search with. The old bbox
+        (`_tile_bbox_4326`, now removed) only ever needed to be a loose
+        superset of the tile, and for tiles whose footprint crosses the
+        antimeridian it fell back to the *entire globe's* longitude range
+        (see git history) -- confirmed live (2026-08-26) against tile
+        h09v02/2008: the bbox search matched 4,692 items across the whole
+        latitude row in 12.1s, versus 92 items (this tile's Aqua + Terra
+        granules) in 0.8s for the equivalent CQL2 filter -- verified
+        identical once the platform filter below is applied to both. Exact
+        server-side matching also means the tile-identity filter below is
+        now defense-in-depth, not the primary mechanism.
         """
-        from pyproj import Transformer
+        from pystac_client.exceptions import APIError
 
-        h, v = int(tile[1:3]), int(tile[4:6])
-        x0, y0, x1, y1 = modis_util.tile_bounds_m(h, v)
-        transformer = Transformer.from_crs(modis_util.SINUSOIDAL_PROJ4, "EPSG:4326", always_xy=True)
-
-        n = 20
-        xs: List[float] = []
-        ys: List[float] = []
-        for i in range(n + 1):
-            t = i / n
-            xs += [x0 + t * (x1 - x0), x0 + t * (x1 - x0), x0, x1]
-            ys += [y0, y1, y0 + t * (y1 - y0), y0 + t * (y1 - y0)]
-        lons, lats = transformer.transform(xs, ys)
-        (center_lon,), _ = transformer.transform([(x0 + x1) / 2], [(y0 + y1) / 2])
-
-        unwrapped = [
-            lon + 360 if lon - center_lon < -180 else (lon - 360 if lon - center_lon > 180 else lon)
-            for lon in lons
-        ]
-        lon_min, lon_max = min(unwrapped), max(unwrapped)
-
-        if lon_max - lon_min >= 360:
-            # Genuinely spans the whole globe -- only possible right at a
-            # pole -- so a full-longitude bbox is the correct search area.
-            lon_min, lon_max = -180.0, 180.0
-        else:
-            if lon_min < -180:
-                lon_min, lon_max = lon_min + 360, lon_max + 360
-            if lon_max > 180:
-                # Crosses the antimeridian: STAC represents that with
-                # min_lon > max_lon, which isn't universally supported by
-                # search backends, so widen to the full range instead --
-                # over-fetching here is only a perf cost (see docstring).
-                lon_min, lon_max = -180.0, 180.0
-
-        return [lon_min, min(lats), lon_max, max(lats)]
-
-    def _search_items(self, tile: str, year: int) -> list:
         client = self._get_stac_client()
-        bbox = self._tile_bbox_4326(tile)
-        search = client.search(collections=[self.collection_id], bbox=bbox, datetime=f"{year}-01-01/{year}-12-31")
-        items = list(search.items())
+        target_h, target_v = int(tile[1:3]), int(tile[4:6])
+        cql2_filter = {
+            "op": "and",
+            "args": [
+                {"op": "=", "args": [{"property": "modis:horizontal-tile"}, target_h]},
+                {"op": "=", "args": [{"property": "modis:vertical-tile"}, target_v]},
+            ],
+        }
+        search = client.search(
+            collections=[self.collection_id], datetime=f"{year}-01-01/{year}-12-31",
+            filter=cql2_filter, filter_lang="cql2-json",
+        )
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                items = list(search.items())
+                break
+            except APIError as exc:
+                if attempt == max_retries:
+                    raise
+                delay = retry_backoff * (2 ** (attempt - 1))
+                logger.warning(
+                    "STAC search failed for tile=%s year=%d (attempt %d/%d): %s -- retrying in %.0fs",
+                    tile, year, attempt, max_retries, exc, delay,
+                )
+                time.sleep(delay)
 
         # `properties.platform` vs the MOD/MYD id prefix -- checked directly
         # against 600 real STAC items (3 collections x 5 regions x 4 years,
@@ -455,28 +463,21 @@ class ModisSource(DataSource):
             if include:
                 filtered.append(item)
 
-        # Tile-identity filter: the bbox search above only needs to be a
-        # reasonable superset of this tile (`_tile_bbox_4326`'s docstring),
-        # and real MODIS granule footprints routinely spill a little past
-        # their own tile's edge, so `search()` often also returns items
-        # belonging to NEIGHBOURING h/v tiles -- confirmed empirically
-        # (2026-08-26): most fetched tiles came out ~3x their true
-        # 1200x1200 km size before `_load_tile_year`'s `geobox=` fix,
-        # consistent with a roughly 3x3 neighbourhood of tiles' items all
-        # getting swept into one load. `geobox=` already guarantees a
-        # correct *written* tile regardless, but dropping neighbour items
-        # here avoids downloading/decoding them at all
-        # (docs/design/13-prepare-memory-parallelism.md). Confirmed live
-        # against the Planetary Computer STAC API (2026-08-26): items carry
-        # `modis:horizontal-tile`/`modis:vertical-tile` integer properties;
-        # falls back to parsing the `h##v##` segment out of `item.id`
-        # (standard MODIS granule-id format, e.g.
-        # "MYD21A2.A2026209.h35v10.061.2026218165459") for the same
-        # incomplete-metadata batches the platform-property fallback above
-        # exists for. If neither is available, keeps the item rather than
-        # risking dropping real data -- `geobox=` makes that just a minor
-        # efficiency cost, never a correctness one.
-        target_h, target_v = int(tile[1:3]), int(tile[4:6])
+        # Tile-identity filter: now defense-in-depth, not the primary
+        # mechanism -- the CQL2 `filter` above already asks the server for
+        # exactly this tile's items, but this stays as a tripwire against
+        # any items whose `modis:horizontal-tile`/`modis:vertical-tile`
+        # properties are missing entirely (the same kind of incomplete-
+        # metadata batch the platform-property fallback above exists for --
+        # not observed for these two properties in 4,692 real items sampled
+        # 2026-08-26, but `platform` has shown exactly this gap before) or,
+        # in principle, a backend that doesn't honor `filter` and falls back
+        # to matching everything. Falls back to parsing the `h##v##` segment
+        # out of `item.id` (standard MODIS granule-id format, e.g.
+        # "MYD21A2.A2026209.h35v10.061.2026218165459"); if neither is
+        # available, keeps the item rather than risking dropping real data
+        # -- `_load_tile_year`'s `geobox=` makes an over-inclusive item list
+        # just a minor efficiency cost, never a correctness one.
         id_tile_re = re.compile(r"\.h(\d{2})v(\d{2})\.")
         tile_filtered = []
         for item in filtered:
@@ -512,13 +513,12 @@ class ModisSource(DataSource):
         # auto-guesses the output window from whichever items the STAC
         # search actually returned, which some items lack `proj` metadata
         # for entirely (observed 2026-08-17, raising
-        # "Failed to auto-guess CRS/resolution." outright) -- and, more
-        # importantly, `_tile_bbox_4326`'s search bbox is deliberately
-        # allowed to be an over-wide superset of the tile for high-latitude
-        # tiles (see its docstring), so an over-inclusive STAC search used
-        # to translate directly into an oversized *written* GeoTIFF
-        # spanning most of a latitude row instead of just this tile
-        # (real production failure, 2026-08-26,
+        # "Failed to auto-guess CRS/resolution." outright) -- and even with
+        # `_search_items`'s exact per-tile CQL2 filter, individual granule
+        # footprints commonly spill a little past their own tile's nominal
+        # edge, so an auto-guessed window from item extents alone could
+        # still come out larger than the tile (a bbox-based search used to
+        # make this much worse -- real production failure, 2026-08-26,
         # docs/design/13-prepare-memory-parallelism.md). Pinning `geobox=`
         # here forces the output window to exactly this tile's bounds
         # regardless of how many (or which) items matched the search.
@@ -566,7 +566,10 @@ class ModisSource(DataSource):
             return False
 
         ds = self._load_tile_year(items, tile)
-        if ds is None or "lst" not in ds.data_vars or "qc" not in ds.data_vars:
+        required = {"lst", "qc"}
+        if self.variant == "main":
+            required |= {"lst_day", "qc_day"}
+        if ds is None or not required.issubset(ds.data_vars):
             logger.error("Failed to load required bands for tile=%s year=%d", tile, year)
             manifest.record_failure(status_dir, target.key, "failed to load required bands")
             return False
@@ -578,16 +581,27 @@ class ModisSource(DataSource):
 
         data_vars = {}
         if self.variant == "main":
-            lst_stats = composite_annual_stats(
-                ds["lst"], valid_mask, stats=MAIN_LST_STATS, thresholds=(self.cold_stress_k, self.heat_stress_k)
-            )
+            lst_stats = composite_annual_stats(ds["lst"], valid_mask, stats=MAIN_LST_STATS)
             data_vars["lst_night_mean"] = lst_stats["mean"].squeeze("time", drop=True).astype("float32")
             data_vars["lst_night_median"] = lst_stats["median"].squeeze("time", drop=True).astype("float32")
             data_vars["lst_night_sd"] = lst_stats["std"].squeeze("time", drop=True).astype("float32")
-            data_vars["lst_night_gt_heat"] = lst_stats["count_above"].squeeze("time", drop=True).astype("float32")
-            data_vars["lst_night_lt_cold"] = lst_stats["count_below"].squeeze("time", drop=True).astype("float32")
             data_vars["valid_period_count_annual"] = lst_stats["valid_period_count"].squeeze("time", drop=True).astype("float32")
             data_vars["valid_month_count_annual"] = lst_stats["valid_month_count"].squeeze("time", drop=True).astype("float32")
+
+            # Day LST -- independent QC decode from the night mask above:
+            # day and night overpasses have their own QC_Day/QC_Night bands
+            # and can disagree pixel-by-pixel on validity, so this is not
+            # derived from `valid_mask`.
+            day_valid_mask = modis_util.decode_qc_valid_mask(
+                ds["qc_day"], self.qc_max_lst_error_k, product=self.product,
+                lst=ds["lst_day"], min_lst_k=self.lst_min_k, max_lst_k=self.lst_max_k,
+            )
+            day_lst_stats = composite_annual_stats(ds["lst_day"], day_valid_mask, stats=MAIN_LST_STATS)
+            data_vars["lst_day_mean"] = day_lst_stats["mean"].squeeze("time", drop=True).astype("float32")
+            data_vars["lst_day_median"] = day_lst_stats["median"].squeeze("time", drop=True).astype("float32")
+            data_vars["lst_day_sd"] = day_lst_stats["std"].squeeze("time", drop=True).astype("float32")
+            data_vars["valid_period_count_day_annual"] = day_lst_stats["valid_period_count"].squeeze("time", drop=True).astype("float32")
+            data_vars["valid_month_count_day_annual"] = day_lst_stats["valid_month_count"].squeeze("time", drop=True).astype("float32")
         else:
             for key in EXTENDED_VARS:
                 if key in ds.data_vars:

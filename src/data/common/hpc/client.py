@@ -5,6 +5,7 @@ This module provides functionality for transferring files between local workstat
 and HPC clusters, executing commands remotely, and managing file synchronization.
 """
 import os
+import re
 import time
 import logging
 import subprocess
@@ -12,17 +13,38 @@ import platform
 import shlex
 import shutil
 from pathlib import Path
-from typing import List, Dict, Any, Union, Tuple, Optional
+from typing import Callable, List, Dict, Any, Union, Tuple, Optional
 
 logger = logging.getLogger(__name__)
 
+#: Matches a scicore-style `transferNN.<domain>` hostname, capturing the
+#: node number and domain suffix so a same-numbered `loginNN` fallback host
+#: can be derived (transfer12.scicore.unibas.ch -> login12.scicore.unibas.ch).
+_TRANSFER_HOST_RE = re.compile(r"^transfer(\d+)(\..+)$")
+
+
 class HPCClient:
-    """Client for interacting with HPC systems via SSH and rsync."""
-    
+    """Client for interacting with HPC systems via SSH and rsync.
+
+    `transfer12.scicore.unibas.ch` (this project's configured transfer
+    node) has been observed to fail ~40% of SSH connection attempts
+    (`kex_exchange_identification: read: Software caused connection abort`,
+    exit 255) while the same-numbered login node, `login12`, is reliable
+    from the same machine at the same moment -- confirmed by repeated live
+    testing, not a one-off. Every SSH/SCP operation below retries against
+    the configured host first (a transfer node is the *intended* place for
+    bulk data movement, so it stays the default), then falls back to the
+    derived login-node host as a last resort if the primary is exhausted --
+    see `_run_with_fallback()`. The login-node fallback is deliberately a
+    last resort, not a first choice: login nodes are shared interactive
+    infrastructure, so routing every push through one by default would
+    trade one kind of overload risk for another.
+    """
+
     def __init__(self, target: str, key_file: str = None):
         """
         Initialize HPC client.
-        
+
         Args:
             target: SSH target in format user@host:/path or user@host
             key_file: Path to SSH private key file (optional)
@@ -39,23 +61,78 @@ class HPCClient:
         else:
             self.ssh_target = target
             self.base_path = ""
-        
+
         # Also set host attribute for backward compatibility
         self.host = self.ssh_target
-        
+
+        self.fallback_ssh_target = self._derive_login_fallback(self.ssh_target)
+        if self.fallback_ssh_target:
+            logger.debug(f"Login-node fallback available: {self.fallback_ssh_target}")
+
         # Initialize cached attributes
         self._rsync_available = shutil.which("rsync") is not None
-        
+
         # Normalize key file path for Windows compatibility
         if self.key_file:
             self.key_file = self._normalize_key_path(self.key_file)
             logger.debug(f"Using SSH key: {self.key_file}")
-            
+
             # Verify key file exists
             if not os.path.exists(self.key_file):
                 logger.warning(f"SSH key file not found: {self.key_file}")
             else:
                 logger.debug(f"SSH key file verified: {self.key_file}")
+
+    @staticmethod
+    def _derive_login_fallback(ssh_target: str) -> Optional[str]:
+        """`user@transferNN.<domain>` -> `user@loginNN.<domain>`, or `None`
+        if `ssh_target`'s host doesn't match that naming pattern (nothing
+        safe to derive)."""
+        user_part, sep, host_part = ssh_target.rpartition("@")
+        m = _TRANSFER_HOST_RE.match(host_part)
+        if not m:
+            return None
+        login_host = f"login{m.group(1)}{m.group(2)}"
+        return f"{user_part}{sep}{login_host}"
+
+    def _run_with_fallback(
+        self, attempt: Callable[[str], Tuple[bool, Any, Any]], *, op_name: str,
+        max_retries: int, retry_backoff: float,
+    ) -> Tuple[bool, Any, Any]:
+        """Run `attempt(target)` -- returning `(success, ...)` -- against
+        `self.ssh_target` up to `max_retries` times (exponential backoff),
+        then one final attempt against `self.fallback_ssh_target` if the
+        primary is exhausted and a fallback host is available.
+
+        Per-attempt failures log at DEBUG -- a bulk run makes thousands of
+        these calls, and most transient bounces resolve within a couple of
+        retries, so WARNING-per-attempt was drowning out genuinely
+        actionable log lines. Only the *outcome* (falling back, or fully
+        exhausted) logs at WARNING/ERROR.
+        """
+        result: Tuple[bool, Any, Any] = (False, None, None)
+        for attempt_n in range(1, max_retries + 1):
+            result = attempt(self.ssh_target)
+            if result[0]:
+                return result
+            if attempt_n < max_retries:
+                delay = retry_backoff * (2 ** (attempt_n - 1))
+                logger.debug(
+                    f"{op_name} failed on {self.ssh_target} (attempt {attempt_n}/{max_retries}), retrying in {delay:.0f}s"
+                )
+                time.sleep(delay)
+
+        if not self.fallback_ssh_target:
+            logger.error(f"{op_name} failed on {self.ssh_target} after {max_retries} attempts (no fallback host configured)")
+            return result
+
+        logger.warning(f"{op_name} failed on {self.ssh_target} after {max_retries} attempts -- falling back to {self.fallback_ssh_target}")
+        fallback_result = attempt(self.fallback_ssh_target)
+        if fallback_result[0]:
+            logger.info(f"{op_name} succeeded via fallback host {self.fallback_ssh_target}")
+            return fallback_result
+        logger.error(f"{op_name} failed on both {self.ssh_target} and fallback {self.fallback_ssh_target}")
+        return fallback_result
 
     def _normalize_key_path(self, key_file: str) -> str:
         """Normalize SSH key file path for cross-platform compatibility."""
@@ -264,27 +341,38 @@ class HPCClient:
             logger.error(f"Failed to get file info on HPC: {e}")
             return result
 
-    def execute_command(self, command: str) -> Tuple[bool, str, str]:
+    def execute_command(self, command: str, *, max_retries: int = 4, retry_backoff: float = 2.0) -> Tuple[bool, str, str]:
         """
         Execute a command on the HPC system.
-        
+
         Args:
             command: Command to execute
-            
+
         Returns:
             Tuple containing (success, stdout, stderr)
+
+        Retries against the configured host (exponential backoff, see
+        `_run_with_fallback`'s docstring for why the transfer node needs
+        this), then falls back to the derived login-node host as a last
+        resort -- see the class docstring. A single failed `extract_tar()`
+        call (this function's caller) fails its *entire* batch (up to
+        `tar_max_files` units) with no retry above this level, so losing
+        the whole batch to a connection hiccup is expensive enough to
+        justify the fallback rather than just giving up.
         """
         logger.debug(f"Executing command on HPC: {command}")
-        
-        try:
-            ssh_cmd = self._build_ssh_command(command)
-            result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
-            return True, result.stdout, result.stderr
-        except subprocess.SubprocessError as e:
-            logger.error(f"Command execution failed on HPC: {e}")
-            if isinstance(e, subprocess.CalledProcessError):
-                return False, e.stdout, e.stderr
-            return False, "", str(e)
+
+        def attempt(target: str) -> Tuple[bool, str, str]:
+            try:
+                ssh_cmd = self._build_ssh_command(command, target=target)
+                result = subprocess.run(ssh_cmd, capture_output=True, text=True, check=True)
+                return True, result.stdout, result.stderr
+            except subprocess.SubprocessError as e:
+                if isinstance(e, subprocess.CalledProcessError):
+                    return False, e.stdout, e.stderr
+                return False, "", str(e)
+
+        return self._run_with_fallback(attempt, op_name="SSH command", max_retries=max_retries, retry_backoff=retry_backoff)
     
     def rsync_transfer(
         self, 
@@ -313,7 +401,7 @@ class HPCClient:
         """
         # Use PowerShell fallback if rsync is not available
         if not self._rsync_available:
-            logger.info("Using PowerShell fallback for file transfer")
+            logger.debug("Using PowerShell fallback for file transfer")
             if source_is_local:
                 # Upload using PowerShell
                 return self._powershell_upload(source_path, target_path, options)
@@ -406,9 +494,9 @@ class HPCClient:
         rsync_cmd.append(formatted_target)
     
         start_time = time.time()
-        
+
         logger.debug(f"Executing rsync command: {' '.join(rsync_cmd[:6])} [paths hidden]")
-        
+
         if return_process or progress_callback:
             # For real-time progress tracking or returning the process
             try:
@@ -495,20 +583,68 @@ class HPCClient:
                     return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
                 return False, str(e)
     
+    def _build_scp_argv(self, *, target: str, local_path: str, remote_path: str, upload: bool) -> List[str]:
+        """Full `powershell -NoProfile -Command "scp ..."` argv for one
+        upload/download attempt against `target`. `-NoProfile`: this is an
+        ad hoc scp wrapper, not an interactive shell -- loading the user's
+        profile is unnecessary and fragile (e.g. a broken conda
+        auto-activate hook there can abort the whole -Command script before
+        scp even runs, misreporting a profile error as a transfer
+        failure)."""
+        scp_cmd = f"scp {self._scp_non_interactive_opts()}"
+        if self.key_file:
+            expanded_key_file = os.path.expanduser(self.key_file)
+            if os.path.isfile(expanded_key_file):
+                scp_cmd += f" -i '{expanded_key_file}'"
+
+        quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
+        if upload:
+            scp_cmd += f" {quoted_local_path} {target}:{remote_path}"
+        else:
+            scp_cmd += f" {target}:{remote_path} {quoted_local_path}"
+        return ["powershell", "-NoProfile", "-Command", scp_cmd]
+
+    def _run_scp(self, *, local_path: str, remote_path: str, upload: bool, op_name: str) -> Tuple[bool, str]:
+        """One scp transfer via `_run_with_fallback` -- see its docstring
+        and the class docstring for why this retries against the configured
+        host before falling back to the derived login-node host."""
+
+        def attempt(target: str) -> Tuple[bool, str]:
+            ps_cmd = self._build_scp_argv(target=target, local_path=local_path, remote_path=remote_path, upload=upload)
+            logger.debug(f"Executing PowerShell command: {ps_cmd}")
+            start_time = time.time()
+            try:
+                # BatchMode (via _scp_non_interactive_opts) makes a broken
+                # connection fail immediately instead of dropping to an
+                # interactive password prompt; the subprocess timeout is a
+                # second line of defense against the process hanging
+                # regardless.
+                subprocess.run(ps_cmd, check=True, capture_output=True, text=True, timeout=self.transfer_timeout)
+                logger.debug(f"PowerShell transfer to {target} completed in {time.time() - start_time:.1f}s")
+                return True, "Transfer completed successfully"
+            except subprocess.TimeoutExpired:
+                return False, f"transfer timed out after {self.transfer_timeout}s"
+            except subprocess.SubprocessError as e:
+                if isinstance(e, subprocess.CalledProcessError):
+                    return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
+                return False, str(e)
+
+        return self._run_with_fallback(attempt, op_name=op_name, max_retries=3, retry_backoff=3.0)
+
     def _powershell_upload(
-        self, 
-        local_path: str, 
-        remote_path: str, 
+        self,
+        local_path: str,
+        remote_path: str,
         options: Dict[str, Any] = None
     ) -> Tuple[bool, str]:
         """
         Upload a file using PowerShell SCP as a fallback when rsync is not available.
-        
+
         Args:
             local_path: Local source file path
             remote_path: Remote target path (can be relative or absolute)
             options: Transfer options (limited support)
-            
+
         Returns:
             Tuple containing (success, output)
         """
@@ -517,77 +653,33 @@ class HPCClient:
             full_remote_path = f"{self.base_path}/{remote_path}"
         else:
             full_remote_path = remote_path
-        
-        logger.info(f"PowerShell upload: {local_path} -> {full_remote_path}")
 
-        try:
-            # Ensure remote directory exists using the relative path (ensure_directory handles base_path)
-            remote_dir = os.path.dirname(remote_path)
-            if remote_dir:
-                self.ensure_directory(remote_dir)
+        logger.debug(f"PowerShell upload: {local_path} -> {full_remote_path}")
 
-            # Build PowerShell command using scp. -NoProfile: this is an ad
-            # hoc scp wrapper, not an interactive shell -- loading the
-            # user's profile is unnecessary and fragile (e.g. a broken conda
-            # auto-activate hook there can abort the whole -Command script
-            # before scp even runs, misreporting a profile error as a
-            # transfer failure).
-            ps_cmd = ["powershell", "-NoProfile", "-Command"]
+        # Ensure remote directory exists using the relative path (ensure_directory handles base_path)
+        remote_dir = os.path.dirname(remote_path)
+        if remote_dir:
+            self.ensure_directory(remote_dir)
 
-            # Construct the SCP command
-            scp_cmd = f"scp {self._scp_non_interactive_opts()}"
+        return self._run_scp(
+            local_path=local_path, remote_path=full_remote_path, upload=True,
+            op_name=f"PowerShell upload ({os.path.basename(local_path)})",
+        )
 
-            # Add key file if specified
-            if self.key_file:
-                expanded_key_file = os.path.expanduser(self.key_file)
-                if os.path.isfile(expanded_key_file):
-                    scp_cmd += f" -i '{expanded_key_file}'"
-
-            # Add source and destination using the full remote path
-            # Handle paths with spaces by quoting them
-            quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
-            scp_cmd += f" {quoted_local_path} {self.ssh_target}:{full_remote_path}"
-
-            # Complete the PowerShell command
-            ps_cmd.append(scp_cmd)
-
-            start_time = time.time()
-            logger.debug(f"Executing PowerShell command: {ps_cmd}")
-
-            # Execute the command. BatchMode (via _scp_non_interactive_opts)
-            # makes a broken connection fail immediately instead of dropping
-            # to an interactive password prompt; the subprocess timeout is a
-            # second line of defense against the process hanging regardless.
-            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True, timeout=self.transfer_timeout)
-
-            elapsed = time.time() - start_time
-            logger.info(f"PowerShell transfer completed in {elapsed:.1f} seconds")
-
-            return True, "Transfer completed successfully"
-
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"PowerShell transfer timed out after {self.transfer_timeout}s: {e}")
-            return False, f"transfer timed out after {self.transfer_timeout}s"
-        except subprocess.SubprocessError as e:
-            logger.error(f"PowerShell transfer failed: {e}")
-            if isinstance(e, subprocess.CalledProcessError):
-                return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
-            return False, str(e)
-    
     def _powershell_download(
-        self, 
-        remote_path: str, 
-        local_path: str, 
+        self,
+        remote_path: str,
+        local_path: str,
         options: Dict[str, Any] = None
     ) -> Tuple[bool, str]:
         """
         Download a file using PowerShell SCP as a fallback when rsync is not available.
-        
+
         Args:
             remote_path: Remote source path (can be relative or absolute)
             local_path: Local target file path
             options: Transfer options (limited support)
-            
+
         Returns:
             Tuple containing (success, output)
         """
@@ -596,54 +688,17 @@ class HPCClient:
             full_remote_path = f"{self.base_path}/{remote_path}"
         else:
             full_remote_path = remote_path
-        
-        logger.info(f"PowerShell download: {full_remote_path} -> {local_path}")
-        
-        try:
-            # Ensure local directory exists
-            local_dir = os.path.dirname(local_path)
-            if local_dir:
-                os.makedirs(local_dir, exist_ok=True)
-            
-            # Build PowerShell command using scp. -NoProfile: see
-            # _powershell_upload's identical comment.
-            ps_cmd = ["powershell", "-NoProfile", "-Command"]
 
-            # Construct the SCP command
-            scp_cmd = f"scp {self._scp_non_interactive_opts()}"
+        logger.debug(f"PowerShell download: {full_remote_path} -> {local_path}")
 
-            # Add key file if specified
-            if self.key_file:
-                expanded_key_file = os.path.expanduser(self.key_file)
-                if os.path.isfile(expanded_key_file):
-                    scp_cmd += f" -i '{expanded_key_file}'"
+        local_dir = os.path.dirname(local_path)
+        if local_dir:
+            os.makedirs(local_dir, exist_ok=True)
 
-            # Add source and destination using the full remote path
-            # Handle paths with spaces by quoting them
-            quoted_local_path = f"'{local_path}'" if " " in local_path else local_path
-            scp_cmd += f" {self.ssh_target}:{full_remote_path} {quoted_local_path}"
-
-            # Complete the PowerShell command
-            ps_cmd.append(scp_cmd)
-
-            start_time = time.time()
-            logger.debug(f"Executing PowerShell command: {ps_cmd}")
-
-            result = subprocess.run(ps_cmd, check=True, capture_output=True, text=True, timeout=self.transfer_timeout)
-
-            elapsed = time.time() - start_time
-            logger.info(f"PowerShell transfer completed in {elapsed:.1f} seconds")
-
-            return True, "Transfer completed successfully"
-
-        except subprocess.TimeoutExpired as e:
-            logger.error(f"PowerShell transfer timed out after {self.transfer_timeout}s: {e}")
-            return False, f"transfer timed out after {self.transfer_timeout}s"
-        except subprocess.SubprocessError as e:
-            logger.error(f"PowerShell transfer failed: {e}")
-            if isinstance(e, subprocess.CalledProcessError):
-                return False, f"STDOUT: {e.stdout}\nSTDERR: {e.stderr}"
-            return False, str(e)
+        return self._run_scp(
+            local_path=local_path, remote_path=full_remote_path, upload=False,
+            op_name=f"PowerShell download ({os.path.basename(local_path)})",
+        )
 
     def _scp_non_interactive_opts(self) -> str:
         """`-o` flags for the ad hoc `scp` fallback command, mirroring
@@ -736,32 +791,36 @@ class HPCClient:
             logger.error(f"Error extracting tar file {full_tar_path}: {e}")
             return False
 
-    def _build_ssh_command(self, remote_command: str) -> List[str]:
+    def _build_ssh_command(self, remote_command: str, *, target: Optional[str] = None) -> List[str]:
         """
         Build an SSH command with the appropriate options.
-        
+
         Args:
             remote_command: Command to execute on the remote system
-            
+            target: SSH destination to use instead of `self.ssh_target` --
+                `_run_with_fallback()` passes the derived login-node host
+                here for its fallback attempt.
+
         Returns:
             List containing the SSH command with arguments
         """
+        target = target or self.ssh_target
         ssh_cmd = ["ssh"]
-        
+
         # Add key file if specified
         if self.key_file:
             # Expand user directory if path contains tilde
             expanded_key_file = os.path.expanduser(self.key_file)
-            
+
             # Check if key file exists
             if os.path.isfile(expanded_key_file):
                 # Add the key file to the command
                 ssh_cmd.extend(["-i", expanded_key_file])
-        
+
         # Add comprehensive SSH options for secure, non-interactive connections
         ssh_cmd.extend([
             "-o", "BatchMode=yes",  # Don't prompt for passwords
-            "-o", "StrictHostKeyChecking=no",  # Don't prompt for host key verification  
+            "-o", "StrictHostKeyChecking=no",  # Don't prompt for host key verification
             "-o", "UserKnownHostsFile=/dev/null",  # Don't save host keys
             "-o", "LogLevel=ERROR",  # Reduce verbose output
             "-o", "ConnectTimeout=30",  # Connection timeout
@@ -770,12 +829,11 @@ class HPCClient:
             "-o", "PreferredAuthentications=publickey",  # Only use public key auth
             "-o", "IdentitiesOnly=yes"  # Only use explicitly specified identity files
         ])
-        
+
         if not self.key_file:
-            logger.warning(f"No SSH key file specified for connection to {self.ssh_target}")
-    
-        # Add host and command - use ssh_target instead of self.host
-        ssh_cmd.append(self.ssh_target)
+            logger.warning(f"No SSH key file specified for connection to {target}")
+
+        ssh_cmd.append(target)
         ssh_cmd.append(remote_command)
-    
+
         return ssh_cmd
