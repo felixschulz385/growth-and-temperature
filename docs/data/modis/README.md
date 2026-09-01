@@ -39,13 +39,13 @@ pushed to HPC via the transfer mechanism).
 
 Per-`(tile, year)` `StepTarget`s (`_plan_fetch`). For each target, `_execute_fetch`:
 
-1. Bounding-boxes the sinusoidal tile into EPSG:4326 (`_tile_bbox_4326`, via
-   `modis_util.tile_bounds_m` + a pyproj transform) and STAC-searches the
-   collection for that bbox/year (`_search_items`), filtering to
-   `properties.platform == self.platform` cross-checked against the `MOD`/`MYD`
-   item-id prefix (a disagreement only logs a warning — the two signals have
-   been checked to agree in 600 real items, so this is a tripwire, not an
-   expected filter path).
+1. STAC-searches the collection for that (tile, year) via a CQL2 `filter` on
+   the collection's queryable `modis:horizontal-tile`/`modis:vertical-tile`
+   properties (`_search_items`) — server-side exact tile matching, not a
+   bbox — filtering the results to `properties.platform == self.platform`
+   cross-checked against the `MOD`/`MYD` item-id prefix (a disagreement only
+   logs a warning — the two signals have been checked to agree in 600 real
+   items, so this is a tripwire, not an expected filter path).
 2. Loads the configured bands via `odc.stac.load` (`_load_tile_year`),
    **manually** applies each band's `scale`/`offset`/`fill` from `BAND_SPECS`
    (`odc.stac.load` does not auto-apply STAC-declared scale/offset — confirmed

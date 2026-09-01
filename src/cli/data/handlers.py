@@ -539,13 +539,13 @@ def _maybe_auto_transfer(source, step: PipelineStep) -> None:
         logger.info("Auto-transfer after fetch for '%s': pushed %d unit(s)", getattr(source, "ID", "?"), len(results))
 
 
-def _push_one_target(pusher, source, target) -> None:
-    """Push immediately after one FETCH target's successful download, for a
-    source with a real per-target list (MODIS/GLASS) rather than the single
-    `Completion.NEVER` pseudo-target the driver-based sources
-    (acag/esacci/ntl_harm/eog/...) use -- those already push per-file inside
-    `run_fetch()` itself (`src/data/common/fetch/driver.py`), so this never
-    runs for them.
+def _resolve_push_unit(source, target) -> "PushUnit":
+    """Compute one FETCH target's `PushUnit` right after its successful
+    download, for a source with a real per-target list (MODIS/GLASS) rather
+    than the single `Completion.NEVER` pseudo-target the driver-based
+    sources (acag/esacci/ntl_harm/eog/...) use -- those already push
+    per-file inside `run_fetch()` itself (`src/data/common/fetch/driver.py`),
+    so this never runs for them.
 
     GLASS-AVHRR's real filename is only known at execute time (its trailing
     processing-date is unpredictable -- see
@@ -556,14 +556,63 @@ def _push_one_target(pusher, source, target) -> None:
     deterministic at plan time (docs/design/12-glass-modis-rebuild.md §4),
     so they never set `_last_fetch_output_path`. Every other source's
     `target.output_path` is already correct post-execute, so the `getattr`
-    fallback covers them all with no per-source opt-in needed."""
+    fallback covers them all with no per-source opt-in needed.
+
+    Must be called right after `target`'s own successful `execute()` --
+    `_last_fetch_output_path` is a single mutable attribute on `source` that
+    the *next* target's `execute()` overwrites, so it can't be read lazily
+    once several targets have queued up for a batched push."""
     from src.data.common.hpc.push import PushUnit
 
     local_path = getattr(source, "_last_fetch_output_path", None) or target.output_path
     remote_path = os.path.relpath(local_path, source.ctx.data_root).replace(os.sep, "/")
-    result = pusher.push_unit(PushUnit(unit_id=target.key, local_path=local_path, remote_path=remote_path))
-    if not result.ok:
-        logger.warning("Auto-transfer failed for %s: %s", target.key, result.error)
+    return PushUnit(unit_id=target.key, local_path=local_path, remote_path=remote_path)
+
+
+def _push_pending_batch(pusher, pending: list, *, tar_max_files: int, tar_max_size_mb: int) -> None:
+    """Flush a batch of just-fetched targets' `PushUnit`s in as few SSH
+    round trips as possible.
+
+    `push_unit()` costs 3 separate SSH connections per file (mkdir, rsync,
+    verify) -- fine normally, but expensive on a flaky transfer node where
+    each connection has a real chance of dying mid-handshake (observed on
+    `transfer12.scicore.unibas.ch`: retrying the same command usually
+    recovers it, but every extra connection is another roll of the dice).
+    `push_batched()`'s tar+extract+batched-verify amortizes that down to a
+    handful of round trips for the whole batch, the same strategy
+    `_push_transfer_units` already uses for `data transfer`. A single-unit
+    batch (a trailing remainder, or a source that rarely pushes) falls back
+    to plain `push_unit()` -- tarring one file has no amortization to offer.
+    """
+    import posixpath
+
+    from src.data.common.hpc.push import PushUnit
+
+    if not pending:
+        return
+    if len(pending) == 1:
+        result = pusher.push_unit(pending[0])
+        if not result.ok:
+            logger.warning("Auto-transfer failed for %s: %s", result.unit_id, result.error)
+        return
+
+    remote_base_dir = posixpath.commonpath([u.remote_path for u in pending])
+    rebased = [
+        PushUnit(
+            unit_id=u.unit_id, local_path=u.local_path,
+            remote_path=posixpath.relpath(u.remote_path, remote_base_dir),
+        )
+        for u in pending
+    ]
+    results = pusher.push_batched(
+        rebased, remote_base_dir, max_files=tar_max_files, max_bytes=tar_max_size_mb * 1024 * 1024,
+    )
+    failed = [r for r in results if not r.ok]
+    if failed:
+        logger.warning(
+            "Auto-transfer batch had %d failure(s) of %d: %s",
+            len(failed), len(results), [(r.unit_id, r.error) for r in failed],
+        )
 
 
 def handle_run(args: argparse.Namespace) -> None:
@@ -574,11 +623,15 @@ def handle_run(args: argparse.Namespace) -> None:
     -- see `TargetSelection.local_only`'s docstring): those sources push
     every fetched file to HPC right after FETCH and don't keep a permanent
     local copy, so local presence isn't a reliable "already fetched" signal
-    for them. For the same reason, each individual target is pushed right
-    after it downloads successfully (`_push_one_target()`), not batched
-    until the whole run finishes -- `_maybe_auto_transfer()` still runs once
-    at the end too, as a cheap, idempotent safety net for anything an
-    individual push failed to deliver.
+    for them. For the same reason, successfully-fetched targets are queued
+    and pushed in batches of up to `tar_max_files` (`_push_pending_batch()`,
+    same tar+extract amortization `data transfer` uses) rather than one at a
+    time -- a `push_unit()` per file costs 3 separate SSH connections
+    (mkdir/rsync/verify), each a chance for a flaky transfer node to drop the
+    connection mid-handshake, so batching cuts that exposure roughly by the
+    batch size instead of paying it per file. `_maybe_auto_transfer()` still
+    runs once at the end too, as a cheap, idempotent safety net for anything
+    a batch push failed to deliver.
     """
     setup_logging(args.log_level, debug=args.debug)
 
@@ -617,13 +670,19 @@ def handle_run(args: argparse.Namespace) -> None:
     already_complete = {target.key for target in targets if is_complete(target)}
 
     push_pusher = None
+    push_tar_max_files = 100
+    push_tar_max_size_mb = 500
     if step is PipelineStep.FETCH and resolve_transfer_mode(source) == "auto" and source.ctx.ssh_target:
         from src.data.common.hpc.client import HPCClient
         from src.data.common.hpc.push import HPCPusher
 
         push_pusher = HPCPusher(HPCClient(target=source.ctx.ssh_target, key_file=source.ctx.key_file))
+        download_cfg = source.cfg.raw.get("download", {})
+        push_tar_max_files = download_cfg.get("tar_max_files", push_tar_max_files)
+        push_tar_max_size_mb = download_cfg.get("tar_max_size_mb", push_tar_max_size_mb)
 
     failures = []
+    pending_push: list = []
     for target in targets:
         if not source.cfg.override and target.key in already_complete:
             logger.debug("Skipping %s -- already complete: %s", target.key, target.output_path)
@@ -648,7 +707,18 @@ def handle_run(args: argparse.Namespace) -> None:
             logger.error("Target failed: %s/%s", args.source, target.key)
             failures.append(target.key)
         elif push_pusher is not None:
-            _push_one_target(push_pusher, source, target)
+            pending_push.append(_resolve_push_unit(source, target))
+            if len(pending_push) >= push_tar_max_files:
+                _push_pending_batch(
+                    push_pusher, pending_push,
+                    tar_max_files=push_tar_max_files, tar_max_size_mb=push_tar_max_size_mb,
+                )
+                pending_push = []
+
+    if pending_push:
+        _push_pending_batch(
+            push_pusher, pending_push, tar_max_files=push_tar_max_files, tar_max_size_mb=push_tar_max_size_mb,
+        )
 
     if not failures:
         _maybe_auto_transfer(source, step)
