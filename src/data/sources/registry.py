@@ -147,6 +147,7 @@ _SOURCE_MODULES: tuple[str, ...] = (
     "src.data.sources.esacci",
     "src.data.sources.ntl_harm",
     "src.data.sources.eog.source",
+    "src.data.sources.eog.flare",
     "src.data.sources.glass.avhrr",
     "src.data.sources.glass.modis",
     "src.data.sources.modis.source",

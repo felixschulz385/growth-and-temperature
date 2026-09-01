@@ -136,18 +136,23 @@ def derive_hpc_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[
     return derive_data_root(assembly_config, full_config)
 
 
-def resolve_dataset_paths(assembly_config: Dict[str, Any], data_root: str) -> None:
+def resolve_dataset_paths(
+    assembly_config: Dict[str, Any],
+    data_root: str,
+    grid_id: str = layout.LEGACY_GRID_ID,
+) -> None:
     """Resolve each dataset's `path` from `data_path`+`family` (+ optional
-    `grid_id`) when `path` isn't given explicitly, via
+    per-dataset `grid_id`) when `path` isn't given explicitly, via
     `src.data.sources.layout.grid_store_path` -- the same helper every
     migrated PREPARE source uses to compute its own GRID-stage output
     directory, so an assembly config can point at a source's output by name
     instead of hand-pasting a path that silently drifts out of sync when that
     source's layout changes. Mutates `assembly_config['datasets']` in place.
 
-    A dataset config with an explicit `path` is left untouched (escape hatch
-    for one-off/manual paths, e.g. join_on tables, land masks, or anything
-    outside the standard GRID layout).
+    `grid_id` is the run's grid (from `pipeline.grid`); each dataset inherits it
+    unless it sets its own `grid_id`. A dataset config with an explicit `path` is
+    left untouched (escape hatch for one-off/manual paths, e.g. join_on tables,
+    land masks, or anything outside the standard GRID layout).
     """
     for name, cfg in assembly_config.get('datasets', {}).items():
         if cfg.get('path'):
@@ -156,8 +161,10 @@ def resolve_dataset_paths(assembly_config: Dict[str, Any], data_root: str) -> No
         family = cfg.get('family')
         if not data_path or not family:
             continue  # validate_assembly_config reports the resulting missing 'path'
-        grid_id = cfg.get('grid_id', layout.LEGACY_GRID_ID)
-        cfg['path'] = layout.grid_store_path(data_root, data_path, grid_id=grid_id, family=family, suffix="")
+        dataset_grid_id = cfg.get('grid_id', grid_id)
+        cfg['path'] = layout.grid_store_path(
+            data_root, data_path, grid_id=dataset_grid_id, family=family, suffix=""
+        )
         logger.debug(f"Dataset '{name}': resolved path from data_path/family -> {cfg['path']}")
 
 
@@ -195,6 +202,7 @@ def apply_cli_overrides(assembly_config: Dict[str, Any], cli_overrides: Dict[str
         'assembly_mode': 'assembly mode',
         'datasource': 'datasource',
         'overwrite': 'overwrite',
+        'grid_label': 'grid label',
     }
     
     for key, log_name in processing_overrides.items():
@@ -217,8 +225,6 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
     
     if 'output_path' not in assembly_config:
         errors.append("Missing required 'output_path' in assembly configuration")
-    
-    spatial_partition_early = assembly_config.get('processing', {}).get('spatial_partition', 'grid')
 
     if 'datasets' not in assembly_config:
         errors.append("Missing required 'datasets' in assembly configuration")
@@ -242,10 +248,6 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
             if join_on is not None:
                 if not isinstance(join_on, str) or not join_on.strip():
                     errors.append(f"Dataset '{name}' join_on must be a non-empty string")
-                if spatial_partition_early == 'geometry':
-                    errors.append(
-                        f"Dataset '{name}': 'join_on' is not supported with spatial_partition='geometry'"
-                    )
 
             # Validate index_cols if specified
             index_cols = config.get('index_cols')
@@ -260,13 +262,7 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 logger.debug(f"Dataset '{name}' using default index_cols: ['pixel_id']")
     
     processing = assembly_config.get('processing', {})
-    spatial_partition = processing.get('spatial_partition', 'grid')
     derived_pixel_ids = processing.get('derived_pixel_ids')
-
-    if spatial_partition not in {'grid', 'geometry'}:
-        errors.append(
-            f"'spatial_partition' must be either 'grid' or 'geometry', got '{spatial_partition}'"
-        )
 
     if derived_pixel_ids is not None:
         if not isinstance(derived_pixel_ids, dict):
@@ -286,34 +282,6 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
             normalize_grid_shake_offsets(grid_shake)
         except ValueError as exc:
             errors.append(f"Invalid 'processing.grid_shake': {exc}")
-        if spatial_partition == 'geometry':
-            errors.append(
-                "'processing.grid_shake' is not supported with spatial_partition='geometry'"
-            )
-
-    if spatial_partition == 'geometry':
-        geometry_source = assembly_config.get('geometry_source')
-        if not isinstance(geometry_source, dict):
-            errors.append(
-                "Geometry assembly requires a 'geometry_source' mapping in the assembly configuration"
-            )
-        else:
-            geometry_path = geometry_source.get('path')
-            geometry_id_column = geometry_source.get('id_column')
-
-            if not geometry_path:
-                errors.append("Geometry assembly requires 'geometry_source.path'")
-            elif not os.path.exists(geometry_path):
-                logger.warning(f"Geometry source path does not exist: {geometry_path}")
-
-            if not geometry_id_column:
-                errors.append("Geometry assembly requires 'geometry_source.id_column'")
-
-        if not assembly_config.get('geometry_aggregator'):
-            errors.append(
-                "Geometry assembly requires 'geometry_aggregator' "
-                "(import path to callable, e.g. 'pkg.module:function')"
-            )
 
     year_range = processing.get('year_range')
     if year_range:

@@ -48,7 +48,6 @@ import dataclasses
 import logging
 import os
 import tempfile
-from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -67,43 +66,6 @@ from src.data.sources.steps import Completion, PipelineStep, StepTarget, TargetS
 from src.data.sources import verify
 
 logger = logging.getLogger(__name__)
-
-
-def _trim_edge_overlap(datasets: List[xr.Dataset]) -> List[xr.Dataset]:
-    """Trims genuine multi-pixel overlap between adjacent source tiles
-    before `xr.combine_by_coords` -- see ModisSource's identical helper
-    (src/data/sources/modis/source.py) for the full rationale
-    (docs/design/13-prepare-memory-parallelism.md)."""
-    claimed_bounds: List[Tuple[float, float, float, float]] = []  # (xmin, xmax, ymin, ymax)
-    trimmed = []
-    for ds in datasets:
-        x = ds["x"].values
-        y = ds["y"].values
-        x_mask = np.ones(x.shape, dtype=bool)
-        y_mask = np.ones(y.shape, dtype=bool)
-        xmin, xmax = float(x.min()), float(x.max())
-        ymin, ymax = float(y.min()), float(y.max())
-        for cxmin, cxmax, cymin, cymax in claimed_bounds:
-            ov_xmin, ov_xmax = max(xmin, cxmin), min(xmax, cxmax)
-            ov_ymin, ov_ymax = max(ymin, cymin), min(ymax, cymax)
-            if ov_xmin > ov_xmax or ov_ymin > ov_ymax:
-                continue
-            if ov_ymin <= ymin and ov_ymax >= ymax:
-                x_mask &= ~((x >= ov_xmin) & (x <= ov_xmax))
-            elif ov_xmin <= xmin and ov_xmax >= xmax:
-                y_mask &= ~((y >= ov_ymin) & (y <= ov_ymax))
-            else:
-                x_mask &= ~((x >= ov_xmin) & (x <= ov_xmax))
-                y_mask &= ~((y >= ov_ymin) & (y <= ov_ymax))
-        if not x_mask.all() or not y_mask.all():
-            ds = ds.isel(x=x_mask, y=y_mask)
-        if ds.sizes.get("x", 0) and ds.sizes.get("y", 0):
-            trimmed.append(ds)
-            claimed_bounds.append(
-                (float(ds["x"].values.min()), float(ds["x"].values.max()),
-                 float(ds["y"].values.min()), float(ds["y"].values.max()))
-            )
-    return trimmed
 
 
 #: Per-variant constants (docs/design/12-glass-modis-rebuild.md §1/§4):
@@ -302,7 +264,7 @@ class GlassModisSource(DataSource):
     DATA_SOURCE_NAME = "glass"
 
     #: bump to force a full reprocess (`run_tiled_prepare`'s `processing_version`)
-    PROCESSING_VERSION = "1-tiled"
+    PROCESSING_VERSION = "2-tiled"
 
     #: 8-band shape every GLASS-MODIS variant's FETCH output carries (§2).
     STAT_VARS = ("mean", "std", "max", "min", "count_above", "count_below", "valid_period_count", "valid_month_count")
@@ -848,11 +810,11 @@ class GlassModisSource(DataSource):
 
     @staticmethod
     def _read_annual_geotiff(path: str, year: int) -> xr.Dataset:
-        """Stays dask-backed (`chunks=True`) -- see ModisSource
-        .`_read_annual_geotiff`'s identical docstring
-        (src/data/sources/modis/source.py) for why: the caller combines
-        every tile for a year into one lazy mosaic and only `.compute()`s
-        after clipping to one output tile's bbox."""
+        """Read one annual multi-band source GeoTIFF as an `xr.Dataset` --
+        see `ModisSource._read_annual_geotiff` (src/data/sources/modis/
+        source.py). Opened `chunks=True`; the shared PREPARE `raw_getter`
+        (`src.data.common.prepare.sinusoidal_mosaic`) `.compute()`s each
+        tile before reprojecting it onto the output grid."""
         import rasterio
 
         da_ = rxr.open_rasterio(path, masked=True, chunks=True)
@@ -872,11 +834,10 @@ class GlassModisSource(DataSource):
         return ds.rio.write_crs(da_.rio.crs)
 
     def _execute_prepare(self, target: StepTarget) -> bool:
-        from odc.geo.geom import box
-
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
+        from src.data.common.prepare.sinusoidal_mosaic import build_sinusoidal_mosaic_raw_getter
+        from src.data.common.raster.spatial import SpatialProcessor
 
         # No top-level `is_complete(target)` short-circuit here: `target`'s
         # marker can already exist from a prior run while `target.meta["years"]`
@@ -889,154 +850,26 @@ class GlassModisSource(DataSource):
         stage1_root = self.output_root(PipelineStep.FETCH)
         years = target.meta["years"]
 
-        # Per-year index of (file, bounds) plus that year's shared CRS, and
-        # `xr.combine_by_coords` (with x/y coords snapped to whole metres
-        # first) to combine overlapping source tiles -- see ModisSource
-        # ._execute_prepare's identical comment (src/data/sources/modis/
-        # source.py) for the full rationale
-        # (docs/design/13-prepare-memory-parallelism.md).
-        tile_index_cache: Dict[int, Tuple[List[Tuple[str, Any]], Any]] = {}
-
-        def year_tile_index(year: int) -> Tuple[List[Tuple[str, Any]], Any]:
-            if year not in tile_index_cache:
-                import rasterio as _rasterio
-
-                logger.debug("GLASS-MODIS PREPARE: building tile index for year %d", year)
-                year_dir = os.path.join(stage1_root, str(year))
-                index = []
-                crs = None
-                if os.path.isdir(year_dir):
-                    for f in sorted(os.listdir(year_dir)):
-                        if not f.endswith(".tif"):
-                            continue
-                        path = os.path.join(year_dir, f)
-                        with _rasterio.open(path) as src:
-                            index.append((path, src.bounds))
-                            if crs is None:
-                                crs = src.crs
-                tile_index_cache[year] = (index, crs)
-                logger.debug("GLASS-MODIS PREPARE: year %d index built, %d tile(s)", year, len(index))
-            return tile_index_cache[year]
-
-        SOURCE_TILE_CACHE_SIZE = 16
-        source_tile_cache: "OrderedDict[str, xr.Dataset]" = OrderedDict()
-
-        def read_source_tile(path: str, year: int) -> xr.Dataset:
-            if path in source_tile_cache:
-                source_tile_cache.move_to_end(path)
-                return source_tile_cache[path]
-            logger.debug("GLASS-MODIS PREPARE: reading source tile %s", path)
-            ds = GlassModisSource._read_annual_geotiff(path, year)
-            squeeze_dims = [d for d in ("time", "band") if d in ds.dims]
-            if squeeze_dims:
-                ds = ds.squeeze(squeeze_dims, drop=True)
-            source_tile_cache[path] = ds
-            if len(source_tile_cache) > SOURCE_TILE_CACHE_SIZE:
-                source_tile_cache.popitem(last=False)
-            return ds
-
-        def raw_getter(tile, year: int) -> Optional[xr.Dataset]:
-            index, source_crs = year_tile_index(year)
-            if not index:
-                logger.error("No stage-1 tiles for year %d at %s", year, os.path.join(stage1_root, str(year)))
-                return None
-
-            # Clamp the padded tile's bbox to the target grid's own valid
-            # extent before reprojecting to the source CRS -- see
-            # ModisSource._execute_prepare's identical comment
-            # (src/data/sources/modis/source.py) for the full rationale
-            # (docs/design/13-prepare-memory-parallelism.md).
-            grid_bbox = target_geobox.extent.boundingbox
-            margin = 2 * abs(target_geobox.resolution.x)
-            padded_bbox = tile.geobox.pad(32, 32).extent.boundingbox
-            clamped_left = max(padded_bbox.left, grid_bbox.left + margin)
-            clamped_bottom = max(padded_bbox.bottom, grid_bbox.bottom + margin)
-            clamped_right = min(padded_bbox.right, grid_bbox.right - margin)
-            clamped_top = min(padded_bbox.top, grid_bbox.top - margin)
-            if clamped_left < clamped_right and clamped_bottom < clamped_top:
-                extent = box(clamped_left, clamped_bottom, clamped_right, clamped_top, crs=tile.geobox.crs)
-            else:
-                extent = tile.geobox.pad(32, 32).extent
-            bbox = extent.to_crs(source_crs).boundingbox
-            overlapping = [
-                path
-                for path, bounds in index
-                if bounds.right >= bbox.left
-                and bounds.left <= bbox.right
-                and bounds.top >= bbox.bottom
-                and bounds.bottom <= bbox.top
-            ]
-
-            dim_y, dim_x = tile.geobox.dims
-            if not overlapping:
-                # This tile falls outside the year's fetched coverage -- a
-                # legitimate tile state, not a fetch failure. Return a
-                # NaN-filled dataset on tile.geobox instead of None so
-                # run_tiled_prepare doesn't record it as a retryable
-                # failure and permanently block mark_complete (same
-                # convention as ecoregions/gadm/snl_mining's
-                # _rasterize_tile). Var names come from one arbitrary
-                # already-fetched tile (cheap via the bounded cache), not
-                # from a full mosaic.
-                sample = read_source_tile(index[0][0], year)
-                return xr.Dataset(
-                    {
-                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
-                        for var in sample.data_vars
-                    }
-                )
-
-            logger.debug(
-                "GLASS-MODIS PREPARE: tile %s year %d overlaps %d source tile(s)", tile.id, year, len(overlapping)
-            )
-            datasets = [read_source_tile(path, year) for path in overlapping]
-            if len(datasets) == 1:
-                merged = datasets[0]
-            else:
-                logger.debug(
-                    "GLASS-MODIS PREPARE: combining %d source tile(s) for tile %s year %d",
-                    len(datasets), tile.id, year,
-                )
-                # Snap x/y to the nearest whole pixel (using the source
-                # data's own resolution) before combining -- erases the
-                # sub-pixel misalignment that otherwise makes
-                # `combine_by_coords` see (non-existent) duplicate labels.
-                res_x = abs(float(datasets[0]["x"].values[1] - datasets[0]["x"].values[0]))
-                res_y = abs(float(datasets[0]["y"].values[1] - datasets[0]["y"].values[0]))
-                aligned = [
-                    ds.assign_coords(
-                        x=np.round(ds["x"].values / res_x) * res_x,
-                        y=np.round(ds["y"].values / res_y) * res_y,
-                    )
-                    for ds in datasets
-                ]
-                trimmed = _trim_edge_overlap(aligned)
-                if len(trimmed) < len(aligned):
-                    logger.debug(
-                        "GLASS-MODIS PREPARE: trimmed overlap, %d of %d source tile(s) remain for tile %s year %d",
-                        len(trimmed), len(aligned), tile.id, year,
-                    )
-                merged = xr.combine_by_coords(trimmed, combine_attrs="drop_conflicts", join="outer")
-                logger.debug("GLASS-MODIS PREPARE: combine done for tile %s year %d", tile.id, year)
-            if merged.rio.crs is None:
-                merged = merged.rio.write_crs(source_crs)
-
-            clipped = sel_bbox(merged, bbox, y_dim="y", x_dim="x")
-            if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
-                return xr.Dataset(
-                    {
-                        var: ((dim_y, dim_x), np.full(tile.geobox.shape, np.nan, dtype=np.float32))
-                        for var in merged.data_vars
-                    }
-                )
-            return clipped
-
         try:
             with self._dask_client() as client:
                 target_geobox = get_target_geobox(self.ctx)
 
                 spatial_processor = SpatialProcessor(
                     hpc_root=self.ctx.data_root, temp_dir=self.temp_dir, dask_client=client, target_geobox=target_geobox
+                )
+
+                # PREPARE reprojects each source tile independently onto the
+                # output tile's own geobox and overlays first-wins (see
+                # `sinusoidal_mosaic`); `raw_getter` returns a dataset
+                # already on `tile.geobox`, so the driver only tabulates
+                # (`reproject=False`). Replaces the old
+                # mosaic-in-sinusoidal-CRS + `xr.combine_by_coords` + reproject
+                # flow (docs/design/15-modis-prepare-2002-tile-failures.md).
+                raw_getter = build_sinusoidal_mosaic_raw_getter(
+                    stage1_root=stage1_root,
+                    target_geobox=target_geobox,
+                    read_annual_geotiff=GlassModisSource._read_annual_geotiff,
+                    log_label="GLASS-MODIS",
                 )
 
                 with spatial_processor.setup_dask_config():
@@ -1047,8 +880,7 @@ class GlassModisSource(DataSource):
                         processor=spatial_processor,
                         raw_getter=raw_getter,
                         tile_size=self.tile_size,
-                        resampling="nearest",
-                        dst_nodata=float("nan"),
+                        reproject=False,
                         processing_version=self.PROCESSING_VERSION,
                         override=self.cfg.override,
                     )

@@ -103,7 +103,7 @@ def test_render_wrap_command_includes_source_and_step():
     wrap_cmd = render_wrap_command(job, _cluster(), _args())
     assert "--source acag" in wrap_cmd
     assert "--step prepare" in wrap_cmd
-    assert "conda activate src" in wrap_cmd
+    assert "conda activate gnt" in wrap_cmd
 
 
 def test_render_wrap_command_skips_dask_flags_for_simple_jobs():

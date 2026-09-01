@@ -65,7 +65,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="/scicore/home/meiera/schulz0022/projects/growth-and-temperature"
-PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python"
+PYTHON_BIN="/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python"
 ADMIN_LEVEL="${1:-1}"
 WINDOW_PX="${2:-300}"
 LON="${3:-10.0}"
@@ -79,7 +79,7 @@ exec > >(tee -a "$LOG_FILE")
 exec 2>&1
 
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate src
+conda activate gnt
 
 DATA_NOBACKUP="${DATA_NOBACKUP:-$PROJECT_ROOT/data_nobackup}"
 TEST_ROOT="/scratch/schulz0022/hard_gate_plad_${SLURM_JOB_ID}"

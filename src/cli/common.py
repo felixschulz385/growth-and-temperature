@@ -24,6 +24,12 @@ _NOISY_GEO_LOGGERS = (
 _NOISY_LIB_LOGGERS = (
     "numcodecs",
     "zarr",
+    # Selenium/Chrome plumbing for the EOG fetch: per-request wire logs
+    # ("selenium"), connection-pool churn ("urllib3"), and the legacy
+    # webdriver-manager banner ("WDM", now unused but harmless to pin).
+    "selenium",
+    "urllib3",
+    "WDM",
 )
 
 

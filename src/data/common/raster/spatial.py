@@ -98,6 +98,67 @@ def reproject_for_tile_overlap(gdf, target_crs):
     return gdf.to_crs(target_crs)
 
 
+def resample_map_for(resampling, data_vars) -> Dict[str, str]:
+    """Resolve *resampling* (a single method string, or a ``{var: method}``
+    dict with an optional ``"*"`` fallback entry) to an explicit
+    ``{var: method}`` map covering every name in *data_vars*.
+
+    A plain string maps every variable to that one method -- the historical
+    behaviour, unchanged. A dict lets one PREPARE call reproject each output
+    column with the method its quantity actually needs (e.g. a flux-like
+    radiance mean by ``"sum"`` alongside a per-pixel median or an observation
+    count by ``"average"``) -- `xr_reproject` itself only takes one method
+    per call, so `_reproject_multi` below groups the dataset by method and
+    reprojects each group separately. A dict that neither names a variable
+    nor supplies a ``"*"`` fallback for it raises rather than silently
+    resampling it by some default.
+    """
+    if isinstance(resampling, str):
+        return {str(v): resampling for v in data_vars}
+    default = resampling.get("*")
+    out: Dict[str, str] = {}
+    missing = []
+    for v in data_vars:
+        v = str(v)
+        method = resampling.get(v, default)
+        if method is None:
+            missing.append(v)
+        else:
+            out[v] = method
+    if missing:
+        raise ValueError(
+            f"resampling map {resampling!r} has no entry (and no '*' fallback) for "
+            f"variable(s): {sorted(missing)}"
+        )
+    return out
+
+
+def _reproject_multi(source_ds: xr.Dataset, geobox, resampling, *, dst_nodata=None) -> xr.Dataset:
+    """`xr_reproject` *source_ds* onto *geobox*, honouring a per-variable
+    *resampling* map (see `resample_map_for`). A single-method call is one
+    `xr_reproject`; a mixed map reprojects each method-group separately and
+    merges the results (all groups land on the identical target *geobox*, so
+    the merge is a plain column union)."""
+    method_map = resample_map_for(resampling, source_ds.data_vars)
+    base_kwargs: Dict[str, Any] = {}
+    if dst_nodata is not None:
+        base_kwargs["dst_nodata"] = dst_nodata
+
+    by_method: Dict[str, list] = {}
+    for var, method in method_map.items():
+        by_method.setdefault(method, []).append(var)
+
+    if len(by_method) == 1:
+        (method,) = by_method
+        return xr_reproject(source_ds, geobox, resampling=method, **base_kwargs)
+
+    parts = [
+        xr_reproject(source_ds[vars_], geobox, resampling=method, **base_kwargs)
+        for method, vars_ in by_method.items()
+    ]
+    return xr.merge(parts, compat="override", combine_attrs="override")
+
+
 class SpatialProcessor:
     """
     Common spatial processing utilities for reprojecting data to unified grids.
@@ -428,7 +489,7 @@ class SpatialProcessor:
         reproject: bool = True,
         preprocess_func: Callable[[xr.Dataset], xr.Dataset] = None,
         dst_nodata: Optional[float] = None,
-        resampling: str = "nearest",
+        resampling: "str | Dict[str, str]" = "nearest",
     ) -> bool:
         """
         Reproject `source_ds` onto one output tile's own geobox
@@ -459,11 +520,20 @@ class SpatialProcessor:
         nodata at the tile's edges, it does not raise.
 
         `reproject=True` (default) reprojects `source_ds` onto `tile.geobox`
-        via `xr_reproject` (raster resampling). Pass `reproject=False` for a
+        via `xr_reproject` (raster resampling). `resampling` is either a
+        single method string applied to every variable, or a
+        ``{variable: method}`` dict (optional ``"*"`` fallback) so one call
+        can resample each output column by the method its quantity needs --
+        see `resample_map_for` / `_reproject_multi`. Pass `reproject=False`
+        for a
         source whose `raw_getter` already produced `source_ds` directly on
-        `tile.geobox` -- e.g. vector polygon rasterization done inside the
-        raw-getter itself -- in which case `source_ds` is used as-is and
-        `resampling`/`dst_nodata` are not applied.
+        `tile.geobox` -- vector polygon rasterization done inside the
+        raw-getter (gadm/osm/ecoregions/snl_mining), or the sinusoidal
+        raster sources (MODIS/GLASS-MODIS) which now reproject each source
+        tile onto `tile.geobox` themselves and overlay
+        (`src.data.common.prepare.sinusoidal_mosaic`) -- in which case
+        `source_ds` is used as-is and `resampling`/`dst_nodata` are not
+        applied.
 
         `full_width` is the *full* target grid's pixel width (e.g.
         `target_geobox.shape.x`), passed to
@@ -475,12 +545,11 @@ class SpatialProcessor:
                 source_ds = preprocess_func(source_ds)
 
             if reproject:
-                reproj_kwargs = {"resampling": resampling}
                 effective_nodata = dst_nodata if dst_nodata is not None else self.default_nodata
-                if effective_nodata is not None:
-                    reproj_kwargs["dst_nodata"] = effective_nodata
                 logger.debug("process_tile_region: reprojecting tile %s", getattr(tile, "id", "?"))
-                reprojected_ds = xr_reproject(source_ds, tile.geobox, **reproj_kwargs)
+                reprojected_ds = _reproject_multi(
+                    source_ds, tile.geobox, resampling, dst_nodata=effective_nodata
+                )
                 logger.debug("process_tile_region: reproject done for tile %s", getattr(tile, "id", "?"))
             else:
                 reprojected_ds = source_ds

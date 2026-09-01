@@ -33,7 +33,7 @@ exec > >(tee -a "$LOG_FILE")
 exec 2>&1
 
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate src
+conda activate gnt
 
 cd "$PROJECT_ROOT"
 
@@ -49,7 +49,7 @@ if [ "$EXECUTE_FLAG" = "--execute" ]; then
     EXECUTE_ARGS=(--execute)
 fi
 
-/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python \
+/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python \
     "${PROJECT_ROOT}/scripts/migrate_legacy_layout.py" \
     --config "$CONFIG_PATH" \
     --grid-id "$GRID_ID" \

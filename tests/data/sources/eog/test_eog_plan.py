@@ -92,9 +92,23 @@ def test_output_root_fetch_and_prepare_use_top_level_trees(tmp_path):
     assert source.output_root(PipelineStep.FETCH) == os.path.join(ctx.data_root, "raw", "eog/viirs")
 
 
-def test_default_resampling_is_sum(tmp_path):
-    source, _ = _make_source(tmp_path)
+def test_default_resampling_is_per_column_map_for_viirs(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs")
+    assert source.resampling == {
+        "viirs_annual": "sum",
+        "viirs_annual_median": "average",
+        "viirs_annual_cf_cvg": "average",
+    }
+
+
+def test_default_resampling_is_sum_for_dmsp(tmp_path):
+    source, _ = _make_source(tmp_path, "dmsp")
     assert source.resampling == "sum"
+
+
+def test_resampling_is_config_overridable(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs", resampling="nearest")
+    assert source.resampling == "nearest"
 
 
 def test_base_url_is_required(tmp_path):
@@ -111,7 +125,7 @@ def test_prepare_plan_empty_when_no_raw_files(tmp_path):
 
 def test_prepare_plan_one_target_covering_every_available_year(tmp_path):
     # The bug fix: this used to always be empty (module docstring).
-    source, _ = _make_source(tmp_path)
+    source, _ = _make_source(tmp_path, "dmsp")
     for fname in (
         "F182019.v4d_web.stable_lights.avg_vis.tif",
         "F182020.v4d_web.stable_lights.avg_vis.tgz",
@@ -128,7 +142,7 @@ def test_prepare_plan_one_target_covering_every_available_year(tmp_path):
 
 
 def test_prepare_target_prefers_tif_over_tgz_per_file_extensions_order(tmp_path):
-    source, _ = _make_source(tmp_path)
+    source, _ = _make_source(tmp_path, "dmsp")
     for fname in (
         "F182020.v4d_web.stable_lights.avg_vis.tgz",
         "F182020.v4d_web.stable_lights.avg_vis.tif",
@@ -137,6 +151,53 @@ def test_prepare_target_prefers_tif_over_tgz_per_file_extensions_order(tmp_path)
 
     targets = source.plan(PipelineStep.PREPARE, TargetSelection())
     assert targets[0].meta["raw_files"][2020] == "F182020.v4d_web.stable_lights.avg_vis.tif"
+
+
+# --- VIIRS annual: multi-variant PREPARE planning ------------------------
+
+def _viirs_name(year, variant):
+    return f"VNL_v21_npp_{year}01-{year}12_global_vcmslcfg_c202203000000.{variant}.dat.tif.gz"
+
+
+def test_viirs_prepare_plan_carries_all_three_variant_columns(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs")
+    for variant in ("average_masked", "median_masked", "cf_cvg"):
+        _write_raw_file(source, _viirs_name(2019, variant))
+
+    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
+    assert target.meta["years"] == [2019]
+    assert target.meta["expected_vars"] == (
+        "viirs_annual",
+        "viirs_annual_median",
+        "viirs_annual_cf_cvg",
+    )
+    assert target.meta["range_vars"] == ("viirs_annual", "viirs_annual_median")
+    assert target.meta["value_range"] == (0, 1_000_000)
+    assert set(target.meta["raw_files"][2019]) == {"average_masked", "median_masked", "cf_cvg"}
+
+
+def test_viirs_prepare_plan_skips_year_without_primary_mean_file(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs")
+    _write_raw_file(source, _viirs_name(2019, "median_masked"))
+    _write_raw_file(source, _viirs_name(2019, "cf_cvg"))
+
+    assert source.plan(PipelineStep.PREPARE, TargetSelection()) == []
+
+
+def test_viirs_prepare_plan_keeps_year_with_only_primary_mean_file(tmp_path):
+    source, _ = _make_source(tmp_path, "viirs")
+    _write_raw_file(source, _viirs_name(2019, "average_masked"))
+
+    target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
+    assert target.meta["years"] == [2019]
+    # schema stays the full 3 columns even though only the mean file exists;
+    # median/cf_cvg are NaN-filled in _load_year.
+    assert target.meta["expected_vars"] == (
+        "viirs_annual",
+        "viirs_annual_median",
+        "viirs_annual_cf_cvg",
+    )
+    assert set(target.meta["raw_files"][2019]) == {"average_masked"}
 
 
 def test_output_path_uses_source_type_family(tmp_path):

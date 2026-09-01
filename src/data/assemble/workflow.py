@@ -4,18 +4,26 @@ Main workflow orchestration for data assembly.
 This module provides the high-level workflow functions that coordinate
 dataset loading, tile processing, and output generation. Implementation
 details are delegated to specialized modules.
+
+One assembled table = every source in ``assembly.sources`` merged onto the
+canonical grid. The CLI picks the output *grid* resolution (``--grid``) and any
+grid-shake variants (``--shake``), not which columns are in the panel. Each
+grid-shake variant is a full, identical-schema sibling table written under a
+``shake=<label>`` partition next to ``shake=base``.
 """
 
 import os
 os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
 
+import copy
 import logging
-import importlib
 from typing import Dict, Any, List, Optional, Tuple
 
 # Import common utilities
-from src.data.common.geobox import get_or_create_geobox
+from src.data.common.geobox import get_target_geobox
 from src.data.common.dask.client import DaskClientContextManager
+from src.data.pipeline.config import build_context
+from src.data.sources.layout import EASE_GRID_ID, LEGACY_GRID_ID
 
 # Import assembly submodules
 from src.data.assemble.config import (
@@ -29,128 +37,35 @@ from src.data.assemble.loaders import (
     load_all_datasets,
     prepare_land_mask,
 )
-from src.data.assemble.processors import TileProcessor, uses_geometry_aggregation
+from src.data.assemble.processors import TileProcessor
 from src.data.assemble.metadata import create_assembly_metadata
 from src.data.assemble.tiles import (
     get_available_tiles,
     adjust_tile_size_for_reprojection,
     create_tile_geobox,
 )
-from src.data.assemble.constants import DEFAULT_TILE_SIZE
+from src.data.assemble.grid_shake import resolve_shake_selection, shift_geobox_origin
+from src.data.assemble.constants import (
+    DEFAULT_GRID_LABEL,
+    DEFAULT_TILE_SIZE,
+    GRID_RESOLUTIONS_M,
+)
 
 logger = logging.getLogger(__name__)
-
-
-def _load_geometry_aggregator(import_path: str):
-    """
-    Load a geometry aggregation callable from an import path.
-
-    Supported formats:
-    - ``package.module:function``
-    - ``package.module.function``
-    """
-    if ":" in import_path:
-        module_name, attr_name = import_path.split(":", 1)
-    else:
-        module_name, attr_name = import_path.rsplit(".", 1)
-
-    module = importlib.import_module(module_name)
-    aggregator = getattr(module, attr_name)
-
-    if not callable(aggregator):
-        raise TypeError(f"Geometry aggregator '{import_path}' is not callable")
-
-    return aggregator
-
-
-def _run_geometry_assembly(
-    assembly_config: Dict[str, Any],
-    full_config: Optional[Dict[str, Any]],
-    hpc_root: str,
-    target_geobox,
-    output_path: str,
-):
-    """
-    Run geometry-based assembly instead of tiled grid assembly.
-
-    The heavy lifting is delegated to a user-specified aggregator callable so
-    geometry assembly can evolve independently from the grid backend.
-    """
-    processing_config = assembly_config.get("processing", {})
-    geometry_source = assembly_config["geometry_source"]
-    aggregator_path = assembly_config["geometry_aggregator"]
-
-    logger.info(
-        "GEOMETRY mode: aggregating datasets to %s using %s",
-        geometry_source.get("path"),
-        aggregator_path,
-    )
-
-    dask_kwargs = _setup_dask_cluster(processing_config)
-    logger.info("Creating Dask cluster for geometry assembly...")
-
-    with DaskClientContextManager(**dask_kwargs) as client:
-        logger.info(f"Dask client initialized: {client.dashboard_link}")
-
-        land_mask_ds = None
-        if processing_config.get("apply_land_mask", False):
-            land_mask_path = processing_config.get("land_mask_path")
-            tile_size = processing_config.get("tile_size", DEFAULT_TILE_SIZE)
-            land_mask_ds = load_land_mask(hpc_root, target_geobox, tile_size, land_mask_path)
-            if land_mask_ds is not None:
-                land_mask_ds = prepare_land_mask(land_mask_ds)
-
-        assembly_mode = processing_config.get("assembly_mode", "create")
-        target_datasource = processing_config.get("datasource")
-
-        if assembly_mode == "update":
-            if not target_datasource:
-                logger.error("Update mode requires datasource to be specified")
-                return
-            logger.info(
-                "UPDATE mode: Loading only datasource '%s' for geometry assembly",
-                target_datasource,
-            )
-            datasets = load_all_datasets(
-                assembly_config,
-                target_geobox,
-                datasource_filter=target_datasource,
-            )
-        else:
-            logger.info("CREATE mode: Loading all datasets for geometry assembly")
-            datasets = load_all_datasets(assembly_config, target_geobox)
-
-        logger.info("Creating assembly metadata...")
-        if not create_assembly_metadata(output_path, assembly_config):
-            logger.warning("Failed to create assembly metadata")
-
-        aggregator = _load_geometry_aggregator(aggregator_path)
-        aggregator(
-            datasets=datasets,
-            geometry_source=geometry_source,
-            assembly_config=assembly_config,
-            output_path=output_path,
-            target_geobox=target_geobox,
-            land_mask_ds=land_mask_ds,
-            hpc_root=hpc_root,
-            full_config=full_config,
-            dask_client=client,
-        )
-        logger.info("Geometry assembly completed successfully")
 
 
 def _setup_dask_cluster(processing_config: Dict[str, Any]) -> Dict[str, Any]:
     """
     Create Dask cluster configuration from processing config.
-    
+
     Args:
         processing_config: Processing configuration with dask settings
-        
+
     Returns:
         Dictionary of kwargs for DaskClientContextManager
     """
     from src.data.assemble.config import DaskConfig
-    
+
     dask_dict = processing_config.get('dask', {})
     dask_config = DaskConfig(
         threads=dask_dict.get('threads'),
@@ -173,51 +88,44 @@ def _process_all_tiles(
 ) -> Tuple[int, int]:
     """
     Process all tiles and return counts of processed and skipped tiles.
-    
+
     Args:
         datasets: Loaded datasets
         land_mask_ds: Optional land mask dataset
         all_tiles: List of (ix, iy) tile indices
-        target_geobox: Target geobox
+        target_geobox: Target geobox (already coarsened + origin-shifted for the variant)
         assembly_config: Assembly configuration
         output_path: Output directory path
-        
+
     Returns:
         Tuple of (processed_count, skipped_count)
     """
     processing_config = assembly_config.get('processing', {})
     tile_size = processing_config.get('tile_size', DEFAULT_TILE_SIZE)
     assembly_mode = processing_config.get('assembly_mode', 'create')
-    uses_geometry_output = uses_geometry_aggregation(assembly_config)
-    
+
     processor = TileProcessor(assembly_config, output_path, target_geobox=target_geobox)
     processed_count = 0
     skipped_count = 0
     overwrite = processing_config.get('overwrite', True)  # Default to True for backward compatibility
-    
+
     for ix, iy in all_tiles:
         tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
         output_file = os.path.join(tile_output_path, "data.parquet")
-        
-        # Geometry-aggregated assemblies do not materialize ix/iy parquet files on disk,
-        # so update mode cannot use file existence as a skip criterion for them.
-        if (
-            assembly_mode == 'update'
-            and not uses_geometry_output
-            and not os.path.exists(output_file)
-        ):
+
+        if assembly_mode == 'update' and not os.path.exists(output_file):
             logger.warning(f"Tile ix={ix}, iy={iy} does not exist, skipping in update mode")
             skipped_count += 1
             continue
-        
+
         # In create mode, skip existing tiles if overwrite=False
         if assembly_mode == 'create' and not overwrite and os.path.exists(output_file):
             logger.info(f"Tile ix={ix}, iy={iy} already exists, skipping (overwrite=False)")
             skipped_count += 1
             continue
-        
+
         tile_geobox = create_tile_geobox(target_geobox, tile_size, ix, iy)
-        
+
         try:
             success = processor.process_tile(
                 datasets, land_mask_ds, ix, iy, tile_geobox
@@ -227,42 +135,41 @@ def _process_all_tiles(
         except Exception as e:
             logger.error(f"Failed to process tile ix={ix}, iy={iy}: {e}")
             continue
-    
+
     return processed_count, skipped_count
 
 
 def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None):
     """
-    Run the complete data assembly workflow.
-    
+    Run one assembled-table pass: one grid resolution, one grid-shake variant.
+
     Main steps:
-    1. Validate configuration
-    2. Initialize Dask cluster for parallel processing
-    3. Load all datasets individually (source-by-source approach)
-    4. Create metadata YAML for provenance
-    5. Process all tiles, each extracting/processing all datasets
-    6. Write results as partitioned parquet files (ix/iy directory structure)
-    
-    The source-by-source approach enables:
-    - Independent resampling methods per dataset (e.g., bilinear for continuous, mode for categorical)
-    - Per-dataset winsorization configuration
-    - Flexible alignment and concatenation at tile level
-    
+    1. Resolve each source's grid-store path and validate the configuration
+    2. Build the run's target geobox from ``pipeline.grid`` (`get_target_geobox`),
+       coarsen it to ``processing.resolution`` and origin-shift it for
+       ``processing.shake_offset`` (if any)
+    3. Initialise a Dask cluster, load every source, write the provenance metadata
+    4. Process all tiles and write tile-partitioned parquet under ``output_path``
+
     Args:
-        assembly_config: Assembly-specific configuration
-        full_config: Full configuration dictionary (optional, for HPC settings)
+        assembly_config: One variant's assembly configuration (already carries
+            ``output_path``, ``datasets``, and ``processing`` with grid/shake keys)
+        full_config: Full pipeline config dict (``paths``/``remote``/``pipeline``)
     """
     logger.info(f"Starting assembly: {assembly_config.get('description', 'Unknown')}")
 
-    # Derive local project data root early (best-effort, not fatal here -- the
-    # original missing-data_root check further down still owns that) so
-    # `resolve_dataset_paths` can fill in any dataset's `path` from `data_path`/
-    # `family` before `validate_assembly_config` checks that `path` exists.
     data_root = derive_data_root(assembly_config, full_config)
-    if data_root:
-        resolve_dataset_paths(assembly_config, data_root)
+    grid_id = LEGACY_GRID_ID
+    ctx = None
+    if full_config:
+        ctx = build_context(full_config)
+        grid_id = ctx.grid_id
 
-    # Validate configuration
+    # Resolve each dataset's `path` from `data_path`+`family` before
+    # `validate_assembly_config` checks that `path` exists.
+    if data_root:
+        resolve_dataset_paths(assembly_config, data_root, grid_id)
+
     errors = validate_assembly_config(assembly_config)
     if errors:
         for error in errors:
@@ -271,7 +178,6 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
 
     output_path = assembly_config['output_path']
     processing_config = assembly_config.get('processing', {})
-    spatial_partition = processing_config.get("spatial_partition", "grid")
 
     os.makedirs(output_path, exist_ok=True)
     logger.info(f"Output will be written to: {output_path}")
@@ -282,43 +188,56 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
 
     logger.info(f"Using data_root: {data_root}")
 
-    # Get target geobox and adjust tile size for reprojection
-    target_geobox = get_or_create_geobox(data_root)
+    if ctx is None:
+        ctx = build_context(full_config or {})
 
-    if spatial_partition == "geometry":
-        _run_geometry_assembly(
-            assembly_config=assembly_config,
-            full_config=full_config,
-            hpc_root=data_root,
-            target_geobox=target_geobox,
-            output_path=output_path,
+    # `processing.resolution` (metres) is only set for a coarser-than-native
+    # `--grid`. Coarsening is only defined on the metric EASE grid -- check this
+    # before building the geobox so a mis-set grid fails fast.
+    resolution = processing_config.get('resolution')
+    if resolution is not None and ctx.grid_id != EASE_GRID_ID:
+        raise ValueError(
+            f"assemble --grid coarsening (resolution={resolution} m) requires "
+            f"pipeline.grid={EASE_GRID_ID!r}, but the configured grid is {ctx.grid_id!r}."
         )
-        return
+
+    # Target geobox: the grid `pipeline.grid` selects (EASE6933 or legacy 4326).
+    target_geobox = get_target_geobox(ctx)
+    native_res = abs(target_geobox.resolution.x)
+
+    # Grid-shake: shift the whole run's grid origin once, up front. The offset is
+    # a fraction of one *output* cell, expressed here in native pixels.
+    shake_offset = processing_config.get('shake_offset') or (0.0, 0.0)
+    dx, dy = float(shake_offset[0]), float(shake_offset[1])
+    if dx or dy:
+        factor = (resolution / native_res) if resolution else 1.0
+        target_geobox = shift_geobox_origin(target_geobox, dx * factor, dy * factor)
+        logger.info(
+            "Grid-shake variant %r: origin shifted by (%.3f, %.3f) output-cells",
+            processing_config.get('shake_label'), dx, dy,
+        )
 
     processing_config.setdefault('tile_size', DEFAULT_TILE_SIZE)
-    native_res = abs(target_geobox.resolution.x)
     processing_config['tile_size'] = adjust_tile_size_for_reprojection(
-        native_res,
-        processing_config.get('resolution'),
-        processing_config['tile_size']
+        native_res, resolution, processing_config['tile_size']
     )
-    
+
     # Discover tiles
     logger.info("Discovering available tiles...")
     all_tiles = get_available_tiles(assembly_config, target_geobox)
     logger.info(f"Found {len(all_tiles)} tiles to process")
-    
+
     if not all_tiles:
         logger.warning("No tiles found to process")
         return
-    
+
     # Set up Dask cluster
     dask_kwargs = _setup_dask_cluster(processing_config)
     logger.info("Creating Dask cluster for data loading and processing...")
-    
+
     with DaskClientContextManager(**dask_kwargs) as client:
         logger.info(f"Dask client initialized: {client.dashboard_link}")
-        
+
         # Load land mask if requested
         land_mask_ds = None
         if processing_config.get('apply_land_mask', False):
@@ -328,19 +247,18 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
             )
             if land_mask_ds is not None:
                 land_mask_ds = prepare_land_mask(land_mask_ds)
-        
+
         # Step 1: Load datasets
         logger.info("Step 1: Loading datasets with alignment checks...")
         try:
             assembly_mode = processing_config.get('assembly_mode', 'create')
             target_datasource = processing_config.get('datasource')
-            
+
             if assembly_mode == 'update':
                 if not target_datasource:
                     logger.error("Update mode requires datasource to be specified")
                     return
                 logger.info(f"UPDATE mode: Loading only datasource '{target_datasource}'")
-                # In update mode, only load the specified datasource
                 datasets = load_all_datasets(assembly_config, target_geobox, datasource_filter=target_datasource)
             else:
                 logger.info("CREATE mode: Loading all datasets")
@@ -348,64 +266,101 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
         except Exception as e:
             logger.error(f"Failed to load datasets: {e}")
             return
-        
+
         # Step 2: Create metadata
         logger.info("Step 2: Creating assembly metadata...")
         if not create_assembly_metadata(output_path, assembly_config):
             logger.warning("Failed to create assembly metadata")
-        
-        # Step 3: Process pixel tiles or geometry-aggregated output
-        processor = TileProcessor(assembly_config, output_path, target_geobox=target_geobox)
-        if uses_geometry_aggregation(assembly_config):
-            logger.info(
-                f"Step 3: Geometry-aggregated {assembly_mode.upper()} mode: building grid-cell tables, "
-                "aggregating appended rows, and merging into the top-level output table"
-            )
-            processed_count, skipped_count = processor.process_geometry_output(
-                datasets, land_mask_ds, all_tiles, target_geobox
-            )
-            logger.info(
-                f"Geometry {assembly_mode} completed. Processed {processed_count} tile-dataset chunks and "
-                f"skipped {skipped_count} chunks without usable source rows"
-            )
-        else:
-            logger.info("Step 3: Processing tiles (source-by-source)...")
-            processed_count, skipped_count = _process_all_tiles(
-                datasets, land_mask_ds, all_tiles, target_geobox,
-                assembly_config, output_path
-            )
-            logger.info(
-                f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
-                f"skipped {skipped_count} tiles"
-            )
+
+        # Step 3: Process pixel tiles
+        logger.info("Step 3: Processing tiles (source-by-source)...")
+        processed_count, skipped_count = _process_all_tiles(
+            datasets, land_mask_ds, all_tiles, target_geobox,
+            assembly_config, output_path
+        )
+        logger.info(
+            f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
+            f"skipped {skipped_count} tiles"
+        )
+
+
+def _resolve_grid_resolution(grid_label: str) -> Optional[float]:
+    """Grid label -> output resolution in metres, or None for the native grid."""
+    if grid_label not in GRID_RESOLUTIONS_M:
+        available = ", ".join(GRID_RESOLUTIONS_M)
+        raise ValueError(f"Unknown --grid label {grid_label!r}. Available: {available}")
+    if grid_label == DEFAULT_GRID_LABEL:
+        return None  # native canonical resolution, no downsampling reprojection
+    return GRID_RESOLUTIONS_M[grid_label]
 
 
 def run_workflow_with_config(config: Dict[str, Any]):
     """
-    Entry point for assembly workflow with unified configuration.
-    
-    Applies CLI overrides (Dask settings, tile size, compression) to assembly config
-    before running the assembly process.
-    
+    Entry point for the assembly workflow.
+
+    Reads the single ``assembly:`` block (``output_root`` + per-source merge
+    settings under ``sources:``), resolves the requested ``--grid``/``--shake``
+    from ``cli_overrides``, and runs one :func:`run_assembly` pass per grid-shake
+    variant.
+
     Args:
-        config: Full configuration dictionary including:
-            - 'assembly_name': Name of assembly config to use (default: 'main')
-            - 'assemble': Dict of assembly configurations
-            - 'cli_overrides': Optional CLI override values
-            
+        config: Full pipeline config dict, plus an optional ``cli_overrides`` key
+            carrying ``grid_label``, ``shake``, dask sizing, ``overwrite``,
+            ``assembly_mode``, and ``datasource``.
+
     Raises:
-        ValueError: If specified assembly configuration not found
+        ValueError: If the ``assembly:`` block is missing or a grid/shake value
+            is unknown.
     """
-    assembly_name = config.get('assembly_name', 'main')
-    
-    if 'assemble' not in config or assembly_name not in config['assemble']:
-        raise ValueError(f"Assembly configuration '{assembly_name}' not found in config")
-    
-    assembly_config = config['assemble'][assembly_name]
-    
-    # Apply CLI overrides
-    cli_overrides = config.get('cli_overrides', {})
-    apply_cli_overrides(assembly_config, cli_overrides)
-    
-    # Run the assembly
-    run_assembly(assembly_config, config)
+    assembly = config.get('assembly')
+    if not assembly or 'sources' not in assembly:
+        raise ValueError(
+            "Config has no 'assembly:' block with a 'sources:' mapping "
+            "(see orchestration/configs/data.yaml)."
+        )
+
+    cli_overrides = dict(config.get('cli_overrides', {}))
+
+    grid_label = cli_overrides.get('grid_label') or DEFAULT_GRID_LABEL
+    resolution = _resolve_grid_resolution(grid_label)
+    shake_selection = resolve_shake_selection(cli_overrides.get('shake'))
+
+    output_root = assembly.get('output_root')
+    if not output_root:
+        raise ValueError("assembly.output_root is required in the config.")
+
+    base_processing = {
+        'compression': assembly.get('compression', 'zstd'),
+        'apply_land_mask': assembly.get('land_mask', True),
+    }
+    if assembly.get('year_range') is not None:
+        base_processing['year_range'] = assembly['year_range']
+    if assembly.get('tile_size') is not None:
+        base_processing['tile_size'] = assembly['tile_size']
+    if assembly.get('derived_pixel_ids') is not None:
+        base_processing['derived_pixel_ids'] = assembly['derived_pixel_ids']
+    if assembly.get('land_mask_path') is not None:
+        base_processing['land_mask_path'] = assembly['land_mask_path']
+
+    logger.info(
+        "Assembly plan: grid=%s (resolution=%s), shake variants=%s",
+        grid_label, resolution, [label for label, _, _ in shake_selection],
+    )
+
+    for shake_label, dx, dy in shake_selection:
+        assembly_config = {
+            'description': f"assembly grid={grid_label} shake={shake_label}",
+            'output_path': os.path.join(
+                output_root, f"grid={grid_label}", f"shake={shake_label}"
+            ),
+            'datasets': copy.deepcopy(assembly['sources']),
+            'processing': {
+                **base_processing,
+                'grid_label': grid_label,
+                'resolution': resolution,
+                'shake_label': shake_label,
+                'shake_offset': [dx, dy],
+            },
+        }
+        apply_cli_overrides(assembly_config, cli_overrides)
+        run_assembly(assembly_config, config)

@@ -13,6 +13,23 @@ DEFAULT_CRS = 4326
 DEFAULT_TILE_SIZE = 2048
 DEFAULT_TILE_PADDING = 64
 
+# `assemble --grid <label>` -> output resolution in metres on the canonical
+# EPSG:6933 grid. "1km" is the native canonical resolution (no downsampling);
+# every coarser label triggers a downsampling reprojection and makes
+# `--shake` meaningful (docs/design/01-grid.md §2, docs/design/04-ingest.md §6).
+GRID_RESOLUTIONS_M = {
+    "1km": 1000.0,
+    "2km": 2000.0,
+    "5km": 5000.0,
+    "10km": 10000.0,
+    "25km": 25000.0,
+}
+DEFAULT_GRID_LABEL = "1km"
+
+# Partition label for the un-shifted assembled table. Grid-shake variants are
+# written as full same-schema sibling tables under shake=s0/s1/... alongside it.
+SHAKE_BASE_LABEL = "base"
+
 # Default compression for parquet output
 DEFAULT_COMPRESSION = 'snappy'
 

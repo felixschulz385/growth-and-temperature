@@ -218,6 +218,56 @@ def test_run_tiled_prepare_reproject_false_uses_raw_getter_output_as_is(tmp_path
     assert len(df) == tile_size * tile_size
 
 
+def test_run_tiled_prepare_reproject_false_accepts_georegistered_nan_canvas(tmp_path, target_geobox, processor):
+    """The sinusoidal raster sources (MODIS/GLASS-MODIS) hand the driver a
+    georegistered all-NaN `xr_zeros(tile.geobox)` canvas for tiles outside
+    that year's coverage; `reproject=False` tabulates it straight through."""
+    from odc.geo.xr import xr_zeros
+
+    output_path = str(tmp_path / "output")
+    tile_size = 4
+
+    def nan_canvas_getter(tile, year):
+        base = xr_zeros(tile.geobox, "float32")
+        return xr.Dataset({"lst": xr.full_like(base, np.nan)})
+
+    ok = run_tiled_prepare(
+        output_path=output_path, years=[2020], target_geobox=target_geobox, processor=processor,
+        raw_getter=nan_canvas_getter, tile_size=tile_size, reproject=False,
+    )
+    assert ok is True
+
+    parts = sorted(Path(output_path).glob("ix=*/iy=*/part-2020.parquet"))
+    assert len(parts) == 4
+    df = pd.read_parquet(parts[0])
+    assert len(df) == tile_size * tile_size
+    assert df["lst"].isna().all()
+
+
+def test_run_tiled_prepare_reproject_false_never_calls_xr_reproject(tmp_path, target_geobox, processor, monkeypatch):
+    """Locks that `reproject=False` (the MODIS/GLASS-MODIS contract) keeps
+    `xr_reproject` -- and its dask `grid_intersect` / degenerate-geometry
+    failure modes -- entirely out of the tabulation path."""
+    import src.data.common.raster.spatial as spatial_module
+
+    def boom(*a, **k):  # pragma: no cover - must never be reached
+        raise AssertionError("xr_reproject called under reproject=False")
+
+    monkeypatch.setattr(spatial_module, "xr_reproject", boom)
+
+    output_path = str(tmp_path / "output")
+
+    def on_grid_getter(tile, year):
+        h, w = tile.geobox.shape
+        return xr.Dataset({"v": (("y", "x"), np.full((h, w), float(year), dtype="float32"))})
+
+    ok = run_tiled_prepare(
+        output_path=output_path, years=[2020], target_geobox=target_geobox, processor=processor,
+        raw_getter=on_grid_getter, tile_size=4, reproject=False,
+    )
+    assert ok is True
+
+
 def test_run_tiled_prepare_logs_per_unit_progress_and_a_final_summary(tmp_path, target_geobox, processor, caplog):
     import logging
 

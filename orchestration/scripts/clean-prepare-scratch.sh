@@ -33,7 +33,7 @@ exec > >(tee -a "$LOG_FILE")
 exec 2>&1
 
 eval "$(/scicore/home/meiera/schulz0022/miniforge-pypy3/bin/conda shell.bash hook)"
-conda activate src
+conda activate gnt
 
 cd "$PROJECT_ROOT"
 
@@ -54,7 +54,7 @@ if [ -n "$SOURCE_ID" ]; then
     SOURCE_ARGS=(--source "$SOURCE_ID")
 fi
 
-/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/src/bin/python \
+/scicore/home/meiera/schulz0022/miniforge-pypy3/envs/gnt/bin/python \
     "${PROJECT_ROOT}/scripts/clean_prepare_scratch.py" \
     --config "$CONFIG_PATH" \
     "${SOURCE_ARGS[@]}" \

@@ -147,7 +147,7 @@ def resubmit_via_slurm(args: argparse.Namespace) -> None:
     wrap_lines = [
         f'cd {cluster["project_root"]}',
         f'eval "$({cluster["conda_hook"]} shell.bash hook)"',
-        "conda activate src",
+        "conda activate gnt",
         " ".join(forward),
     ]
     log_dir = f'{cluster["project_root"]}/log/maintenance/find-and-remove-oversized-modis-tiles'

@@ -5,8 +5,7 @@ Entry point: ``src/cli/main.py:main`` (also exposed via ``run.py``).
 
 Domains
 -------
-download  — index / run (download files)
-preprocess — run (preprocess raw files)
-assemble  — create / update / demean (assemble panel dataset)
+data      — list / summary / plan / run / transfer (fetch/prepare/grid a source)
+assemble  — create / update (assemble the panel dataset for a --grid / --shake)
 analysis  — run / submit / summary / tables / cleanup
 """

@@ -320,14 +320,53 @@ sources:
     # download through one shared `self._driver` Selenium instance -- more
     # than one concurrent download races on that same driver's init/close
     # and in-flight download-directory polling.
+    #
+    # Small batch_size: the FETCH driver pushes to HPC (transfer_mode=auto)
+    # only at each batch boundary, and these VNL composites are ~0.5-2 GB
+    # each -- pushing every 4 files keeps far less un-transferred local data
+    # around if the run is interrupted, at negligible cost (the per-batch
+    # asyncio.run overhead is nothing next to the downloads, and the Selenium
+    # session persists across batches).
+    download:
+      batch_size: 4
+      max_concurrent_downloads: 1
+      # Idle timeout (seconds) for one VNL file: download_file() aborts only
+      # after this long with no growth in the partial file, not on a fixed
+      # total budget -- a ~0.5-2 GB composite on a slow link can legitimately
+      # run for many minutes.
+      timeout: 1200
+
+    # Three parallel columns (EogSource.VIIRS_VARIANTS):
+    #   viirs_annual         masked mean radiance, area-weighted "sum"
+    #   viirs_annual_median  masked median radiance, "average" (per-pixel)
+    #   viirs_annual_cf_cvg  cloud-free observation count, "average"
+    # After "sum" onto 1 km EASE, a gas-flare / industrial-core cell reaches
+    # ~1e5-1e6 nW/cm^2/sr -- 2000 was a city-scale bound that the flare tail
+    # sails past. Only the two radiance columns are range-checked; cf_cvg is
+    # a count, left out of range_vars.
+    verification:
+      expected_vars: ["viirs_annual", "viirs_annual_median", "viirs_annual_cf_cvg"]
+      value_range: [0, 1000000]
+      range_vars: ["viirs_annual", "viirs_annual_median"]
+
+  # EOG VIIRS gas flares -- distance-banded uint8 flag rasterized from the
+  # annual global gas-flare survey (src/data/sources/eog/flare.py). Standalone
+  # so downstream can drop it by simply not joining `eog_flare`.
+  eog_flare:
+    type: "eog_flare"
+    base_url: "https://eogdata.mines.edu/products/vnf/global_gas_flare.html"
+    data_path: "eog/flare"
+    year_range: [2012, 2021]  # match eog_viirs; 2012-2016 share the combined survey file
+
+    # Small .xlsx files scraped from one HTML page -- no need to parallelise,
+    # and it's politer to the EOG host.
     download:
       max_concurrent_downloads: 1
 
-    # VIIRS radiance is continuous and can spike much higher over cities/flares
-    # (matches the ntl_harm bound below, which is derived from this source).
     verification:
-      expected_vars: ["viirs_annual"]
-      value_range: [0, 2000]
+      expected_vars: ["flare_band"]
+      value_range: [0, 3]
+      sparse_vars: ["flare_band"]
 
   # EOG DVNL -- disabled for now, not run by the pipeline. Left commented
   # rather than deleted so it can be re-enabled by uncommenting
@@ -627,64 +666,58 @@ sources:
       value_range: [0, 200]
       range_vars: ["mine_count_10km", "mine_count_20km", "mine_count_50km", "mine_polygon_count"]
 
-# Data assembly configurations
+# Data assembly configuration
 #
-# Each pixel-grid dataset below is resolved at run time from `data_path`+`family`
-# via `src.data.sources.layout.grid_store_path` (src/data/assemble/config.py's
-# `resolve_dataset_paths`) -- the same helper each PREPARE source uses to compute
-# its own GRID-stage tiled-parquet output directory, so these entries track a
-# source's real output location instead of a hand-pasted path that drifts out of
-# sync. An explicit `path:` (as still used below for `land_mask`/`cluster_vars`,
-# where dropping the escape hatch isn't required) always overrides this resolution.
-assemble:
-  modis:
-    description: "MODIS assembly with all datasets"
-    output_path: "${DATA_NOBACKUP}/assembled/modis.parquet"
-    datasets:
-      modis:
-        data_path: "glass/LST/MODIS/Daily/1KM/"
-        family: "glass_modis_lst"
-        index_cols: ["pixel_id", "year"]
-        columns: ["LST"]
-      viirs:
-        data_path: "eog/viirs"
-        family: "eog_viirs_annual"
-        index_cols: ["pixel_id", "year"]
-      dvnl:
-        data_path: "eog/dvnl"
-        family: "eog_viirs_dvnl"
-        index_cols: ["pixel_id", "year"]
-      dmsp:
-        data_path: "eog/dmsp"
-        family: "eog_dmsp"
-        index_cols: ["pixel_id", "year"]
-      cluster_vars:
-        data_path: "misc"
-        family: "country_id"
-        index_cols: ["pixel_id"]
-        columns: ["GID_0"]
-      land_mask:
-        data_path: "misc"
-        family: "land_mask"
-        index_cols: ["pixel_id"]
-    processing:
-      compression: "zstd"
-      # demean_columns/filter_land_only/spark deleted -- confirmed dead
-      # config, not read anywhere in src/data/assemble/*.py
-      # (docs/design/05-migration.md §2).
-
-  temperature_only:
-    description: "Temperature data only assembly"
-    output_path: "${DATA_NOBACKUP}/assembled/temperature_only.parquet"
-    datasets:
-      modis:
-        data_path: "glass/LST/MODIS/Daily/1KM/"
-        family: "glass_modis_lst"
-        index_cols: ["pixel_id", "year"]
-        columns: ["LST"]
-      land_mask:
-        data_path: "misc"
-        family: "land_mask"
-        index_cols: ["pixel_id"]
-    processing:
-      compression: "zstd"
+# One block, not a set of named assemblies. Every entry in `assembly.sources`
+# is merged into every assembled table -- the CLI picks the output *grid* and
+# any grid-shake variants (`assemble create --grid 10km --shake quad`), not
+# which columns are in the panel.
+#
+# Each source's pixel-grid store is resolved at run time from `data_path`+`family`
+# (+ optional per-source `grid_id`) via `src.data.sources.layout.grid_store_path`
+# (src/data/assemble/config.py's `resolve_dataset_paths`) -- the same helper each
+# PREPARE source uses for its own GRID-stage output directory, so these entries
+# track a source's real output location. `grid_id` defaults to `pipeline.grid`
+# above; an explicit `path:` overrides the whole resolution.
+#
+# Optional per-source keys honored by the merge code: `columns`, `column_prefix`,
+# `resampling` (default "mode"), `winsorize`, `index_cols` (default ["pixel_id"]),
+# `grid_id`, `join_on` (GID-keyed sidecar merged directly), `fillna`.
+#
+# Output tree: <output_root>/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data.parquet
+assembly:
+  output_root: "${DATA_NOBACKUP}/assembled"
+  compression: "zstd"
+  land_mask: true
+  # year_range: [1992, 2022]   # optional panel-wide year clip
+  # tile_size: 2048            # optional override of the shared PREPARE tile grid
+  sources:
+    glass_modis:
+      data_path: "glass/LST/MODIS/Daily/1KM/"
+      family: "glass_modis_lst"
+      index_cols: ["pixel_id", "year"]
+      columns: ["LST"]
+    eog_viirs:
+      data_path: "eog/viirs"
+      family: "eog_viirs_annual"
+      index_cols: ["pixel_id", "year"]
+      # viirs_annual_cf_cvg is also in the prepared store (an observation-
+      # density weight); add it here to carry it into the panel.
+      columns: ["viirs_annual", "viirs_annual_median"]
+    eog_dvnl:
+      data_path: "eog/dvnl"
+      family: "eog_viirs_dvnl"
+      index_cols: ["pixel_id", "year"]
+    eog_dmsp:
+      data_path: "eog/dmsp"
+      family: "eog_dmsp"
+      index_cols: ["pixel_id", "year"]
+    country_id:
+      data_path: "misc"
+      family: "country_id"
+      index_cols: ["pixel_id"]
+      columns: ["GID_0"]
+    land_mask:
+      data_path: "misc"
+      family: "land_mask"
+      index_cols: ["pixel_id"]

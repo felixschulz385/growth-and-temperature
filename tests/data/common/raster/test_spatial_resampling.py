@@ -88,3 +88,76 @@ def test_process_spatial_standard_default_signature_still_nearest():
 
     sig = inspect.signature(SpatialProcessor.process_spatial_standard)
     assert sig.parameters["resampling"].default == "nearest"
+
+
+# --- per-variable resampling map (resample_map_for / _reproject_multi) ----
+
+from src.data.common.raster.spatial import resample_map_for, _reproject_multi
+
+
+def test_resample_map_for_string_applies_to_every_var():
+    assert resample_map_for("sum", ["a", "b"]) == {"a": "sum", "b": "sum"}
+
+
+def test_resample_map_for_dict_is_per_variable():
+    got = resample_map_for({"a": "sum", "b": "average"}, ["a", "b"])
+    assert got == {"a": "sum", "b": "average"}
+
+
+def test_resample_map_for_dict_star_fallback():
+    got = resample_map_for({"a": "sum", "*": "nearest"}, ["a", "b", "c"])
+    assert got == {"a": "sum", "b": "nearest", "c": "nearest"}
+
+
+def test_resample_map_for_dict_missing_var_without_fallback_raises():
+    with pytest.raises(ValueError, match="no entry.*for variable"):
+        resample_map_for({"a": "sum"}, ["a", "b"])
+
+
+def _tiny_ds(size=6):
+    lon = np.linspace(-1.0, 1.0, size)
+    lat = np.linspace(1.0, -1.0, size)
+    base = np.arange(size * size, dtype="float32").reshape(size, size)
+    ds = xr.Dataset(
+        {
+            "mean": (("latitude", "longitude"), base),
+            "count": (("latitude", "longitude"), base + 100.0),
+        },
+        coords={"latitude": lat, "longitude": lon},
+    )
+    return ds.rio.write_crs(4326)
+
+
+def test_reproject_multi_mixed_methods_calls_xr_reproject_per_group(tmp_path, monkeypatch):
+    ds = _tiny_ds()
+    target = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5)
+
+    calls = []
+    real = spatial_module.xr_reproject
+
+    def spy(obj, geobox, **kwargs):
+        calls.append((sorted(obj.data_vars), kwargs.get("resampling")))
+        return real(obj, geobox, **kwargs)
+
+    monkeypatch.setattr(spatial_module, "xr_reproject", spy)
+
+    out = _reproject_multi(ds, target, {"mean": "sum", "count": "average"})
+
+    assert set(out.data_vars) == {"mean", "count"}
+    assert sorted(calls) == [(["count"], "average"), (["mean"], "sum")]
+
+
+def test_reproject_multi_single_method_is_one_call(tmp_path, monkeypatch):
+    ds = _tiny_ds()
+    target = GeoBox.from_bbox((-1, -1, 1, 1), crs="EPSG:4326", resolution=0.5)
+
+    calls = []
+    real = spatial_module.xr_reproject
+    monkeypatch.setattr(
+        spatial_module,
+        "xr_reproject",
+        lambda obj, gb, **kw: calls.append(kw.get("resampling")) or real(obj, gb, **kw),
+    )
+
+    _reproject_multi(ds, target, "sum")
+    assert calls == ["sum"]

@@ -4,8 +4,8 @@ Project-local wrapper for the modular GNT CLI.
 
 Examples:
   python run.py data run --config config.yaml --source acag --step fetch
-  python run.py assemble create --config config.yaml --source main_panel
-  python run.py assemble update --config config.yaml --source main_panel --datasource ntl
+  python run.py assemble create --config config.yaml --grid 10km --shake quad
+  python run.py assemble update --config config.yaml --grid 10km --datasource ntl_harm
   python run.py analysis run --model my_model
   python run.py analysis submit --tables table_main table_robustness
   python run.py analysis summary

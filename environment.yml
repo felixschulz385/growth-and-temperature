@@ -68,8 +68,8 @@ dependencies:
   - aiohttp=3.14.1
   - requests=2.33.1
   - beautifulsoup4=4.14.3
-  - selenium=4.43.0
-  - webdriver-manager=4.1.1
+  - selenium=4.43.0  # EOG fetch: chromedriver via built-in Selenium Manager
+  - webdriver-manager=4.1.1  # only the (notebook-only) snl_mining scraper still uses this
   - openpyxl=3.1.5
   # cv2, used by gnt/data/sources/snl_mining/scraper/scrapers/geometry.py.
   # Missing from this file entirely until now (ModuleNotFoundError surfaced
