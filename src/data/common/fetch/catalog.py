@@ -84,7 +84,19 @@ def required_files(source: Any, status_dir: str, *, refresh_entrypoints: bool = 
         for rel, url in pairs:
             required.append(RequiredFile(unit_id=get_hash(url), relative_path=rel, url=url))
 
-    return required
+    # A file legitimately shared by several entrypoints (e.g. one combined
+    # multi-year archive covering a run of yearly entrypoints, as EOG's
+    # 2012-2016 gas-flare survey does) must be fetched once, not once per
+    # entrypoint -- duplicate RequiredFiles for the same local path
+    # otherwise download concurrently and race on the same "<path>.part".
+    seen: set[str] = set()
+    deduped: list[RequiredFile] = []
+    for req in required:
+        if req.relative_path in seen:
+            continue
+        seen.add(req.relative_path)
+        deduped.append(req)
+    return deduped
 
 
 def cached_required_files(source: Any, status_dir: str) -> "list[RequiredFile] | None":

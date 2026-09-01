@@ -282,8 +282,21 @@ sources:
     # download through one shared `self._driver` Selenium instance -- more
     # than one concurrent download races on that same driver's init/close
     # and in-flight download-directory polling.
+    #
+    # Small batch_size: the FETCH driver pushes to HPC (transfer_mode=auto)
+    # only at each batch boundary, and these VNL composites are ~0.5-2 GB
+    # each -- pushing every 4 files keeps far less un-transferred local data
+    # around if the run is interrupted, at negligible cost (the per-batch
+    # asyncio.run overhead is nothing next to the downloads, and the Selenium
+    # session persists across batches).
     download:
+      batch_size: 4
       max_concurrent_downloads: 1
+      # Idle timeout (seconds) for one VNL file: download_file() aborts only
+      # after this long with no growth in the partial file, not on a fixed
+      # total budget -- a ~0.5-2 GB composite on a slow link can legitimately
+      # run for many minutes.
+      timeout: 1200
 
     # Three parallel columns (EogSource.VIIRS_VARIANTS):
     #   viirs_annual         masked mean radiance, area-weighted "sum"
@@ -306,6 +319,11 @@ sources:
     base_url: "https://eogdata.mines.edu/products/vnf/global_gas_flare.html"
     data_path: "eog/flare"
     year_range: [2012, 2021]  # match eog_viirs; 2012-2016 share the combined survey file
+
+    # Small .xlsx files scraped from one HTML page -- no need to parallelise,
+    # and it's politer to the EOG host.
+    download:
+      max_concurrent_downloads: 1
 
     verification:
       expected_vars: ["flare_band"]

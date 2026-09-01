@@ -225,6 +225,12 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         default_resampling = self.VIIRS_RESAMPLING if self.source_type == "viirs_annual" else "sum"
         self.resampling = cfg.raw.get("resampling", default_resampling)
 
+        #: Idle (no-progress) timeout for a single Selenium download, seconds
+        #: -- see download_file(). `download.timeout` in config overrides it.
+        self._download_stall_timeout_s = int(
+            cfg.raw.get("download", {}).get("timeout", self.DOWNLOAD_STALL_TIMEOUT_S)
+        )
+
         #: In-process cache for _viirs_annual_listing() -- populated by one
         #: crawl the first time any year's entrypoint is requested, reused
         #: for the rest (module docstring: avoids 10 separate logins to
@@ -351,6 +357,9 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         listing: Dict[int, List[Tuple[str, str]]] = {}
         start, end = self.VIIRS_YEAR_RANGE
         base = self.base_url if self.base_url.endswith("/") else self.base_url + "/"
+        # Reuse an already-open session (e.g. one _execute_fetch opened for
+        # the whole run) rather than tearing it down in the finally below.
+        opened_here = self._driver is None
         self._init_selenium_driver()
         try:
             for i, year in enumerate(range(start, end + 1)):
@@ -369,7 +378,8 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                         continue
                     listing.setdefault(year, []).append((href, full_url))
         finally:
-            self._close_selenium_driver()
+            if opened_here:
+                self._close_selenium_driver()
 
         for year, matches in listing.items():
             seen: Dict[str, Tuple[str, str]] = {}
@@ -387,18 +397,36 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         self._viirs_listing_cache = listing
         return listing
 
+    #: download_file() aborts a download only when it *stalls* -- no growth
+    #: in the partial file for this many seconds -- not on a fixed total
+    #: budget, since a healthy VNL composite is ~0.5-2 GB and can legitimately
+    #: take many minutes on a slow link. Overridable per deployment via
+    #: `sources.eog_viirs.download.timeout`. DOWNLOAD_MAX_TIMEOUT_S is a hard
+    #: backstop against a download that dribbles forever without ever
+    #: stalling long enough to trip the idle check.
+    DOWNLOAD_STALL_TIMEOUT_S = 600
+    DOWNLOAD_MAX_TIMEOUT_S = 4 * 3600
+    DOWNLOAD_POLL_S = 5
+
     def download_file(self, file_url, output_path, driver=None):
-        """Ported from EOGDataSource.download_file -- polls the shared
-        Selenium download directory for the newest completed file."""
+        """Trigger *file_url* in Chrome and poll the Selenium download
+        scratch dir until a non-partial file appears, then copy it to
+        *output_path*. Returns True on success, False on stall/error --
+        the caller turns a False into a retryable fetch failure."""
         import shutil
         import time
 
+        # output_path is the fetch driver's atomic "<final>.part" temp -- log
+        # the real name, not the .part.
+        name = os.path.basename(output_path)
+        if name.endswith(".part"):
+            name = name[: -len(".part")]
+
+        stall_timeout = self._download_stall_timeout_s
+
         current_driver = driver or self._driver
-        if not hasattr(current_driver, "get") or not hasattr(current_driver, "find_element"):
-            logger.error("EOG downloads require Selenium WebDriver")
-            return False
-        if current_driver is None:
-            logger.error("No Selenium driver available")
+        if current_driver is None or not hasattr(current_driver, "get"):
+            logger.error("EOG download %s: no Selenium WebDriver available", name)
             return False
 
         try:
@@ -406,31 +434,88 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             if not download_dir or not os.path.exists(download_dir):
                 if self._download_dir and os.path.exists(self._download_dir):
                     download_dir = self._download_dir
-                    current_driver._eog_download_dir = download_dir
                 else:
                     download_dir = tempfile.mkdtemp(prefix="eog_session_downloads_")
-                    current_driver._eog_download_dir = download_dir
+                current_driver._eog_download_dir = download_dir
 
             before_files = set(os.listdir(download_dir))
+            logger.info("EOG download: %s", name)
+            logger.debug("EOG download URL: %s", file_url)
+            started = time.monotonic()
             current_driver.get(file_url)
             self._check_and_handle_login(current_driver)
 
-            max_wait_time, interval, elapsed = 300, 5, 0
-            while elapsed < max_wait_time:
-                current_files = set(os.listdir(download_dir))
-                new_files = current_files - before_files
-                completed = [f for f in new_files if not f.endswith(".tmp") and not f.endswith(".crdownload")]
-                if completed:
-                    latest = max((os.path.join(download_dir, f) for f in completed), key=os.path.getmtime)
+            next_heartbeat = 30
+            last_size: Dict[str, int] = {}
+            max_partial_bytes = 0
+            last_progress_at = started
+            while True:
+                now = time.monotonic()
+                elapsed = now - started
+                new_files = set(os.listdir(download_dir)) - before_files
+                # A finished download: a non-partial file that is non-empty
+                # and whose size held steady across two polls (Chrome renames
+                # <name>.crdownload -> <name> only at the end, but new-headless
+                # / blocked-download failures can drop a 0-byte stub, and a
+                # just-renamed file can still be flushing).
+                ready = None
+                partial_bytes = 0
+                for f in new_files:
+                    path = os.path.join(download_dir, f)
+                    try:
+                        size = os.path.getsize(path)
+                    except OSError:
+                        continue
+                    if f.endswith((".tmp", ".crdownload")):
+                        partial_bytes = max(partial_bytes, size)
+                        continue
+                    if size > 0 and last_size.get(f) == size:
+                        ready = path
+                        break
+                    last_size[f] = size
+
+                if ready:
+                    size_mb = os.path.getsize(ready) / 1e6
                     os.makedirs(os.path.dirname(output_path), exist_ok=True)
-                    shutil.copy2(latest, output_path)
+                    shutil.copy2(ready, output_path)
+                    try:
+                        os.remove(ready)  # keep the scratch dir from growing across a run
+                    except OSError:
+                        pass
+                    logger.info("EOG download complete: %s (%.1f MB, %.0fs)", name, size_mb, elapsed)
                     return True
-                time.sleep(interval)
-                elapsed += interval
-            logger.error("Download timeout exceeded")
-            return False
+
+                # Reset the stall clock whenever the partial file grows -- a
+                # slow-but-flowing download must not be killed just for taking
+                # a long time.
+                if partial_bytes > max_partial_bytes:
+                    max_partial_bytes = partial_bytes
+                    last_progress_at = now
+
+                idle = now - last_progress_at
+                if idle >= stall_timeout or elapsed >= self.DOWNLOAD_MAX_TIMEOUT_S:
+                    why = (
+                        f"no progress for {idle:.0f}s"
+                        if idle >= stall_timeout
+                        else f"exceeded {self.DOWNLOAD_MAX_TIMEOUT_S}s hard cap"
+                    )
+                    holds = ", ".join(sorted(new_files)) or "nothing started"
+                    logger.error(
+                        "EOG download STALLED (%s) after %.0fs at %.1f MB: %s -- scratch dir holds: %s",
+                        why, elapsed, max_partial_bytes / 1e6, name, holds,
+                    )
+                    return False
+
+                if elapsed >= next_heartbeat:
+                    logger.info(
+                        "EOG download still running: %s -- %.0fs (%.1f MB so far)",
+                        name, elapsed, max_partial_bytes / 1e6,
+                    )
+                    next_heartbeat += 30
+
+                time.sleep(self.DOWNLOAD_POLL_S)
         except Exception:
-            logger.exception("Error downloading file")
+            logger.exception("EOG download failed: %s", name)
             return False
 
     def download(self, file_url: str, output_path: str, session: Any = None) -> None:
@@ -464,9 +549,13 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
             raise
 
     def _download_sync_wrapper(self, file_url: str, output_path: str, session=None):
+        # download_file() has already logged the specific reason (timeout,
+        # no driver, exception); this message only needs to mark the unit
+        # failed for the fetch manifest.
+        failed = RuntimeError("Selenium download did not produce a file (see log above)")
         if session is not None and hasattr(session, "find_element"):
             if not self.download_file(file_url, output_path, driver=session):
-                raise RuntimeError(f"Failed to download {file_url}")
+                raise failed
             return
         close_driver = False
         try:
@@ -474,7 +563,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                 self._init_selenium_driver()
                 close_driver = True
             if not self.download_file(file_url, output_path, driver=self._driver):
-                raise RuntimeError(f"Failed to download {file_url}")
+                raise failed
         finally:
             if close_driver:
                 self._close_selenium_driver()
@@ -511,12 +600,25 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
         ]
 
     def _execute_fetch(self, target: StepTarget) -> bool:
-        # FETCH is local-disk only now -- no HPC target required. `data
-        # transfer` (separate, manual or auto per source config) is the only
-        # thing that pushes to HPC.
+        # `data transfer` (or transfer_mode=auto's inline push in run_fetch)
+        # is what moves these bytes to HPC -- this step only downloads.
+        #
+        # Open ONE authenticated Chrome for the whole run and keep it on
+        # `self._driver`: `_download_sync_wrapper` reuses a non-None
+        # `self._driver` without tearing it down, so every VNL file rides the
+        # same session instead of paying a fresh WebDriver launch + EOG login
+        # (~10-15s each) per file -- the dominant cost now that each year
+        # fetches three variants.
         from src.data.common.fetch.driver import run_fetch
 
-        return run_fetch(self, **self.cfg.raw.get("download", {}))
+        opened_here = self._driver is None
+        if opened_here:
+            self.get_authenticated_session()
+        try:
+            return run_fetch(self, **self.cfg.raw.get("download", {}))
+        finally:
+            if opened_here:
+                self._close_selenium_driver()
 
     # -- PREPARE (raw fetched file -> tiled, reprojected output) ----------
     # the AttributeError bug fix lives here (module docstring)

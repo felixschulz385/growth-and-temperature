@@ -43,6 +43,19 @@ def test_flat_source_lists_remote_files_directly(tmp_path):
     assert required[0].unit_id == _hash("https://x/a.nc")
 
 
+def test_required_files_dedupes_a_file_shared_by_several_entrypoints(tmp_path):
+    # EOG's 2012-2016 gas-flare survey: five yearly entrypoints, one
+    # combined file. It must appear once, or duplicate downloads race on
+    # the same "<path>.part".
+    combined = ("flare_2012-2016.xlsx", "https://x/flare_2012-2016.xlsx")
+    source = _EntrypointSource(
+        entrypoints=[{"year": y} for y in (2012, 2013, 2014, 2015)],
+        files_by_year={y: [combined] for y in (2012, 2013, 2014, 2015)},
+    )
+    required = catalog.required_files(source, str(tmp_path))
+    assert [r.relative_path for r in required] == ["flare_2012-2016.xlsx"]
+
+
 def test_entrypoint_source_crawls_each_entrypoint_and_caches_result(tmp_path):
     calls = []
     source = _EntrypointSource(
