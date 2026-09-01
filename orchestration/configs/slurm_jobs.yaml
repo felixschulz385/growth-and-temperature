@@ -108,6 +108,25 @@ jobs:
     mem_fraction: 0.9
     temp_dir_prefix: glass_modis
 
+  # glass_ta_modis is glass_modis's rebuilt (tile, year) FETCH/PREPARE
+  # pipeline run as a second variant (GlassModisSource, variant="ta") --
+  # docs/design/12-glass-modis-rebuild.md -- same day_range and land tile
+  # grid, so its PREPARE envelope is copied from glass-modis-prepare. The one
+  # known difference is three daily bands (Ta_min/Ta_mean/Ta_max) instead of
+  # one, so this may run heavier/longer; re-tune against a real run, same
+  # caveat as the never-actually-profiled glass values above.
+  - name: glass-ta-modis-prepare
+    log_key: glass_ta_modis
+    source: glass_ta_modis
+    step: prepare
+    partition: scicore
+    time: "7-00:00:00"
+    qos: 1week
+    cpus: 8
+    mem: 128G
+    mem_fraction: 0.9
+    temp_dir_prefix: glass_ta_modis
+
   # gadm's PREPARE now extracts the vectors AND rasterizes them in one job
   # (the PREPARE+GRID merge, docs/design successor to the ledger) -- there
   # is no separate GRID step or job anymore. Resources below keep the old
@@ -228,8 +247,8 @@ jobs:
     log_key: modis
     source: modis
     step: prepare
-    time: "1-00:00:00"
-    qos: 1day
+    time: "7-00:00:00"
+    qos: 1week
     cpus: 8
     mem: 256G
     mem_fraction: 0.6
