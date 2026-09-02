@@ -703,33 +703,57 @@ assembly:
   land_mask: true
   # year_range: [1992, 2022]   # optional panel-wide year clip
   # tile_size: 2048            # optional override of the shared PREPARE tile grid
+  # Order below = column order in the assembled panel. For pixel-grid sources
+  # `data_path`+`family` resolve to
+  # <data_root>/prepared/<data_path>/crs/ease6933/<family> -- verify against
+  # `ls data_nobackup/prepared/*/crs/ease6933/` if the validation gate complains.
+  # `index_cols: [pixel_id]` = static per-pixel; `[pixel_id, year]` = annual.
   sources:
-    glass_modis:
-      data_path: "glass/LST/MODIS/Daily/1KM/"
-      family: "glass_modis_lst"
+    modis:                       # MODIS LST (21A2) -- the temperature signal
+      data_path: "modis/21A2"
+      family: "modis_lst_21a2"
       index_cols: ["pixel_id", "year"]
-      columns: ["LST"]
-    eog_viirs:
+    ntl_harm:                    # harmonized DMSP+VIIRS nighttime lights
+      data_path: "ntl_harm/harmonized"
+      family: "ntl_harm"
+      index_cols: ["pixel_id", "year"]
+    eog_viirs:                   # VIIRS annual nighttime lights (2012-)
       data_path: "eog/viirs"
       family: "eog_viirs_annual"
       index_cols: ["pixel_id", "year"]
-      # viirs_annual_cf_cvg is also in the prepared store (an observation-
-      # density weight); add it here to carry it into the panel.
-      columns: ["viirs_annual", "viirs_annual_median"]
-    eog_dvnl:
-      data_path: "eog/dvnl"
-      family: "eog_viirs_dvnl"
+    eog_flare:                   # VIIRS gas-flare detections
+      data_path: "eog/flare"
+      family: "eog_flare"
       index_cols: ["pixel_id", "year"]
-    eog_dmsp:
-      data_path: "eog/dmsp"
-      family: "eog_dmsp"
-      index_cols: ["pixel_id", "year"]
-    country_id:
+    gadm:                        # GID_0..GID_3 admin ids rasterized per pixel
       data_path: "misc"
       family: "country_id"
       index_cols: ["pixel_id"]
-      columns: ["GID_0"]
-    land_mask:
+    country_classifications:     # HDI + World Bank income group -- GID_0-keyed sidecar
+      # join_on: merged by an existing GID_0 column (provided by `gadm` above),
+      # not reprojected. Explicit path: a prepared/<agg>/ table, not a grid store.
+      path: "${DATA_NOBACKUP}/prepared/misc/adm/country_classifications/classifications_by_gid0.parquet"
+      join_on: "GID_0"
+    ecoregions:                  # dominant biome / ecoregion per pixel
       data_path: "misc"
-      family: "land_mask"
+      family: "ecoregions"
       index_cols: ["pixel_id"]
+    # plad: NOT included. PLAD's regional-favoritism table is keyed by
+    #   (GID_2, year); the single-column `join_on` merge cannot key on year and
+    #   would fan every pixel-year out to all of a unit's PLAD years. Needs a
+    #   (GID_N, year) join first -- see src/data/sources/plad.py's header.
+    snl_mining:                  # mine counts + price-shock sums (radius buffers)
+      data_path: "snl_mining"
+      family: "snl_mining"
+      index_cols: ["pixel_id"]
+    # commodity_prices: NOT included. A (commodity, year) price lookup with no
+    #   pixel or GID key -- nothing to merge it onto. Already consumed inside
+    #   snl_mining's PREPARE (the price-shock sums above).
+    acag:                        # ACAG surface PM2.5
+      data_path: "acag/pm25"
+      family: "pm25"
+      index_cols: ["pixel_id", "year"]
+    esacci:                      # ESA CCI land cover (annual)
+      data_path: "esacci/landcover"
+      family: "land_cover"
+      index_cols: ["pixel_id", "year"]
