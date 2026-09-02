@@ -80,8 +80,20 @@ def compute_dominant_classes(
     total_area = fragments.groupby(gid_col)["_area"].sum()
     result = pd.DataFrame(index=total_area.index)
 
+    # Dedupe on the *code* only, not the (code, label) pair: RESOLVE carries a
+    # handful of codes (e.g. BIOME_NUM 98/99, some ECO_IDs) with two spellings
+    # of the same name across features. A full-row drop_duplicates() keeps both,
+    # making `.set_index(level_col)` non-unique and `Series.map()` below raise
+    # `InvalidIndexError`. Sort first so the retained label is deterministic
+    # (lexicographically first), matching this module's tie-break philosophy.
     label_lookups = {
-        level_col: classes[[level_col, label_col]].drop_duplicates().set_index(level_col)[label_col]
+        level_col: (
+            classes[[level_col, label_col]]
+            .dropna()
+            .sort_values([level_col, label_col])
+            .drop_duplicates(subset=[level_col], keep="first")
+            .set_index(level_col)[label_col]
+        )
         for level_col, (_, _, label_col) in _LEVELS.items()
         if label_col is not None
     }

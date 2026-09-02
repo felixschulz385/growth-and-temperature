@@ -121,6 +121,26 @@ def test_code_to_id_translates_and_drops_unmapped_rows():
     assert list(result["GID_3_code"]) == ["A"]
 
 
+def test_duplicate_code_with_two_label_spellings_does_not_raise():
+    # RESOLVE has codes that appear with two spellings of the same name across
+    # features; the label lookup must dedupe on the code, not the (code, label)
+    # pair, or Series.map() raises InvalidIndexError.
+    gid = _gid_gdf([("A", _rect(0, 0, 10, 10))])
+    classes = _class_gdf(
+        [
+            ("Nearctic", 1, "Biome One", 101, "Eco One", _rect(0, 0, 10, 6)),
+            ("Nearctic", 1, "Biome One ", 101, "Eco One ", _rect(0, 6, 10, 10)),
+        ]
+    )
+
+    result = compute_dominant_classes(gid, classes, gid_col="GID_3", crs=CRS)
+    row = result.iloc[0]
+    assert row["dominant_biome_num"] == 1
+    assert row["dominant_biome_name"] == "Biome One"  # sorted-first spelling wins
+    assert row["dominant_eco_id"] == 101
+    assert row["dominant_eco_name"] == "Eco One"
+
+
 def test_no_intersection_returns_empty_frame_with_expected_columns():
     gid = _gid_gdf([("A", _rect(0, 0, 10, 10))])
     classes = _class_gdf([("Nearctic", 1, "Biome One", 101, "Eco One", _rect(100, 100, 110, 110))])
