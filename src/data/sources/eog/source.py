@@ -819,12 +819,14 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                     **verify.verification_meta(
                         self.cfg.raw,
                         expected_vars=columns,
-                        # Post-`sum` onto 1 km EASE, a flare/industrial-core
-                        # cell reaches ~1e5-1e6 -- see the range-check note
-                        # in orchestration/configs/data.yaml. Only the two
+                        # One-sided magnitude guard: the upper bound catches a
+                        # blown-up `sum` / garbage floats (legit flare cells
+                        # reach ~1e6), the small negative floor tolerates VNL
+                        # V2's signed background noise -- see the range-check
+                        # note in orchestration/configs/data.yaml. Only the two
                         # radiance columns are range-checked; cf_cvg (an
                         # observation count) is left out of range_vars.
-                        value_range=(0, 1_000_000),
+                        value_range=(-100, 1_000_000),
                         range_vars=("viirs_annual", "viirs_annual_median"),
                     ),
                 },
