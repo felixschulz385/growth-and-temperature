@@ -80,17 +80,17 @@ jobs:
   # glass's PREPARE now builds each (year[, grid_cell])'s daily->annual
   # stats zarr AND reprojects it into the final output in one job (the
   # PREPARE+GRID merge, docs/design successor to the ledger) -- there is no
-  # separate GRID step or job anymore. Time budgets below are the sum of the
-  # old prepare+grid jobs' budgets (both phases now run sequentially in one
-  # job); mem/cpus keep the larger of the two. Needs re-tuning against a
-  # real run, same caveat as this file's other never-actually-profiled
-  # glass/eog resource values.
+  # separate GRID step or job anymore; mem/cpus keep the larger of the old
+  # prepare/grid jobs. Time cut to a 12h / 1day-qos envelope (down from the
+  # old summed multi-day budgets) -- still needs re-tuning against a real
+  # run, same caveat as this file's other never-actually-profiled glass/eog
+  # resource values.
   - name: glass-avhrr-prepare
     log_key: glass_avhrr
     source: glass_avhrr
     step: prepare
-    time: "4-00:00:00"
-    qos: 1week
+    time: "12:00:00"
+    qos: 1day
     cpus: 8
     mem: 256G
     mem_fraction: 0.9
@@ -101,8 +101,8 @@ jobs:
     source: glass_modis
     step: prepare
     partition: scicore
-    time: "10-00:00:00"
-    qos: 1week
+    time: "12:00:00"
+    qos: 1day
     cpus: 8
     mem: 128G
     mem_fraction: 0.9
@@ -120,8 +120,8 @@ jobs:
     source: glass_ta_modis
     step: prepare
     partition: scicore
-    time: "7-00:00:00"
-    qos: 1week
+    time: "12:00:00"
+    qos: 1day
     cpus: 8
     mem: 128G
     mem_fraction: 0.9
@@ -247,8 +247,8 @@ jobs:
     log_key: modis
     source: modis
     step: prepare
-    time: "7-00:00:00"
-    qos: 1week
+    time: "12:00:00"
+    qos: 1day
     cpus: 8
     mem: 256G
     mem_fraction: 0.6

@@ -344,9 +344,20 @@ sources:
     # ~1e5-1e6 nW/cm^2/sr -- 2000 was a city-scale bound that the flare tail
     # sails past. Only the two radiance columns are range-checked; cf_cvg is
     # a count, left out of range_vars.
+    #
+    # This is really a one-sided "is the magnitude sane" guard. The upper
+    # bound does the work: it catches a blown-up "sum" accumulation (bad
+    # tile weights, double-counting) or byte-swapped/garbage float data,
+    # and can't go lower because legit flare cells genuinely reach ~1e6.
+    # The lower bound is negative on purpose: VNL V2 radiance is *signed* --
+    # EOG's background/stray-light subtraction leaves small values on both
+    # sides of zero over dark areas (ocean, polar night, dim rural) and the
+    # `_masked` variants don't floor them. Observed noise reaches ~-10
+    # nW/cm^2/sr; -100 keeps ~10x headroom while still rejecting -999-style
+    # fill and gross sign errors.
     verification:
       expected_vars: ["viirs_annual", "viirs_annual_median", "viirs_annual_cf_cvg"]
-      value_range: [0, 1000000]
+      value_range: [-100, 1000000]
       range_vars: ["viirs_annual", "viirs_annual_median"]
 
   # EOG VIIRS gas flares -- distance-banded uint8 flag rasterized from the
