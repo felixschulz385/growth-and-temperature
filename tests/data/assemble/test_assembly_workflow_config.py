@@ -106,3 +106,41 @@ def test_update_mode_and_datasource_flow_through(captured):
 def test_missing_assembly_block_raises():
     with pytest.raises(ValueError, match="no 'assembly:' block"):
         run_workflow_with_config({"paths": {}, "cli_overrides": {}})
+
+
+# --- output_root is data_root-relative (no ${DATA_NOBACKUP}) -------------------
+
+
+def test_relative_output_root_is_joined_to_data_root(captured):
+    cfg = _config()
+    cfg["assembly"]["output_root"] = "assembled"
+    run_workflow_with_config({**cfg, "cli_overrides": {"grid_label": "10km", "shake": "none"}})
+    assert captured[0]["output_path"] == "/tmp/data/assembled/grid=10km/shake=base"
+
+
+def test_omitted_output_root_defaults_under_data_root(captured):
+    cfg = _config()
+    cfg["assembly"].pop("output_root")
+    run_workflow_with_config({**cfg, "cli_overrides": {"grid_label": "1km", "shake": "none"}})
+    assert captured[0]["output_path"] == "/tmp/data/assembled/grid=1km/shake=base"
+
+
+def test_absolute_output_root_is_left_alone(captured):
+    run_workflow_with_config({**_config(), "cli_overrides": {"grid_label": "1km", "shake": "none"}})
+    assert captured[0]["output_path"] == "/tmp/assembled/grid=1km/shake=base"
+
+
+def test_relative_dataset_path_resolves_against_data_root(tmp_path):
+    from src.data.assemble.config import resolve_dataset_paths
+
+    ac = {"datasets": {"cc": {"path": "prepared/misc/adm/x.parquet", "join_on": "GID_0"}}}
+    resolve_dataset_paths(ac, str(tmp_path), grid_id="ease6933")
+    assert ac["datasets"]["cc"]["path"] == str(tmp_path / "prepared/misc/adm/x.parquet")
+
+
+def test_absolute_dataset_path_is_left_alone(tmp_path):
+    from src.data.assemble.config import resolve_dataset_paths
+
+    ac = {"datasets": {"cc": {"path": "/abs/x.parquet", "join_on": "GID_0"}}}
+    resolve_dataset_paths(ac, str(tmp_path), grid_id="ease6933")
+    assert ac["datasets"]["cc"]["path"] == "/abs/x.parquet"

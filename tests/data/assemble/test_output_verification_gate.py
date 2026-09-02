@@ -64,6 +64,19 @@ def test_all_nan_dataset_output_is_a_hard_error(tmp_path):
     assert any("nodata/NaN" in e for e in errors)
 
 
+def test_all_nan_column_passes_when_source_declares_it_sparse(tmp_path):
+    """The gate uses the source's own verification tuning (attached as
+    `_verification` by run_workflow_with_config), so a by-design-sparse column
+    that reads all-NaN in the sample -- e.g. snl_mining's mine_priceshock_* --
+    is not a hard error, matching `data summary`'s `verified: yes`."""
+    path = str(tmp_path / "sparse.zarr")
+    _write_all_nan_zarr(path)
+    errors = validate_assembly_config(
+        _config(tmp_path, path, _verification={"expected_vars": ["pm25"], "sparse_vars": ["pm25"]})
+    )
+    assert errors == []
+
+
 def test_dataset_columns_config_is_used_as_expected_vars(tmp_path):
     path = str(tmp_path / "good.zarr")
     _write_good_zarr(path)

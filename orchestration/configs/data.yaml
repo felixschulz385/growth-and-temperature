@@ -698,7 +698,9 @@ sources:
 #
 # Output tree: <output_root>/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data.parquet
 assembly:
-  output_root: "${DATA_NOBACKUP}/assembled"
+  # data_root-relative (paths.data_root in data.local.yaml); an absolute path
+  # also works. No ${DATA_NOBACKUP} dependency.
+  output_root: "assembled"
   compression: "zstd"
   land_mask: true
   # year_range: [1992, 2022]   # optional panel-wide year clip
@@ -731,8 +733,9 @@ assembly:
       index_cols: ["pixel_id"]
     country_classifications:     # HDI + World Bank income group -- GID_0-keyed sidecar
       # join_on: merged by an existing GID_0 column (provided by `gadm` above),
-      # not reprojected. Explicit path: a prepared/<agg>/ table, not a grid store.
-      path: "${DATA_NOBACKUP}/prepared/misc/adm/country_classifications/classifications_by_gid0.parquet"
+      # not reprojected. Explicit path (a prepared/<agg>/ table, not a grid
+      # store); relative -> resolved against data_root.
+      path: "prepared/misc/adm/country_classifications/classifications_by_gid0.parquet"
       join_on: "GID_0"
     ecoregions:                  # dominant biome / ecoregion per pixel
       data_path: "misc"

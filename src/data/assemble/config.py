@@ -150,12 +150,17 @@ def resolve_dataset_paths(
     source's layout changes. Mutates `assembly_config['datasets']` in place.
 
     `grid_id` is the run's grid (from `pipeline.grid`); each dataset inherits it
-    unless it sets its own `grid_id`. A dataset config with an explicit `path` is
-    left untouched (escape hatch for one-off/manual paths, e.g. join_on tables,
-    land masks, or anything outside the standard GRID layout).
+    unless it sets its own `grid_id`. A dataset with an explicit `path` keeps it
+    (escape hatch for one-off/manual paths, e.g. join_on sidecars outside the
+    standard GRID layout); a *relative* explicit path is resolved against
+    `data_root` so the config stays machine-agnostic (no `${DATA_NOBACKUP}`).
     """
     for name, cfg in assembly_config.get('datasets', {}).items():
-        if cfg.get('path'):
+        explicit = cfg.get('path')
+        if explicit:
+            if not os.path.isabs(explicit):
+                cfg['path'] = os.path.join(data_root, explicit)
+                logger.debug(f"Dataset '{name}': resolved relative path -> {cfg['path']}")
             continue
         data_path = cfg.get('data_path')
         family = cfg.get('family')
@@ -235,9 +240,24 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
             if 'path' not in config:
                 errors.append(f"Dataset '{name}' missing required 'path' field")
             elif not os.path.exists(config['path']):
-                errors.append(f"Dataset '{name}' path does not exist: {config['path']}")
+                errors.append(
+                    f"Dataset '{name}' path does not exist: {config['path']} "
+                    f"-- build it with `data run --source {name} --step prepare`"
+                )
             else:
-                result = verify_grid_output(config['path'], expected_vars=config.get('columns'))
+                # Use the same verification kwargs the source itself declares
+                # (attached as `_verification` by run_workflow_with_config), so
+                # the assembly gate agrees with `data summary`'s `verified`
+                # column -- e.g. honoring `sparse_vars` for by-design-sparse
+                # columns like snl_mining's mine_priceshock_*.
+                vm = config.get('_verification') or {}
+                result = verify_grid_output(
+                    config['path'],
+                    expected_vars=vm.get('expected_vars', config.get('columns')),
+                    value_range=tuple(vm['value_range']) if vm.get('value_range') is not None else None,
+                    range_vars=vm.get('range_vars'),
+                    sparse_vars=vm.get('sparse_vars'),
+                )
                 if not result.ok:
                     errors.append(f"Dataset '{name}' failed output verification: {result.detail}")
 

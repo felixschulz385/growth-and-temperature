@@ -294,6 +294,45 @@ def _resolve_grid_resolution(grid_label: str) -> Optional[float]:
     return GRID_RESOLUTIONS_M[grid_label]
 
 
+def _source_verification_meta(config: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """The `verify_grid_output` kwargs a source declares for its final-step
+    output -- the same ones `data run`/`data summary` use, so the assembly gate
+    agrees with the `verified` column (picking up Python-side defaults like
+    snl_mining's `sparse_vars` that aren't spelled out in the config's
+    `verification:` block). Best-effort: returns ``{}`` when *name* isn't a
+    registered source or the source can't be built here.
+    """
+    if name not in (config.get("sources") or {}):
+        return {}
+    try:
+        from src.data.pipeline.config import build_context, get_source_config
+        from src.data.sources import registry
+        from src.data.sources.steps import PipelineStep, TargetSelection
+
+        ctx = build_context(config)
+        spec = registry.resolve(name)
+        source = registry.create(name, ctx, get_source_config(config, name))
+        try:
+            final_step = (
+                PipelineStep.GRID if PipelineStep.GRID in spec.steps else PipelineStep.PREPARE
+            )
+            targets = source.plan(final_step, TargetSelection())
+        finally:
+            source.close()
+        for target in targets:
+            meta = target.meta or {}
+            keys = {
+                k: meta[k]
+                for k in ("expected_vars", "value_range", "range_vars", "sparse_vars")
+                if k in meta
+            }
+            if keys:
+                return keys
+    except Exception as exc:  # noqa: BLE001 -- verification tuning is best-effort
+        logger.debug("Could not read verification meta for source %r: %s", name, exc)
+    return {}
+
+
 def run_workflow_with_config(config: Dict[str, Any]):
     """
     Entry point for the assembly workflow.
@@ -325,9 +364,24 @@ def run_workflow_with_config(config: Dict[str, Any]):
     resolution = _resolve_grid_resolution(grid_label)
     shake_selection = resolve_shake_selection(cli_overrides.get('shake'))
 
-    output_root = assembly.get('output_root')
-    if not output_root:
-        raise ValueError("assembly.output_root is required in the config.")
+    # Output root is data_root-relative by default, so the config carries no
+    # machine-specific absolute path or `${DATA_NOBACKUP}` env dependency.
+    data_root = derive_data_root(None, config)
+    output_root = assembly.get('output_root') or 'assembled'
+    if not os.path.isabs(output_root):
+        if not data_root:
+            raise ValueError(
+                "assembly.output_root is relative but data_root is not resolvable "
+                "(set paths.data_root in orchestration/configs/data.local.yaml)."
+            )
+        output_root = os.path.join(data_root, output_root)
+
+    # Pull each source's own verification tuning once, so the per-variant gate
+    # agrees with `data summary`'s `verified` column.
+    source_verification = {
+        name: _source_verification_meta(config, name)
+        for name in assembly['sources']
+    }
 
     base_processing = {
         'compression': assembly.get('compression', 'zstd'),
@@ -348,12 +402,16 @@ def run_workflow_with_config(config: Dict[str, Any]):
     )
 
     for shake_label, dx, dy in shake_selection:
+        datasets = copy.deepcopy(assembly['sources'])
+        for name, dcfg in datasets.items():
+            if source_verification.get(name):
+                dcfg['_verification'] = source_verification[name]
         assembly_config = {
             'description': f"assembly grid={grid_label} shake={shake_label}",
             'output_path': os.path.join(
                 output_root, f"grid={grid_label}", f"shake={shake_label}"
             ),
-            'datasets': copy.deepcopy(assembly['sources']),
+            'datasets': datasets,
             'processing': {
                 **base_processing,
                 'grid_label': grid_label,
