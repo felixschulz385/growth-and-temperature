@@ -244,3 +244,51 @@ def test_execute_fetch_fails_when_no_days_found(tmp_path, monkeypatch):
 
     assert source.execute(target) is False
     assert not os.path.exists(target.output_path)
+
+
+def test_fetch_concurrency_knob(tmp_path):
+    # one knob drives the semaphore + limit_per_host; falls back to
+    # max_concurrent_downloads, then to the default of 4.
+    assert _make_source(tmp_path)[0].fetch_concurrency == 4
+    assert _make_source(tmp_path, fetch_concurrency=8)[0].fetch_concurrency == 8
+    s = _make_source(tmp_path, max_concurrent_downloads=3)[0]
+    assert s.fetch_concurrency == 3 and s.max_concurrent_downloads == 3
+
+
+def test_prefetch_listings_warms_cache_concurrently(tmp_path):
+    import asyncio
+
+    source, _ = _make_source(tmp_path, day_range={"start": [2019, 1], "end": [2019, 5]})
+
+    calls = []
+
+    def fake_list_single_directory(url):
+        calls.append(url)
+        return [("GLASS06A01.V01.A2019001.h08v05.x.hdf", f"{url}f.hdf")]
+
+    # patch the underlying GET; real _listing_for still runs (+ caches)
+    source._list_single_directory = fake_list_single_directory
+
+    asyncio.run(source._prefetch_listings(2019))
+    assert len(calls) == 5                      # one GET per day, once
+    assert set(source._listing_cache) == {(2019, d) for d in range(1, 6)}
+
+    calls.clear()
+    asyncio.run(source._prefetch_listings(2019))  # all cached now
+    assert calls == []
+
+
+def test_prefetch_listings_caches_404_day_as_empty(tmp_path):
+    import asyncio
+    import requests
+
+    source, _ = _make_source(tmp_path, day_range={"start": [2019, 1], "end": [2019, 2]})
+
+    def boom(url):
+        resp = requests.Response()
+        resp.status_code = 404
+        raise requests.HTTPError(response=resp)
+
+    source._list_single_directory = boom
+    asyncio.run(source._prefetch_listings(2019))
+    assert source._listing_cache == {(2019, 1): [], (2019, 2): []}

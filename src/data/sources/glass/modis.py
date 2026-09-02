@@ -384,19 +384,24 @@ class GlassModisSource(DataSource):
         self.heat_stress_k = float(cfg.raw.get("heat_stress_k", 308.15))
         self.cold_stress_k = float(cfg.raw.get("cold_stress_k", 273.15))
 
-        # One tile-year FETCH target downloads up to ~365 daily HDFs; doing
-        # that sequentially (one `requests.get` at a time) was the pre-
-        # rebuild `GlassSource`'s actual bottleneck -- the pre-integrated-
-        # pipeline `GlassLSTDataSource.download_async` concurrent-download
-        # behaviour the user remembers from "the old fetch suite" predates
-        # even that, and got factored into `src.data.common.fetch.http
-        # .download_with_retries` (its own docstring: "was duplicated...
-        # across ... glass/source.py"), just never wired back up after the
-        # StepTarget rebuild. Reusing it here, same conservative
-        # `limit_per_host=2`/300s timeout that module's docstring documents
-        # as glass's own historical tuning (a shared multi-user archive,
-        # not a CDN). Default of 5 matches `driver.run_fetch`'s own default.
-        self.max_concurrent_downloads = int(cfg.raw.get("max_concurrent_downloads", 5))
+        # One tile-year FETCH target lists ~365 day directories then downloads
+        # up to ~365 daily HDFs. Both phases are bounded by one knob,
+        # `fetch_concurrency`: it is the asyncio semaphore width AND the
+        # aiohttp `limit_per_host` for the daily downloads (they were 5 and 2
+        # respectively -- so 3 semaphore slots always idled), and the
+        # semaphore width for the concurrent day-directory listing pass
+        # (`_resolve_day_urls`, previously a strictly sequential
+        # `requests.get` loop -- the pre-rebuild `GlassSource`'s actual
+        # bottleneck). `max_concurrent_downloads` is still honoured as a
+        # fallback for existing configs. Default 4 stays conservative: glass.
+        # hku.hk is a shared multi-user academic archive (plain nginx, no
+        # CDN), and small HDFs are latency- not bandwidth-bound so returns
+        # past ~4-6 are thin. The 300s timeout is unchanged.
+        self.fetch_concurrency = int(
+            cfg.raw.get("fetch_concurrency", cfg.raw.get("max_concurrent_downloads", 4))
+        )
+        #: back-compat alias -- some call sites / tests still read this name.
+        self.max_concurrent_downloads = self.fetch_concurrency
 
         self.temp_dir = cfg.temp_dir or tempfile.mkdtemp(prefix=f"glass_modis_{self.variant}_processor_")
         os.makedirs(self.temp_dir, exist_ok=True)
@@ -586,6 +591,40 @@ class GlassModisSource(DataSource):
             self._listing_cache[cache_key] = self._list_single_directory(self._listing_url(year, day))
         return self._listing_cache[cache_key]
 
+    async def _prefetch_listings(self, year: int) -> None:
+        """Warm `_listing_cache` for every not-yet-cached day of `year`
+        concurrently (bounded by `self.fetch_concurrency`), so the sequential
+        `_resolve_day_urls` pass below then hits the cache for all of them
+        instead of ~365 serial GETs -- the pre-rebuild bottleneck.
+
+        Best-effort: each day's `_listing_for` runs in a worker thread; a
+        404 day directory is cached as `[]` (a real sensor gap, same as the
+        sequential path's `continue`), and any other error is swallowed and
+        left uncached so `_resolve_day_urls` re-attempts that one day and
+        applies its existing record-failure / abort handling unchanged."""
+        import requests
+
+        days = [
+            day
+            for y, day in daterange_doy(self.day_range_start, self.day_range_end)
+            if y == year and (year, day) not in self._listing_cache
+        ]
+        if not days:
+            return
+        semaphore = asyncio.Semaphore(self.fetch_concurrency)
+
+        async def _one(day: int) -> None:
+            async with semaphore:
+                try:
+                    await asyncio.to_thread(self._listing_for, year, day)
+                except requests.HTTPError as exc:
+                    if exc.response is not None and exc.response.status_code == 404:
+                        self._listing_cache[(year, day)] = []
+                except requests.RequestException:
+                    pass
+
+        await asyncio.gather(*(_one(day) for day in days))
+
     @staticmethod
     def _match_in_listing(listing: List[Tuple[str, str]], year: int, day: int, tile: str) -> Optional[Tuple[str, str]]:
         """The one listing entry matching this target's `(year, day, tile)`
@@ -599,17 +638,22 @@ class GlassModisSource(DataSource):
         return None
 
     def _resolve_day_urls(self, target: StepTarget, status_dir: str) -> Optional[List[Tuple[int, str, str]]]:
-        """Sequential first pass: resolve every day in the target's year to
-        a `(day, url, dest_path)` triple via `_listing_for`'s memoized
-        listing (shared across every sibling tile target for that day, so
-        keeping this sequential doesn't cost extra real GETs beyond the
-        first tile processed for each day this run). Returns `None` on a
-        transient listing error (already recorded); a day genuinely absent
-        from the remote (sensor gap, 404'd day directory) is silently
-        skipped, not a failure."""
+        """Resolve every day in the target's year to a `(day, url, dest_path)`
+        triple. `_prefetch_listings` first warms `_listing_cache` for the
+        whole year concurrently, so the loop below is a pure in-memory pass
+        over the memoized listings (shared across every sibling tile target
+        for that day this run). Returns `None` on a transient listing error
+        (already recorded); a day genuinely absent from the remote (sensor
+        gap, 404'd day directory) is silently skipped, not a failure."""
         import requests
 
         year, tile = target.meta["year"], target.meta["tile"]
+
+        try:
+            asyncio.run(self._prefetch_listings(year))
+        except Exception:  # optimization only -- fall back to the serial loop
+            logger.debug("listing prefetch failed for %s; using serial fallback", year, exc_info=True)
+
         resolved: List[Tuple[int, str, str]] = []
         for y, day in daterange_doy(self.day_range_start, self.day_range_end):
             if y != year:
@@ -648,15 +692,16 @@ class GlassModisSource(DataSource):
         self, items: List[Tuple[int, str, str]]
     ) -> List[Tuple[int, str, Optional[str]]]:
         """Concurrent download of every resolved `(day, url, dest)` triple,
-        bounded by `self.max_concurrent_downloads` -- same conservative
-        connector tuning the pre-rebuild `GlassLSTDataSource.download_async`
-        used (module docstring). Returns `(day, dest, error_or_None)` per
-        item; a failed item doesn't cancel the others, so one flaky day
+        bounded by `self.fetch_concurrency` -- both the asyncio semaphore
+        width and the aiohttp `limit_per_host` (aligned, so no semaphore
+        slot idles waiting on a connection). Returns `(day, dest,
+        error_or_None)` per item; a failed item doesn't cancel the others,
+        so one flaky day
         doesn't waste every other already-in-flight download for this
         target."""
         import aiohttp
 
-        semaphore = asyncio.Semaphore(self.max_concurrent_downloads)
+        semaphore = asyncio.Semaphore(self.fetch_concurrency)
 
         async def _one(day: int, url: str, dest: str, session: aiohttp.ClientSession) -> Tuple[int, str, Optional[str]]:
             async with semaphore:
@@ -666,7 +711,7 @@ class GlassModisSource(DataSource):
                 except Exception as exc:
                     return day, dest, str(exc)
 
-        connector = aiohttp.TCPConnector(limit=20, limit_per_host=2)
+        connector = aiohttp.TCPConnector(limit=20, limit_per_host=self.fetch_concurrency)
         timeout = aiohttp.ClientTimeout(total=300, connect=30)
         async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
             tasks = [_one(day, url, dest, session) for day, url, dest in items]
