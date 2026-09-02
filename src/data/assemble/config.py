@@ -269,6 +269,17 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 if not isinstance(join_on, str) or not join_on.strip():
                     errors.append(f"Dataset '{name}' join_on must be a non-empty string")
 
+            # resampling: a method string, or a {default, <glob>: <method>} map
+            # for per-variable control. resolve_resampling validates the method
+            # names up front (no variable list needed for that).
+            if 'resampling' in config:
+                from src.data.assemble.utils import resolve_resampling
+
+                try:
+                    resolve_resampling(config['resampling'], [])
+                except ValueError as exc:
+                    errors.append(f"Dataset '{name}' invalid 'resampling': {exc}")
+
             # Validate index_cols if specified
             index_cols = config.get('index_cols')
             if index_cols is not None:

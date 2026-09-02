@@ -16,6 +16,7 @@ import xarray as xr
 import pyarrow.parquet as pq
 
 from src.data.assemble.constants import (
+    DEFAULT_RESAMPLING_METHOD,
     DEFAULT_TILE_PADDING,
     LATITUDE_COORD,
     LONGITUDE_COORD,
@@ -24,12 +25,40 @@ from src.data.assemble.constants import (
 from src.data.assemble.parquet_raster import _partitioned_parquet_files, is_tiled_parquet_dataset
 from src.data.assemble.utils import (
     add_derived_pixel_id_columns,
+    dataset_spatial_dims,
     make_pixel_ids,
     normalize_derived_pixel_id_specs,
+    resolve_resampling,
     winsorize,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _reproject_per_variable(ds: xr.Dataset, target_geobox, resampling_cfg) -> xr.Dataset:
+    """Reproject *ds* onto *target_geobox*, grouping its data variables by the
+    resampling method each resolves to (`resolve_resampling`), so one store can
+    mix methods -- e.g. MODIS LST means via ``average`` and valid-observation
+    counts via ``sum`` -- in a single downsampling pass.
+    """
+    var_names = [v for v in ds.data_vars if v not in EXCLUDED_VARIABLES]
+    method_by_var = resolve_resampling(resampling_cfg, var_names)
+
+    groups: Dict[str, List[str]] = {}
+    for var, method in method_by_var.items():
+        groups.setdefault(method, []).append(var)
+
+    if len(groups) <= 1:
+        method = next(iter(groups), DEFAULT_RESAMPLING_METHOD)
+        return ds.odc.reproject(target_geobox, resampling=method, dst_nodata=np.nan)
+
+    parts = [
+        ds[group_vars].odc.reproject(target_geobox, resampling=method, dst_nodata=np.nan)
+        for method, group_vars in groups.items()
+    ]
+    # Every part is on `target_geobox`, so coords are identical -- `override`
+    # (take-first) is the correct and unambiguous combine here.
+    return xr.merge(parts, compat="override", combine_attrs="override")
 
 
 def get_dataset_columns(
@@ -374,23 +403,25 @@ class TileProcessor:
         Returns:
             DataFrame with pixel_id, or None if tile is empty
         """
-        resampling_method = dataset_config.get('resampling', 'mode')
-        
+        resampling_cfg = dataset_config.get('resampling')
+
         try:
             bbox = padded_tile_geobox.boundingbox
-            
-            # Extract tile data with padding
-            if LATITUDE_COORD in ds.coords and LONGITUDE_COORD in ds.coords:
-                tile_ds = ds.sel(
-                    latitude=slice(bbox.top, bbox.bottom),
-                    longitude=slice(bbox.left, bbox.right)
-                ).compute()
-            else:
-                logger.warning(f"Unknown coordinate system in dataset")
+
+            # Extract tile data with padding. Spatial dim names come from the
+            # dataset's own grid (`latitude`/`longitude` on a geographic CRS,
+            # `y`/`x` on EASE 6933), not a hardcoded assumption.
+            dim_y, dim_x = dataset_spatial_dims(ds) or (None, None)
+            if dim_y is None:
+                logger.warning("Dataset %s has no recognizable spatial dims", ds.attrs.get('dataset_name', '?'))
                 return None
-            
+            tile_ds = ds.sel({
+                dim_y: slice(bbox.top, bbox.bottom),
+                dim_x: slice(bbox.left, bbox.right),
+            }).compute()
+
             # Check for empty tile
-            if tile_ds.sizes.get(LATITUDE_COORD, 0) == 0 or tile_ds.sizes.get(LONGITUDE_COORD, 0) == 0:
+            if tile_ds.sizes.get(dim_y, 0) == 0 or tile_ds.sizes.get(dim_x, 0) == 0:
                 return None
             
             # Apply winsorization before reprojection
@@ -409,13 +440,12 @@ class TileProcessor:
             # Reproject to the target geobox if it differs from native. The
             # target geobox already carries the run's --grid coarsening and the
             # --shake origin shift (applied once, up front, in run_assembly), so
-            # there is nothing shake-specific to do per column here.
+            # there is nothing shake-specific to do per column here. Variables
+            # are grouped by their resolved resampling method (per-variable via
+            # the dataset's `resampling` map) so e.g. means and counts in one
+            # store downsample correctly in the same pass.
             if target_geobox_zoomed is not None and hasattr(tile_ds, 'odc'):
-                tile_ds = tile_ds.odc.reproject(
-                    target_geobox_zoomed,
-                    resampling=resampling_method,
-                    dst_nodata=np.nan
-                )
+                tile_ds = _reproject_per_variable(tile_ds, target_geobox_zoomed, resampling_cfg)
 
             # Assign pixel_id when requested for pixel-partitioned assemblies.
             if include_pixel_id:
@@ -426,10 +456,10 @@ class TileProcessor:
             # Convert to DataFrame, preserving all coordinates as columns (including year)
             df = tile_ds.to_dataframe().reset_index()
             
-            # Drop spatial coordinates unless a geometry-aggregation path needs them.
-            drop_cols = ['band', 'spatial_ref']
-            if not keep_spatial_coords:
-                drop_cols.extend([LATITUDE_COORD, LONGITUDE_COORD])
+            # Drop spatial coordinate columns (their names depend on the grid's CRS).
+            drop_cols = ['band', 'spatial_ref', LATITUDE_COORD, LONGITUDE_COORD, 'y', 'x']
+            if keep_spatial_coords:
+                drop_cols = ['band', 'spatial_ref']
             df = df.drop(columns=drop_cols, errors='ignore')
             
             # Drop rows where all data columns are NaN (from land mask filtering)
@@ -757,18 +787,18 @@ class TileProcessor:
         
         try:
             bbox = padded_tile_geobox.boundingbox
-            
-            # Extract land mask tile
-            if LATITUDE_COORD in land_mask_ds.coords and LONGITUDE_COORD in land_mask_ds.coords:
-                mask_tile = land_mask_ds.sel(
-                    latitude=slice(bbox.top, bbox.bottom),
-                    longitude=slice(bbox.left, bbox.right)
-                ).compute()
-            else:
+
+            # Extract land mask tile (spatial dim names follow the mask's own grid).
+            dim_y, dim_x = dataset_spatial_dims(land_mask_ds) or (None, None)
+            if dim_y is None:
                 logger.warning(f"Tile [{ix}, {iy}]: land_mask has unknown coordinate system")
                 return None
-            
-            if mask_tile is None or mask_tile.sizes.get(LATITUDE_COORD, 0) == 0:
+            mask_tile = land_mask_ds.sel({
+                dim_y: slice(bbox.top, bbox.bottom),
+                dim_x: slice(bbox.left, bbox.right),
+            }).compute()
+
+            if mask_tile is None or mask_tile.sizes.get(dim_y, 0) == 0:
                 logger.debug(f"Tile [{ix}, {iy}]: land_mask tile is empty")
                 return None
             
@@ -834,7 +864,7 @@ class TileProcessor:
 
         # Create pixel IDs
         pixel_id_ds = make_pixel_ids(ix, iy, target_geobox_zoomed)
-        if pixel_id_ds is None or pixel_id_ds.sizes.get(LATITUDE_COORD, 0) == 0:
+        if pixel_id_ds is None or min(pixel_id_ds.sizes.values(), default=0) == 0:
             logger.warning(f"Failed to create pixel_id for tile [{ix}, {iy}]")
             return False
 
@@ -929,7 +959,7 @@ class TileProcessor:
 
         # Create pixel IDs
         pixel_id_ds = make_pixel_ids(ix, iy, target_geobox_zoomed)
-        if pixel_id_ds is None or pixel_id_ds.sizes.get(LATITUDE_COORD, 0) == 0:
+        if pixel_id_ds is None or min(pixel_id_ds.sizes.values(), default=0) == 0:
             logger.warning(f"Failed to create pixel_id for tile [{ix}, {iy}]")
             return False
 

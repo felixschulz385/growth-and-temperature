@@ -15,7 +15,6 @@ import xarray as xr
 from odc.geo.xr import ODCExtensionDa
 
 from src.data.assemble.constants import (
-    DEFAULT_CRS,
     DEFAULT_TILE_SIZE,
     EXCLUDED_VARIABLES,
     LAND_MASK_RELATIVE_PATHS,
@@ -40,12 +39,20 @@ def _open_dataset_path(
     """Open a GRID-stage dataset at *path*, dispatching on format: a Zarr
     store (legacy, being phased out) or a `run_tiled_prepare`-produced
     directory of `cell_id`-keyed tiled parquet parts (current PREPARE output
-    for every pixel-grid source, see `src.data.assemble.parquet_raster`)."""
+    for every pixel-grid source, see `src.data.assemble.parquet_raster`).
+
+    The CRS is taken from `target_geobox` (the run's grid, EASE6933 or legacy
+    4326), not hardcoded -- the tiled-parquet reconstruction is already built on
+    that geobox, and a Zarr store is expected to be on the same grid."""
     if is_tiled_parquet_dataset(path):
         ds = open_tiled_parquet_dataset(path, target_geobox, tile_size=tile_size)
     else:
         ds = xr.open_zarr(path, mask_and_scale=True, consolidated=False, chunks='auto')
-    return ds.odc.assign_crs(DEFAULT_CRS)
+    try:
+        existing_crs = ds.odc.crs
+    except Exception:
+        existing_crs = None
+    return ds.odc.assign_crs(existing_crs or target_geobox.crs)
 
 
 def load_land_mask(
@@ -205,13 +212,20 @@ def load_single_dataset(
         Tuple of (name, dataset, config) or None if loading fails
     """
     dataset_path = dataset_config['path']
-    resampling_method = dataset_config.get('resampling', 'mode')
+    # `resampling` may be a method string or a per-variable {default, <glob>: <method>}
+    # map -- resolved against real variable names in TileProcessor. Keep a readable
+    # form here just for logging/provenance.
+    resampling_cfg = dataset_config.get('resampling')
+    resampling_repr = resampling_cfg if isinstance(resampling_cfg, str) else (
+        "per-variable(" + ", ".join(f"{k}={v}" for k, v in resampling_cfg.items()) + ")"
+        if isinstance(resampling_cfg, dict) else "mode (default)"
+    )
 
     if not os.path.exists(dataset_path):
         logger.warning(f"Dataset path does not exist: {dataset_path}, skipping")
         return None
 
-    logger.info(f"Loading dataset {dataset_name} from {dataset_path} (resampling: {resampling_method})")
+    logger.info(f"Loading dataset {dataset_name} from {dataset_path} (resampling: {resampling_repr})")
 
     try:
         ds = _open_dataset_path(dataset_path, target_geobox, tile_size)
@@ -243,7 +257,7 @@ def load_single_dataset(
         
         # Store metadata
         ds.attrs['dataset_name'] = dataset_name
-        ds.attrs['resampling_method'] = resampling_method
+        ds.attrs['resampling_method'] = resampling_repr
         
         logger.info(f"Loaded dataset {dataset_name}: {list(ds.data_vars.keys())}")
         return (dataset_name, ds, dataset_config)
@@ -283,7 +297,7 @@ def load_all_datasets(
     year_range = processing_config.get('year_range')
     
     if target_resolution:
-        logger.info(f"Target resolution for assembly: {target_resolution}°")
+        logger.info(f"Target resolution for assembly: {target_resolution} (target CRS units, m for EASE6933)")
     if year_range:
         logger.info(f"Year range filter: {year_range[0]} to {year_range[1]}")
     

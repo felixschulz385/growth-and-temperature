@@ -5,23 +5,81 @@ Contains helper functions for path manipulation, data transformations,
 and other reusable operations.
 """
 
+import fnmatch
 import re
 import logging
 import numpy as np
 import pandas as pd
 import xarray as xr
 from odc.geo.xr import ODCExtensionDa
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from src.data.assemble.constants import (
-    DEFAULT_CRS,
+    DEFAULT_RESAMPLING_METHOD,
     PIXEL_ID_IX_SHIFT,
     PIXEL_ID_IY_SHIFT,
     LATITUDE_COORD,
     LONGITUDE_COORD,
+    VALID_RESAMPLING_METHODS,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def resolve_resampling(
+    config: Any,
+    var_names: Iterable[str],
+) -> Dict[str, str]:
+    """Map each variable name to an ``odc.reproject`` resampling method.
+
+    *config* (a dataset's ``resampling`` value) is one of:
+
+    - ``None`` -> every variable gets ``DEFAULT_RESAMPLING_METHOD``.
+    - a method string -> applied to every variable.
+    - a mapping: the reserved ``default`` key is the fallback; every other key is
+      an :mod:`fnmatch` glob tested against variable names, and the **first**
+      matching pattern (in config order) wins. Missing ``default`` ->
+      ``DEFAULT_RESAMPLING_METHOD``.
+
+    Example (MODIS: LST means area-averaged, valid-obs counts summed)::
+
+        resampling:
+          default: average
+          "valid_*count*": sum
+
+    Raises ``ValueError`` on a non-str/non-mapping config or an unknown method.
+    """
+    names = list(var_names)
+
+    def _check(method: str) -> str:
+        if method not in VALID_RESAMPLING_METHODS:
+            raise ValueError(
+                f"Unknown resampling method {method!r}. "
+                f"Valid: {', '.join(sorted(VALID_RESAMPLING_METHODS))}"
+            )
+        return method
+
+    if config is None:
+        return {name: DEFAULT_RESAMPLING_METHOD for name in names}
+    if isinstance(config, str):
+        return {name: _check(config) for name in names}
+    if not isinstance(config, dict):
+        raise ValueError(
+            f"'resampling' must be a method string or a mapping, got {type(config).__name__}"
+        )
+
+    default = _check(str(config.get("default", DEFAULT_RESAMPLING_METHOD)))
+    patterns = [(str(k), _check(str(v))) for k, v in config.items() if k != "default"]
+
+    resolved: Dict[str, str] = {}
+    for name in names:
+        method = default
+        for pattern, pattern_method in patterns:
+            if fnmatch.fnmatchcase(name, pattern):
+                method = pattern_method
+                break
+        resolved[name] = method
+    return resolved
 
 DEFAULT_DERIVED_PIXEL_ID_RESOLUTIONS = {
     "500m": 0.00417,
@@ -44,6 +102,26 @@ def strip_remote_prefix(path: str) -> str:
     if isinstance(path, str):
         return re.sub(r"^[^@]+@[^:]+:", "", path)
     return path
+
+
+def geobox_spatial_dims(geobox) -> Tuple[str, str]:
+    """``(y_name, x_name)`` for *geobox* -- ``('latitude', 'longitude')`` for a
+    geographic CRS, ``('y', 'x')`` for a projected one (e.g. EASE 6933). The
+    assemble stage keys everything off this instead of assuming lat/lon, so it
+    works on whichever grid ``pipeline.grid`` selects."""
+    return tuple(geobox.dimensions)  # type: ignore[return-value]
+
+
+def dataset_spatial_dims(obj) -> Optional[Tuple[str, str]]:
+    """``(y_name, x_name)`` for a Dataset/DataArray's actual spatial dims, or
+    ``None`` if it has neither known pair. Checks the real xarray dim names
+    (not ``obj.odc.geobox.dimensions``, which odc canonicalizes to ``y``/``x``
+    even when the array's dims are really ``latitude``/``longitude``)."""
+    dims = set(getattr(obj, "dims", ()) or ())
+    for pair in (("y", "x"), (LATITUDE_COORD, LONGITUDE_COORD)):
+        if pair[0] in dims and pair[1] in dims:
+            return pair
+    return None
 
 
 def winsorize(array: xr.DataArray, cutoff: float = 0.001) -> xr.DataArray:
@@ -101,22 +179,23 @@ def make_pixel_ids(ix: int, iy: int, tile_geobox) -> xr.Dataset:
     
     h, w = tile_geobox.shape
     local_pixel_ids = np.arange(h * w, dtype="uint32").reshape((h, w))
-    
+
     pixel_id_matrix = (
-        (np.uint64(ix) << PIXEL_ID_IX_SHIFT) | 
-        (np.uint64(iy) << PIXEL_ID_IY_SHIFT) | 
+        (np.uint64(ix) << PIXEL_ID_IX_SHIFT) |
+        (np.uint64(iy) << PIXEL_ID_IY_SHIFT) |
         local_pixel_ids.astype(np.uint64)
     )
-    
+
+    dim_y, dim_x = geobox_spatial_dims(tile_geobox)
     pixel_id_ds = xr.Dataset(
-        data_vars={'pixel_id': ([LATITUDE_COORD, LONGITUDE_COORD], pixel_id_matrix)},
+        data_vars={'pixel_id': ([dim_y, dim_x], pixel_id_matrix)},
         coords={
-            LATITUDE_COORD: tile_geobox.coords[LATITUDE_COORD].values,
-            LONGITUDE_COORD: tile_geobox.coords[LONGITUDE_COORD].values
-        }
+            dim_y: tile_geobox.coords[dim_y].values,
+            dim_x: tile_geobox.coords[dim_x].values,
+        },
     )
-    pixel_id_ds = pixel_id_ds.odc.assign_crs(DEFAULT_CRS)
-    
+    pixel_id_ds = pixel_id_ds.odc.assign_crs(tile_geobox.crs)
+
     return pixel_id_ds
 
 
@@ -214,17 +293,19 @@ def build_derived_pixel_id_mapping(
     rows = local_pixels // source_w
     cols = local_pixels % source_w
 
-    source_lats = source_geobox.coords[LATITUDE_COORD].values
-    source_lons = source_geobox.coords[LONGITUDE_COORD].values
-    lats = source_lats[rows]
-    lons = source_lons[cols]
+    src_dim_y, src_dim_x = geobox_spatial_dims(source_geobox)
+    source_ys = source_geobox.coords[src_dim_y].values
+    source_xs = source_geobox.coords[src_dim_x].values
+    ys = source_ys[rows]
+    xs = source_xs[cols]
 
     mapping = pd.DataFrame({"pixel_id": pixel_ids})
     for column_name, resolution in specs:
         target_geobox = base_tile_geobox.zoom_to(resolution=resolution)
         target_h, target_w = target_geobox.shape
-        target_rows = _centers_to_indices(lats, target_geobox.coords[LATITUDE_COORD].values)
-        target_cols = _centers_to_indices(lons, target_geobox.coords[LONGITUDE_COORD].values)
+        tgt_dim_y, tgt_dim_x = geobox_spatial_dims(target_geobox)
+        target_rows = _centers_to_indices(ys, target_geobox.coords[tgt_dim_y].values)
+        target_cols = _centers_to_indices(xs, target_geobox.coords[tgt_dim_x].values)
         target_local = target_rows * target_w + target_cols
         if np.any(target_local < 0) or np.any(target_local >= target_h * target_w):
             raise ValueError(

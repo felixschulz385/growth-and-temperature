@@ -710,27 +710,40 @@ assembly:
   # <data_root>/prepared/<data_path>/crs/ease6933/<family> -- verify against
   # `ls data_nobackup/prepared/*/crs/ease6933/` if the validation gate complains.
   # `index_cols: [pixel_id]` = static per-pixel; `[pixel_id, year]` = annual.
+  # `resampling` is the odc.reproject method used when --grid coarsens below the
+  # native 1 km EASE resolution. Either a single method string (all of that
+  # source's variables), or a `{default, <glob>: <method>}` map for per-variable
+  # control (first matching glob wins). `average` for continuous/intensive
+  # fields, `sum` for extensive counts, `mode` for categorical codes, `max` for
+  # an ordinal flag.
   sources:
     modis:                       # MODIS LST (21A2) -- the temperature signal
       data_path: "modis/21A2"
       family: "modis_lst_21a2"
       index_cols: ["pixel_id", "year"]
+      resampling:
+        default: "average"       # LST means/medians/sd -- area-weighted mean
+        "valid_*count*": "sum"   # valid_period/month_count_* -- obs counts, summed
     ntl_harm:                    # harmonized DMSP+VIIRS nighttime lights
       data_path: "ntl_harm/harmonized"
       family: "ntl_harm"
       index_cols: ["pixel_id", "year"]
+      resampling: "average"      # radiance; use "sum" instead for extensive totals
     eog_viirs:                   # VIIRS annual nighttime lights (2012-)
       data_path: "eog/viirs"
       family: "eog_viirs_annual"
       index_cols: ["pixel_id", "year"]
+      resampling: "average"      # radiance + cloud-free-coverage weight
     eog_flare:                   # VIIRS gas-flare detections
       data_path: "eog/flare"
       family: "eog_flare"
       index_cols: ["pixel_id", "year"]
+      resampling: "max"          # uint8 distance-banded flag -- keep strongest signal
     gadm:                        # GID_0..GID_3 admin ids rasterized per pixel
       data_path: "misc"
       family: "country_id"
       index_cols: ["pixel_id"]
+      resampling: "mode"         # categorical GID_N codes
     country_classifications:     # HDI + World Bank income group -- GID_0-keyed sidecar
       # join_on: merged by an existing GID_0 column (provided by `gadm` above),
       # not reprojected. Explicit path (a prepared/<agg>/ table, not a grid
@@ -741,6 +754,7 @@ assembly:
       data_path: "misc"
       family: "ecoregions"
       index_cols: ["pixel_id"]
+      resampling: "mode"         # categorical realm/biome/eco ids
     # plad: NOT included. PLAD's regional-favoritism table is keyed by
     #   (GID_2, year); the single-column `join_on` merge cannot key on year and
     #   would fan every pixel-year out to all of a unit's PLAD years. Needs a
@@ -749,6 +763,7 @@ assembly:
       data_path: "snl_mining"
       family: "snl_mining"
       index_cols: ["pixel_id"]
+      resampling: "average"      # already a smooth buffer-count field; sum would overcount
     # commodity_prices: NOT included. A (commodity, year) price lookup with no
     #   pixel or GID key -- nothing to merge it onto. Already consumed inside
     #   snl_mining's PREPARE (the price-shock sums above).
@@ -756,7 +771,9 @@ assembly:
       data_path: "acag/pm25"
       family: "pm25"
       index_cols: ["pixel_id", "year"]
+      resampling: "average"      # continuous concentration
     esacci:                      # ESA CCI land cover (annual)
       data_path: "esacci/landcover"
       family: "land_cover"
       index_cols: ["pixel_id", "year"]
+      resampling: "mode"         # categorical land-cover class codes

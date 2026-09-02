@@ -36,6 +36,14 @@ DEFAULT_COMPRESSION = 'snappy'
 # Default resampling method for datasets
 DEFAULT_RESAMPLING_METHOD = 'mode'
 
+# odc.reproject / rasterio resampling methods accepted in a dataset's
+# `resampling` config (a bare method string, or a {default, <glob>: <method>}
+# map for per-variable control). Mirrors rasterio.enums.Resampling.
+VALID_RESAMPLING_METHODS = frozenset({
+    'nearest', 'bilinear', 'cubic', 'cubic_spline', 'lanczos', 'average',
+    'mode', 'gauss', 'max', 'min', 'med', 'q1', 'q3', 'sum', 'rms',
+})
+
 # Default Dask configuration -- kept under this module's own name since
 # src/data/assemble/config.py already imports it as such; the value itself
 # comes from the single shared constant, not redefined here.
