@@ -86,3 +86,32 @@ def test_separate_min_da_max_da_used_directly_when_given():
     )
     assert float(stats["max"].item()) == 45.0
     assert float(stats["min"].item()) == -5.0
+
+
+def test_min_max_bands_independently_clamped_to_value_range():
+    # A day where mean_da is valid (so valid_mask passes) but the daily
+    # min/max band is fill (GLASS-Ta's lowercase fillvalue="0" -> scaled
+    # 0.0, not auto-masked). Without the independent [value_min, value_max]
+    # clamp on min_da/max_da, the 0.0 would survive the annual .min() and
+    # poison that pixel's yearly minimum (and a garbage-high max the .max()).
+    year = 2021
+    mean_da = _daily_series(year, extreme_value=300.0, extreme_day_of_year=100, base_value=295.0)
+    min_da = _daily_series(year, extreme_value=0.0, extreme_day_of_year=100, base_value=290.0)
+    max_da = _daily_series(year, extreme_value=9999.0, extreme_day_of_year=100, base_value=305.0)
+    valid_mask = xr.full_like(mean_da, True, dtype=bool)
+
+    stats = _composite_glass_annual_stats(
+        mean_da, valid_mask, min_da=min_da, max_da=max_da,
+        thresholds=(273.15, 308.15), value_min=160.0, value_max=370.0,
+    )
+    # fill day excluded -> min is the real base, not 0.0; max is the real
+    # base, not 9999.0
+    assert float(stats["min"].item()) == 290.0
+    assert float(stats["max"].item()) == 305.0
+
+    # default (no range given) keeps the old unclamped behaviour
+    unclamped = _composite_glass_annual_stats(
+        mean_da, valid_mask, min_da=min_da, max_da=max_da, thresholds=(273.15, 308.15)
+    )
+    assert float(unclamped["min"].item()) == 0.0
+    assert float(unclamped["max"].item()) == 9999.0

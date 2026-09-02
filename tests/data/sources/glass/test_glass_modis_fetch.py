@@ -104,6 +104,41 @@ def _fake_multiband(values, band_dim_size, long_name=None):
     return arr.rio.write_crs("EPSG:4326")
 
 
+def test_scale_bands_applies_scale_factor_and_prefers_attr():
+    # `rxr.open_rasterio(masked=True)` does not apply scale_factor, so raw
+    # int16 DN (~16000-37000 for Ta) is scaled here -- without it the
+    # caller's 160-370 K valid_mask rejects every real pixel.
+    raw = xr.DataArray(np.array([[16000.0, 29000.0], [37000.0, np.nan]]), dims=("y", "x"))
+    raw.attrs["long_name"] = "Ta_mean"
+
+    scaled = glass_modis_module._scale_bands({"Ta_mean": raw}, 0.01)["Ta_mean"]
+    assert float(scaled.isel(y=0, x=0)) == 160.0
+    assert float(scaled.isel(y=1, x=0)) == 370.0
+    assert "scale_factor" not in scaled.attrs  # stale attr dropped, no double-apply
+
+    # a scale_factor on the band's own attrs wins over the passed default
+    raw2 = raw.copy()
+    raw2.attrs["scale_factor"] = 0.1
+    assert float(glass_modis_module._scale_bands({"b": raw2}, 0.01)["b"].isel(y=0, x=0)) == 1600.0
+
+    # no-op passthrough
+    assert glass_modis_module._scale_bands({"b": raw}, 1.0)["b"] is raw
+    assert glass_modis_module._scale_bands({}, 0.01) == {}
+
+
+def test_open_hdf_bands_scales_raw_dn_to_physical(monkeypatch):
+    # End-to-end through _open_hdf_bands: a fake reader returns raw DN, the
+    # returned bands must be in physical Kelvin.
+    fake = _fake_multiband([3700.0, 2900.0, 1600.0], 3, long_name=("Ta_max", "Ta_mean", "Ta_min"))
+    monkeypatch.setattr(glass_modis_module.rxr, "open_rasterio", lambda path, masked=True: fake)
+
+    bands = glass_modis_module._open_hdf_bands("fake.hdf", ("Ta_min", "Ta_mean", "Ta_max"), scale_factor=0.01)
+
+    assert float(bands["Ta_max"].isel(y=0, x=0)) == 37.0
+    assert float(bands["Ta_mean"].isel(y=0, x=0)) == 29.0
+    assert float(bands["Ta_min"].isel(y=0, x=0)) == 16.0
+
+
 def test_open_hdf_bands_matches_grouped_multiband_array_by_long_name(monkeypatch):
     # The real production shape for Ta (2026-08-17 bug): GDAL groups
     # Ta_min/Ta_mean/Ta_max into one 3-band DataArray, not a list. GDAL's
@@ -144,7 +179,7 @@ def test_execute_fetch_writes_annual_geotiff_with_eight_bands_lst(tmp_path, monk
     monkeypatch.setattr(source, "_listing_for", fake_listing_for)
     monkeypatch.setattr(source, "download_async", _fake_download_async)
     monkeypatch.setattr(
-        glass_modis_module, "_open_hdf_bands", lambda path, band_names: {"LST": _fake_band(290.0)}
+        glass_modis_module, "_open_hdf_bands", lambda path, band_names, scale_factor=1.0: {"LST": _fake_band(290.0)}
     )
 
     assert source.execute(target) is True
@@ -168,7 +203,9 @@ def test_execute_fetch_writes_annual_geotiff_with_eight_bands_ta(tmp_path, monke
     monkeypatch.setattr(
         glass_modis_module,
         "_open_hdf_bands",
-        lambda path, band_names: {"Ta_min": _fake_band(280.0), "Ta_mean": _fake_band(290.0), "Ta_max": _fake_band(300.0)},
+        lambda path, band_names, scale_factor=1.0: {
+            "Ta_min": _fake_band(280.0), "Ta_mean": _fake_band(290.0), "Ta_max": _fake_band(300.0)
+        },
     )
 
     assert source.execute(target) is True
@@ -192,7 +229,7 @@ def test_execute_fetch_treats_missing_day_as_a_gap_not_a_failure(tmp_path, monke
     monkeypatch.setattr(source, "_listing_for", fake_listing_for)
     monkeypatch.setattr(source, "download_async", _fake_download_async)
     monkeypatch.setattr(
-        glass_modis_module, "_open_hdf_bands", lambda path, band_names: {"LST": _fake_band(290.0)}
+        glass_modis_module, "_open_hdf_bands", lambda path, band_names, scale_factor=1.0: {"LST": _fake_band(290.0)}
     )
 
     assert source.execute(target) is True

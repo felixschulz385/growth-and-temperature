@@ -41,10 +41,11 @@ sources:
       start: [2000, 55]
       end: [2020, 365]
     # Fill/QC-free validity range (docs/design/12-glass-modis-rebuild.md §1):
-    # a pixel counts as valid iff not-fill (per the HDF's own _FillValue/
-    # scale_factor, auto-applied by rxr.open_rasterio(masked=True)) AND
-    # within this physically-plausible Kelvin range -- mirrors `modis:`'s
-    # own lst_min_k/lst_max_k.
+    # a pixel counts as valid iff not-fill AND within this physically-
+    # plausible Kelvin range -- mirrors `modis:`'s own lst_min_k/lst_max_k.
+    # The HDF's int16 raw DN is scaled to Kelvin by GlassModisSource's
+    # per-variant scale_factor (0.01) before this check; rxr.open_rasterio(
+    # masked=True) only masks _FillValue, it does not apply scale_factor.
     value_min: 150.0
     value_max: 350.0
     # count_above/count_below thresholds (§2): GLASS LST is a daytime/

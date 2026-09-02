@@ -27,11 +27,17 @@ directly, no derivation needed). One class, `self.variant` derived from
 
 §1's QA-band investigation (against two real downloaded tiles) found neither
 product has a QC/QA subdataset -- validity is "not-fill AND within a
-physically-plausible value range", read from each file's own
-`_FillValue`/`scale_factor`/`valid_range` attrs via
-`rxr.open_rasterio(path, masked=True)` (which auto-applies them), plus a
-configurable sanity range (`value_min`/`value_max`) mirroring
-`ModisSource.lst_min_k`/`lst_max_k`. Ta's physical unit is confirmed
+physically-plausible value range". `rxr.open_rasterio(path, masked=True)`
+masks each file's own `_FillValue` to NaN but does **not** apply
+`scale_factor` (that needs `mask_and_scale=True`), so both variants' int16
+raw DN is scaled explicitly by the per-variant `scale_factor` in
+`_VARIANT_SPECS` (0.01 for both -- Ta confirmed via pyhdf below, LST the
+standard GLASS06A01 encoding), mirroring how `glass/avhrr.py` carries a
+known `scale_factor=0.01` rather than trusting the reader. Out-of-range raw
+values (and Ta's non-standard lowercase `fillvalue="0"`, which `masked=True`
+may not catch) are then filtered by the configurable sanity range
+(`value_min`/`value_max`) mirroring `ModisSource.lst_min_k`/`lst_max_k`.
+Ta's physical unit is confirmed
 **Kelvin** (`units: 'K'`, `scale_factor: 0.01`, `valid_range: [16000, 37000]`
 raw -> 160-370 K physical, `long_name` `Ta_min`/`Ta_mean`/`Ta_max`), checked
 against a real downloaded `GLASS18A01` granule via `pyhdf` (2026-08-17).
@@ -74,7 +80,13 @@ logger = logging.getLogger(__name__)
 #: every daily SDS this variant's HDF granules carry; `mean_band`/
 #: `min_band`/`max_band` say which of those feeds the §2 stats helper's
 #: `mean_da`/`min_da`/`max_da` (LST has only one band, so all three alias
-#: it; Ta already has separate daily min/mean/max bands).
+#: it; Ta already has separate daily min/mean/max bands). `scale_factor`
+#: converts the granule's int16 raw DN to physical Kelvin -- applied
+#: explicitly in `_open_hdf_bands` because `rxr.open_rasterio(masked=True)`
+#: masks fill but does not scale (module docstring). 0.01 for both: Ta
+#: confirmed via pyhdf (`valid_range [16000, 37000]` raw -> 160-370 K), LST
+#: the standard GLASS06A01 int16/0.01 Kelvin encoding (same as `glass/
+#: avhrr.py`'s hardcoded `scale_factor=0.01`).
 _VARIANT_SPECS: Dict[str, Dict[str, Any]] = {
     "lst": {
         "path_prefix": "glass/LST/MODIS/Daily/1KM/",
@@ -82,6 +94,7 @@ _VARIANT_SPECS: Dict[str, Dict[str, Any]] = {
         "mean_band": "LST",
         "min_band": "LST",
         "max_band": "LST",
+        "scale_factor": 0.01,
     },
     "ta": {
         "path_prefix": "glass/Ta/MODIS/",
@@ -89,6 +102,7 @@ _VARIANT_SPECS: Dict[str, Dict[str, Any]] = {
         "mean_band": "Ta_mean",
         "min_band": "Ta_min",
         "max_band": "Ta_max",
+        "scale_factor": 0.01,
     },
 }
 
@@ -126,8 +140,34 @@ def _match_band_names(
     return None
 
 
-def _open_hdf_bands(path: str, band_names: Tuple[str, ...]) -> Dict[str, xr.DataArray]:
-    """Open one GLASS daily HDF4 granule, returning `{band_name: DataArray}`.
+def _scale_bands(bands: Dict[str, xr.DataArray], scale_factor: float) -> Dict[str, xr.DataArray]:
+    """Convert each band's raw int16 DN to physical units by `scale_factor`.
+
+    `rxr.open_rasterio(masked=True)` masks fill but does NOT apply
+    `scale_factor` (that needs `mask_and_scale=True`), so it's applied here
+    -- mirroring `glass/avhrr.py`, which likewise carries a known
+    `scale_factor=0.01` rather than trusting the reader. A no-op when
+    `scale_factor == 1.0` or `bands` is empty. `scale_factor` from the
+    band's own `.attrs` (when GDAL's HDF4 driver surfaced it) wins over the
+    passed default; the stale attr is dropped from the result so nothing
+    downstream double-applies it."""
+    if not bands or scale_factor == 1.0:
+        return bands
+    scaled: Dict[str, xr.DataArray] = {}
+    for name, arr in bands.items():
+        factor = float(arr.attrs.get("scale_factor", scale_factor))
+        out = arr * factor
+        out.attrs = {k: v for k, v in arr.attrs.items() if k != "scale_factor"}
+        scaled[name] = out
+    return scaled
+
+
+def _open_hdf_bands(
+    path: str, band_names: Tuple[str, ...], scale_factor: float = 1.0
+) -> Dict[str, xr.DataArray]:
+    """Open one GLASS daily HDF4 granule, returning `{band_name: DataArray}`
+    in physical units (raw DN scaled by `scale_factor`, default 1.0 == no
+    scaling for callers/tests that already supply physical values).
 
     A single-SDS file (LST) opens via `rxr.open_rasterio` as one plain
     DataArray directly -- confirmed by today's (pre-rebuild) `GlassSource`
@@ -167,7 +207,11 @@ def _open_hdf_bands(path: str, band_names: Tuple[str, ...]) -> Dict[str, xr.Data
     problem in practice: the caller's `value_min`/`value_max` sanity range
     (confirmed 160-370 K, comfortably above scaled fill=0.0) filters out
     unmasked fill pixels either way -- but if `masked=True` ever silently
-    stops being the only defense here, revisit this."""
+    stops being the only defense here, revisit this.
+
+    `masked=True` does NOT apply `scale_factor` (that's `mask_and_scale=
+    True`), so raw int16 DN is scaled to physical units via `_scale_bands`
+    on the way out -- see that helper and the module docstring."""
     opened = rxr.open_rasterio(path, masked=True)
 
     if isinstance(opened, list):
@@ -177,7 +221,11 @@ def _open_hdf_bands(path: str, band_names: Tuple[str, ...]) -> Dict[str, xr.Data
     elif isinstance(opened, xr.Dataset):
         var_names = list(opened.data_vars)
         if len(var_names) != len(band_names):
-            return {} if len(band_names) > 1 else {band_names[0]: opened[var_names[0]]}
+            return (
+                {}
+                if len(band_names) > 1
+                else _scale_bands({band_names[0]: opened[var_names[0]]}, scale_factor)
+            )
         sub_arrays = [opened[v] for v in var_names]
         long_names = [str(opened[v].attrs["long_name"]) if opened[v].attrs.get("long_name") else None for v in var_names]
         names = [str(v) for v in var_names]
@@ -193,7 +241,7 @@ def _open_hdf_bands(path: str, band_names: Tuple[str, ...]) -> Dict[str, xr.Data
         # Single-band file (LST): whatever GDAL/rioxarray returned IS the
         # one band this variant expects -- no name-matching needed.
         arr = opened.squeeze("band", drop=True) if "band" in opened.dims else opened
-        return {band_names[0]: arr} if len(band_names) == 1 else {}
+        return _scale_bands({band_names[0]: arr}, scale_factor) if len(band_names) == 1 else {}
 
     matched = _match_band_names(path, band_names, long_names, names)
     if matched is None:
@@ -203,7 +251,7 @@ def _open_hdf_bands(path: str, band_names: Tuple[str, ...]) -> Dict[str, xr.Data
             path, len(sub_arrays), band_names, long_names, names,
         )
         return {}
-    return dict(zip(matched, sub_arrays))
+    return _scale_bands(dict(zip(matched, sub_arrays)), scale_factor)
 
 
 def _composite_glass_annual_stats(
@@ -213,6 +261,8 @@ def _composite_glass_annual_stats(
     min_da: Optional[xr.DataArray] = None,
     max_da: Optional[xr.DataArray] = None,
     thresholds: Tuple[float, float],
+    value_min: float = float("-inf"),
+    value_max: float = float("inf"),
 ) -> Dict[str, xr.DataArray]:
     """The shared 8-band annual-stats helper both GLASS-MODIS variants call
     (docs/design/12-glass-modis-rebuild.md §2): `mean`/`std`/
@@ -229,7 +279,14 @@ def _composite_glass_annual_stats(
     The same `valid_mask` (built from `mean_da` by the caller) is applied to
     `min_da`/`max_da` too before taking their direct max/min -- a pixel with
     an invalid *mean* reading for a day is not a trustworthy source for that
-    day's extreme either.
+    day's extreme either -- AND each of `min_da`/`max_da` is independently
+    clamped to `[value_min, value_max]`. `valid_mask` only vets `mean_da`,
+    so on a day where the mean is valid but the daily min/max band is fill
+    (GLASS-Ta's non-standard lowercase `fillvalue="0"` -> scaled 0.0, not
+    auto-masked -- see `_open_hdf_bands`), an unclamped `0.0` would survive
+    the annual `.min()` and poison that pixel's yearly minimum. `value_min`/
+    `value_max` default to `[-inf, inf]` (no clamp) for callers that don't
+    supply a physical range.
     """
     from src.data.common.raster.compositing import composite_annual_stats
 
@@ -244,8 +301,10 @@ def _composite_glass_annual_stats(
         stats=("mean", "std", "valid_period_count", "valid_month_count", "count_above", "count_below"),
         thresholds=thresholds,
     )
-    stats["max"] = max_da.where(valid_mask).resample(time="1YE").max()
-    stats["min"] = min_da.where(valid_mask).resample(time="1YE").min()
+    min_valid = valid_mask & min_da.notnull() & (min_da >= value_min) & (min_da <= value_max)
+    max_valid = valid_mask & max_da.notnull() & (max_da >= value_min) & (max_da <= value_max)
+    stats["max"] = max_da.where(max_valid).resample(time="1YE").max()
+    stats["min"] = min_da.where(min_valid).resample(time="1YE").min()
     return stats
 
 
@@ -284,6 +343,8 @@ class GlassModisSource(DataSource):
         self.mean_band: str = spec["mean_band"]
         self.min_band: str = spec["min_band"]
         self.max_band: str = spec["max_band"]
+        #: raw int16 DN -> physical Kelvin (module docstring / _VARIANT_SPECS).
+        self.scale_factor: float = float(spec["scale_factor"])
 
         if cfg.data_path is None:
             cfg = dataclasses.replace(cfg, data_path=self.path_prefix.rstrip("/"))
@@ -669,7 +730,7 @@ class GlassModisSource(DataSource):
         valid_days: List[int] = []
         for day, path in daily_files:
             try:
-                bands = _open_hdf_bands(path, self.band_names)
+                bands = _open_hdf_bands(path, self.band_names, self.scale_factor)
             except Exception:
                 logger.warning("Failed to open %s", path, exc_info=True)
                 continue
@@ -698,7 +759,9 @@ class GlassModisSource(DataSource):
 
         valid_mask = mean_da.notnull() & (mean_da >= self.value_min) & (mean_da <= self.value_max)
         stats = _composite_glass_annual_stats(
-            mean_da, valid_mask, min_da=min_da, max_da=max_da, thresholds=(self.cold_stress_k, self.heat_stress_k)
+            mean_da, valid_mask, min_da=min_da, max_da=max_da,
+            thresholds=(self.cold_stress_k, self.heat_stress_k),
+            value_min=self.value_min, value_max=self.value_max,
         )
 
         data_vars = {name: arr.squeeze("time", drop=True).astype("float32") for name, arr in stats.items()}
