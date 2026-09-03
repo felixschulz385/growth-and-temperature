@@ -1,14 +1,16 @@
-"""Per-variable resampling: `resolve_resampling` (name -> method) and
-`_reproject_per_variable` (one store, method-grouped downsampling pass).
+"""Per-variable resampling: `resolve_resampling` (name -> method) and the
+`SQL_RESAMPLING_AGGREGATES` mapping the DuckDB engine downsamples each variable
+with.
 """
 
-import numpy as np
+import duckdb
 import pytest
-import xarray as xr
-from odc.geo.geobox import GeoBox
 
-from src.data.assemble.constants import DEFAULT_CRS, DEFAULT_RESAMPLING_METHOD
-from src.data.assemble.processors import _reproject_per_variable
+from src.data.assemble.constants import (
+    DEFAULT_RESAMPLING_METHOD,
+    SQL_RESAMPLING_AGGREGATES,
+    VALID_RESAMPLING_METHODS,
+)
 from src.data.assemble.utils import resolve_resampling
 
 
@@ -30,7 +32,7 @@ def test_map_config_default_plus_glob_first_match_wins():
     cfg = {
         "default": "average",
         "valid_*count*": "sum",
-        "*_sd": "nearest",
+        "*_sd": "min",
     }
     got = resolve_resampling(
         cfg,
@@ -38,7 +40,7 @@ def test_map_config_default_plus_glob_first_match_wins():
     )
     assert got == {
         "lst_day_mean": "average",
-        "lst_day_sd": "nearest",
+        "lst_day_sd": "min",
         "valid_period_count_annual": "sum",
         "valid_month_count_day_annual": "sum",
     }
@@ -52,10 +54,16 @@ def test_map_config_without_default_falls_back_to_module_default():
 def test_unknown_method_raises_even_with_no_var_names():
     with pytest.raises(ValueError, match="Unknown resampling method 'avg'"):
         resolve_resampling({"default": "avg"}, [])
-    with pytest.raises(ValueError, match="Unknown resampling method 'summe'"):
-        resolve_resampling({"default": "average", "*_count": "summe"}, [])
     with pytest.raises(ValueError, match="Unknown resampling method"):
         resolve_resampling("bogus", ["a"])
+
+
+def test_kernel_methods_are_rejected_now_that_downsampling_is_block_aggregation():
+    # nearest/bilinear/cubic/... have no SQL block-aggregate equivalent.
+    for m in ("nearest", "bilinear", "cubic", "lanczos", "gauss", "cubic_spline"):
+        assert m not in VALID_RESAMPLING_METHODS
+        with pytest.raises(ValueError, match="Unknown resampling method"):
+            resolve_resampling(m, ["a"])
 
 
 def test_non_str_non_mapping_config_raises():
@@ -63,39 +71,28 @@ def test_non_str_non_mapping_config_raises():
         resolve_resampling(["average"], ["a"])
 
 
-# --- _reproject_per_variable -----------------------------------------------
+# --- SQL_RESAMPLING_AGGREGATES -------------------------------------------------
 
 
-def _ds_of_ones(geobox, var_names):
-    h, w = geobox.shape
-    data = np.ones((h, w), dtype="float32")
-    ds = xr.Dataset(
-        {v: (("latitude", "longitude"), data.copy()) for v in var_names},
-        coords={
-            "latitude": geobox.coords["latitude"].values,
-            "longitude": geobox.coords["longitude"].values,
-        },
-    )
-    return ds.odc.assign_crs(DEFAULT_CRS)
+def test_every_valid_method_has_a_sql_aggregate():
+    assert set(VALID_RESAMPLING_METHODS) == set(SQL_RESAMPLING_AGGREGATES)
 
 
-def test_single_method_still_reprojects_all_vars_together():
-    src = GeoBox.from_bbox((0, 0, 0.16, 0.16), crs="EPSG:4326", resolution=0.01)  # 16x16
-    tgt = GeoBox.from_bbox((0, 0, 0.16, 0.16), crs="EPSG:4326", resolution=0.04)  # 4x4
-    out = _reproject_per_variable(_ds_of_ones(src, ["mean", "other"]), tgt, "average")
-    assert out.sizes["latitude"] == 4 and out.sizes["longitude"] == 4
-    assert np.allclose(out["mean"].values, 1.0)
-    assert np.allclose(out["other"].values, 1.0)
-
-
-def test_map_splits_average_and_sum_in_one_pass():
-    src = GeoBox.from_bbox((0, 0, 0.16, 0.16), crs="EPSG:4326", resolution=0.01)  # 16x16
-    tgt = GeoBox.from_bbox((0, 0, 0.16, 0.16), crs="EPSG:4326", resolution=0.04)  # 4x4 (16:1)
-
-    cfg = {"default": "average", "*_count": "sum"}
-    out = _reproject_per_variable(_ds_of_ones(src, ["lst_mean", "obs_count"]), tgt, cfg)
-
-    # every 4km cell aggregates a 4x4 block of 1s
-    assert np.allclose(out["lst_mean"].values, 1.0)      # area-weighted mean
-    assert np.allclose(out["obs_count"].values, 16.0)    # summed
-    assert set(out.data_vars) == {"lst_mean", "obs_count"}
+@pytest.mark.parametrize(
+    "method,rows,expected",
+    [
+        ("average", [1.0, 2.0, 3.0], 2.0),
+        ("sum", [1.0, 2.0, 3.0], 6.0),
+        ("max", [1.0, 5.0, 3.0], 5.0),
+        ("min", [1.0, 5.0, 3.0], 1.0),
+        ("mode", [7.0, 7.0, 9.0], 7.0),
+        ("med", [1.0, 2.0, 3.0, 4.0], 2.5),
+    ],
+)
+def test_sql_aggregate_expression_computes_expected(method, rows, expected):
+    con = duckdb.connect()
+    con.execute("CREATE TABLE t(v DOUBLE)")
+    con.executemany("INSERT INTO t VALUES (?)", [(r,) for r in rows])
+    expr = SQL_RESAMPLING_AGGREGATES[method]("v")
+    got = con.execute(f"SELECT {expr} FROM t").fetchone()[0]
+    assert got == pytest.approx(expected)

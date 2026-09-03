@@ -1,19 +1,19 @@
 """Grid-shake / block-reduce robustness check for downsampling assemble operations.
 
-docs/design/04-ingest.md §6: grid-shake re-runs the coarse-grid reprojection with the
-output grid's origin shifted by a fraction of a pixel, to test how sensitive assembled
-values are to where the coarse cell boundaries fall relative to the native pixels. Only
-meaningful when downsampling (target resolution coarser than the source/native resolution)
--- shifting the origin when upsampling doesn't change which native pixel a target cell maps
-to. This module only builds the origin-shifted geoboxes; the actual re-reprojection reuses
-the existing `odc.reproject` call in `src.data.assemble.processors.TileProcessor`.
+docs/design/04-ingest.md §6: grid-shake re-runs the coarse-grid aggregation with the
+output grid's origin shifted, to test how sensitive assembled values are to where the
+coarse cell boundaries fall relative to the native pixels. Only meaningful when
+downsampling (a coarser ``--grid`` than the native 1 km canonical resolution).
+
+This module resolves a ``--shake`` selection / ``processing.grid_shake`` config into
+``(label, dx_frac, dy_frac)`` triples. The DuckDB engine
+(:mod:`src.data.assemble.sql_engine`) turns each fraction into an integer native-pixel
+origin shift ``round(frac * F)`` folded into its ``pixel_id`` block-index expression --
+so the shifted grid is exact, quantised to whole native pixels.
 """
 
 import re
 from typing import Any, Dict, List, Tuple, Union
-
-from affine import Affine
-from odc.geo.geobox import GeoBox
 
 DEFAULT_GRID_SHAKE_PRESETS: Dict[str, List[Tuple[float, float]]] = {
     "quad": [(0.5, 0.0), (0.0, 0.5), (0.5, 0.5)],
@@ -111,9 +111,3 @@ def normalize_grid_shake_offsets(
         specs.append((str(index), dx, dy))
 
     return specs
-
-
-def shift_geobox_origin(geobox: GeoBox, dx_frac: float, dy_frac: float) -> GeoBox:
-    """Return a geobox with identical shape/resolution/crs, origin shifted by a pixel fraction."""
-    shifted_affine = geobox.affine * Affine.translation(dx_frac, dy_frac)
-    return GeoBox(geobox.shape, shifted_affine, geobox.crs)

@@ -10,7 +10,6 @@ import logging
 
 from src.cli.config import load_config_with_env_vars
 from src.cli.common import setup_logging
-from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
 
 logger = logging.getLogger(__name__)
 
@@ -20,20 +19,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 def _collect_dask_overrides(args: argparse.Namespace) -> dict:
-    """Extract Dask-related CLI overrides from *args* into a dict."""
+    """Extract engine-resource + processing CLI overrides from *args*.
+
+    ``--threads`` / ``--memory-limit`` / ``--temp-dir`` drive the DuckDB engine;
+    the ``--dask-*`` names are still accepted as deprecated aliases (mapped to
+    the same keys in :func:`src.data.assemble.config.apply_cli_overrides`).
+    """
     overrides = {}
-    if getattr(args, "dask_threads", None) is not None:
-        overrides["dask_threads"] = args.dask_threads
-    if getattr(args, "dask_memory_limit", None) is not None:
-        overrides["dask_memory_limit"] = args.dask_memory_limit
-        logger.info(f"Overriding dask_memory_limit from CLI: {args.dask_memory_limit}")
+    threads = getattr(args, "threads", None) or getattr(args, "dask_threads", None)
+    if threads is not None:
+        overrides["threads"] = threads
+    mem = getattr(args, "memory_limit", None) or getattr(args, "dask_memory_limit", None)
+    if mem is not None:
+        overrides["memory_limit"] = mem
+        logger.info(f"DuckDB memory limit from CLI: {mem}")
     if getattr(args, "temp_dir", None) is not None:
         overrides["temp_dir"] = args.temp_dir
-    if getattr(args, "dashboard_port", DEFAULT_DASHBOARD_PORT) != DEFAULT_DASHBOARD_PORT:
-        overrides["dashboard_port"] = args.dashboard_port
-    if getattr(args, "local_directory", None) is not None:
-        overrides["local_directory"] = args.local_directory
-        logger.info(f"Overriding local_directory from CLI: {args.local_directory}")
     if getattr(args, "tile_size", None) is not None:
         overrides["tile_size"] = args.tile_size
         logger.info(f"Overriding tile_size from CLI: {args.tile_size}")

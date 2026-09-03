@@ -21,7 +21,6 @@ from pathlib import Path
 
 import yaml
 
-from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
 from src.data.assemble.grid_shake import resolve_shake_selection
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -104,15 +103,15 @@ def render_wrap_command(job: dict, cluster: dict, args: argparse.Namespace) -> s
     elif getattr(args, "overwrite", None) is False:
         run_parts.append("--no-overwrite")
     run_parts += [
-        "--dask-threads $SLURM_CPUS_PER_TASK",
-        '--dask-memory-limit "${MEMORY_LIMIT_GB}GiB"',
+        "--threads $SLURM_CPUS_PER_TASK",
+        '--memory-limit "${MEMORY_LIMIT_GB}GB"',
         f'--temp-dir "{cluster["scratch_prefix"]}/assemble_${{SLURM_JOB_ID}}"',
-        f"--dashboard-port {getattr(args, 'dashboard_port', DEFAULT_DASHBOARD_PORT)}",
     ]
     if getattr(args, "debug", False):
         run_parts.append("--debug")
 
-    mem_fraction = job.get("mem_fraction", 0.6)
+    # DuckDB gets the bulk of the node's RAM; it spills the rest to --temp-dir.
+    mem_fraction = job.get("mem_fraction", 0.85)
     lines = [
         f'cd {cluster["project_root"]}',
         f'eval "$({cluster["conda_hook"]} shell.bash hook)"',

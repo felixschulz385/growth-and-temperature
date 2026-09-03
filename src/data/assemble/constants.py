@@ -4,8 +4,6 @@ Constants used throughout the assembly module.
 Centralizes magic numbers and configuration defaults for maintainability.
 """
 
-from src.data.common.dask.client import DEFAULT_DASHBOARD_PORT
-
 # Default coordinate reference system
 DEFAULT_CRS = 4326
 
@@ -15,7 +13,7 @@ DEFAULT_TILE_PADDING = 64
 
 # `assemble --grid <label>` -> output resolution in metres on the canonical
 # EPSG:6933 grid. "1km" is the native canonical resolution (no downsampling);
-# every coarser label triggers a downsampling reprojection and makes
+# every coarser label triggers an integer block aggregation and makes
 # `--shake` meaningful (docs/design/01-grid.md §2, docs/design/04-ingest.md §6).
 GRID_RESOLUTIONS_M = {
     "1km": 1000.0,
@@ -36,20 +34,24 @@ DEFAULT_COMPRESSION = 'snappy'
 # Default resampling method for datasets
 DEFAULT_RESAMPLING_METHOD = 'mode'
 
-# odc.reproject / rasterio resampling methods accepted in a dataset's
-# `resampling` config (a bare method string, or a {default, <glob>: <method>}
-# map for per-variable control). Mirrors rasterio.enums.Resampling.
-VALID_RESAMPLING_METHODS = frozenset({
-    'nearest', 'bilinear', 'cubic', 'cubic_spline', 'lanczos', 'average',
-    'mode', 'gauss', 'max', 'min', 'med', 'q1', 'q3', 'sum', 'rms',
-})
-
-# Default Dask configuration -- kept under this module's own name since
-# src/data/assemble/config.py already imports it as such; the value itself
-# comes from the single shared constant, not redefined here.
-DEFAULT_DASK_DASHBOARD_PORT = DEFAULT_DASHBOARD_PORT
-DEFAULT_WORKER_THREADS_PER_CPU = 2
-DEFAULT_WORKER_FRACTION = 0.5
+# Downsampling on the canonical grid is an exact integer block aggregation
+# (assemble/sql_engine.py), so every `resampling` method a dataset declares must
+# map to a SQL aggregate. `SQL_RESAMPLING_AGGREGATES[m]` is a callable
+# `col -> aggregate SQL expression`. `VALID_RESAMPLING_METHODS` is exactly the
+# set of keys -- kernel-based methods (nearest/bilinear/cubic/...) have no
+# block-aggregate equivalent and are rejected by validate_assembly_config.
+SQL_RESAMPLING_AGGREGATES = {
+    'average': lambda c: f'avg({c})',
+    'sum':     lambda c: f'sum({c})',
+    'max':     lambda c: f'max({c})',
+    'min':     lambda c: f'min({c})',
+    'mode':    lambda c: f'mode({c})',
+    'med':     lambda c: f'median({c})',
+    'q1':      lambda c: f'quantile_cont({c}, 0.25)',
+    'q3':      lambda c: f'quantile_cont({c}, 0.75)',
+    'rms':     lambda c: f'sqrt(avg({c} * {c}))',
+}
+VALID_RESAMPLING_METHODS = frozenset(SQL_RESAMPLING_AGGREGATES)
 
 # Pixel ID bit layout: [ix: 16 bits | iy: 16 bits | local_pixel: 32 bits]
 PIXEL_ID_IX_SHIFT = 48

@@ -696,7 +696,7 @@ sources:
 # `resampling` (default "mode"), `winsorize`, `index_cols` (default ["pixel_id"]),
 # `grid_id`, `join_on` (GID-keyed sidecar merged directly), `fillna`.
 #
-# Output tree: <output_root>/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data.parquet
+# Output tree: <output_root>/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data_*.parquet
 assembly:
   # data_root-relative (paths.data_root in data.local.yaml); an absolute path
   # also works. No ${DATA_NOBACKUP} dependency.
@@ -710,12 +710,14 @@ assembly:
   # <data_root>/prepared/<data_path>/crs/ease6933/<family> -- verify against
   # `ls data_nobackup/prepared/*/crs/ease6933/` if the validation gate complains.
   # `index_cols: [pixel_id]` = static per-pixel; `[pixel_id, year]` = annual.
-  # `resampling` is the odc.reproject method used when --grid coarsens below the
-  # native 1 km EASE resolution. Either a single method string (all of that
-  # source's variables), or a `{default, <glob>: <method>}` map for per-variable
-  # control (first matching glob wins). `average` for continuous/intensive
-  # fields, `sum` for extensive counts, `mode` for categorical codes, `max` for
-  # an ordinal flag.
+  # `resampling` is the SQL block-aggregate used when --grid coarsens below the
+  # native 1 km EASE resolution (exact integer NxN aggregation, no warp). Either
+  # a single method string (all of that source's variables), or a
+  # `{default, <glob>: <method>}` map for per-variable control (first matching
+  # glob wins). `average` for continuous/intensive fields, `sum` for extensive
+  # counts, `mode` for categorical codes (ties broken arbitrarily), `max` for an
+  # ordinal flag. `min`/`med`/`q1`/`q3`/`rms` also available; kernel methods
+  # (nearest/bilinear/cubic/...) are rejected -- they have no block-aggregate form.
   sources:
     modis:                       # MODIS LST (21A2) -- the temperature signal
       data_path: "modis/21A2"

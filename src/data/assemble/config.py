@@ -7,108 +7,13 @@ Provides functions for loading, validating, and deriving configuration values.
 import os
 import logging
 from typing import Dict, Any, Optional, List
-from dataclasses import dataclass, field
 
 from src.config.runtime import resolve_data_root
-from src.data.assemble.constants import (
-    DEFAULT_TILE_SIZE,
-    DEFAULT_COMPRESSION,
-    DEFAULT_RESAMPLING_METHOD,
-    DEFAULT_DASK_DASHBOARD_PORT,
-    DEFAULT_WORKER_THREADS_PER_CPU,
-    DEFAULT_WORKER_FRACTION,
-)
 from src.data.assemble.grid_shake import normalize_grid_shake_offsets
 from src.data.sources import layout
 from src.data.sources.verify import verify_grid_output
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class DaskConfig:
-    """Configuration for Dask distributed processing."""
-    threads: Optional[int] = None
-    memory_limit: Optional[str] = None
-    dashboard_port: int = DEFAULT_DASK_DASHBOARD_PORT
-    temp_dir: Optional[str] = None
-    worker_threads_per_cpu: int = DEFAULT_WORKER_THREADS_PER_CPU
-    worker_fraction: float = DEFAULT_WORKER_FRACTION
-    
-    def to_kwargs(self) -> Dict[str, Any]:
-        """Convert to kwargs dict for DaskClientContextManager, excluding None values."""
-        return {k: v for k, v in {
-            'threads': self.threads,
-            'memory_limit': self.memory_limit,
-            'dashboard_port': self.dashboard_port,
-            'temp_dir': self.temp_dir,
-            'worker_threads_per_cpu': self.worker_threads_per_cpu,
-            'worker_fraction': self.worker_fraction,
-        }.items() if v is not None}
-
-
-@dataclass
-class ProcessingConfig:
-    """Configuration for tile processing parameters."""
-    resolution: Optional[float] = None
-    tile_size: int = DEFAULT_TILE_SIZE
-    compression: str = DEFAULT_COMPRESSION
-    year_range: Optional[tuple] = None
-    apply_land_mask: bool = False
-    land_mask_path: Optional[str] = None
-    dask: DaskConfig = field(default_factory=DaskConfig)
-    
-    @classmethod
-    def from_dict(cls, config_dict: Dict[str, Any]) -> 'ProcessingConfig':
-        """Create ProcessingConfig from dictionary."""
-        dask_dict = config_dict.get('dask', {})
-        dask_config = DaskConfig(
-            threads=dask_dict.get('threads'),
-            memory_limit=dask_dict.get('memory_limit'),
-            dashboard_port=dask_dict.get('dashboard_port', DEFAULT_DASK_DASHBOARD_PORT),
-            temp_dir=dask_dict.get('temp_dir'),
-            worker_threads_per_cpu=dask_dict.get('worker_threads_per_cpu', DEFAULT_WORKER_THREADS_PER_CPU),
-            worker_fraction=dask_dict.get('worker_fraction', DEFAULT_WORKER_FRACTION),
-        )
-        
-        year_range = config_dict.get('year_range')
-        if year_range and isinstance(year_range, list):
-            year_range = tuple(year_range)
-        
-        return cls(
-            resolution=config_dict.get('resolution'),
-            tile_size=config_dict.get('tile_size', DEFAULT_TILE_SIZE),
-            compression=config_dict.get('compression', DEFAULT_COMPRESSION),
-            year_range=year_range,
-            apply_land_mask=config_dict.get('apply_land_mask', False),
-            land_mask_path=config_dict.get('land_mask_path'),
-            dask=dask_config,
-        )
-
-
-@dataclass
-class DatasetConfig:
-    """Configuration for a single dataset."""
-    name: str
-    path: str
-    resampling: str = DEFAULT_RESAMPLING_METHOD
-    columns: Optional[List[str]] = None
-    column_prefix: Optional[str] = None
-    winsorize: Optional[float] = None
-    index_cols: List[str] = field(default_factory=lambda: ['pixel_id'])
-    
-    @classmethod
-    def from_dict(cls, name: str, config_dict: Dict[str, Any]) -> 'DatasetConfig':
-        """Create DatasetConfig from dictionary."""
-        return cls(
-            name=name,
-            path=config_dict['path'],
-            resampling=config_dict.get('resampling', DEFAULT_RESAMPLING_METHOD),
-            columns=config_dict.get('columns'),
-            column_prefix=config_dict.get('column_prefix'),
-            winsorize=config_dict.get('winsorize'),
-            index_cols=config_dict.get('index_cols', ['pixel_id']),
-        )
 
 
 def derive_data_root(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None) -> Optional[str]:
@@ -183,23 +88,29 @@ def apply_cli_overrides(assembly_config: Dict[str, Any], cli_overrides: Dict[str
     """
     if not cli_overrides:
         return
-    
+
     processing_config = assembly_config.setdefault('processing', {})
-    dask_config = processing_config.setdefault('dask', {})
-    
-    # Dask-related CLI overrides
-    dask_overrides = {
-        'dask_threads': ('threads', 'dask threads'),
-        'dask_memory_limit': ('memory_limit', 'dask memory limit'),
-        'temp_dir': ('temp_dir', 'temp dir'),
-        'dashboard_port': ('dashboard_port', 'dashboard port'),
+    duckdb_config = processing_config.setdefault('duckdb', {})
+
+    # DuckDB resource CLI overrides. The legacy `--dask-*` flags are accepted as
+    # deprecated aliases so existing SLURM scripts keep working.
+    duckdb_overrides = {
+        'threads': 'DuckDB threads',
+        'dask_threads': 'DuckDB threads',
+        'memory_limit': 'DuckDB memory limit',
+        'dask_memory_limit': 'DuckDB memory limit',
+        'temp_dir': 'DuckDB temp dir',
     }
-    
-    for cli_key, (config_key, log_name) in dask_overrides.items():
-        if cli_key in cli_overrides:
-            dask_config[config_key] = cli_overrides[cli_key]
+    key_map = {
+        'threads': 'threads', 'dask_threads': 'threads',
+        'memory_limit': 'memory_limit', 'dask_memory_limit': 'memory_limit',
+        'temp_dir': 'temp_dir',
+    }
+    for cli_key, log_name in duckdb_overrides.items():
+        if cli_key in cli_overrides and cli_overrides[cli_key] is not None:
+            duckdb_config[key_map[cli_key]] = cli_overrides[cli_key]
             logger.info(f"Overriding {log_name} from CLI: {cli_overrides[cli_key]}")
-    
+
     # Processing overrides
     processing_overrides = {
         'tile_size': 'tile size',
@@ -262,8 +173,8 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                     errors.append(f"Dataset '{name}' failed output verification: {result.detail}")
 
             # join_on datasets are small GID-keyed tables merged directly onto
-            # assembled rows (not reprojected pixel-grid data) -- see
-            # TileProcessor._apply_join_tables.
+            # assembled rows by an existing GID column (not block-aggregated
+            # pixel-grid data) -- see sql_engine._register_join_tables.
             join_on = config.get('join_on')
             if join_on is not None:
                 if not isinstance(join_on, str) or not join_on.strip():

@@ -57,7 +57,8 @@ def test_render_wrap_command_create_uses_gnt_and_assemble_create():
     assert "run.py assemble create" in wrap
     assert "--grid 10km" in wrap
     assert "--shake quad" in wrap
-    assert "--dask-threads $SLURM_CPUS_PER_TASK" in wrap
+    assert "--threads $SLURM_CPUS_PER_TASK" in wrap
+    assert '--memory-limit "${MEMORY_LIMIT_GB}GB"' in wrap
     assert "assemble_${SLURM_JOB_ID}" in wrap
 
 

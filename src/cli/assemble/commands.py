@@ -108,23 +108,19 @@ def _add_assemble_common(parser: argparse.ArgumentParser) -> None:
             "coarsens below the native resolution."
         ),
     )
-    # Dask configuration
-    parser.add_argument("--dask-threads", type=int, help="Number of Dask threads")
+    # DuckDB engine resource knobs (one process per grid=/shake= variant).
+    parser.add_argument("--threads", type=int, help="DuckDB threads (default: all cores)")
     parser.add_argument(
-        "--dask-memory-limit",
-        help='Dask memory limit per worker (e.g. "4GB")',
+        "--memory-limit",
+        help='DuckDB memory limit for the whole process (e.g. "200GB")',
     )
-    parser.add_argument("--temp-dir", help="Temporary directory")
-    parser.add_argument(
-        "--dashboard-port",
-        type=int,
-        default=DEFAULT_DASHBOARD_PORT,
-        help=f"Dask dashboard port (default: {DEFAULT_DASHBOARD_PORT})",
-    )
-    parser.add_argument(
-        "--local-directory",
-        help="Directory for Dask worker spilling",
-    )
+    parser.add_argument("--temp-dir", help="DuckDB spill directory (large aggregations/joins)")
+    # Deprecated Dask aliases -- accepted so existing scripts keep working.
+    parser.add_argument("--dask-threads", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--dask-memory-limit", help=argparse.SUPPRESS)
+    parser.add_argument("--dashboard-port", type=int, default=DEFAULT_DASHBOARD_PORT,
+                        help=argparse.SUPPRESS)
+    parser.add_argument("--local-directory", help=argparse.SUPPRESS)
     parser.add_argument("--tile-size", type=int, help="Tile size override")
     parser.add_argument("--compression", help="Parquet compression format override")
 

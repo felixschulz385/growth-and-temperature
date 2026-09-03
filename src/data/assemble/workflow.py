@@ -17,11 +17,8 @@ os.environ["PYARROW_IGNORE_TIMEZONE"] = "1"
 
 import copy
 import logging
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Optional
 
-# Import common utilities
-from src.data.common.geobox import get_target_geobox
-from src.data.common.dask.client import DaskClientContextManager
 from src.data.pipeline.config import build_context
 from src.data.sources.layout import EASE_GRID_ID, LEGACY_GRID_ID
 
@@ -32,19 +29,10 @@ from src.data.assemble.config import (
     resolve_dataset_paths,
     validate_assembly_config,
 )
-from src.data.assemble.loaders import (
-    load_land_mask,
-    load_all_datasets,
-    prepare_land_mask,
-)
-from src.data.assemble.processors import TileProcessor
+from src.data.assemble.loaders import resolve_land_mask_path
 from src.data.assemble.metadata import create_assembly_metadata
-from src.data.assemble.tiles import (
-    get_available_tiles,
-    adjust_tile_size_for_reprojection,
-    create_tile_geobox,
-)
-from src.data.assemble.grid_shake import resolve_shake_selection, shift_geobox_origin
+from src.data.assemble.grid_shake import resolve_shake_selection
+from src.data.assemble.sql_engine import DuckDBConfig, run_sql_assembly
 from src.data.assemble.constants import (
     DEFAULT_GRID_LABEL,
     DEFAULT_TILE_SIZE,
@@ -54,102 +42,19 @@ from src.data.assemble.constants import (
 logger = logging.getLogger(__name__)
 
 
-def _setup_dask_cluster(processing_config: Dict[str, Any]) -> Dict[str, Any]:
-    """
-    Create Dask cluster configuration from processing config.
-
-    Args:
-        processing_config: Processing configuration with dask settings
-
-    Returns:
-        Dictionary of kwargs for DaskClientContextManager
-    """
-    from src.data.assemble.config import DaskConfig
-
-    dask_dict = processing_config.get('dask', {})
-    dask_config = DaskConfig(
-        threads=dask_dict.get('threads'),
-        memory_limit=dask_dict.get('memory_limit'),
-        dashboard_port=dask_dict.get('dashboard_port', 8787),
-        temp_dir=dask_dict.get('temp_dir'),
-        worker_threads_per_cpu=dask_dict.get('worker_threads_per_cpu', 2),
-        worker_fraction=dask_dict.get('worker_fraction', 0.5),
-    )
-    return dask_config.to_kwargs()
-
-
-def _process_all_tiles(
-    datasets: List[Tuple],
-    land_mask_ds,
-    all_tiles: List[Tuple[int, int]],
-    target_geobox,
-    assembly_config: Dict[str, Any],
-    output_path: str,
-) -> Tuple[int, int]:
-    """
-    Process all tiles and return counts of processed and skipped tiles.
-
-    Args:
-        datasets: Loaded datasets
-        land_mask_ds: Optional land mask dataset
-        all_tiles: List of (ix, iy) tile indices
-        target_geobox: Target geobox (already coarsened + origin-shifted for the variant)
-        assembly_config: Assembly configuration
-        output_path: Output directory path
-
-    Returns:
-        Tuple of (processed_count, skipped_count)
-    """
-    processing_config = assembly_config.get('processing', {})
-    tile_size = processing_config.get('tile_size', DEFAULT_TILE_SIZE)
-    assembly_mode = processing_config.get('assembly_mode', 'create')
-
-    processor = TileProcessor(assembly_config, output_path, target_geobox=target_geobox)
-    processed_count = 0
-    skipped_count = 0
-    overwrite = processing_config.get('overwrite', True)  # Default to True for backward compatibility
-
-    for ix, iy in all_tiles:
-        tile_output_path = os.path.join(output_path, f"ix={ix}", f"iy={iy}")
-        output_file = os.path.join(tile_output_path, "data.parquet")
-
-        if assembly_mode == 'update' and not os.path.exists(output_file):
-            logger.warning(f"Tile ix={ix}, iy={iy} does not exist, skipping in update mode")
-            skipped_count += 1
-            continue
-
-        # In create mode, skip existing tiles if overwrite=False
-        if assembly_mode == 'create' and not overwrite and os.path.exists(output_file):
-            logger.info(f"Tile ix={ix}, iy={iy} already exists, skipping (overwrite=False)")
-            skipped_count += 1
-            continue
-
-        tile_geobox = create_tile_geobox(target_geobox, tile_size, ix, iy)
-
-        try:
-            success = processor.process_tile(
-                datasets, land_mask_ds, ix, iy, tile_geobox
-            )
-            if success:
-                processed_count += 1
-        except Exception as e:
-            logger.error(f"Failed to process tile ix={ix}, iy={iy}: {e}")
-            continue
-
-    return processed_count, skipped_count
-
-
 def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str, Any]] = None):
     """
     Run one assembled-table pass: one grid resolution, one grid-shake variant.
 
-    Main steps:
+    Steps:
     1. Resolve each source's grid-store path and validate the configuration
-    2. Build the run's target geobox from ``pipeline.grid`` (`get_target_geobox`),
-       coarsen it to ``processing.resolution`` and origin-shift it for
-       ``processing.shake_offset`` (if any)
-    3. Initialise a Dask cluster, load every source, write the provenance metadata
-    4. Process all tiles and write tile-partitioned parquet under ``output_path``
+       (hard gate -- raises on a missing/broken source, see
+       :func:`validate_assembly_config`).
+    2. Hand the whole pass to :func:`run_sql_assembly` -- one DuckDB process
+       that block-aggregates every ``cell_id``-keyed source onto the requested
+       ``--grid`` factor, full-outer-joins them on ``(pixel_id[, year])``,
+       merges any ``join_on`` sidecars, and writes tile-partitioned parquet
+       under ``output_path``. No Dask, no per-tile Python loop.
 
     Args:
         assembly_config: One variant's assembly configuration (already carries
@@ -191,97 +96,57 @@ def run_assembly(assembly_config: Dict[str, Any], full_config: Optional[Dict[str
     if ctx is None:
         ctx = build_context(full_config or {})
 
-    # `processing.resolution` (metres) is only set for a coarser-than-native
-    # `--grid`. Coarsening is only defined on the metric EASE grid -- check this
-    # before building the geobox so a mis-set grid fails fast.
-    resolution = processing_config.get('resolution')
-    if resolution is not None and ctx.grid_id != EASE_GRID_ID:
+    # The DuckDB block-aggregation engine only makes sense on the metric,
+    # exactly-tileable canonical EASE grid.
+    if ctx.grid_id != EASE_GRID_ID:
         raise ValueError(
-            f"assemble --grid coarsening (resolution={resolution} m) requires "
-            f"pipeline.grid={EASE_GRID_ID!r}, but the configured grid is {ctx.grid_id!r}."
+            f"assemble requires pipeline.grid={EASE_GRID_ID!r} (DuckDB block "
+            f"aggregation on the canonical grid); configured grid is {ctx.grid_id!r}."
         )
 
-    # Target geobox: the grid `pipeline.grid` selects (EASE6933 or legacy 4326).
-    target_geobox = get_target_geobox(ctx)
-    native_res = abs(target_geobox.resolution.x)
-
-    # Grid-shake: shift the whole run's grid origin once, up front. The offset is
-    # a fraction of one *output* cell, expressed here in native pixels.
-    shake_offset = processing_config.get('shake_offset') or (0.0, 0.0)
-    dx, dy = float(shake_offset[0]), float(shake_offset[1])
-    if dx or dy:
-        factor = (resolution / native_res) if resolution else 1.0
-        target_geobox = shift_geobox_origin(target_geobox, dx * factor, dy * factor)
-        logger.info(
-            "Grid-shake variant %r: origin shifted by (%.3f, %.3f) output-cells",
-            processing_config.get('shake_label'), dx, dy,
-        )
-
-    processing_config.setdefault('tile_size', DEFAULT_TILE_SIZE)
-    processing_config['tile_size'] = adjust_tile_size_for_reprojection(
-        native_res, resolution, processing_config['tile_size']
-    )
-
-    # Discover tiles
-    logger.info("Discovering available tiles...")
-    all_tiles = get_available_tiles(assembly_config, target_geobox)
-    logger.info(f"Found {len(all_tiles)} tiles to process")
-
-    if not all_tiles:
-        logger.warning("No tiles found to process")
+    resolution = processing_config.get('resolution')
+    mode = processing_config.get('assembly_mode', 'create')
+    datasource = processing_config.get('datasource')
+    if mode == 'update' and not datasource:
+        logger.error("Update mode requires datasource to be specified")
         return
 
-    # Set up Dask cluster
-    dask_kwargs = _setup_dask_cluster(processing_config)
-    logger.info("Creating Dask cluster for data loading and processing...")
-
-    with DaskClientContextManager(**dask_kwargs) as client:
-        logger.info(f"Dask client initialized: {client.dashboard_link}")
-
-        # Load land mask if requested
-        land_mask_ds = None
-        if processing_config.get('apply_land_mask', False):
-            land_mask_path = processing_config.get('land_mask_path')
-            land_mask_ds = load_land_mask(
-                data_root, target_geobox, processing_config['tile_size'], land_mask_path
-            )
-            if land_mask_ds is not None:
-                land_mask_ds = prepare_land_mask(land_mask_ds)
-
-        # Step 1: Load datasets
-        logger.info("Step 1: Loading datasets with alignment checks...")
-        try:
-            assembly_mode = processing_config.get('assembly_mode', 'create')
-            target_datasource = processing_config.get('datasource')
-
-            if assembly_mode == 'update':
-                if not target_datasource:
-                    logger.error("Update mode requires datasource to be specified")
-                    return
-                logger.info(f"UPDATE mode: Loading only datasource '{target_datasource}'")
-                datasets = load_all_datasets(assembly_config, target_geobox, datasource_filter=target_datasource)
-            else:
-                logger.info("CREATE mode: Loading all datasets")
-                datasets = load_all_datasets(assembly_config, target_geobox)
-        except Exception as e:
-            logger.error(f"Failed to load datasets: {e}")
-            return
-
-        # Step 2: Create metadata
-        logger.info("Step 2: Creating assembly metadata...")
-        if not create_assembly_metadata(output_path, assembly_config):
-            logger.warning("Failed to create assembly metadata")
-
-        # Step 3: Process pixel tiles
-        logger.info("Step 3: Processing tiles (source-by-source)...")
-        processed_count, skipped_count = _process_all_tiles(
-            datasets, land_mask_ds, all_tiles, target_geobox,
-            assembly_config, output_path
+    # Default False here to match the pre-rewrite `run_assembly` contract for
+    # direct callers; `run_workflow_with_config` always sets this explicitly
+    # (from `assembly.land_mask`, default True) for the real pipeline path.
+    land_mask_path = None
+    if processing_config.get('apply_land_mask', False):
+        land_mask_path = processing_config.get('land_mask_path') or resolve_land_mask_path(
+            data_root, ctx.grid_id
         )
-        logger.info(
-            f"Dask processing completed. Processed {processed_count}/{len(all_tiles)} tiles, "
-            f"skipped {skipped_count} tiles"
-        )
+        if not land_mask_path:
+            logger.warning("apply_land_mask is set but no land mask was found; proceeding unmasked")
+
+    if not create_assembly_metadata(output_path, assembly_config):
+        logger.warning("Failed to create assembly metadata")
+
+    dcfg = processing_config.get('duckdb', {}) or {}
+    duckdb_cfg = DuckDBConfig(
+        threads=dcfg.get('threads'),
+        memory_limit=dcfg.get('memory_limit'),
+        temp_dir=dcfg.get('temp_dir'),
+    )
+
+    run_sql_assembly(
+        datasets=assembly_config['datasets'],
+        output_path=output_path,
+        resolution_m=resolution,
+        shake_offset=tuple(processing_config.get('shake_offset') or (0.0, 0.0)),
+        land_mask_path=land_mask_path,
+        compression=processing_config.get('compression', 'zstd'),
+        tile_size=processing_config.get('tile_size') or DEFAULT_TILE_SIZE,
+        year_range=processing_config.get('year_range'),
+        derived_pixel_ids=processing_config.get('derived_pixel_ids'),
+        mode=mode,
+        datasource=datasource,
+        duckdb_cfg=duckdb_cfg,
+    )
+    logger.info("Assembly pass complete: %s", output_path)
 
 
 def _resolve_grid_resolution(grid_label: str) -> Optional[float]:

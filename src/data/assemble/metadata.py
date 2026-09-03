@@ -36,14 +36,20 @@ def create_assembly_metadata(
 
         metadata_dict = {
             'assembly_config': assembly_config,
+            'engine': 'duckdb',
             'output_format': 'parquet',
             'partitioning': 'ix/iy tiles',
-            'scaling': 'Applied on grid-store read with mask_and_scale=True',
+            'downsampling': (
+                'exact integer block aggregation on the canonical EASE grid; '
+                'per-variable SQL aggregate from each source\'s resampling method '
+                '(mode ties broken arbitrarily)'
+            ),
             'description': 'Assembled pixel panel in tile-partitioned parquet format',
             'grid_label': processing.get('grid_label'),
             'resolution_m': processing.get('resolution'),
             'shake_label': processing.get('shake_label'),
             'shake_offset': processing.get('shake_offset'),
+            'duckdb': processing.get('duckdb'),
             'sources': sorted(assembly_config.get('datasets', {}).keys()),
         }
 
