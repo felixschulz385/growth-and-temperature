@@ -70,7 +70,9 @@ def write_land_mask(root: str, *, W: int, H: int, land) -> str:
 
 
 def _test_con(out: str):
-    return se._connect(se.DuckDBConfig(), os.path.join(os.path.dirname(out.rstrip("/")), ".spill"))
+    spill = os.path.join(os.path.dirname(out.rstrip("/")), ".spill")
+    os.makedirs(spill, exist_ok=True)
+    return se._connect(se.DuckDBConfig(), spill, os.path.join(spill, se._WORKDB_NAME))
 
 
 def run_create(g: se.GridFacts, datasets: Dict[str, dict], out: str, *,

@@ -270,7 +270,7 @@ def _src_select(
     """The row-level scan for one source: ``pixel_id`` (+ ``_repr_cell`` only
     when a derived pixel id needs it), ``[year]``, and each variable with NaN
     nodata mapped to NULL. Land masking is a semi-join against the ``land_cells``
-    temp table built once by the driver."""
+    table built once by the driver."""
     pid = _pixel_id_sql("cell_id::BIGINT", g, g.F, g.DR, g.DC)
     read = f"read_parquet('{src.glob}', union_by_name = true)"
     where = []
@@ -298,7 +298,7 @@ def _agg_select(
     want_repr: bool,
 ) -> str:
     """A standalone ``SELECT`` (possibly ``WITH``-prefixed) that block-aggregates
-    one source to the coarse ``pixel_id`` grid -- fed to ``CREATE TEMP TABLE
+    one source to the coarse ``pixel_id`` grid -- fed to ``CREATE OR REPLACE TABLE
     agg_<name> AS ...`` so each source's scan+group-by completes and frees its
     memory before the next, instead of ten aggregation pipelines living at once
     inside a single query.
@@ -406,8 +406,16 @@ class DuckDBConfig:
     max_temp_size: str = DEFAULT_MAX_TEMP_SIZE
 
 
-def _connect(cfg: DuckDBConfig, spill_dir: str) -> duckdb.DuckDBPyConnection:
-    con = duckdb.connect()
+#: Basename of the on-disk working database created inside the spill directory.
+#: The engine connects to a real database file (not ``:memory:``) so the
+#: ``land_cells`` / ``agg_<name>`` / ``panel`` working tables are disk-backed --
+#: only their hot pages sit in the buffer pool, the rest is flushed rather than
+#: reactively evicted -- and it is removed with the spill directory after the run.
+_WORKDB_NAME = "assemble.duckdb"
+
+
+def _connect(cfg: DuckDBConfig, spill_dir: str, db_path: str) -> duckdb.DuckDBPyConnection:
+    con = duckdb.connect(db_path)
     con.execute("SET preserve_insertion_order = false")
     # 119 native tiles -> keep every partition file open for a single-pass write.
     con.execute("SET partitioned_write_max_open_files = 512")
@@ -591,7 +599,17 @@ def run_sql_assembly(
         owns_spill_dir = True
     logger.info("DuckDB spill: %s (requested max %s)", spill_dir, duckdb_cfg.max_temp_size)
 
-    con = _connect(duckdb_cfg, spill_dir)
+    # Real on-disk working database inside the spill dir (never ``:memory:``), so
+    # the land_cells / agg_<name> / panel working tables are disk-backed.
+    os.makedirs(spill_dir, exist_ok=True)
+    db_path = os.path.join(spill_dir, _WORKDB_NAME)
+    for stale in (db_path, db_path + ".wal"):
+        try:
+            os.remove(stale)
+        except OSError:
+            pass
+
+    con = _connect(duckdb_cfg, spill_dir, db_path)
     try:
         if mode == "update":
             _run_update(con, sources[0], g, output_path,
@@ -611,6 +629,14 @@ def run_sql_assembly(
                 os.rmdir(DEFAULT_SPILL_ROOT)
             except OSError:
                 pass
+        else:
+            # Caller owns the spill dir and we leave it in place, but the working
+            # database is ours -- drop it so it never lingers as stale state.
+            for leftover in (db_path, db_path + ".wal"):
+                try:
+                    os.remove(leftover)
+                except OSError:
+                    pass
 
 
 def _check_no_column_collisions(sources: List[_Source], derived_specs: List[Tuple[str, float]]) -> None:
@@ -634,19 +660,20 @@ def _check_no_column_collisions(sources: List[_Source], derived_specs: List[Tupl
 def _materialize_aggregates(
     con, sources, g, *, land_scan, year_range, want_repr,
 ) -> None:
-    """``CREATE TEMP TABLE land_cells`` (once) + ``agg_<name>`` per source,
+    """``CREATE OR REPLACE TABLE land_cells`` (once) + ``agg_<name>`` per source,
     one at a time. Each source's scan + group-by completes and releases its
-    memory before the next, so peak RAM is one aggregation, not ten -- and the
-    temp tables spill to the configured directory. This is what keeps a
-    full-grid create inside its memory limit."""
+    memory before the next, so peak RAM is one aggregation, not ten. The tables
+    are ordinary tables in the on-disk working database (``_connect``), so their
+    storage is flushed to disk and only the hot pages stay resident. This is what
+    keeps a full-grid create inside its memory limit."""
     if land_scan:
-        con.execute(f"CREATE TEMP TABLE land_cells AS {land_scan}")
+        con.execute(f"CREATE OR REPLACE TABLE land_cells AS {land_scan}")
         logger.info("land mask: %d land cells", con.execute("SELECT count(*) FROM land_cells").fetchone()[0])
     for s in sources:
         sel = _agg_select(
             s, g, use_land_cells=bool(land_scan), year_range=year_range, want_repr=want_repr
         )
-        con.execute(f"CREATE TEMP TABLE agg_{s.name} AS\n{sel}")
+        con.execute(f"CREATE OR REPLACE TABLE agg_{s.name} AS\n{sel}")
         rows = con.execute(f"SELECT count(*) FROM agg_{s.name}").fetchone()[0]
         logger.info("aggregated %s -> %d coarse rows", s.name, rows)
 
@@ -663,11 +690,11 @@ def _run_create(
     )
 
     # Materialize the merged panel too, so the FULL OUTER JOIN of the coarse
-    # aggregates completes and spills before the partitioned COPY sink starts --
+    # aggregates completes and flushes before the partitioned COPY sink starts --
     # the two never contend for memory at once.
-    merged = _merge_sql(sources)  # FULL OUTER JOIN over the agg_<name> temp tables
+    merged = _merge_sql(sources)  # FULL OUTER JOIN over the agg_<name> tables
     repr_sel = f", {_repr_cell_coalesce(sources)} AS _repr_cell" if want_repr else ""
-    con.execute(f"CREATE TEMP TABLE panel AS SELECT *{repr_sel} FROM {merged}")
+    con.execute(f"CREATE OR REPLACE TABLE panel AS SELECT *{repr_sel} FROM {merged}")
     logger.info(
         "merged panel -> %d rows", con.execute("SELECT count(*) FROM panel").fetchone()[0]
     )

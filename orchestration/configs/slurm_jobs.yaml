@@ -378,8 +378,8 @@ assembly_jobs:
     time: "03:00:00"
     qos: 6hours
     cpus: 8
-    mem: 96G
-    mem_fraction: 0.85
+    mem: 128G
+    mem_fraction: 0.75
     partition: scicore
   - grid: "25km"
     time: "01:00:00"
