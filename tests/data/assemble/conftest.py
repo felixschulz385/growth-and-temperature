@@ -69,6 +69,10 @@ def write_land_mask(root: str, *, W: int, H: int, land) -> str:
     return path
 
 
+def _test_con(out: str):
+    return se._connect(se.DuckDBConfig(), os.path.join(os.path.dirname(out.rstrip("/")), ".spill"))
+
+
 def run_create(g: se.GridFacts, datasets: Dict[str, dict], out: str, *,
                land_mask_path: Optional[str] = None,
                derived: Optional[dict] = None,
@@ -76,7 +80,7 @@ def run_create(g: se.GridFacts, datasets: Dict[str, dict], out: str, *,
     sources, join_specs = se._build_sources(datasets, datasource_filter=None)
     derived_specs = se.normalize_derived_pixel_id_specs(derived)
     se._check_no_column_collisions(sources, derived_specs)
-    con = se._connect(se.DuckDBConfig())
+    con = _test_con(out)
     try:
         se._run_create(
             con, sources, join_specs, g, shake_offset, out,
@@ -93,7 +97,7 @@ def run_create(g: se.GridFacts, datasets: Dict[str, dict], out: str, *,
 def run_update(g: se.GridFacts, datasets: Dict[str, dict], datasource: str, out: str,
                *, land_mask_path: Optional[str] = None) -> pd.DataFrame:
     sources, _join_specs = se._build_sources(datasets, datasource_filter=datasource)
-    con = se._connect(se.DuckDBConfig())
+    con = _test_con(out)
     try:
         se._run_update(
             con, sources[0], g, out,

@@ -105,12 +105,15 @@ def render_wrap_command(job: dict, cluster: dict, args: argparse.Namespace) -> s
     run_parts += [
         "--threads $SLURM_CPUS_PER_TASK",
         '--memory-limit "${MEMORY_LIMIT_GB}GB"',
-        f'--temp-dir "{cluster["scratch_prefix"]}/assemble_${{SLURM_JOB_ID}}"',
     ]
+    # No --temp-dir: the engine spills to a private assemble_* subdir of
+    # <project_root>/scratch_nobackup (capped at min(1 TB, 90% free)), created
+    # before the run and removed after. Pass --temp-dir to use node-local
+    # /scratch instead when that filesystem is faster.
     if getattr(args, "debug", False):
         run_parts.append("--debug")
 
-    # DuckDB gets the bulk of the node's RAM; it spills the rest to --temp-dir.
+    # DuckDB gets the bulk of the node's RAM and spills the rest to disk.
     mem_fraction = job.get("mem_fraction", 0.85)
     lines = [
         f'cd {cluster["project_root"]}',

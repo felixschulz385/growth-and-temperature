@@ -2,6 +2,8 @@
 aggregation per resampling method, static x annual merge, land mask, join_on
 sidecar, fillna, derived pixel ids, column order, and grid-shake."""
 
+import os
+
 import numpy as np
 import pytest
 
@@ -177,6 +179,36 @@ def test_update_refuses_when_refreshed_source_is_empty(fixture):
     )
     with pytest.raises(ValueError, match="refreshed aggregate|empty"):
         run_update(grid(F=2), datasets, "modis", out, land_mask_path=lm)
+
+
+def test_spill_dir_lifecycle(tmp_path, monkeypatch):
+    from src.data.assemble import sql_engine as se
+
+    root = str(tmp_path / "g")
+    src = write_tiled_source(root, "m", W=W, H=H, years=[2000],
+                             value_fn=lambda r, c, y: {"v": float(r + c)})
+    datasets = {"m": {"path": src, "index_cols": ["pixel_id", "year"], "resampling": "average"}}
+    common = dict(
+        datasets=datasets, resolution_m=10000.0, shake_offset=(0.0, 0.0),
+        land_mask_path=None, compression="zstd", tile_size=2048, year_range=None,
+        derived_pixel_ids=None, mode="create", datasource=None,
+    )
+
+    # default: a private assemble_* subdir under the scratch root, removed after;
+    # a sibling belonging to another component is left untouched.
+    scratch_root = str(tmp_path / "scratch_nobackup")
+    monkeypatch.setattr(se, "DEFAULT_SPILL_ROOT", scratch_root)
+    sibling = os.path.join(scratch_root, "snl_mining")
+    os.makedirs(sibling)
+    se.run_sql_assembly(output_path=str(tmp_path / "out1"), duckdb_cfg=se.DuckDBConfig(), **common)
+    assert os.path.isdir(sibling)                                   # sibling untouched
+    assert not any(n.startswith("assemble_") for n in os.listdir(scratch_root))  # our subdir gone
+
+    # explicit temp_dir: used as-is, left in place
+    explicit = str(tmp_path / "my_spill")
+    se.run_sql_assembly(output_path=str(tmp_path / "out2"),
+                        duckdb_cfg=se.DuckDBConfig(temp_dir=explicit), **common)
+    assert os.path.isdir(explicit)
 
 
 def test_colliding_output_column_names_are_rejected(tmp_path):

@@ -31,6 +31,7 @@ from __future__ import annotations
 import glob
 import logging
 import os
+import re
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -258,92 +259,92 @@ def _agg_expr(method: str, col: str) -> str:
     return fn(f'"{col}"')
 
 
-def _source_ctes(
+def _src_select(
     src: _Source,
     g: GridFacts,
     *,
     use_land_cells: bool,
     year_range: Optional[Sequence[int]],
+    want_repr: bool,
 ) -> str:
-    """Return the comma-joined CTE fragment for one source: ``src_<name>``,
-    optionally ``cutoffs_<name>`` + ``win_<name>`` (winsorize), then
-    ``agg_<name>`` (columns ``pixel_id``, ``_repr_cell_<name>``, ``[year]``,
-    then the source's prefixed value columns).
-
-    ``use_land_cells`` semi-joins against the shared ``land_cells`` CTE (built
-    once by :func:`_cte_block`), not a per-source re-scan of the mask.
-    """
-    winsorize = src.winsorize
+    """The row-level scan for one source: ``pixel_id`` (+ ``_repr_cell`` only
+    when a derived pixel id needs it), ``[year]``, and each variable with NaN
+    nodata mapped to NULL. Land masking is a semi-join against the ``land_cells``
+    temp table built once by the driver."""
     pid = _pixel_id_sql("cell_id::BIGINT", g, g.F, g.DR, g.DC)
-
     read = f"read_parquet('{src.glob}', union_by_name = true)"
     where = []
     if use_land_cells:
         where.append("cell_id IN (SELECT cell_id FROM land_cells)")
     if src.is_annual and year_range:
         where.append(f"year BETWEEN {int(year_range[0])} AND {int(year_range[1])}")
-    where_sql = f" WHERE {' AND '.join(where)}" if where else ""
+    where_sql = f"\n    WHERE {' AND '.join(where)}" if where else ""
 
-    val_cols = ",\n        ".join(
-        f'{_nan_to_null(v)} AS "{out}"'
-        for v, out in zip(src.variables, src.out_columns)
-    )
-    year_sel = "year,\n        " if src.is_annual else ""
-    src_cte = (
-        f"src_{src.name} AS (\n"
-        f"    SELECT\n"
-        f"        {pid} AS pixel_id,\n"
-        f"        cell_id::BIGINT AS _repr_cell,\n"
-        f"        {year_sel}{val_cols}\n"
-        f"    FROM {read}{where_sql}\n"
-        f")"
-    )
+    cols = [f"{pid} AS pixel_id"]
+    if want_repr:
+        cols.append("cell_id::BIGINT AS _repr_cell")
+    if src.is_annual:
+        cols.append("year")
+    cols += [f'{_nan_to_null(v)} AS "{out}"' for v, out in zip(src.variables, src.out_columns)]
+    return "SELECT\n        " + ",\n        ".join(cols) + f"\n    FROM {read}{where_sql}"
 
-    from_rel = f"src_{src.name}"
-    if winsorize and winsorize > 0:
-        lo, hi = winsorize, 1.0 - winsorize
-        # Bounded aggregate (per year for annual sources), not an unbounded
-        # window over the whole column -- one small row of cutoffs, joined back.
-        cut_grp = "year" if src.is_annual else None
-        cut_cols = ",\n        ".join(
-            f'quantile_cont("{out}", {lo}) AS lo_{i}, quantile_cont("{out}", {hi}) AS hi_{i}'
-            for i, out in enumerate(src.out_columns)
-        )
-        cut_sel = (f"year,\n        {cut_cols}" if cut_grp else cut_cols)
-        cut_grp_sql = "\n    GROUP BY year" if cut_grp else ""
-        clamp_cols = ",\n        ".join(
-            f'least(greatest("{out}", c.lo_{i}), c.hi_{i}) AS "{out}"'
-            for i, out in enumerate(src.out_columns)
-        )
-        keep = ("s.pixel_id, s._repr_cell, s.year" if src.is_annual else "s.pixel_id, s._repr_cell")
-        join_on = "ON s.year = c.year" if cut_grp else "ON TRUE"
-        src_cte += (
-            f",\ncutoffs_{src.name} AS (\n"
-            f"    SELECT {cut_sel}\n    FROM src_{src.name}{cut_grp_sql}\n"
-            f"),\nwin_{src.name} AS (\n"
-            f"    SELECT {keep},\n        {clamp_cols}\n"
-            f"    FROM src_{src.name} s JOIN cutoffs_{src.name} c {join_on}\n"
-            f")"
-        )
-        from_rel = f"win_{src.name}"
 
+def _agg_select(
+    src: _Source,
+    g: GridFacts,
+    *,
+    use_land_cells: bool,
+    year_range: Optional[Sequence[int]],
+    want_repr: bool,
+) -> str:
+    """A standalone ``SELECT`` (possibly ``WITH``-prefixed) that block-aggregates
+    one source to the coarse ``pixel_id`` grid -- fed to ``CREATE TEMP TABLE
+    agg_<name> AS ...`` so each source's scan+group-by completes and frees its
+    memory before the next, instead of ten aggregation pipelines living at once
+    inside a single query.
+    """
+    group_keys = "pixel_id, year" if src.is_annual else "pixel_id"
+    repr_sel = f"any_value(_repr_cell) AS _repr_cell_{src.name},\n        " if want_repr else ""
     agg_val_cols = ",\n        ".join(
         f'{_agg_expr(src.method_by_var[v], out)} AS "{out}"'
         for v, out in zip(src.variables, src.out_columns)
     )
-    group_keys = "pixel_id, year" if src.is_annual else "pixel_id"
     not_all_null = " OR ".join(f'"{out}" IS NOT NULL' for out in src.out_columns)
-    agg_cte = (
-        f"agg_{src.name} AS (\n"
-        f"    SELECT {group_keys},\n"
-        f"        any_value(_repr_cell) AS _repr_cell_{src.name},\n"
-        f"        {agg_val_cols}\n"
-        f"    FROM {from_rel}\n"
-        f"    GROUP BY {group_keys}\n"
-        f"    HAVING {not_all_null}\n"
-        f")"
+    src_sql = _src_select(src, g, use_land_cells=use_land_cells, year_range=year_range, want_repr=want_repr)
+
+    if src.winsorize and src.winsorize > 0:
+        lo, hi = src.winsorize, 1.0 - src.winsorize
+        # Bounded per-(variable[, year]) cutoffs, joined back -- not an unbounded
+        # window over the whole column.
+        cut_cols = ", ".join(
+            f'quantile_cont("{out}", {lo}) AS lo_{i}, quantile_cont("{out}", {hi}) AS hi_{i}'
+            for i, out in enumerate(src.out_columns)
+        )
+        clamp = ",\n        ".join(
+            f'least(greatest(w."{out}", c.lo_{i}), c.hi_{i}) AS "{out}"'
+            for i, out in enumerate(src.out_columns)
+        )
+        keep = "w.pixel_id" + (", w._repr_cell" if want_repr else "") + (", w.year" if src.is_annual else "")
+        if src.is_annual:
+            cut_body = f"SELECT year, {cut_cols} FROM s GROUP BY year"
+            cut_join = "c ON w.year = c.year"
+        else:
+            cut_body = f"SELECT {cut_cols} FROM s"
+            cut_join = "c ON TRUE"
+        from_rel = (
+            f"(\n    WITH s AS (\n    {src_sql}\n    ), cutoffs AS ({cut_body})\n"
+            f"    SELECT {keep},\n        {clamp}\n"
+            f"    FROM s w JOIN cutoffs {cut_join}\n    )"
+        )
+    else:
+        from_rel = f"(\n    {src_sql}\n    )"
+
+    return (
+        f"SELECT {group_keys},\n        {repr_sel}{agg_val_cols}\n"
+        f"FROM {from_rel} agg_src\n"
+        f"GROUP BY {group_keys}\n"
+        f"HAVING {not_all_null}"
     )
-    return f"{src_cte},\n{agg_cte}"
 
 
 def _merge_sql(sources: List[_Source]) -> str:
@@ -370,23 +371,59 @@ def _repr_cell_coalesce(sources: List[_Source]) -> str:
 # Driver
 # ---------------------------------------------------------------------------
 
+#: Project root (``src/data/assemble/sql_engine.py`` -> up 3). ``scratch_nobackup``
+#: under it is the repo-wide gitignored scratch convention (also used by the
+#: snl_mining scraper and the analysis runner), so the engine spills to a
+#: *run-private* subdirectory of it and only ever removes that subdirectory.
+_PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+DEFAULT_SPILL_ROOT = os.path.join(_PROJECT_ROOT, "scratch_nobackup")
+DEFAULT_MAX_TEMP_SIZE = "1TB"
+
+_SIZE_UNITS = {
+    "": 1, "B": 1,
+    "KB": 1000, "MB": 1000**2, "GB": 1000**3, "TB": 1000**4,
+    "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3, "TIB": 1024**4,
+}
+
+
+def _parse_size(text: str) -> int:
+    m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([A-Za-z]*)\s*", text)
+    if not m:
+        raise ValueError(f"unparseable size {text!r}")
+    return int(float(m.group(1)) * _SIZE_UNITS[m.group(2).upper()])
+
+
 @dataclass
 class DuckDBConfig:
     threads: Optional[int] = None
     memory_limit: Optional[str] = None
+    #: Explicit spill directory, used as-is and never removed. ``None`` -> a
+    #: private ``assemble_*`` subdir of ``<project_root>/scratch_nobackup``,
+    #: created before the run and removed after.
     temp_dir: Optional[str] = None
+    #: Requested cap on total spill. Clamped down to 90% of the volume's free
+    #: space so it is always a ceiling, never a raise of DuckDB's own default.
+    max_temp_size: str = DEFAULT_MAX_TEMP_SIZE
 
 
-def _connect(cfg: DuckDBConfig) -> duckdb.DuckDBPyConnection:
+def _connect(cfg: DuckDBConfig, spill_dir: str) -> duckdb.DuckDBPyConnection:
     con = duckdb.connect()
     con.execute("SET preserve_insertion_order = false")
+    # 119 native tiles -> keep every partition file open for a single-pass write.
+    con.execute("SET partitioned_write_max_open_files = 512")
     if cfg.threads:
         con.execute(f"SET threads TO {int(cfg.threads)}")
     if cfg.memory_limit:
         con.execute(f"SET memory_limit = '{cfg.memory_limit}'")
-    if cfg.temp_dir:
-        os.makedirs(cfg.temp_dir, exist_ok=True)
-        con.execute(f"SET temp_directory = '{cfg.temp_dir}'")
+    os.makedirs(spill_dir, exist_ok=True)
+    con.execute(f"SET temp_directory = '{spill_dir}'")
+    if cfg.max_temp_size:
+        try:
+            free = shutil.disk_usage(spill_dir).free
+            cap = min(_parse_size(cfg.max_temp_size), int(free * 0.9))
+            con.execute(f"SET max_temp_directory_size = '{cap}B'")
+        except Exception as exc:  # noqa: BLE001 -- fall back to DuckDB's default cap
+            logger.warning("could not set max_temp_directory_size (%s); using DuckDB default", exc)
     return con
 
 
@@ -541,7 +578,20 @@ def run_sql_assembly(
     land_scan = _land_scan_sql(land_mask_path)
     derived_specs = normalize_derived_pixel_id_specs(derived_pixel_ids)
 
-    con = _connect(duckdb_cfg)
+    if duckdb_cfg.temp_dir:
+        # Caller owns it: use as-is, leave it in place.
+        spill_dir = duckdb_cfg.temp_dir
+        owns_spill_dir = False
+    else:
+        # A private subdir of the shared scratch root -- unique per run so
+        # concurrent assembly jobs never collide, and cleanup can only ever
+        # touch this run's own directory (never the shared root or a sibling).
+        os.makedirs(DEFAULT_SPILL_ROOT, exist_ok=True)
+        spill_dir = tempfile.mkdtemp(prefix="assemble_", dir=DEFAULT_SPILL_ROOT)
+        owns_spill_dir = True
+    logger.info("DuckDB spill: %s (requested max %s)", spill_dir, duckdb_cfg.max_temp_size)
+
+    con = _connect(duckdb_cfg, spill_dir)
     try:
         if mode == "update":
             _run_update(con, sources[0], g, output_path,
@@ -554,6 +604,13 @@ def run_sql_assembly(
                         derived_specs=derived_specs, compression=compression)
     finally:
         con.close()
+        if owns_spill_dir:
+            shutil.rmtree(spill_dir, ignore_errors=True)
+            # tidy the scratch root if we created it and nothing else uses it
+            try:
+                os.rmdir(DEFAULT_SPILL_ROOT)
+            except OSError:
+                pass
 
 
 def _check_no_column_collisions(sources: List[_Source], derived_specs: List[Tuple[str, float]]) -> None:
@@ -574,15 +631,24 @@ def _check_no_column_collisions(sources: List[_Source], derived_specs: List[Tupl
             seen[col] = s.name
 
 
-def _cte_block(sources: List[_Source], g: GridFacts, *, land_scan: Optional[str], year_range) -> str:
-    parts = []
+def _materialize_aggregates(
+    con, sources, g, *, land_scan, year_range, want_repr,
+) -> None:
+    """``CREATE TEMP TABLE land_cells`` (once) + ``agg_<name>`` per source,
+    one at a time. Each source's scan + group-by completes and releases its
+    memory before the next, so peak RAM is one aggregation, not ten -- and the
+    temp tables spill to the configured directory. This is what keeps a
+    full-grid create inside its memory limit."""
     if land_scan:
-        parts.append(f"land_cells AS (\n    {land_scan}\n)")
-    parts += [
-        _source_ctes(s, g, use_land_cells=bool(land_scan), year_range=year_range)
-        for s in sources
-    ]
-    return "WITH " + ",\n".join(parts)
+        con.execute(f"CREATE TEMP TABLE land_cells AS {land_scan}")
+        logger.info("land mask: %d land cells", con.execute("SELECT count(*) FROM land_cells").fetchone()[0])
+    for s in sources:
+        sel = _agg_select(
+            s, g, use_land_cells=bool(land_scan), year_range=year_range, want_repr=want_repr
+        )
+        con.execute(f"CREATE TEMP TABLE agg_{s.name} AS\n{sel}")
+        rows = con.execute(f"SELECT count(*) FROM agg_{s.name}").fetchone()[0]
+        logger.info("aggregated %s -> %d coarse rows", s.name, rows)
 
 
 def _run_create(
@@ -590,15 +656,24 @@ def _run_create(
     *, land_scan, year_range, derived_specs, compression,
 ) -> None:
     any_annual = any(s.is_annual for s in sources)
-    cte_sql = _cte_block(sources, g, land_scan=land_scan, year_range=year_range)
+    want_repr = bool(derived_specs)
 
-    merged = _merge_sql(sources)
-    repr_cell = _repr_cell_coalesce(sources)
-    merged_cte = (
-        f"{cte_sql},\n"
-        f"panel AS (\n    SELECT *, {repr_cell} AS _repr_cell\n    FROM {merged}\n)"
+    _materialize_aggregates(
+        con, sources, g, land_scan=land_scan, year_range=year_range, want_repr=want_repr
     )
-    derived_col_sql = _derived_column_sql(derived_specs, g, shake_offset, "_repr_cell")
+
+    # Materialize the merged panel too, so the FULL OUTER JOIN of the coarse
+    # aggregates completes and spills before the partitioned COPY sink starts --
+    # the two never contend for memory at once.
+    merged = _merge_sql(sources)  # FULL OUTER JOIN over the agg_<name> temp tables
+    repr_sel = f", {_repr_cell_coalesce(sources)} AS _repr_cell" if want_repr else ""
+    con.execute(f"CREATE TEMP TABLE panel AS SELECT *{repr_sel} FROM {merged}")
+    logger.info(
+        "merged panel -> %d rows", con.execute("SELECT count(*) FROM panel").fetchone()[0]
+    )
+    derived_col_sql = (
+        _derived_column_sql(derived_specs, g, shake_offset, "_repr_cell") if want_repr else []
+    )
 
     join_cols = _register_join_tables(con, join_specs)
     from_rel = _apply_joins_sql("panel", join_specs)
@@ -612,7 +687,7 @@ def _run_create(
         shutil.rmtree(stale, ignore_errors=True)
     os.makedirs(output_path, exist_ok=True)
     copy_sql = (
-        f"COPY (\n{merged_cte}\n{select_sql}\n) TO '{output_path}' "
+        f"COPY (\n{select_sql}\n) TO '{output_path}' "
         f"(FORMAT parquet, PARTITION_BY (ix, iy), OVERWRITE_OR_IGNORE true, "
         f"COMPRESSION '{compression}', FILENAME_PATTERN 'data_{{i}}')"
     )
@@ -638,7 +713,6 @@ def _run_update(
     # hive partition columns (ix/iy) are in the path, not the file schema
     existing_cols = [c for c in pq.ParquetFile(panel_parts[0]).schema_arrow.names if c not in ("ix", "iy")]
 
-    cte_sql = _cte_block([source], g, land_scan=land_scan, year_range=year_range)
     key = "pixel_id, year" if source.is_annual else "pixel_id"
     t_cols = set(source.out_columns)
     missing = t_cols.difference(existing_cols)
@@ -648,10 +722,14 @@ def _run_update(
             f"existing panel at {output_path}; run `assemble create` to add a new source"
         )
 
+    _materialize_aggregates(
+        con, [source], g, land_scan=land_scan, year_range=year_range, want_repr=False
+    )
+
     # Guard: an empty refreshed aggregate (broken/all-NaN re-prepare, or every
     # group dropped by HAVING) would NULL out this source's columns and the
     # atomic swap would commit the corrupted panel. Abort instead.
-    n = con.execute(f"{cte_sql}\nSELECT count(*) FROM agg_{source.name}").fetchone()[0]
+    n = con.execute(f"SELECT count(*) FROM agg_{source.name}").fetchone()[0]
     if n == 0:
         raise ValueError(
             f"update mode: refreshed aggregate for {source.name!r} is empty -- refusing to "
@@ -669,7 +747,7 @@ def _run_update(
     tmp_dir = tempfile.mkdtemp(prefix=".assemble_update_", dir=os.path.dirname(output_path.rstrip("/")))
     try:
         copy_sql = (
-            f"COPY (\n{cte_sql}\n"
+            f"COPY (\n"
             f"SELECT {proj}, e.ix, e.iy\n"
             f"FROM read_parquet('{existing_glob}', hive_partitioning = true) e\n"
             f"LEFT JOIN agg_{source.name} t USING ({key})\n"

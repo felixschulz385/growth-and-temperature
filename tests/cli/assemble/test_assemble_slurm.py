@@ -59,7 +59,8 @@ def test_render_wrap_command_create_uses_gnt_and_assemble_create():
     assert "--shake quad" in wrap
     assert "--threads $SLURM_CPUS_PER_TASK" in wrap
     assert '--memory-limit "${MEMORY_LIMIT_GB}GB"' in wrap
-    assert "assemble_${SLURM_JOB_ID}" in wrap
+    # spill dir is the engine default (<project_root>/scratch_nobackup), not passed here
+    assert "--temp-dir" not in wrap
 
 
 def test_render_wrap_command_update_passes_datasource():
