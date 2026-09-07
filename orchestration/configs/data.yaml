@@ -703,7 +703,7 @@ assembly:
   output_root: "assembled"
   compression: "zstd"
   land_mask: true
-  # year_range: [1992, 2022]   # optional panel-wide year clip
+  year_range: [1992, 2022]   # optional panel-wide year clip
   # tile_size: 2048            # optional override of the shared PREPARE tile grid
   # Order below = column order in the assembled panel. For pixel-grid sources
   # `data_path`+`family` resolve to
