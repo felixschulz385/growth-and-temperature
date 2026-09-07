@@ -55,7 +55,7 @@ Per-`(tile, year)` `StepTarget`s (`_plan_fetch`). For each target, `_execute_fet
    month-first-then-annual composites `lst` and each emissivity/view band via
    the shared `composite_to_annual` helper (`src/data/common/raster/compositing.py`).
 4. Writes one multi-band GeoTIFF per `(year, tile)`: annual `lst_night`,
-   `valid_period_count_annual`, `valid_month_count_annual`, per-product
+   `valid_period_count_night_annual`, `valid_month_count_night_annual`, per-product
    emissivity/view bands, plus one band per month for `lst_night_monthly_MM`
    and `valid_period_count_monthly_MM` (`_write_annual_geotiff`).
 
@@ -131,7 +131,7 @@ present in the FETCH GeoTIFFs, but only `lst_night` is declared/checked by
 | variable | dtype | meaning | nodata | value_range (checked) |
 |---|---|---|---|---|
 | `lst_night` | float32 | annual mean night LST, Kelvin (scale/offset already applied at FETCH time — code comment: "no packed decode is needed here") | NaN | `[150, 350]` — both `sources.modis.verification` and `sources.modis_robustness_11a1.verification` in `data.yaml` declare `expected_vars: ["lst_night"]`, `value_range: [150, 350]`, matching the Python-side default passed by `_plan_grid`'s `verify.verification_meta(..., expected_vars=("lst_night",), value_range=(150, 350))` |
-| `valid_period_count_annual`, `valid_month_count_annual`, `emis_29`\* /`emis_31`/`emis_32`, `view_angle`, `view_time` | float32 | diagnostics/auxiliary bands carried through mosaicking (see [FETCH](#fetch) for what each means) | NaN | not covered by `verification_meta`/`data.yaml`'s `verification:` block — no declared range check |
+| `valid_period_count_night_annual`, `valid_month_count_night_annual`, `emis_29`\* /`emis_31`/`emis_32`, `view_angle`, `view_time` | float32 | diagnostics/auxiliary bands carried through mosaicking (see [FETCH](#fetch) for what each means) | NaN | not covered by `verification_meta`/`data.yaml`'s `verification:` block — no declared range check |
 
 \* `emis_29` only exists for `21A2` (`BAND_SPECS["11A1"]` has no `emis_29` asset).
 

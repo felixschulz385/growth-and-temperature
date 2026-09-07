@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+# Repo-managed pre-commit hook. Enable once per clone with:
+#   git config core.hooksPath .githooks
+# (or run .githooks/install.sh)
+set -euo pipefail
+
+hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+python3 "${hook_dir}/check-notebook-outputs.py"

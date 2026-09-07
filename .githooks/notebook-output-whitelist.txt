@@ -1,0 +1,11 @@
+# Notebooks allowed to commit cell outputs / execution counts.
+#
+# One glob pattern per line, matched (fnmatch-style) against the repo-relative
+# path of each staged .ipynb. Blank lines and lines starting with '#' ignored.
+# '*' matches across '/' too, so "src/**" and "src/*" behave the same here.
+#
+# Examples:
+#   src/analysis/poster/visualization.ipynb   # one exact notebook
+#   src/analysis/**/*.ipynb                    # everything under an analysis dir
+#
+# Keep this list short: an entry means "outputs in git are intentional here".

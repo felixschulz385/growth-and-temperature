@@ -36,12 +36,12 @@ def test_map_config_default_plus_glob_first_match_wins():
     }
     got = resolve_resampling(
         cfg,
-        ["lst_day_mean", "lst_day_sd", "valid_period_count_annual", "valid_month_count_day_annual"],
+        ["lst_day_mean", "lst_day_sd", "valid_period_count_night_annual", "valid_month_count_day_annual"],
     )
     assert got == {
         "lst_day_mean": "average",
         "lst_day_sd": "min",
-        "valid_period_count_annual": "sum",
+        "valid_period_count_night_annual": "sum",
         "valid_month_count_day_annual": "sum",
     }
 
