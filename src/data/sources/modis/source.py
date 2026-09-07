@@ -585,8 +585,11 @@ class ModisSource(DataSource):
             data_vars["lst_night_mean"] = lst_stats["mean"].squeeze("time", drop=True).astype("float32")
             data_vars["lst_night_median"] = lst_stats["median"].squeeze("time", drop=True).astype("float32")
             data_vars["lst_night_sd"] = lst_stats["std"].squeeze("time", drop=True).astype("float32")
-            data_vars["valid_period_count_annual"] = lst_stats["valid_period_count"].squeeze("time", drop=True).astype("float32")
-            data_vars["valid_month_count_annual"] = lst_stats["valid_month_count"].squeeze("time", drop=True).astype("float32")
+            # "_night_" mirrors the "_day_" suffix on the paired columns below --
+            # previously bare "valid_period_count_annual"/"valid_month_count_annual",
+            # which made the night/day pair look asymmetric.
+            data_vars["valid_period_count_night_annual"] = lst_stats["valid_period_count"].squeeze("time", drop=True).astype("float32")
+            data_vars["valid_month_count_night_annual"] = lst_stats["valid_month_count"].squeeze("time", drop=True).astype("float32")
 
             # Day LST -- independent QC decode from the night mask above:
             # day and night overpasses have their own QC_Day/QC_Night bands

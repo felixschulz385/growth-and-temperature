@@ -134,7 +134,7 @@ def test_main_variant_writes_lst_stats_and_valid_counts_only(tmp_path, monkeypat
     with rasterio.open(target.output_path) as src:
         assert set(src.descriptions) == {
             "lst_night_mean", "lst_night_median", "lst_night_sd",
-            "valid_period_count_annual", "valid_month_count_annual",
+            "valid_period_count_night_annual", "valid_month_count_night_annual",
             "lst_day_mean", "lst_day_median", "lst_day_sd",
             "valid_period_count_day_annual", "valid_month_count_day_annual",
         }

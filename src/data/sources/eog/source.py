@@ -140,10 +140,12 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
 
     #: The VNL product variants fetched, each landing as its own column in
     #: the one `eog_viirs_annual` PREPARE output:
-    #:   * `average_masked` -> `viirs_annual`          (the masked mean
+    #:   * `average_masked` -> `viirs_annual_avg`      (the masked mean
     #:     composite -- background/fire/aurora-corrected; the standard used
     #:     in nightlights economics literature). Reprojected by area-weighted
-    #:     `sum` (flux-conserving -- docs/design/04-ingest.md §1).
+    #:     `sum` (flux-conserving -- docs/design/04-ingest.md §1). The `_avg`
+    #:     suffix (previously bare `viirs_annual`) makes explicit that this is
+    #:     the mean-radiance variant, parallel to `_median`/`_cf_cvg` below.
     #:   * `median_masked`  -> `viirs_annual_median`   (per-pixel masked
     #:     median radiance -- robust to transient bright nights). Reprojected
     #:     by `average`; a per-pixel diagnostic, NOT a flux ring sum.
@@ -155,7 +157,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
 
     #: Which VNL variant produces which output column (see VIIRS_VARIANTS).
     VIIRS_VARIANT_COLUMNS = {
-        "average_masked": "viirs_annual",
+        "average_masked": "viirs_annual_avg",
         "median_masked": "viirs_annual_median",
         "cf_cvg": "viirs_annual_cf_cvg",
     }
@@ -165,11 +167,11 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
     #: year's parquet part keeps the same 3-column schema).
     VIIRS_PRIMARY_VARIANT = "average_masked"
 
-    #: Per-column resampling for the multi-variant `viirs_annual` output,
+    #: Per-column resampling for the multi-variant `viirs_annual_avg` output,
     #: threaded through `run_tiled_prepare` -> `process_tile_region` as a
     #: `{variable: method}` map (SpatialProcessor.resample_map_for).
     VIIRS_RESAMPLING = {
-        "viirs_annual": "sum",
+        "viirs_annual_avg": "sum",
         "viirs_annual_median": "average",
         "viirs_annual_cf_cvg": "average",
     }
@@ -827,7 +829,7 @@ class EogSource(_CrawlerMixin, _SessionMixin, DataSource):
                         # radiance columns are range-checked; cf_cvg (an
                         # observation count) is left out of range_vars.
                         value_range=(-100, 1_000_000),
-                        range_vars=("viirs_annual", "viirs_annual_median"),
+                        range_vars=("viirs_annual_avg", "viirs_annual_median"),
                     ),
                 },
             )

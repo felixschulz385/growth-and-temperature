@@ -95,7 +95,7 @@ def test_output_root_fetch_and_prepare_use_top_level_trees(tmp_path):
 def test_default_resampling_is_per_column_map_for_viirs(tmp_path):
     source, _ = _make_source(tmp_path, "viirs")
     assert source.resampling == {
-        "viirs_annual": "sum",
+        "viirs_annual_avg": "sum",
         "viirs_annual_median": "average",
         "viirs_annual_cf_cvg": "average",
     }
@@ -167,11 +167,11 @@ def test_viirs_prepare_plan_carries_all_three_variant_columns(tmp_path):
     target = source.plan(PipelineStep.PREPARE, TargetSelection())[0]
     assert target.meta["years"] == [2019]
     assert target.meta["expected_vars"] == (
-        "viirs_annual",
+        "viirs_annual_avg",
         "viirs_annual_median",
         "viirs_annual_cf_cvg",
     )
-    assert target.meta["range_vars"] == ("viirs_annual", "viirs_annual_median")
+    assert target.meta["range_vars"] == ("viirs_annual_avg", "viirs_annual_median")
     assert target.meta["value_range"] == (0, 1_000_000)
     assert set(target.meta["raw_files"][2019]) == {"average_masked", "median_masked", "cf_cvg"}
 
@@ -193,7 +193,7 @@ def test_viirs_prepare_plan_keeps_year_with_only_primary_mean_file(tmp_path):
     # schema stays the full 3 columns even though only the mean file exists;
     # median/cf_cvg are NaN-filled in _load_year.
     assert target.meta["expected_vars"] == (
-        "viirs_annual",
+        "viirs_annual_avg",
         "viirs_annual_median",
         "viirs_annual_cf_cvg",
     )

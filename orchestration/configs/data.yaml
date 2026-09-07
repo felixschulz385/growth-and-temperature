@@ -338,7 +338,7 @@ sources:
       timeout: 1200
 
     # Three parallel columns (EogSource.VIIRS_VARIANTS):
-    #   viirs_annual         masked mean radiance, area-weighted "sum"
+    #   viirs_annual_avg     masked mean radiance, area-weighted "sum"
     #   viirs_annual_median  masked median radiance, "average" (per-pixel)
     #   viirs_annual_cf_cvg  cloud-free observation count, "average"
     # After "sum" onto 1 km EASE, a gas-flare / industrial-core cell reaches
@@ -357,9 +357,9 @@ sources:
     # nW/cm^2/sr; -100 keeps ~10x headroom while still rejecting -999-style
     # fill and gross sign errors.
     verification:
-      expected_vars: ["viirs_annual", "viirs_annual_median", "viirs_annual_cf_cvg"]
+      expected_vars: ["viirs_annual_avg", "viirs_annual_median", "viirs_annual_cf_cvg"]
       value_range: [-100, 1000000]
-      range_vars: ["viirs_annual", "viirs_annual_median"]
+      range_vars: ["viirs_annual_avg", "viirs_annual_median"]
 
   # EOG VIIRS gas flares -- distance-banded uint8 flag rasterized from the
   # annual global gas-flare survey (src/data/sources/eog/flare.py). Standalone
