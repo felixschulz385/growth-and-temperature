@@ -48,6 +48,7 @@ cd growth-and-temperature
 conda env create -f environment.yml
 conda activate src
 pip install -e .
+./.githooks/install.sh   # enable repo git hooks (notebook-output pre-commit check)
 ```
 
 ### Basic Usage
