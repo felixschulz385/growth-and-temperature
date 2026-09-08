@@ -14,10 +14,11 @@ tiny `(GID_N, year)`-keyed parquet table of favored units instead of a full
 pixel-grid zarr, and doesn't need GADM's polygon geometries at all (only
 `GID_N_code_mapping.json`, to translate PLAD's native `gid_1`/`gid_2` string
 codes into the same integer ids gadm's own per-pixel `GID_N` grid uses).
-Assembly merges it directly onto rows via
-`src.data.assemble.processors.TileProcessor`'s `join_on` mechanism, keyed on
-`GID_N` (fillna=False for admin units absent from the favored-unit table, via
-the assemble config, not baked in here).
+Assembly merges it directly onto rows via `src.data.assemble.sql_engine`'s
+`join_on` mechanism, keyed on the composite `(GID_N, year)` (see
+`data.yaml`'s `assembly.sources.plad`: `join_on: ["GID_2", "year"]`, with
+`fillna: false` for the admin-unit/year pairs absent from the favored table --
+set in the assemble config, not baked in here).
 
 **Quirk preserved, not "fixed"**: `get_hpc_output_path` hardcodes the string
 `"plad"` as the output path prefix, never `self.data_path` -- so even a

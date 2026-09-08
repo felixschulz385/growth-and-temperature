@@ -172,13 +172,23 @@ def validate_assembly_config(assembly_config: Dict[str, Any]) -> List[str]:
                 if not result.ok:
                     errors.append(f"Dataset '{name}' failed output verification: {result.detail}")
 
-            # join_on datasets are small GID-keyed tables merged directly onto
-            # assembled rows by an existing GID column (not block-aggregated
-            # pixel-grid data) -- see sql_engine._register_join_tables.
+            # join_on datasets are small key-aligned tables merged directly onto
+            # assembled rows by existing panel column(s) (not block-aggregated
+            # pixel-grid data) -- see sql_engine._register_join_tables. A string
+            # keys on one column (e.g. "GID_0"); a list keys on a composite
+            # (e.g. ["GID_2", "year"] for PLAD's (GID_N, year) favoritism table).
             join_on = config.get('join_on')
             if join_on is not None:
-                if not isinstance(join_on, str) or not join_on.strip():
-                    errors.append(f"Dataset '{name}' join_on must be a non-empty string")
+                cols = [join_on] if isinstance(join_on, str) else join_on
+                if (
+                    not isinstance(cols, (list, tuple))
+                    or not cols
+                    or not all(isinstance(c, str) and c.strip() for c in cols)
+                ):
+                    errors.append(
+                        f"Dataset '{name}' join_on must be a non-empty string "
+                        f"or a list of non-empty strings"
+                    )
 
             # resampling: a method string, or a {default, <glob>: <method>} map
             # for per-variable control. resolve_resampling validates the method
