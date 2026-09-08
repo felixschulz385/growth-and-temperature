@@ -187,16 +187,20 @@ def _build_sources(
     datasets: Dict[str, Dict[str, Any]],
     *,
     datasource_filter: Optional[str],
-) -> Tuple[List[_Source], Dict[str, Tuple[str, Dict[str, Any]]]]:
+) -> Tuple[List[_Source], Dict[str, Tuple[Tuple[str, ...], Dict[str, Any]]]]:
     """Split the config's datasets into reprojected pixel-grid *sources* and
     ``join_on`` sidecars. Returns ``(sources, join_specs)`` where ``join_specs``
-    maps name -> ``(join_col, dataset_cfg)``."""
+    maps name -> ``(join_cols, dataset_cfg)`` -- ``join_cols`` is a tuple of one
+    or more existing panel columns (a scalar ``join_on`` string is normalized to
+    a 1-tuple here; a list keys on a composite, e.g. ``["GID_2", "year"]`` for a
+    ``(GID_N, year)``-keyed table like PLAD's regional-favoritism sidecar)."""
     raster: List[_Source] = []
-    join_specs: Dict[str, Tuple[str, Dict[str, Any]]] = {}
+    join_specs: Dict[str, Tuple[Tuple[str, ...], Dict[str, Any]]] = {}
 
     for name, cfg in datasets.items():
         if cfg.get("join_on"):
-            join_specs[name] = (cfg["join_on"], cfg)
+            jo = cfg["join_on"]
+            join_specs[name] = ((jo,) if isinstance(jo, str) else tuple(jo), cfg)
             continue
         if datasource_filter and name != datasource_filter:
             continue
@@ -522,30 +526,38 @@ def _final_select_sql(
 
 def _register_join_tables(
     con: duckdb.DuckDBPyConnection,
-    join_specs: Dict[str, Tuple[str, Dict[str, Any]]],
+    join_specs: Dict[str, Tuple[Tuple[str, ...], Dict[str, Any]]],
 ) -> Dict[str, Tuple[Any, List[str]]]:
     """Register each ``join_on`` sidecar as a DuckDB view ``join_<name>`` and
-    return ``{name: (fillna, [prefixed value columns])}``."""
+    return ``{name: (fillna, [prefixed value columns])}``. ``column_prefix`` and
+    the duplicate-key drop both key on the full (possibly composite) join tuple,
+    never just its first column."""
     out: Dict[str, Tuple[Any, List[str]]] = {}
-    for jname, (jcol, jcfg) in join_specs.items():
+    for jname, (jcols, jcfg) in join_specs.items():
         df = pd.read_parquet(jcfg["path"], columns=jcfg.get("columns"))
-        if jcol not in df.columns:
-            raise ValueError(f"join_on dataset {jname!r}: no {jcol!r} column at {jcfg['path']}")
+        missing = [c for c in jcols if c not in df.columns]
+        if missing:
+            raise ValueError(
+                f"join_on dataset {jname!r}: no {missing[0]!r} column at {jcfg['path']}"
+            )
         prefix = jcfg.get("column_prefix") or ""
         if prefix:
-            df = df.rename(columns={c: f"{prefix}{c}" for c in df.columns if c != jcol})
-        if df[jcol].duplicated().any():
-            logger.warning("join_on %r: duplicate %r values, keeping first", jname, jcol)
-            df = df.drop_duplicates(subset=[jcol], keep="first")
+            df = df.rename(columns={c: f"{prefix}{c}" for c in df.columns if c not in jcols})
+        if df.duplicated(subset=list(jcols)).any():
+            logger.warning("join_on %r: duplicate %s values, keeping first", jname, list(jcols))
+            df = df.drop_duplicates(subset=list(jcols), keep="first")
         con.register(f"join_{jname}", df)
-        out[jname] = (jcfg.get("fillna"), [c for c in df.columns if c != jcol])
+        out[jname] = (jcfg.get("fillna"), [c for c in df.columns if c not in jcols])
     return out
 
 
-def _apply_joins_sql(base_rel: str, join_specs: Dict[str, Tuple[str, Dict[str, Any]]]) -> str:
+def _apply_joins_sql(
+    base_rel: str, join_specs: Dict[str, Tuple[Tuple[str, ...], Dict[str, Any]]]
+) -> str:
     sql = base_rel
-    for jname, (jcol, jcfg) in join_specs.items():
-        sql += f'\n    LEFT JOIN join_{jname} USING ("{jcol}")'
+    for jname, (jcols, jcfg) in join_specs.items():
+        using = ", ".join(f'"{c}"' for c in jcols)
+        sql += f"\n    LEFT JOIN join_{jname} USING ({using})"
     return sql
 
 

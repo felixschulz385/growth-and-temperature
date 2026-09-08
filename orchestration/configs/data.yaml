@@ -694,7 +694,8 @@ sources:
 #
 # Optional per-source keys honored by the merge code: `columns`, `column_prefix`,
 # `resampling` (default "mode"), `winsorize`, `index_cols` (default ["pixel_id"]),
-# `grid_id`, `join_on` (GID-keyed sidecar merged directly), `fillna`.
+# `grid_id`, `join_on` (sidecar merged directly onto rows by an existing panel
+# column, or list of columns for a composite key e.g. ["GID_2", "year"]), `fillna`.
 #
 # Output tree: <output_root>/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data_*.parquet
 assembly:
@@ -726,6 +727,18 @@ assembly:
       resampling:
         default: "average"       # LST means/medians/sd -- area-weighted mean
         "valid_*count*": "sum"   # valid_period/month_count_* -- obs counts, summed
+    glass_ta_modis:              # GLASS near-surface AIR temperature (MODIS) -- 2nd temp signal
+      data_path: "glass/Ta/MODIS"
+      family: "glass_modis_ta"
+      # 8 generic stat bands (mean/std/max/min/count_*/valid_*_count); prefix
+      # them so they don't collide with any other source's mean/max/... and
+      # read unambiguously in the panel (also leaves room for a future
+      # glass_modis LST arm with the same band names).
+      column_prefix: "glass_ta_"
+      index_cols: ["pixel_id", "year"]
+      resampling:
+        default: "average"       # mean/std/max/min Kelvin -- area-weighted mean
+        "*count*": "sum"         # count_above/below + valid_period/month_count -- day-counts, summed
     ntl_harm:                    # harmonized DMSP+VIIRS nighttime lights
       data_path: "ntl_harm/harmonized"
       family: "ntl_harm"
@@ -757,10 +770,16 @@ assembly:
       family: "ecoregions"
       index_cols: ["pixel_id"]
       resampling: "mode"         # categorical realm/biome/eco ids
-    # plad: NOT included. PLAD's regional-favoritism table is keyed by
-    #   (GID_2, year); the single-column `join_on` merge cannot key on year and
-    #   would fan every pixel-year out to all of a unit's PLAD years. Needs a
-    #   (GID_N, year) join first -- see src/data/sources/plad.py's header.
+    plad:                        # PLAD regional favoritism -- (GID_2, year)-keyed sidecar
+      # A tiny (favored GID_2, year) presence table; merged directly onto
+      # assembled rows by the composite `join_on` below -- keyed on `gadm`'s
+      # per-pixel GID_2 (above) plus the panel year. Absence from the table
+      # means "not favored" -> fillna:false. Explicit path (a prepared/<adm>/
+      # table, not a grid store); relative -> resolved against data_root.
+      # `admin_level` in `sources.plad` must stay 2 for the GID_2 key to match.
+      path: "prepared/plad/adm/plad_adm2_reg_fav.parquet"
+      join_on: ["GID_2", "year"]
+      fillna: false
     snl_mining:                  # mine counts + price-shock sums (radius buffers)
       data_path: "snl_mining"
       family: "snl_mining"
