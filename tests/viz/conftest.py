@@ -47,6 +47,71 @@ def canonical_geobox():
     return canonical_ease_geobox()
 
 
+# ---------------------------------------------------------------------------
+# Synthetic regression panel (src/viz/stats, models, regplot)
+# ---------------------------------------------------------------------------
+
+PANEL_N_UNITS = 40
+PANEL_YEARS = list(range(2000, 2020))
+PANEL_SLOPE = 2.0
+
+
+def _build_panel() -> pd.DataFrame:
+    """A tiny unbalanced panel with a known slope: `y = 2*x + unit_fe + year_fe
+    + 0.5*treat + noise`. `ntl` is skewed-positive with ~10% missing, for
+    log-transform / missingness tests."""
+    rng = np.random.default_rng(12345)
+    unit_fe = rng.normal(0.0, 1.0, PANEL_N_UNITS)
+    year_fe = {y: rng.normal(0.0, 0.5) for y in PANEL_YEARS}
+
+    rows = []
+    for u in range(PANEL_N_UNITS):
+        treat_start = int(rng.integers(PANEL_YEARS[5], PANEL_YEARS[-4]))
+        for y in PANEL_YEARS:
+            x = float(rng.normal(0.0, 1.0))
+            treat = int(y >= treat_start)
+            yy = PANEL_SLOPE * x + unit_fe[u] + year_fe[y] + 0.5 * treat + rng.normal(0.0, 0.3)
+            rows.append(
+                {
+                    "unit": f"U{u:03d}",
+                    "year": y,
+                    "country": f"C{u % 5}",
+                    "x": x,
+                    "treat": treat,
+                    "y": yy,
+                    "ntl": float(rng.lognormal(0.0, 1.0)),
+                }
+            )
+    df = pd.DataFrame(rows)
+    df.loc[df.sample(frac=0.1, random_state=7).index, "ntl"] = np.nan
+    return df
+
+
+@pytest.fixture(scope="session")
+def panel_frame() -> pd.DataFrame:
+    return _build_panel()
+
+
+@pytest.fixture()
+def panel_parquet(tmp_path, panel_frame) -> str:
+    """The panel as a single flat parquet file."""
+    path = tmp_path / "panel.parquet"
+    panel_frame.to_parquet(path, index=False, engine="pyarrow")
+    return str(path)
+
+
+@pytest.fixture()
+def panel_hive(tmp_path, panel_frame) -> str:
+    """The panel as a hive tree (`ix=*/iy=*/data.parquet`) -- one part per
+    country, mapped to a fake `(ix, iy)`."""
+    root = tmp_path / "panel_hive"
+    for i, (country, part) in enumerate(panel_frame.groupby("country")):
+        tile = root / f"ix={i}" / "iy=0"
+        tile.mkdir(parents=True, exist_ok=True)
+        part.drop(columns="country").to_parquet(tile / "data.parquet", index=False, engine="pyarrow")
+    return str(root)
+
+
 @pytest.fixture()
 def prepare_tree(tmp_path, canonical_geobox):
     """A small PREPARE parquet tree: real pixels inside `TEST_BBOX`'s tile,

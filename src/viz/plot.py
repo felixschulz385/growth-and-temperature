@@ -6,11 +6,9 @@ embed in a notebook (no file I/O in this module).
 
 from __future__ import annotations
 
-import math
-
-import matplotlib.pyplot as plt
 import numpy as np
 
+from src.viz._facet import facet_grid
 from src.viz.grid import load_matrix
 
 
@@ -63,33 +61,28 @@ def plot_grid(
     vmin = float(min(f.min() for f in finite))
     vmax = float(max(f.max() for f in finite))
 
-    n = len(resolved_years)
-    ncols = math.ceil(math.sqrt(n))
-    nrows = math.ceil(n / ncols)
+    ims: list = []
 
-    fig, axes = plt.subplots(nrows, ncols, figsize=figsize or (4 * ncols, 3.5 * nrows), squeeze=False)
-    axes_flat = axes.flatten()
-
-    im = None
-    for ax, year in zip(axes_flat, resolved_years):
+    def _draw(ax, year):
         result = results[year]
-        im = ax.imshow(
-            result.matrix,
-            extent=result.extent_lonlat,
-            origin="upper",
-            cmap=cmap,
-            vmin=vmin,
-            vmax=vmax,
-            aspect="auto",
+        ims.append(
+            ax.imshow(
+                result.matrix,
+                extent=result.extent_lonlat,
+                origin="upper",
+                cmap=cmap,
+                vmin=vmin,
+                vmax=vmax,
+                aspect="auto",
+            )
         )
         ax.set_title(str(year))
         ax.set_xlabel("lon")
         ax.set_ylabel("lat")
 
-    for ax in axes_flat[n:]:
-        ax.axis("off")
+    fig, used_axes = facet_grid(resolved_years, _draw, figsize=figsize, panel_size=(4.0, 3.5))
 
-    if im is not None:
-        fig.colorbar(im, ax=axes_flat[:n].tolist(), label=variable, shrink=0.8)
+    if ims:
+        fig.colorbar(ims[-1], ax=used_axes, label=variable, shrink=0.8)
 
     return fig
