@@ -9,3 +9,5 @@
 #   src/analysis/**/*.ipynb                    # everything under an analysis dir
 #
 # Keep this list short: an entry means "outputs in git are intentional here".
+
+output/notebooks/regression.ipynb
