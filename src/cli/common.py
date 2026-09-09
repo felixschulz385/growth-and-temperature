@@ -120,7 +120,8 @@ def add_logging_args(parser: argparse.ArgumentParser) -> None:
 #: Repo-relative path to the pipeline's standard config file, resolved
 #: against the current working directory (matches the `analysis run
 #: --config` default convention of a relative `orchestration/configs/...`
-#: path -- both assume invocation from the repo root, e.g. via `run.py`).
+#: path -- both assume invocation from the repo root, e.g. via
+#: `python -m src.cli`).
 DEFAULT_PIPELINE_CONFIG = "orchestration/configs/data.yaml"
 
 

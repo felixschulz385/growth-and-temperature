@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # Login shell so the micromamba-activated `gnt` env is on PATH.
+        shell: bash -el {0}
+    steps:
+      - uses: actions/checkout@v4
+
+      # environment.yml is the single dependency source of truth
+      # (docs/design/... / environment.yml header). Its `pip:` section runs
+      # `pip install -e .`, so `from src.xxx import yyy` imports resolve.
+      - name: Provision the gnt conda environment
+        uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-file: environment.yml
+          cache-environment: true
+          cache-downloads: true
+
+      - name: Environment summary
+        run: |
+          micromamba list
+          python -c "import sys; print(sys.version)"
+
+      - name: Run test suite
+        # Run from the repo root so `from src.xxx import yyy` resolves
+        # (tests/conftest.py: no pytest config, relies on default rootdir).
+        run: pytest -q

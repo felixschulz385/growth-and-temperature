@@ -197,7 +197,7 @@ EOF
 run_old() {
     local stage="$1"
     echo "$(date -Is): OLD  preprocess run --source misc --subsource osm --stage $stage"
-    "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source misc --subsource osm \
+    "$PYTHON_BIN" -m src.cli preprocess run --config "$TEST_CONFIG" --source misc --subsource osm \
         --stage "$stage" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -206,7 +206,7 @@ run_old() {
 run_new() {
     local step="$1"
     echo "$(date -Is): NEW  data run --source osm --step $step"
-    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source osm \
+    "$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source osm \
         --step "$step" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

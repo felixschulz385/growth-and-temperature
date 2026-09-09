@@ -54,7 +54,7 @@ def test_render_wrap_command_create_uses_gnt_and_assemble_create():
     job = find_assembly_job(_assembly_jobs(), "10km")
     wrap = render_wrap_command(job, _cluster(), _args())
     assert "conda activate gnt" in wrap
-    assert "run.py assemble create" in wrap
+    assert "-m src.cli assemble create" in wrap
     assert "--grid 10km" in wrap
     assert "--shake quad" in wrap
     assert "--threads $SLURM_CPUS_PER_TASK" in wrap
@@ -66,7 +66,7 @@ def test_render_wrap_command_create_uses_gnt_and_assemble_create():
 def test_render_wrap_command_update_passes_datasource():
     job = find_assembly_job(_assembly_jobs(), "1km")
     wrap = render_wrap_command(job, _cluster(), _args(grid="1km", shake="none", datasource="eog_viirs"))
-    assert "run.py assemble update" in wrap
+    assert "-m src.cli assemble update" in wrap
     assert "--datasource eog_viirs" in wrap
 
 

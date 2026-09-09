@@ -2,20 +2,20 @@
 src.cli.main — root parser and top-level entry point.
 
 Usage:
-    python -m src.cli.main data list
-    python -m src.cli.main data plan   --config cfg.yaml --source acag --step prepare
-    python -m src.cli.main data run    --config cfg.yaml --source acag --step fetch
-    python -m src.cli.main assemble create --config cfg.yaml --grid 10km --shake quad
-    python -m src.cli.main assemble update --config cfg.yaml --grid 10km --datasource ntl_harm
-    python -m src.cli.main analysis run    --model my_model
-    python -m src.cli.main analysis submit --tables table_main
-    python -m src.cli.main analysis summary
-    python -m src.cli.main analysis tables
-    python -m src.cli.main analysis cleanup
-    python -m src.cli.main analysis subsets generate
-    python -m src.cli.main analysis subsets list
+    python -m src.cli data list
+    python -m src.cli data plan   --config cfg.yaml --source acag --step prepare
+    python -m src.cli data run    --config cfg.yaml --source acag --step fetch
+    python -m src.cli assemble create --config cfg.yaml --grid 10km --shake quad
+    python -m src.cli assemble update --config cfg.yaml --grid 10km --datasource ntl_harm
+    python -m src.cli analysis run    --model my_model
+    python -m src.cli analysis submit --tables table_main
+    python -m src.cli analysis summary
+    python -m src.cli analysis tables
+    python -m src.cli analysis cleanup
+    python -m src.cli analysis subsets generate
+    python -m src.cli analysis subsets list
 
-The module is also the delegate for ``run.py``.
+``src/cli/__main__.py`` makes ``python -m src.cli`` run ``main()`` below.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 def build_parser() -> argparse.ArgumentParser:
     """Build and return the top-level argument parser."""
     parser = argparse.ArgumentParser(
-        prog="src",
+        prog="python -m src.cli",
         description=(
             "GNT Data System — unified entry point for the fetch/prepare/grid "
             "pipeline, assembly, and analysis."
@@ -48,16 +48,16 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  src data run        --config cfg.yaml --source acag --step fetch
-  src assemble create --config cfg.yaml --grid 10km --shake quad
-  src assemble update --config cfg.yaml --grid 10km --datasource ntl_harm
-  src analysis run    --model baseline_ols
-  src analysis submit --tables table_main table_robustness
-  src analysis summary
-  src analysis tables --formats html latex
-  src analysis cleanup --dry-run
-  src analysis subsets generate
-  src analysis subsets list
+  python -m src.cli data run        --config cfg.yaml --source acag --step fetch
+  python -m src.cli assemble create --config cfg.yaml --grid 10km --shake quad
+  python -m src.cli assemble update --config cfg.yaml --grid 10km --datasource ntl_harm
+  python -m src.cli analysis run    --model baseline_ols
+  python -m src.cli analysis submit --tables table_main table_robustness
+  python -m src.cli analysis summary
+  python -m src.cli analysis tables --formats html latex
+  python -m src.cli analysis cleanup --dry-run
+  python -m src.cli analysis subsets generate
+  python -m src.cli analysis subsets list
 """,
     )
 

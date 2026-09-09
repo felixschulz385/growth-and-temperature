@@ -225,7 +225,7 @@ run_old() {
     # spawned 28+ worker processes under a 4-cpu/32G job. Constrain it to
     # match run_new()'s sizing so both codepaths run under the same
     # resources and neither blows past what SBATCH actually reserved.
-    "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source "$SOURCE" \
+    "$PYTHON_BIN" -m src.cli preprocess run --config "$TEST_CONFIG" --source "$SOURCE" \
         --stage "$stage" --year "$YEAR" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -234,7 +234,7 @@ run_old() {
 run_new() {
     local step="$1"
     echo "$(date -Is): NEW  data run --source $SOURCE --step $step --years $YEAR $YEAR"
-    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source "$SOURCE" \
+    "$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source "$SOURCE" \
         --step "$step" --years "$YEAR" "$YEAR" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

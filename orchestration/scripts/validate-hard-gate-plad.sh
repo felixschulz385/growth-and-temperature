@@ -197,7 +197,7 @@ EOF
 
 run_old() {
     echo "$(date -Is): OLD  preprocess run --source plad --stage spatial --admin-level $ADMIN_LEVEL"
-    "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source plad \
+    "$PYTHON_BIN" -m src.cli preprocess run --config "$TEST_CONFIG" --source plad \
         --stage spatial --admin-level "$ADMIN_LEVEL" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -205,7 +205,7 @@ run_old() {
 
 run_new() {
     echo "$(date -Is): NEW  data run --source plad --step grid"
-    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source plad \
+    "$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source plad \
         --step grid --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

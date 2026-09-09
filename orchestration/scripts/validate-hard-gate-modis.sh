@@ -164,7 +164,7 @@ EOF
 
 run_old() {
     echo "$(date -Is): OLD  preprocess run --source modis --stage spatial"
-    "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source modis \
+    "$PYTHON_BIN" -m src.cli preprocess run --config "$TEST_CONFIG" --source modis \
         --stage spatial --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -172,7 +172,7 @@ run_old() {
 
 run_new() {
     echo "$(date -Is): NEW  data run --source modis --step grid"
-    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source modis \
+    "$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source modis \
         --step grid --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

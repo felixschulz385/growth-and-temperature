@@ -162,7 +162,7 @@ EOF
 run_old() {
     local stage="$1"
     echo "$(date -Is): OLD  preprocess run --source berman_mining --stage $stage"
-    "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source berman_mining \
+    "$PYTHON_BIN" -m src.cli preprocess run --config "$TEST_CONFIG" --source berman_mining \
         --stage "$stage" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -171,7 +171,7 @@ run_old() {
 run_new() {
     local step="$1"
     echo "$(date -Is): NEW  data run --source berman_mining --step $step"
-    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source berman_mining \
+    "$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source berman_mining \
         --step "$step" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -183,7 +183,7 @@ run_new() {
 # deliberately suspended for this one call since a nonzero exit is success.)
 echo "$(date -Is): confirming NEW correctly rejects the undeclared PREPARE step for this source"
 set +e
-"$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source berman_mining --step prepare 2>&1 | tail -5
+"$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source berman_mining --step prepare 2>&1 | tail -5
 PREPARE_REJECTED=$?
 set -e
 if [ $PREPARE_REJECTED -eq 0 ]; then

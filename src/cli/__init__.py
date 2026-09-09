@@ -1,7 +1,7 @@
 """
 src.cli — modular command-line interface for the GNT data system.
 
-Entry point: ``src/cli/main.py:main`` (also exposed via ``run.py``).
+Entry point: ``python -m src.cli`` (``src/cli/__main__.py`` → ``main.py:main``).
 
 Domains
 -------

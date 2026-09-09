@@ -100,7 +100,7 @@ def _model_block(
         f"  [{model_idx}/{n_models_total} overall]: {model}\n"
         f'mkdir -p "{model_log_dir}"\n'
         f'echo "[$(date -Is)] Running model {table_idx}/{n_models_in_table}: {model}"\n'
-        f"python run.py analysis run \\\n"
+        f"python -m src.cli analysis run \\\n"
         f"{debug_arg}"
         f"    --config orchestration/configs/analysis.xlsx \\\n"
         f'    --model "{model}" \\\n'

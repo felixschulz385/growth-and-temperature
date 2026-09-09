@@ -171,5 +171,5 @@ class MissingPrerequisiteError(RuntimeError):
             f"Source '{source_id}' requires source '{requires_id}' step "
             f"'{requires_step.value}' to be complete first. Expected output not "
             f"found at: {expected_path}. Run: "
-            f"run.py data run --source {requires_id} --step {requires_step.value}"
+            f"python -m src.cli data run --source {requires_id} --step {requires_step.value}"
         )

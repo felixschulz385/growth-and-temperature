@@ -277,7 +277,7 @@ EOF
 run_old() {
     local stage="$1"
     echo "$(date -Is): OLD  preprocess run --source misc --subsource country_classifications --stage $stage"
-    "$PYTHON_BIN" run.py preprocess run --config "$TEST_CONFIG" --source misc --subsource country_classifications \
+    "$PYTHON_BIN" -m src.cli preprocess run --config "$TEST_CONFIG" --source misc --subsource country_classifications \
         --stage "$stage" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"
@@ -286,7 +286,7 @@ run_old() {
 run_new() {
     local step="$1"
     echo "$(date -Is): NEW  data run --source country_classifications --step $step"
-    "$PYTHON_BIN" run.py data run --config "$TEST_CONFIG" --source country_classifications \
+    "$PYTHON_BIN" -m src.cli data run --config "$TEST_CONFIG" --source country_classifications \
         --step "$step" --override \
         --dask-threads "$SLURM_CPUS_PER_TASK" --dask-memory-limit 4GiB \
         --temp-dir "${TEST_ROOT}/dask_tmp"

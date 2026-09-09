@@ -102,7 +102,7 @@ def render_wrap_command(job: dict, cluster: dict, args: argparse.Namespace) -> s
     simple = job.get("simple", False)
 
     run_parts = [
-        f'{cluster["python_bin"]} run.py data run',
+        f'{cluster["python_bin"]} -m src.cli data run',
         f'--config "{args.config}"',
         f"--source {job['source']}",
         f"--step {job['step']}",

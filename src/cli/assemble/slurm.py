@@ -93,7 +93,7 @@ def render_wrap_command(job: dict, cluster: dict, args: argparse.Namespace) -> s
     conda env, then the ``assemble`` invocation itself."""
     sub = _subcommand(args)
     run_parts = [
-        f'{cluster["python_bin"]} run.py assemble {sub}',
+        f'{cluster["python_bin"]} -m src.cli assemble {sub}',
         f'--config "{args.config}"',
         f"--grid {args.grid}",
         f"--shake {args.shake}",

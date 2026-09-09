@@ -54,33 +54,33 @@ pip install -e .
 ### Basic Usage
 ```bash
 # Fetch + prepare a source (fetch/prepare/grid lifecycle)
-python run.py data run --config orchestration/configs/data.yaml --source glass_modis --step prepare
+python -m src.cli data run --config orchestration/configs/data.yaml --source glass_modis --step prepare
 
 # Assemble the panel: every source in assembly.sources, on the chosen grid.
 # --grid picks the output resolution; --shake adds grid-origin robustness variants.
-python run.py assemble create --config orchestration/configs/data.yaml --grid 1km
-python run.py assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad
+python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 1km
+python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad
 # output: ${DATA_NOBACKUP}/assembled/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data.parquet
 
 # Refresh one source in an already-built table
-python run.py assemble update --config orchestration/configs/data.yaml --grid 10km --datasource eog_viirs
+python -m src.cli assemble update --config orchestration/configs/data.yaml --grid 10km --datasource eog_viirs
 ```
 
 ### HPC Processing
 ```bash
 # Submit a single (source, step) as a SLURM job (resource defaults from
 # orchestration/configs/slurm_jobs.yaml, overridable with --slurm-time/-mem/-cpus/-qos/-partition)
-python run.py data run --source glass_modis --step prepare --slurm
+python -m src.cli data run --source glass_modis --step prepare --slurm
 
 # Submit a source's full dependency chain (REQUIRES prerequisites included)
-python run.py data run --source glass_modis --step prepare --slurm --chain
+python -m src.cli data run --source glass_modis --step prepare --slurm --chain
 
 # Preview the sbatch command(s) without submitting
-python run.py data run --source glass_modis --step prepare --slurm --chain --dry-run
+python -m src.cli data run --source glass_modis --step prepare --slurm --chain --dry-run
 
 # Submit an assembly run (per-grid resource defaults from slurm_jobs.yaml's assembly_jobs:)
-python run.py assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad --slurm
-python run.py assemble create --config orchestration/configs/data.yaml --grid 10km --slurm --dry-run
+python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad --slurm
+python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 10km --slurm --dry-run
 ```
 
 ## 🏗️ System Architecture
@@ -91,7 +91,7 @@ python run.py assemble create --config orchestration/configs/data.yaml --grid 10
 3. **Assemble**: Analysis-ready datasets with consistent alignment
 
 ### Key Features
-- **Unified Interface**: Single `run.py` script for all operations
+- **Unified Interface**: Single `python -m src.cli` entry point for all operations
 - **SLURM Integration**: `data run --slurm` submits jobs directly (`orchestration/configs/slurm_jobs.yaml` resource defaults)
 - **Scalable Processing**: Dask-based parallel processing
 - **Data Standards**: Chunked Zarr format for efficient I/O
