@@ -711,6 +711,9 @@ assembly:
   # <data_root>/prepared/<data_path>/crs/ease6933/<family> -- verify against
   # `ls data_nobackup/prepared/*/crs/ease6933/` if the validation gate complains.
   # `index_cols: [pixel_id]` = static per-pixel; `[pixel_id, year]` = annual.
+  # Informational only: the DuckDB engine (src/data/assemble/sql_engine.py)
+  # decides static vs annual from the parquet part names (part.parquet vs
+  # part-<year>.parquet), not from this key.
   # `resampling` is the SQL block-aggregate used when --grid coarsens below the
   # native 1 km EASE resolution (exact integer NxN aggregation, no warp). Either
   # a single method string (all of that source's variables), or a
@@ -780,10 +783,10 @@ assembly:
       path: "prepared/plad/adm/plad_adm2_reg_fav.parquet"
       join_on: ["GID_2", "year"]
       fillna: false
-    snl_mining:                  # mine counts + price-shock sums (radius buffers)
+    snl_mining:                  # mine counts + price-shock sums (radius buffers), per active year
       data_path: "snl_mining"
       family: "snl_mining"
-      index_cols: ["pixel_id"]
+      index_cols: ["pixel_id", "year"]
       resampling: "average"      # already a smooth buffer-count field; sum would overcount
     # commodity_prices: NOT included. A (commodity, year) price lookup with no
     #   pixel or GID key -- nothing to merge it onto. Already consumed inside
