@@ -1,5 +1,10 @@
 # 11. GLASS: static per-target FETCH (no crawl, no entrypoints)
 
+> **Status (2026-09-28): implemented, later restructured.** The static-target FETCH shipped as
+> described. `glass/source.py` was then split into `glass/modis.py` and `glass/avhrr.py` by
+> [`12`](12-glass-modis-rebuild.md), which also changed GLASS-MODIS FETCH to (tile, year) targets.
+> This doc's design still describes `glass_avhrr`'s FETCH.
+
 **Status: implemented** (`src/data/sources/glass/source.py`,
 `orchestration/configs/data.yaml`, `tests/data/sources/glass/
 test_glass_fetch.py`) -- `_CrawlerMixin`/`crawler.py` deleted, both

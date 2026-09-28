@@ -1,8 +1,8 @@
 # 15 — MODIS PREPARE 2002: tile-grid combine bug + separate reproject failures
 
 > **SUPERSEDED (2026-08-28).** Both Part A and Part B are resolved by the
-> reproject-then-overlay rearchitecture in `modis_prepare_rework.md` (repo
-> root): `src/data/common/prepare/sinusoidal_mosaic.py` reprojects each
+> reproject-then-overlay rearchitecture in
+> [`15a-modis-prepare-rework.md`](15a-modis-prepare-rework.md): `src/data/common/prepare/sinusoidal_mosaic.py` reprojects each
 > fetched sinusoidal source tile individually onto the output tile's geobox
 > and overlays first-wins onto a georegistered NaN canvas, with the driver
 > called `reproject=False`. That deletes `_regrid_to_sinusoidal` (the interim

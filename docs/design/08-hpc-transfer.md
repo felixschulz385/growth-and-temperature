@@ -1,5 +1,11 @@
 # 08 — Generic HPC transfer capability
 
+> **Status (2026-09-28): superseded twice.** The transfer manifest designed here was replaced by the
+> DuckDB ledger in [`10-fetch-ledger.md`](10-fetch-ledger.md). That ledger was itself removed on
+> 2026-08-14 (commit `3bd22ef`). HPC push now lives in `src/data/common/hpc/push.py`, driven by
+> `data run` (inline, `transfer_mode=auto`) and `data transfer`. The reasoning in §1 (why the transfer
+> is generic rather than MODIS-only) still holds.
+
 ## 1. Why this exists, and why it's generic rather than MODIS-only
 
 [`07-modis-ingest.md`](07-modis-ingest.md) §2 resolves the "do scicore compute nodes have outbound

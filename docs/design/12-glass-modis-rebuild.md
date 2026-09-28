@@ -1,5 +1,9 @@
 # 12. Split GLASS AVHRR/MODIS; rebuild GLASS-MODIS on the raw-MODIS tile×year pipeline; add GLASS Land Air Temperature
 
+> **Status (2026-09-28): implemented** (commit `458e440`, 2026-08-17): `src/data/sources/glass/modis.py`
+> (`glass_modis`, `glass_ta_modis`) and `src/data/sources/glass/avhrr.py` (`glass_avhrr`). The
+> "planned, not yet implemented" line below is kept as written at the time.
+
 **Status: planned, not yet implemented.** This doc records the agreed design
 so implementation can start in a later session without re-deriving it.
 Nothing in `src/data/sources/glass/` has changed yet.

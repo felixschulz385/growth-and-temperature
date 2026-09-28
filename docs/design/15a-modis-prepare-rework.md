@@ -1,4 +1,10 @@
-# MODIS / GLASS-MODIS PREPARE — reproject-then-overlay rearchitecture
+# 15a — MODIS / GLASS-MODIS PREPARE: reproject-then-overlay rearchitecture
+
+> **Status (2026-09-28): implemented** (commit `693ce6a`, 2026-08-28) as
+> `src/data/common/prepare/sinusoidal_mosaic.py`. This is the fix for the failures analysed in
+> [`15`](15-modis-prepare-2002-tile-failures.md). It was kept at the repo root as
+> `modis_prepare_rework.md` until 2026-09-28. The "currently uncommitted" wording below describes
+> the state when it was written.
 
 ## Context
 

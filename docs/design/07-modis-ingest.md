@@ -1,5 +1,12 @@
 # 07 — MODIS LST Ingest
 
+> **Status (2026-09-28): current for the science; step names changed.** The "annual"/"spatial" stage
+> names used here are now FETCH (STAC streaming, QC masking and annual compositing, one GeoTIFF per
+> tile-year) and PREPARE (reprojection onto the EASE grid), per [`09`](09-integrated-pipeline.md) and
+> [`10`](10-fetch-ledger.md) §7. The month-first compositing below is implemented as described; monthly
+> values are used only as an internal weighting step and are not persisted
+> (`src/data/common/raster/compositing.py`).
+
 Replaces GLASS as the project's primary night-time LST source. This document assumes the backbone
 grid/storage decisions in [`01-grid.md`](01-grid.md)/[`02-storage.md`](02-storage.md) are settled and
 does not re-argue them; it also assumes and cites [`04-ingest.md`](04-ingest.md)'s backbone-level

@@ -1,5 +1,13 @@
 # 09 — Integrated Pipeline: merging download+preprocess, a standardized step vocabulary, splitting `misc`
 
+> **Status (2026-09-28): implemented, with one later change.** The fetch/prepare/grid vocabulary
+> described here was cut to **two** steps on 2026-08-14 (commit `2d3bf1a`): every source now declares
+> `STEPS = (FETCH, PREPARE)`, and PREPARE writes the gridded output directly through
+> `src/data/common/prepare/driver.py::run_tiled_prepare`. `PipelineStep.GRID` is still in the enum
+> but no source uses it. The ledger sections were superseded the same day (see
+> [`10`](10-fetch-ledger.md)). Everything else here (the per-source package split, `REQUIRES`
+> semantics, the `misc` split) is still how the code is organised.
+
 This document supersedes the download/preprocess subsystem split and the `stage="annual"/"spatial"` naming
 used throughout [`00-backbone-overview.md`](00-backbone-overview.md), [`04-ingest.md`](04-ingest.md),
 [`05-migration.md`](05-migration.md), [`07-modis-ingest.md`](07-modis-ingest.md) and

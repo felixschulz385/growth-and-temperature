@@ -1,5 +1,9 @@
 # 06 — Open Questions
 
+> **Status (2026-09-28): session record from 2026-07-29, not a live list.** Items marked RESOLVED
+> were closed later; live status for MODIS items is in [`07b`](07b-modis-outstanding.md), and for
+> PREPARE memory/parallelism in [`13`](13-prepare-memory-parallelism.md).
+
 Everything below could not be resolved from the repository or from a primary source verifiable
 within this task, and is stated here rather than silently asserted, per the design brief's hard
 constraint to flag rather than guess.

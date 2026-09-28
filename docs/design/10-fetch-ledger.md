@@ -1,5 +1,11 @@
 # 10. Fetch ledger and unified HPC transfer
 
+> **Status (2026-09-28): superseded.** The DuckDB ledger was removed on 2026-08-14 (commit `3bd22ef`,
+> *"Remove the DuckDB fetch/transfer ledger in favor of live filesystem/HPC state"*). FETCH
+> bookkeeping is now a declared list of required files diffed against one directory listing, plus
+> per-unit JSON status sidecars (`src/data/common/fetch/manifest.py`, `src/data/common/statusfile.py`);
+> PREPARE uses the same sidecars per (tile, year) unit. Kept for the problem analysis in §1.
+
 Ground-up replacement for `UnifiedDataIndex` (Parquet-backed FETCH-completion
 index, `src/data/common/index/unified_index.py`) and `TransferManifest`
 (Parquet-backed PREPARE/GRID transfer manifest,

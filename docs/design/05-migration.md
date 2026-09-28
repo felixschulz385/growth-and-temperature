@@ -1,5 +1,10 @@
 # 05 — Migration
 
+> **Status (2026-09-28): historical.** This was the rollout plan for the backbone redesign. The EASE-Grid
+> (`ease6933`) is now the configured grid (`pipeline.grid` in `orchestration/configs/data.yaml`), and every
+> source writes to it through the shared PREPARE driver. Read this for why the rollout was sequenced this
+> way, not for the current state; for that, see [`09`](09-integrated-pipeline.md) and the code.
+
 ## 1. Additive rollout, nothing broken immediately
 
 The new canonical EPSG:6933 GeoBox, the neighbourhood engine module, and the new Zarr disc-ladder
