@@ -1,66 +1,40 @@
-# acag — ACAG (Atmospheric Composition Analysis Group) PM2.5
+# acag — Surface PM2.5 (WashU ACAG)
 
-- **Registry id:** `acag`
-- **Class:** `AcagSource` (`src/data/sources/acag.py`)
-- **Aliases:** `acag_pm25`, `pm25`
-- **Steps implemented (`STEPS`):** `FETCH`, `PREPARE`, `GRID`
-- **`REQUIRES`:** none (default `()`, not overridden)
-- **Config key in `data.yaml`:** `sources.acag`
-  ```yaml
-  acag:
-    type: "acag"
-    data_path: "acag/pm25"
-    year_range: [1998, 2023]
-    verification:
-      expected_vars: ["pm25"]
-      value_range: [0, 500]
-  ```
-  `namespace` is not set for this source (defaults to `None`), so no `/<namespace>` path segment applies to any step below.
+| | |
+|---|---|
+| Config key | `acag` |
+| Module | `src/data/sources/acag.py` (`AcagSource`) |
+| Steps | FETCH, PREPARE · no `REQUIRES` |
+| In panel | yes (`pm25`) |
 
-Source data: WashU ACAG global annual PM2.5 surface-concentration grids (V6GL02.04, "CNNPM25"), fetched from a hardcoded Box shared-folder file inventory (`KNOWN_FILES`, one `.nc`/`.nc4` file per year, 1998-2023 in the current inventory).
+## What it is
 
-## FETCH
+Annual mean surface PM2.5 concentration (µg/m³) from the Washington University Atmospheric
+Composition Analysis Group: version V6GL02.04 (`CNNPM25`), 0.01° grid, 1998–2023. The estimates
+combine satellite aerosol optical depth, a chemical transport model and ground monitors.
 
-Downloads whatever `KNOWN_FILES` entries are not yet present, via `run_fetch` against a Box shared-link download URL built per file id (`_file_download_url`). Requires `ctx.ssh_target` (an HPC/remote target) to be configured — `_execute_fetch` logs a warning and returns `False` otherwise. Uses a browser-spoofing `User-Agent`/headers and a fixed 0.2s polite delay between requests (`download_async`).
+## Raw data (FETCH)
 
-- **Output path**
-  - `<data_root>/raw/acag/pm25`
-- **Format:** raw files as downloaded from Box — one NetCDF (`.nc`, occasionally `.nc4`) per year, named like `V6GL02.04.CNNPM25.GL.<YYYY>01-<YYYY>12.nc` (one file in `KNOWN_FILES` uses a `.EU.` region code instead of `.GL.` for year 2000 — `V6GL02.04.CNNPM25.EU.200001-200012.nc`).
-- **Caveats (from code):**
-  - `KNOWN_FILES` is a hardcoded inventory, not discovered dynamically from Box — adding a new year requires a code change.
-  - `Completion.NEVER`: the FETCH target always re-runs; `run_fetch` itself is responsible for only downloading what's missing.
+`raw/acag/pm25/GL/Annual/`: one NetCDF per year, downloaded from a Box shared folder using a
+hardcoded file inventory (`KNOWN_FILES`). Adding a year is a code change.
 
-## PREPARE
+## Prepared output (PREPARE)
 
-Builds one annual zarr per year from the selected raw file (`.nc4` preferred over `.nc` if both exist for a year — `_plan_prepare`'s candidate-selection order). Loads via `rioxarray.open_rasterio(..., mask_and_scale=True, driver="HDF5")`, extracts the (first) band, renames dims to `latitude`/`longitude`, rescales the raw pixel-index coordinates (`x*0.01 - 180`, `y*0.01 - 60`), writes `EPSG:4326`, masks negative values (`ds.where(ds >= 0)`) and casts to `float32`. Ensures `time` (`<year>-12-31`) and `band` dims exist, then writes to zarr.
+- **Path:** `prepared/acag/pm25/crs/ease6933/pm25/ix=/iy=/part-<year>.parquet`
+- **Column** `pm25` (float32; negative raw values set to NaN): resampled by nearest neighbour
+  (0.01° ≈ 1.1 km); aggregated to coarser grids by `average`.
 
-- **Output path**
-  - `<data_root>/prepared/acag/pm25/<year>.zarr`
-- **Format:** one zarr store per year, dims `(time=1, band=1, latitude, longitude)`, CRS `EPSG:4326`, chunks `(1, 1, 512, 512)`, Blosc-zstd (level 3, bitshuffle) compression, `zarr_format=3`, `consolidated=False`.
-- **Schema**
+## Analysis caveats
 
-  | variable | dtype | notes |
-  |---|---|---|
-  | `pm25` | `float32` | negative raw values masked to NaN before cast |
+- **This is the only direct measure of the aerosol channel.** Use it as an outcome of the
+  treatment or as a baseline heterogeneity dimension. Don't use it as a control: it is a mediator.
+- **It may share MODIS's clear-sky problem.** Satellite AOD is retrieved under clear skies only,
+  so hazy periods may be under-represented in the same cells where MODIS LST loses observations.
+  Check ACAG's documentation for a per-cell data-support measure.
+- **The 2000 file is regional.** The inventory's 2000 entry is the Europe file
+  (`V6GL02.04.CNNPM25.EU.200001-200012.nc`), not the global one. This is outside the 2002+ Aqua
+  window, so it doesn't matter for the main analysis.
 
-- **Caveats:** completion is marker-based (`<year>.zarr.complete`); a year is only reprocessed if `cfg.override` is set or the marker is missing. Requires the ledger's `completed_fetch_files()` to know which raw files exist — if `local_index_dir`/the ledger for `acag/pm25` is missing, `_plan_prepare` logs a warning and yields no targets.
+## Needs live data
 
-## GRID
-
-Reprojects every annual PREPARE zarr onto the pipeline's canonical target geobox (`get_target_geobox(ctx)`) into one multi-year timeseries zarr, via `SpatialProcessor.process_spatial_standard` with `resampling="nearest"` (the function's default — not overridden by this source) and no explicit `dst_nodata`/`packaging_attrs` override.
-
-- **Output path**
-  - `<data_root>/prepared/<data_path>/crs/<grid_id>/pm25.zarr` (`<grid_id>` is `ease6933` under the checked-in config)
-- **Format:** single multi-year zarr, dims `(time, band=1, <y>, <x>)` (axis names follow the target geobox's own CRS-dependent dimension names — `latitude`/`longitude` for a geographic grid, `y`/`x` for a projected one such as EASE-Grid 2.0 EPSG:6933), CRS written via `.rio.write_crs()`/`grid_mapping="spatial_ref"`, Blosc-zstd compression, chunks `(1, 1, 512, 512)`.
-- **Storage encoding (from `SpatialProcessor.create_empty_target_zarr`, since this source passes no `dst_nodata`/`packaging_attrs` override):** stored as `uint16` with `scale_factor=0.01`, `add_offset=0.0` (packed: `physical = stored * 0.01`), fill/nodata value `65535`.
-
-- **Variables**
-
-  | name | on-disk dtype | physical meaning | nodata/fill | `value_range` (verification) |
-  |---|---|---|---|---|
-  | `pm25` | `uint16` (packed, `scale_factor=0.01`) | annual-mean surface PM2.5 concentration (µg/m³, per ACAG's own product; not independently confirmed here) | `65535` | `[0, 500]` |
-
-  `expected_vars`/`value_range` come from `verify.verification_meta(self.cfg.raw, expected_vars=("pm25",), value_range=(0, 500))` in `_plan_grid`, and are **not** overridden by `data.yaml`'s `sources.acag.verification` block (same values: `expected_vars: ["pm25"]`, `value_range: [0, 500]`) — the config block just makes the same values explicit/overridable.
-- **Caveats:** marker-based completion, same override semantics as PREPARE. `_plan_grid` only includes years whose annual PREPARE zarr already exists on disk (via `_list_annual_zarrs`, scanning the PREPARE output directory) — it does not consult the ledger.
-
-**TODO (needs live data):** actual year coverage achieved in a real run (vs. the 1998-2023 inventory/`year_range`), on-disk file/store sizes, and empirically observed PM2.5 value distribution have not been verified against real output and are not claimed here.
+The PM2.5 distribution by region; whether all 26 years prepared cleanly.

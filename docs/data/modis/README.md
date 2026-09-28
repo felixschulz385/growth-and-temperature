@@ -1,196 +1,83 @@
-# modis — MODIS night LST, streamed from Planetary Computer and gridded onto EPSG:6933
+# modis — MODIS Aqua land surface temperature
 
-Registry id `modis`, class `ModisSource`, module `src/data/sources/modis/source.py`.
-Aliases: `modis_lst`, `modis_robustness_11a1` (`ModisSource.ALIASES`) — both alias
-strings route to the same class; which config block a run reads is selected by
-`--source`/the `sources.<key>` config key, not by the alias mechanism.
+| | |
+|---|---|
+| Config keys | `modis` (primary), `modis_robustness_11a1` (robustness arm); `modis_extended` is commented out |
+| Module | `src/data/sources/modis/source.py` (`ModisSource`), QC decoding in `modis/tiles.py` |
+| Steps | FETCH, PREPARE · no `REQUIRES` |
+| In panel | `modis` → `assembly.sources.modis` |
 
-`STEPS = (PipelineStep.FETCH, PipelineStep.GRID)` — **no PREPARE step**, unlike
-every other multi-step source in the registry (`glass`, `eog`, `acag`, …). FETCH
-here does the work a PREPARE stage would normally do elsewhere: it streams,
-QC-masks, and annually composites MODIS data in one pass, rather than landing
-untouched raw bytes first (see [FETCH](#fetch) below). `REQUIRES = ()` (inherited
-default, not overridden) — MODIS has no cross-source dependency.
+## What it is
 
-Config keys: `sources.modis` (primary) and `sources.modis_robustness_11a1`
-(robustness arm), both `type: "modis"` in `orchestration/configs/data.yaml`.
+MODIS Aqua land surface temperature from Microsoft Planetary Computer's STAC catalogue.
 
-## Config variants
-
-| variant | product | platform | years | tiles | distinctive |
-|---|---|---|---|---|---|
-| `modis` | `21A2` (MYD21A2, 8-day TES LST+emissivity) | `aqua` | `year_range: [2002, 2025]` (contiguous) | every sinusoidal tile intersecting `lat_clip_deg: 60.0`, optionally narrowed by a `land_tiles` allowlist (unset in the checked-in config — see caveat below) | primary series; TES emissivity is land-cover-independent, which matters for this project's estimand (rationale in `07-modis-ingest.md` §1, not repeated here) |
-| `modis_robustness_11a1` | `11A1` (MYD11A1, daily split-window LST+emissivity) | `aqua` | `years: [2004, 2014, 2023]` — explicit discrete years (early/mid/late Aqua mission), not a range | explicit 5-tile list: `h12v09` (Amazon), `h18v06` (Sahara), `h18v04` (Central Europe), `h22v03` (Siberian boreal, near the 60° clip edge), `h30v11` (Australian outback) | bounded same-methodology comparison arm, not a full parallel backfill — validates the 21A2 8-day valid-observation proxy against 11A1's true daily counts on a handful of biome-representative tiles/years |
-
-Both variants share `qc_max_lst_error_k: 2.0` and
-`stac_url: https://planetarycomputer.microsoft.com/api/stac/v1`. `product` picks
-the STAC collection (`modis-21A2-061` / `modis-11A1-061`) and asset names via
-`BAND_SPECS` in `source.py`; `ModisSource.__init__` rejects any other `product`
-value. `self.years` (a discrete list) takes priority over `year_range` when both
-would apply — `_plan_fetch`/`_plan_grid` compute `self.years or range(*year_range)`.
-`data_path` defaults to `modis/<product>` when not set in config (both blocks here
-leave it unset, so effectively `modis/21A2` and `modis/11A1`).
-
-`modis`'s config block also carries a commented-out `tiles:`/`land_tiles:`
-example and `transfer: {steps: ["fetch"]}` (orchestration-level: which steps get
-pushed to HPC via the transfer mechanism).
-
-## FETCH
-
-Per-`(tile, year)` `StepTarget`s (`_plan_fetch`). For each target, `_execute_fetch`:
-
-1. STAC-searches the collection for that (tile, year) via a CQL2 `filter` on
-   the collection's queryable `modis:horizontal-tile`/`modis:vertical-tile`
-   properties (`_search_items`) — server-side exact tile matching, not a
-   bbox — filtering the results to `properties.platform == self.platform`
-   cross-checked against the `MOD`/`MYD` item-id prefix (a disagreement only
-   logs a warning — the two signals have been checked to agree in 600 real
-   items, so this is a tripwire, not an expected filter path).
-2. Loads the configured bands via `odc.stac.load` (`_load_tile_year`),
-   **manually** applies each band's `scale`/`offset`/`fill` from `BAND_SPECS`
-   (`odc.stac.load` does not auto-apply STAC-declared scale/offset — confirmed
-   empirically, see `docs/design/07a-modis-band-reference.md`).
-3. Builds a QC-valid mask from the `qc` band (`modis_util.decode_qc_valid_mask`,
-   product-specific bit layout — see [GRID caveats](#caveats) below) and
-   month-first-then-annual composites `lst` and each emissivity/view band via
-   the shared `composite_to_annual` helper (`src/data/common/raster/compositing.py`).
-4. Writes one multi-band GeoTIFF per `(year, tile)`: annual `lst_night`,
-   `valid_period_count_night_annual`, `valid_month_count_night_annual`, per-product
-   emissivity/view bands, plus one band per month for `lst_night_monthly_MM`
-   and `valid_period_count_monthly_MM` (`_write_annual_geotiff`).
-
-**Output path** — FETCH here physically reuses the path shape a PREPARE stage
-would use elsewhere (`ModisSource.output_root()` explicitly overrides the base
-class to route FETCH through `layout.output_root(..., PipelineStep.PREPARE, ...)`
-rather than `layout.raw_root()`'s bare-bytes convention every crawler-based FETCH
-source uses):
-- `<data_root>/prepared/<data_path>[/<namespace>]/<year>/<tile>.tif`
-
-**Format**: one GeoTIFF per `(year, tile)`, float32, `nodata=NaN`, deflate-compressed,
-band descriptions set to the variable/month names above (`dst.set_band_description`).
-Not visible in `tiles.py`/`source.py` alone: the exact land-tile count actually
-produced by a run — see caveat below.
-
-**require_remote / ledger dependency.** Every FETCH `StepTarget` sets
-`require_remote=True` (`_plan_fetch`) — per `docs/design/10-fetch-ledger.md`,
-MODIS FETCH is the one case in this codebase where "complete" means more than
-local-disk existence: FETCH streams from Planetary Computer off-cluster (needs
-internet egress SLURM compute nodes may lack) and must be verified as pushed to
-HPC via the ledger (`src/data/common/ledger/`, `SourceLedger.ensure_artifact`/
-`set_local_state`) before GRID's SLURM job can trust the tile-year is actually
-there. This doc does not re-derive the ledger mechanism itself — see
-`docs/design/10-fetch-ledger.md`.
-
-**Other caveats explicit in code:**
-- `lat_clip_deg` (default 60.0) restricts the FETCH tile list at plan time via
-  `modis_util.get_modis_sinusoidal_tiles`, not post-hoc filtering.
-- `land_tiles` is an optional allowlist mechanism (`compute_land_tiles()` in
-  `tiles.py`, driven by `scripts/compute_modis_land_tiles.py` against the `osm`
-  source's land-polygon output) that further restricts tiles to land-covering
-  ones. **Not populated in the checked-in `sources.modis` block** — confirmed
-  from `data.yaml` (the `land_tiles:` line is commented out) — so a run today
-  ingests every tile in the latitude band, ocean-only tiles included, unless an
-  operator runs the script and adds the config. `docs/design/07b-modis-outstanding.md`
-  already flags this as open ("tooled, not yet run"); still true against current
-  `data.yaml`.
-- QC handling happens at FETCH time, not GRID: `decode_qc_valid_mask` gates
-  which pixels contribute to each composite before the GeoTIFF is written: see
-  [GRID caveats](#caveats) for the per-product bit-layout status.
-
-## GRID (PREPARE)
-
-A single `key="all"` `StepTarget` (`_discover_prepare`) covering every year
-with at least one FETCH GeoTIFF present. `_execute_prepare` builds each
-year's mosaic once (`_mosaic_tiles`, `xr.combine_by_coords` over sinusoidal
-coordinates, memoized one year at a time), then reprojects it tile-by-tile
-onto the canonical target geobox via the shared `run_tiled_prepare` driver
-(`src/data/common/prepare/driver.py`, `nearest` resampling,
-`SPATIAL_RESAMPLING`) instead of one whole-extent zarr region-write per year.
-`raw_getter(tile, year)` clips a 32px-halo-padded bbox out of that year's
-memoized mosaic per tile, mirroring GLASS-AVHRR's own `raw_getter`.
-
-`output_root(GRID)` always forces `grid_id="ease6933"` regardless of
-`ctx.grid_id`/`pipeline.grid` in `data.yaml` — a deliberately preserved MODIS-only
-ad hoc case (module docstring, `docs/design/05-migration.md` §1).
-
-**Output path** (`layout.grid_store_path`, `family=f"modis_lst_{product.lower()}"`, `suffix=""`):
-- `<data_root>/prepared/<data_path>/crs/ease6933/modis_lst_<product>/ix=<row>/iy=<col>/part-<year>.parquet`
-  (e.g. under `modis_lst_21a2/`, `modis_lst_11a1/` — flat, no namespace, so the
-  two config variants land in genuinely separate stores)
-
-**Format**: `cell_id`-keyed parquet parts (one per (tile, year) unit, via
-`SpatialProcessor.process_tile_region`), `dtype="float32"`, `dst_nodata=NaN`,
-sorted by `cell_id`. `Completion.MARKER` — a sibling `.complete` file is only
-written once every declared (tile, year) unit has been written.
-
-**Variables** — `lst_night` is always written (per `_execute_fetch`'s `data_vars`
-dict); the diagnostic/auxiliary bands are also mosaicked/reprojected whenever
-present in the FETCH GeoTIFFs, but only `lst_night` is declared/checked by
-`verification_meta`:
-
-| variable | dtype | meaning | nodata | value_range (checked) |
+| Variant | Product | Years | Tiles | Role |
 |---|---|---|---|---|
-| `lst_night` | float32 | annual mean night LST, Kelvin (scale/offset already applied at FETCH time — code comment: "no packed decode is needed here") | NaN | `[150, 350]` — both `sources.modis.verification` and `sources.modis_robustness_11a1.verification` in `data.yaml` declare `expected_vars: ["lst_night"]`, `value_range: [150, 350]`, matching the Python-side default passed by `_plan_grid`'s `verify.verification_meta(..., expected_vars=("lst_night",), value_range=(150, 350))` |
-| `valid_period_count_night_annual`, `valid_month_count_night_annual`, `emis_29`\* /`emis_31`/`emis_32`, `view_angle`, `view_time` | float32 | diagnostics/auxiliary bands carried through mosaicking (see [FETCH](#fetch) for what each means) | NaN | not covered by `verification_meta`/`data.yaml`'s `verification:` block — no declared range check |
+| `modis` | MYD21A2 (8-day, TES emissivity) | 2002–2025 | 280 land tiles within \|φ\| ≤ 60° (`land_tiles` in `data.yaml`) | **primary outcome** |
+| `modis_robustness_11a1` | MYD11A1 (daily, split-window) | 2004, 2014, 2023 | 5 biome-representative tiles | checks 21A2 against a daily product |
 
-\* `emis_29` only exists for `21A2` (`BAND_SPECS["11A1"]` has no `emis_29` asset).
+Why MYD21A2 and not the more common MYD11: its temperature–emissivity separation retrieves
+emissivity from the radiances themselves rather than from a land-cover lookup table. The
+emissivity, and therefore the LST, is independent of land-cover classification
+([`../../design/07-modis-ingest.md`](../../design/07-modis-ingest.md) §1). The 11A1 arm uses the
+lookup-table method; its tiles are Amazon (`h12v09`), Sahara (`h18v06`), Central Europe (`h18v04`),
+Siberia (`h22v03`) and Australia (`h30v11`).
 
-`verification_meta()` (`src/data/sources/verify.py`) only ever powers a *sampled*
-sanity check (finite + in-range on a strided sample) opened via `data
-summary`/the assembly gate — not a full-array pass. Actual observed value
-distribution, tile/date coverage achieved by a real run, and zarr store size are
-not knowable from code/config alone.
+## Raw data (FETCH)
 
-**TODO (needs live data):** actual land-tile count ingested by a real `modis`
-run (the ~317-figure in `07a-modis-band-reference.md` is explicitly flagged
-UNVERIFIED there, and `land_tiles` is unset — see FETCH caveats); observed
-`lst_night` value distribution; parquet part sizes for `modis_lst_21a2` /
-`modis_lst_11a1`; whether a full `modis` backfill (2002–2025 × full tile
-list) has actually completed.
+FETCH is not a plain download. For each (tile, year) it:
 
-### Caveats
+1. searches STAC for that tile's Aqua items;
+2. loads LST, QC, emissivity and view bands, and applies scale/offset/fill manually (they are not
+   applied automatically — [`07a`](../../design/07a-modis-band-reference.md));
+3. masks pixels with QC LST error above `qc_max_lst_error_k` (2 K) or outside 150–350 K;
+4. composites month-first to annual (`src/data/common/raster/compositing.py`): the mean of each
+   month's valid 8-day values, then the mean of the monthly means, so each month counts equally.
 
-- **`Completion.MARKER` on the PREPARE target** (`_discover_prepare`): unlike
-  the earlier per-year/`Completion.NEVER` shape, a single `key="all"` target
-  now covers every year; `_execute_prepare` loops over years internally via
-  `run_tiled_prepare` and only calls `mark_complete()` once every declared
-  (tile, year) unit has been written.
-- **`qc_max_lst_error_k`** (default `2.0`, both config blocks): the LST-error-K
-  threshold `decode_qc_valid_mask` applies when building the FETCH-time valid
-  mask — a configurable policy choice, not a layout fact, per
-  `docs/design/07-modis-ingest.md` §6.
-- **QC bit layout is confirmed for both products in the current code**, contrary
-  to what a literal reading of `07a-modis-band-reference.md`'s "still open for
-  MOD21A2" framing might suggest in isolation: `tiles.py`'s
-  `_LST_ERROR_K_BY_BITS` dict has verified entries for both `"11A1"` and
-  `"21A2"` (with the two products' bit-value-to-error-K polarity explicitly
-  inverted and documented in the module comment), and
-  `_QC_LAYOUT_CONFIRMED_PRODUCTS = frozenset(_LST_ERROR_K_BY_BITS)` covers both
-  — the runtime "UNVERIFIED" warning in `decode_qc_valid_mask` only fires for a
-  `product` outside that set, which neither `modis` nor `modis_robustness_11a1`
-  is. `docs/design/07b-modis-outstanding.md` already reflects this as resolved
-  (dated 2026-08-09) — flagging here only because `07a-modis-band-reference.md`
-  read alone still frames MOD21A2's QC as "still open," which is stale relative
-  to `07b` and the current code.
-- Scale/offset/fill values in `BAND_SPECS` are applied once, manually, at FETCH
-  time (`_load_tile_year`) — `odc.stac.load` does not auto-apply STAC-declared
-  scale/offset (confirmed empirically per `07a-modis-band-reference.md`), so
-  GRID reads already-physical values and does no further decoding.
+- **Path:** `raw/modis/21A2/<year>/<tile>.tif` (and `raw/modis/11A1/...`), one multi-band float32
+  GeoTIFF in the sinusoidal projection per tile-year, band descriptions = variable names.
+- **Monthly values are not persisted**, only the annual statistics below.
+- `transfer_mode=auto`: each tile-year is pushed to the HPC as it's written.
+
+## Prepared output (PREPARE)
+
+Each year's tiles are reprojected onto the EASE grid by nearest neighbour, one source tile at a
+time, and overlaid (`src/data/common/prepare/sinusoidal_mosaic.py`,
+[`15a`](../../design/15a-modis-prepare-rework.md)). The output grid is always `ease6933`,
+regardless of `pipeline.grid`.
+
+- **Path:** `prepared/modis/21A2/crs/ease6933/modis_lst_21a2/ix=/iy=/part-<year>.parquet`
+  (`modis_lst_11a1` for the robustness arm)
+
+| Column | Meaning | Panel aggregation |
+|---|---|---|
+| `lst_night_mean`, `lst_day_mean` | annual month-weighted mean LST, K | `average` |
+| `lst_night_median`, `lst_day_median` | annual median, K | `average` |
+| `lst_night_sd`, `lst_day_sd` | annual standard deviation, K | `average` |
+| `valid_period_count_{night,day}_annual` | valid 8-day periods (21A2) or days (11A1) in the year | `sum` |
+| `valid_month_count_{night,day}_annual` | months with at least one valid observation | `sum` |
+
+Day and night are masked separately, from `QC_Day` and `QC_Night`.
+
+## Analysis caveats
+
+- **Clear-sky selection.** A composite contains only clear-sky, QC-passing observations. Haze and
+  heavy aerosol can trip the cloud mask, so pollution-heavy periods are under-sampled. The valid
+  counts are the only per-pixel measure of this; see the analysis plan, Phase 1b.
+- **No monthly detail.** Checking where in the year coverage drops would need FETCH to write
+  monthly bands again, which means re-streaming from STAC.
+- **Aqua orbit drift** after about 2020 moves the overpass time
+  ([`14`](../../design/14-terra-aqua-drift-diagnostic.md)).
+- **No extreme-value counts** (heat/cold months) here: 8-day compositing is too coarse for them.
+  Use GLASS for those.
+
+## Needs live data
+
+- The share of land pixel-years with a valid annual value, by latitude band.
+- Whether the 2002–2025 backfill is complete for all 280 tiles (`data summary --source modis`).
 
 ## See also
 
-- [`docs/design/07-modis-ingest.md`](../../design/07-modis-ingest.md) — product
-  choice rationale (21A2 vs 11A1 vs rejected 11A2), the two-stage
-  composite-in-native-sinusoidal/reproject-once architecture, the month-first
-  compositing definition, and operational requirements (token refresh, dev
-  cache, execution scripts).
-- [`docs/design/07a-modis-band-reference.md`](../../design/07a-modis-band-reference.md) —
-  authoritative per-band scale/offset/fill/range reference for both products,
-  cited to primary sources (STAC + the MOD11/MxD21 user guides).
-- [`docs/design/07b-modis-outstanding.md`](../../design/07b-modis-outstanding.md) —
-  live checklist of resolved vs. still-open MODIS items (QC bit layout,
-  land-tile allowlist, robustness-arm tile/year selection, HPC transfer
-  throughput).
-- [`docs/design/10-fetch-ledger.md`](../../design/10-fetch-ledger.md) — the
-  `require_remote`/ledger mechanism MODIS FETCH depends on for HPC-verified
-  completion (§7 specifically documents MODIS's FETCH placement).
+[`07-modis-ingest.md`](../../design/07-modis-ingest.md) (product choice, compositing),
+[`07a-modis-band-reference.md`](../../design/07a-modis-band-reference.md) (per-band scale/offset/fill),
+[`07b-modis-outstanding.md`](../../design/07b-modis-outstanding.md) (live checklist).
