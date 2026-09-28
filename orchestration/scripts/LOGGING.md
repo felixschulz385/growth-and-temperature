@@ -1,55 +1,33 @@
-# SLURM script logging convention
+# SLURM logging
 
-All scripts in this directory except `analysis.sh` (documented exception below) follow one convention for SLURM's own stdout/stderr capture:
+Where SLURM's stdout/stderr ends up for each kind of job. All paths are relative to the project
+root on the HPC (`cluster.project_root` in `orchestration/configs/slurm_jobs.yaml`).
 
-- **Directory**: `log/<category>/<key>/`, where:
-  - `<category>` is one of `preprocess`, `assemble`, `maintenance` — mirrors `src/cli/<domain>`.
-  - `<key>` is the script's `--source` value (e.g. `acag`, `esacci`, `snl_mining`) for source-keyed preprocess/assemble scripts, or the script's own operation name for scripts without a fixed source (`create`, `update`, `demean` for assemble; `compress`, `rechunk` for maintenance).
-- **Filename**: always `%x-%j.out` / `%x-%j.err` — SLURM's own job-name/job-id substitutions, never a hand-typed literal.
-- **Invariant**: `--job-name` must equal the script's own filename stem (e.g. `esacci-preprocess-spatial.sh` → `--job-name=esacci-preprocess-spatial`). This is what `%x` resolves to, and enforcing it prevents copy-paste bugs where a script's log ends up under another script's directory or job name (this happened twice before this convention: `esacci-preprocess-spatial.sh` was writing into ACAG's log dir, and `plad-preprocess.sh` was using `eog-preprocess`'s job name). Check with `lint_slurm_scripts.sh`.
-- **Path form**: pragma paths stay relative (`./log/...`). All scripts here are submitted from the project root by convention — `sbatch` must be invoked from there.
+| Job | Submitted by | Log directory | Files |
+|---|---|---|---|
+| Data pipeline (`data run --slurm`) | `src/cli/data/slurm.py` | `log/preprocess/<source>/` | `%x-%j.out`, `%x-%j.err` |
+| Assembly (`assemble create/update --slurm`) | `src/cli/assemble/slurm.py` | `log/assemble/<grid>/` | `%x-%j.out`, `%x-%j.err` |
+| Maintenance/validation scripts in this directory | `sbatch orchestration/scripts/<name>.sh` | `log/maintenance/<name-or-group>/` | `%x-%j.out`, `%x-%j.err` |
+| Analysis (`analysis submit`, `analysis.sh`) | `src/analysis/orchestration/slurm.py` | `log/analysis/<model-or-table>/<duckreg_version>/` | `slurm-<jobid>.log`, `.err` |
 
-## Directory pre-creation
+`%x` is the job name and `%j` the job id. The two CLI submitters create their log directory
+before calling `sbatch`, and submit with `sbatch --wrap`. No generated `.sh` files are involved;
+job resources come from `slurm_jobs.yaml` and can be overridden with `--slurm-time`/`-mem`/`-cpus`/
+`-qos`/`-partition`.
 
-SLURM opens the `--output`/`--error` files at job start, before the script body runs, and the `#SBATCH` pragma cannot execute a command — so a `mkdir -p` inside the script body cannot help the very first submission after `log/` doesn't exist (it's gitignored, so this happens on every fresh clone and after any `git clean`).
+## Conventions for the scripts in this directory
 
-Run once after cloning, and again any time `log/` is wiped:
-
-```bash
-bash orchestration/slurm/bootstrap_log_dirs.sh
-```
-
-This parses every script's `--output=`/`--error=` line and `mkdir -p`s each directory referenced. It's self-maintaining — adding a new script needs no separate list update.
-
-Each script also keeps a defensive `mkdir -p "$(dirname ...)"` as its first body line, in case a later cleanup job deletes the directory between a bootstrap run and a subsequent submission. This is defense-in-depth, not the primary mechanism — the bootstrap script is what actually runs early enough to matter.
-
-## Linting
-
-```bash
-bash orchestration/slurm/lint_slurm_scripts.sh
-```
-
-Checks every script (except `analysis.sh`) for the job-name/filename-stem invariant and the `%x-%j.out`/`%x-%j.err` filename pattern. Run this before committing a new or edited `.sh` script.
-
-## Generated scripts: the `preprocess` family
-
-The 16 `*-preprocess-*.sh`/`eog-preprocess.sh`/`plad-preprocess.sh` scripts are **generated**, not hand-maintained. This is a direct response to the copy-paste bugs referenced above (the job-name/log-dir fix in that paragraph didn't catch everything — `esacci-preprocess-spatial.sh` was still actually running `--source acag`, and several scripts had a `/scratch/.../<wrong_source>_$SLURM_JOB_ID` temp-dir inherited from whatever script they were copied from). Auditing the fleet also found every one of these scripts invoking `run.py preprocess --source ...` without the `run` sub-subcommand that `src/cli/preprocess/commands.py` has required since commit `7da6da6` — all 16 were failing immediately with an argparse error.
-
-- **Source of truth**: `jobs.yaml` — one entry per script (source, stage, resources).
-- **Generator**: `generate_slurm_scripts.py` — one template, so the `run.py preprocess run ...` invocation shape is written in exactly one place.
-
-```bash
-# after editing jobs.yaml:
-python orchestration/slurm/generate_slurm_scripts.py          # regenerate the .sh files
-python orchestration/slurm/generate_slurm_scripts.py --check  # drift check only, exit 1 if any .sh disagrees with jobs.yaml
-```
-
-Each generated file carries a `# Generated by ... Do not hand-edit` header. If you need a one-off change to a single job, edit `jobs.yaml`, not the `.sh` file — a hand-edit will just show up as drift on the next `--check` and get silently clobbered by the next regeneration.
-
-Not covered by the generator (hand-maintained, standalone files, each for a documented reason): `analysis.sh`, `compress.sh`, `rechunk-zarr.sh`, `validate-backbone-subset.sh`. Assembly no longer has committed sbatch wrappers — `run.py assemble create --slurm` submits it directly (`src/cli/assemble/slurm.py`), the same on-the-fly `sbatch --wrap` pattern as `data run --slurm`.
+- `--job-name` equals the script's filename stem, so `%x` resolves to it.
+- `--output`/`--error` are relative (`./log/maintenance/...`), so submit from the project root.
+- SLURM opens the log files before the script body runs, so the directory must already exist.
+  `log/` is git-ignored; after a fresh clone, create it first
+  (`mkdir -p log/maintenance/<name>`).
 
 ## Exception: the analysis family
 
-`analysis.sh` and `src/analysis/orchestration/slurm.py` (which generates SLURM scripts for batched model runs) use a different, documented scheme: `log/analysis/<model-or-table>/<duckreg_version>/`, `.log`/`.err` extensions, and manual `echo "[$(date -Is)] ..."` markers instead of Python `logging`. This is deliberate — `scripts/screen_analysis_logs.py` parses that exact format and directory depth. Do not fold the analysis family into the general convention above; if you touch its log paths, keep `screen_analysis_logs.py` in sync.
-
-`analysis.sh` additionally sets a fallback `#SBATCH --output=./log/_bootstrap/%x-%j.out`/`--error=...` to catch anything printed before its manual `exec > ... 2> ...` redirection takes over (e.g. a failed `conda activate`).
+`analysis.sh` and `src/analysis/orchestration/slurm.py` use their own layout:
+`log/analysis/<model-or-table>/<duckreg_version>/`, `.log`/`.err` extensions, and
+`echo "[$(date -Is)] ..."` markers instead of Python `logging`. `scripts/screen_analysis_logs.py`
+parses exactly that format and directory depth, so keep the two in sync if either changes.
+`analysis.sh` also sets a fallback `--output=./log/_bootstrap/%x-%j.out` to catch anything printed
+before its own redirection takes over, e.g. a failed `conda activate`.

@@ -1,137 +1,116 @@
-# 🌍 Growth and Temperature (GNT) Data System
+# Growth and Temperature (GNT)
 
-A satellite data processing system for studying **the direct impact of economic growth on local temperature**, investigating how economic development affects local warming independent of global CO₂ effects.
+Does local economic growth change local temperature, separately from the global CO₂-driven
+trend? Growth alters the local energy balance through three channels that push in different
+directions:
 
-## 🎯 Research Question
+- **land-cover change** (urbanisation, deforestation) and **anthropogenic heat** warm the surface;
+- **aerosols** from pollution cool it.
 
-**How much does local economic growth contribute to local warming, independent of global CO₂ effects?**
+The sign of the net effect is therefore an empirical question.
 
-Economic growth may directly alter local temperatures through:
-- **Land Cover Change**: Deforestation, urbanization, irrigation
-- **Aerosol Pollution**: Industrial particles affecting albedo  
-- **Anthropogenic Heat**: Direct thermal emissions from economic activity
+This repository holds the data pipeline and the analysis for a global 1 km panel of grid cells.
 
-## 🔬 Research Innovation
+## Research design at a glance
 
-This project goes beyond existing urban heat island studies:
+| | |
+|---|---|
+| Outcome | MODIS Aqua night land surface temperature (MYD21A2), annual, 2002–2022; GLASS near-surface air temperature as a second outcome |
+| Treatment | Nighttime lights: harmonized DMSP–VIIRS (`ntl_harm`) and VIIRS annual composites (`eog_viirs`) |
+| Instruments | Mining exposure (S&P/SNL mines: active-mine counts and commodity price shocks within 10/20/50 km); regional favoritism (leaders' birth regions, PLAD) |
+| Mechanisms | ESA CCI land cover, ACAG surface PM2.5 |
+| Model | Pixel and country (× biome) × year fixed effects, 2SLS; the target is a distance-ring specification that captures spillovers up to 30 km |
+| Grid | 1 km EASE-Grid 2.0 (EPSG:6933), \|φ\| ≤ 60°; coarser grids by exact block aggregation |
 
-- **Global scope**: Entire planet, not just selected cities
-- **Growth dynamics**: Economic change over time, not static comparisons
-- **Rural inclusion**: All development effects, not just urban areas
-- **Causal design**: Natural experiments vs. correlational evidence
-- **High resolution**: 30+ years of satellite data at 500m grid resolution
+The analysis plan, including the known threats to identification, is in
+[`docs/analysis/final-analysis-plan.md`](docs/analysis/final-analysis-plan.md). Every data source
+is described in [`docs/data/`](docs/data/README.md).
 
-## 📊 Data & Methodology
+## Setup
 
-### Core Model
-Two-way fixed-effects panel regression:
-```
-T_it = α + β · NightLights_it + γ_i + δ_t + λ_i · t + ε_it
-```
-
-### Data Sources
-- **Economic Activity**: DMSP-OLS (1992–2013), VIIRS-DNB (2012–2022) nighttime lights
-- **Temperature**: AVHRR & MODIS LST from GLASS archive
-- **Supporting**: ESA CCI land cover, administrative boundaries
-
-### Sample Scale
-- **Spatial**: Global 500m × 500m grid cells
-- **Temporal**: 1992–2022 (18+ billion observations)
-- **Causal ID**: Regional favoritism, resource discoveries
-
-## 🚀 Quick Start
-
-### Installation
 ```bash
-git clone <repository-url>
-cd growth-and-temperature
-conda env create -f environment.yml
-conda activate src
-pip install -e .
-./.githooks/install.sh   # enable repo git hooks (notebook-output pre-commit check)
+conda env create -f environment.yml    # creates the "gnt" env and runs `pip install -e .`
+conda activate gnt
+./.githooks/install.sh                 # blocks committing notebooks that contain outputs
 ```
 
-### Basic Usage
+Machine-specific settings go in `orchestration/configs/data.local.yaml` (git-ignored), which
+overrides the empty `paths:`/`remote:` blocks in `data.yaml`:
+
+```yaml
+paths:
+  data_root: "/path/to/data"          # raw/, prepared/, assembled/ live under here
+remote:                               # optional: HPC target for pushing fetched data
+  ssh_target: "user@host:/path/to/data"
+  key_file: "~/.ssh/id_ed25519"
+```
+
+Some sources need credentials: EOG in `orchestration/secrets/eog.credentials.json` or
+`EOG_USERNAME`/`EOG_PASSWORD`; ESA CCI in `~/.cdsapirc`. The analysis notebooks also expect a
+`duckreg` source checkout next to this repo (or at `DUCKREG_PATH`).
+
+## Usage
+
+Everything runs through one CLI, `python -m src.cli`, with three domains.
+
+**`data`**: fetch and prepare one source (see [`docs/data/`](docs/data/README.md)).
+
 ```bash
-# Fetch + prepare a source (fetch/prepare/grid lifecycle)
-python -m src.cli data run --config orchestration/configs/data.yaml --source glass_modis --step prepare
+python -m src.cli data list                                  # registered sources
+python -m src.cli data summary                               # what's complete / outstanding
+python -m src.cli data run --source acag --step fetch
+python -m src.cli data run --source acag --step prepare
 
-# Assemble the panel: every source in assembly.sources, on the chosen grid.
-# --grid picks the output resolution; --shake adds grid-origin robustness variants.
-python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 1km
-python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad
-# output: ${DATA_NOBACKUP}/assembled/grid=<label>/shake=<base|s0|s1|...>/ix=/iy=/data.parquet
-
-# Refresh one source in an already-built table
-python -m src.cli assemble update --config orchestration/configs/data.yaml --grid 10km --datasource eog_viirs
+# on the HPC: submit as SLURM jobs (defaults from orchestration/configs/slurm_jobs.yaml)
+python -m src.cli data run --source snl_mining --step prepare --slurm --chain   # includes REQUIRES
+python -m src.cli data run --source snl_mining --step prepare --slurm --chain --dry-run
 ```
 
-### HPC Processing
+**`assemble`**: merge every source in `assembly.sources` into the analysis panel.
+
 ```bash
-# Submit a single (source, step) as a SLURM job (resource defaults from
-# orchestration/configs/slurm_jobs.yaml, overridable with --slurm-time/-mem/-cpus/-qos/-partition)
-python -m src.cli data run --source glass_modis --step prepare --slurm
-
-# Submit a source's full dependency chain (REQUIRES prerequisites included)
-python -m src.cli data run --source glass_modis --step prepare --slurm --chain
-
-# Preview the sbatch command(s) without submitting
-python -m src.cli data run --source glass_modis --step prepare --slurm --chain --dry-run
-
-# Submit an assembly run (per-grid resource defaults from slurm_jobs.yaml's assembly_jobs:)
-python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 10km --shake quad --slurm
-python -m src.cli assemble create --config orchestration/configs/data.yaml --grid 10km --slurm --dry-run
+CFG=orchestration/configs/data.yaml    # assemble needs --config explicitly; data defaults to it
+python -m src.cli assemble create --config $CFG --grid 10km                # coarser grids aggregate 1 km pixels
+python -m src.cli assemble create --config $CFG --grid 10km --shake quad   # + shifted-origin robustness variants
+python -m src.cli assemble create --config $CFG --grid 10km --slurm        # submit on the HPC
+python -m src.cli assemble update --config $CFG --grid 10km --datasource eog_viirs   # refresh one source
+# output: <data_root>/assembled/grid=<label>/shake=<base|s0|...>/ix=/iy=/*.parquet
 ```
 
-## 🏗️ System Architecture
+**`analysis`**: batch model runs defined in `orchestration/configs/analysis.xlsx` (git-ignored):
+`analysis run | submit | summary | tables | cleanup | subsets`.
 
-### Processing Pipeline
-1. **Download**: Multi-source data acquisition with retry logic
-2. **Preprocess**: Temporal aggregation (Daily → Annual), spatial harmonization
-3. **Assemble**: Analysis-ready datasets with consistent alignment
+Interactive analysis lives in `output/notebooks/`: `descriptive_statistics.ipynb`,
+`descriptive_overview.ipynb` and `regression.ipynb`.
 
-### Key Features
-- **Unified Interface**: Single `python -m src.cli` entry point for all operations
-- **SLURM Integration**: `data run --slurm` submits jobs directly (`orchestration/configs/slurm_jobs.yaml` resource defaults)
-- **Scalable Processing**: Dask-based parallel processing
-- **Data Standards**: Chunked Zarr format for efficient I/O
+## Repository layout
 
-## 📁 Repository Structure
 ```
-.
-├── src/                     # Core Python package
-│   ├── data/               # Data processing modules
-│   └── experiments/        # Analysis notebooks
-├── orchestration/          # Configuration & SLURM scripts
-├── scripts/               # Utility scripts
-└── data_nobackup/         # Processed data (not in git)
+src/
+  cli/                 python -m src.cli entry point (data / assemble / analysis)
+  data/
+    sources/           one module or package per data source, plus registry, layout, verify
+    common/            shared machinery: fetch, prepare driver, grid/geobox, neighbourhood engine, HPC push
+    assemble/          DuckDB panel assembly (block aggregation, joins, grid-shake)
+  analysis/            batch estimation, SLURM submission, table rendering
+  viz/                 plotting helpers (coefficient plots, maps)
+  experiments/         exploratory notebooks (not maintained)
+orchestration/
+  configs/             data.yaml (sources + assembly), slurm_jobs.yaml, local overrides
+  scripts/             maintenance and validation SLURM scripts (see LOGGING.md)
+scripts/               one-off maintenance and diagnostic scripts
+tests/                 pytest suite (runs in CI: .github/workflows/tests.yml)
+docs/                  analysis plan, data-source pages, design records (docs/README.md)
+output/                notebooks, tables, figures, presentations, results website
+data/                  local data root (git-ignored)
 ```
 
-## 🎯 Research Applications
+## Tests
 
-### Current Focus
-- Urban heat island quantification
-- Economic development impact assessment
-- Regional climate pattern analysis
+```bash
+pytest -q
+```
 
-### Policy Relevance
-If causal effects confirmed:
-- Climate cost accounting for development projects
-- Urban planning and industrial zoning optimization
-- Welfare impact studies linking temperature to human outcomes
+## Contact and license
 
-## 📅 Project Status
-- ✅ **Completed**: Data harmonization, pilot results
-- 🔄 **In Progress**: Full-scale global estimation  
-- 📋 **Next**: Welfare impacts, mechanism analysis
-
-## 📞 Contact
-**Felix Schulz** - felix.schulz@unibas.ch
-
-## 🔗 Resources
-- [GLASS Data Portal](https://glass.hku.hk/)
-- [EOG Nighttime Lights](https://eogdata.mines.edu/nighttime_light/)
-- [ESA Climate Change Initiative](https://climate.esa.int/)
-
-## 📄 License
-MIT License - see [LICENSE](LICENSE) file for details.
+Felix Schulz (felix.schulz@unibas.ch), University of Basel. MIT License, see [LICENSE](LICENSE).
