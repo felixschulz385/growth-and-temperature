@@ -1,0 +1,23 @@
+\begin{tabular}{llllll}
+\toprule
+ & (1) TWFE & (2) 2SLS & (3) RF: Temp & (4) TWFE + PM2.5 & (5) RF: PM2.5 \\
+\midrule
+log(1+NTL) & -0.0300*** & -0.0259 &  & -0.0298*** &  \\
+ & (0.0056) & (0.1503) &  & (0.0055) &  \\
+Mines within 20 km &  &  & -0.0017 &  & -0.1263* \\
+ &  &  & (0.0097) &  & (0.0667) \\
+PM2.5 &  &  &  & 0.0028*** &  \\
+ &  &  &  & (0.0010) &  \\
+First stage: Mines 20 km -> log(1+NTL) &  & 0.0642*** &  &  &  \\
+ &  & (0.0076) &  &  &  \\
+First-stage F (cluster-robust) &  & 71.0 &  &  &  \\
+Anderson-Rubin 95\% CI &  & [-0.322, 0.284] &  &  &  \\
+Dep. var. & Night LST & Night LST & Night LST & Night LST & PM2.5 \\
+Pixel FE & Yes & Yes & Yes & Yes & Yes \\
+Country x biome x year FE & Yes & Yes & Yes & Yes & Yes \\
+Observations & 25,133,764 & 25,133,764 & 25,133,764 & 25,133,698 & 25,133,698 \\
+Pixels & 1,205,480 & 1,205,480 & 1,205,480 & 1,205,470 & 1,205,470 \\
+ADM1 regions (clusters) & 3,410 & 3,410 & 3,410 & 3,410 & 3,410 \\
+Years & 2002-2022 & 2002-2022 & 2002-2022 & 2002-2022 & 2002-2022 \\
+\bottomrule
+\end{tabular}
