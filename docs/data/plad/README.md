@@ -28,7 +28,7 @@ expanded to one row per year; codes not found in gadm's mapping are dropped.
 ## Analysis caveats
 
 - **Rare treatment.** `reg_fav` is true for about 0.5 % of pixel-years; about 2 % of pixels ever
-  switch (`regression.ipynb` R8).
+  switch (`03_post_analysis.ipynb` R8).
 - **Absorbed by pixel fixed effects.** Under pixel + country × year FE the first stage was dead
   (F ≈ 0.5), and the reduced form on LST was +0.09 K. The variation is at the region level, so the
   natural design is an ADM2 panel with region FE.

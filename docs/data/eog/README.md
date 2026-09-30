@@ -33,7 +33,7 @@ each year FETCH takes the one composite whose period ends in December, in three 
 - After `sum` resampling, flare and industrial cells can reach 10⁵–10⁶.
 - `cf_cvg` is the treatment-side analogue of MODIS's valid counts. Low coverage makes the
   composite noisier, and coverage itself varies with cloud and haze.
-- Only 10 years: a short panel, and the VIIRS-era first stage in `regression.ipynb` (R5) was
+- Only 10 years: a short panel, and the VIIRS-era first stage in `03_post_analysis.ipynb` (R5) was
   near zero.
 
 ## eog_flare — VIIRS Nightfire upstream gas-flare survey

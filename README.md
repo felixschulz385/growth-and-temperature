@@ -19,8 +19,8 @@ This repository holds the data pipeline and the analysis for a global 1 km panel
 | Treatment | Nighttime lights: harmonized DMSP–VIIRS (`ntl_harm`) and VIIRS annual composites (`eog_viirs`) |
 | Instruments | Mining exposure (S&P/SNL mines: active-mine counts and commodity price shocks within 10/20/50 km); regional favoritism (leaders' birth regions, PLAD) |
 | Mechanisms | ESA CCI land cover, ACAG surface PM2.5 |
-| Model | Pixel and country (× biome) × year fixed effects, 2SLS; the target is a distance-ring specification that captures spillovers up to 30 km |
-| Grid | 1 km EASE-Grid 2.0 (EPSG:6933), \|φ\| ≤ 60°; coarser grids by exact block aggregation |
+| Model | Pixel and country × biome × year fixed effects, 2SLS at the 10 km cell level; the instrument's spatial reach weights in neighbour-cell spillovers ([`docs/analysis/10km-ring-check.md`](docs/analysis/10km-ring-check.md)). A distance-ring specification up to 30 km is a robustness check |
+| Grid | 1 km EASE-Grid 2.0 (EPSG:6933), \|φ\| ≤ 60°; coarser grids by exact block aggregation. Main analysis grid: 10 km |
 
 The analysis plan, including the known threats to identification, is in
 [`docs/analysis/final-analysis-plan.md`](docs/analysis/final-analysis-plan.md). Every data source
@@ -80,8 +80,11 @@ python -m src.cli assemble update --config $CFG --grid 10km --datasource eog_vii
 **`analysis`**: batch model runs defined in `orchestration/configs/analysis.xlsx` (git-ignored):
 `analysis run | submit | summary | tables | cleanup | subsets`.
 
-Interactive analysis lives in `output/notebooks/`: `descriptive_statistics.ipynb`,
-`descriptive_overview.ipynb` and `regression.ipynb`.
+Interactive analysis lives in `output/notebooks/`, in the three stages of
+[`docs/analysis/final-analysis-plan.md`](docs/analysis/final-analysis-plan.md):
+`01_pre_analysis.ipynb`, `02_core_analysis.ipynb` and `03_post_analysis.ipynb`. All three share
+the specification in `src/analysis/spec.py`. `descriptive_statistics.ipynb` (exploratory, day
+LST, 1992–2022) and `descriptive_overview.ipynb` (one map per assembled column) are companions.
 
 ## Repository layout
 
