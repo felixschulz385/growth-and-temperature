@@ -80,9 +80,11 @@ python -m src.cli assemble update --config $CFG --grid 10km --datasource eog_vii
 **`analysis`**: batch model runs defined in `orchestration/configs/analysis.xlsx` (git-ignored):
 `analysis run | submit | summary | tables | cleanup | subsets`.
 
-Interactive analysis lives in `output/notebooks/`, in the three stages of
+Interactive analysis lives in `output/notebooks/`, ordered as in
 [`docs/analysis/final-analysis-plan.md`](docs/analysis/final-analysis-plan.md):
-`01_pre_analysis.ipynb`, `02_core_analysis.ipynb` and `03_post_analysis.ipynb`. All three share
+`01_pre_analysis.ipynb` (checks without outcome regressions), then one notebook per story:
+`02_baseline.ipynb` (is the lights–temperature association robust?), `03_iv.ipynb` with
+`03b_iv_robustness.ipynb` (the mining instrument) and `04_channels.ipynb` (mechanisms). All share
 the specification in `src/analysis/spec.py`. `descriptive_statistics.ipynb` (exploratory, day
 LST, 1992–2022) and `descriptive_overview.ipynb` (one map per assembled column) are companions.
 
