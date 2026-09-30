@@ -1,5 +1,7 @@
 # 13 — PREPARE Memory & Parallelism
 
+> **Status (2026-09-30): frozen.** The project was retired on 2026-09-30 ([`../analysis/project-conclusion.md`](../analysis/project-conclusion.md)); open items below were not pursued.
+
 Live checklist, same convention as [`07b-modis-outstanding.md`](07b-modis-outstanding.md): update in
 place as items get resolved, don't treat this as a session-scoped writeup.
 

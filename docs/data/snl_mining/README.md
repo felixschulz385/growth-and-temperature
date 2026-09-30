@@ -78,7 +78,7 @@ parquet sidecars (`_export_admin_count_tables`). They are not in the panel.
 - **The price shock is not a clean shift-share instrument.** It sums over mines active *that
   year*, so exposure moves with openings and closures, not only with world prices. A
   baseline-fixed-exposure variant would need to be built
-  ([`../../analysis/final-analysis-plan.md`](../../analysis/final-analysis-plan.md) §3).
+  ([`../../analysis/final-analysis-plan.md`](../../analysis/final-analysis-plan.md) §5; not built).
 - **Opening and closing years are mostly LLM-imputed** (manual years for about 15 % / 2 % of
   mines). Timing errors blur event studies around openings, and the active-mine counts inherit
   them. A manual-years-only robustness check will be small; report the imputation status next

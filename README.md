@@ -9,7 +9,19 @@ directions:
 
 The sign of the net effect is therefore an empirical question.
 
-This repository holds the data pipeline and the analysis for a global 1 km panel of grid cells.
+This repository holds the data pipeline and the analysis for a global 1 km panel of grid cells,
+analysed at 10 km.
+
+> **Status: retired on 2026-09-30.**
+> - **No detectable local effect.** Growth, measured by night lights, has no detectable effect on
+>   night land surface temperature at the 10 km cell scale.
+> - **A causal bound.** The mining instrument rules out effects beyond about ±0.3 K per log
+>   point of lights.
+> - **The association is regional.** The negative fixed-effects association vanishes between
+>   neighbouring cells, so it is regional, not local.
+>
+> Findings, interpretation and what a successor would need:
+> [`docs/analysis/project-conclusion.md`](docs/analysis/project-conclusion.md).
 
 ## Research design at a glance
 
@@ -17,12 +29,14 @@ This repository holds the data pipeline and the analysis for a global 1 km panel
 |---|---|
 | Outcome | MODIS Aqua night land surface temperature (MYD21A2), annual, 2002–2022; GLASS near-surface air temperature as a second outcome |
 | Treatment | Nighttime lights: harmonized DMSP–VIIRS (`ntl_harm`) and VIIRS annual composites (`eog_viirs`) |
-| Instruments | Mining exposure (S&P/SNL mines: active-mine counts and commodity price shocks within 10/20/50 km); regional favoritism (leaders' birth regions, PLAD) |
+| Instruments | Mining exposure (S&P/SNL mines: active mines within 20 km; 10/50 km and commodity price shocks as robustness). Regional favoritism (leaders' birth regions, PLAD) was tried; it has no first stage |
 | Mechanisms | ESA CCI land cover, ACAG surface PM2.5 |
-| Model | Pixel and country × biome × year fixed effects, 2SLS at the 10 km cell level; the instrument's spatial reach weights in neighbour-cell spillovers ([`docs/analysis/10km-ring-check.md`](docs/analysis/10km-ring-check.md)). A distance-ring specification up to 30 km is a robustness check |
+| Model | Pixel and country × biome × year fixed effects, 2SLS at the 10 km cell level; the instrument's spatial reach weights in neighbour-cell spillovers ([`docs/analysis/10km-ring-check.md`](docs/analysis/10km-ring-check.md)) |
 | Grid | 1 km EASE-Grid 2.0 (EPSG:6933), \|φ\| ≤ 60°; coarser grids by exact block aggregation. Main analysis grid: 10 km |
 
-The analysis plan, including the known threats to identification, is in
+The findings and the decision to retire the project are in
+[`docs/analysis/project-conclusion.md`](docs/analysis/project-conclusion.md). The analysis plan,
+with every pre-specified decision rule and its outcome, is in
 [`docs/analysis/final-analysis-plan.md`](docs/analysis/final-analysis-plan.md). Every data source
 is described in [`docs/data/`](docs/data/README.md).
 
@@ -85,8 +99,11 @@ Interactive analysis lives in `output/notebooks/`, ordered as in
 `01_pre_analysis.ipynb` (checks without outcome regressions), then one notebook per story:
 `02_baseline.ipynb` (is the lights–temperature association robust?), `03_iv.ipynb` with
 `03b_iv_robustness.ipynb` (the mining instrument) and `04_channels.ipynb` (mechanisms). All share
-the specification in `src/analysis/spec.py`. `descriptive_statistics.ipynb` (exploratory, day
-LST, 1992–2022) and `descriptive_overview.ipynb` (one map per assembled column) are companions.
+the specification in `src/analysis/spec.py`, and their committed outputs are the runs of record
+(how to reproduce them: [`project-conclusion.md`](docs/analysis/project-conclusion.md) §6).
+`descriptive_statistics.ipynb` (exploratory, day LST, 1992–2022) and `descriptive_overview.ipynb`
+(one map per assembled column) are companions. The poster, presentations, results website and
+`output/tables/table_*.tex` predate the final specification; do not cite their numbers.
 
 ## Repository layout
 

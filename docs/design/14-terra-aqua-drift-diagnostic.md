@@ -1,5 +1,7 @@
 # 14 — Terra/Aqua Platform-Bias & Orbital-Drift Diagnostic
 
+> **Status (2026-09-30): never run.** The project used Aqua only, so the Terra/Aqua fusion question did not arise. Aqua's night-overpass drift was measured in [`../analysis/drift-and-pm25-coverage-checks.md`](../analysis/drift-and-pm25-coverage-checks.md) §1: negligible through 2022. The project was retired on 2026-09-30.
+
 Handoff note for whoever picks this up next (agent or human) — this environment (local sandbox,
 this session) has no `pystac_client`/`planetary_computer`/`odc-stac` installed and likely no
 egress to Planetary Computer's blob storage for actual pixel reads, so **this diagnostic needs to

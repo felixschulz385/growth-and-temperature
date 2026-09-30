@@ -1,164 +1,118 @@
-# Final Paper Analysis Plan
+# Final Analysis Plan
 
-Planning note, first written 2026-09-28, restructured into stages on 2026-09-29 and into
-stories on 2026-09-30. It lays out the analysis flow for the final paper. It combines all
-sources now in the assembly with the critique from the Scientific Reasoning review of this
-project (*"Reviewing a Research Project: Growth, Night Lights, and Local Temperature"*,
-2026-09-19). What each source contains, and its caveats, is in
-[`../data/README.md`](../data/README.md).
+> **Status: closed on 2026-09-30; the project is retired.** Findings, interpretation and the
+> decision are in [`project-conclusion.md`](project-conclusion.md). This document is the plan as
+> it was specified: the fixed specification, every block, its ◇ decision rule and its outcome.
 
-**Why it was restructured.** The first results were inconclusive. The mining-IV second stage is
-null. Controlling for PM2.5 did not move the negative TWFE coefficient, and pollution was
-believed to be the only channel that could make that coefficient negative. On that basis, the
-author and supervisor leaned towards stopping the current path of the project. The 2026-09-29
-pre- and core-analysis showed that both results are absences of power, not negative findings
-(§1). The analysis is now organised by the three stories the project could still tell.
+First written 2026-09-28, restructured into stages on 2026-09-29 and into stories on 2026-09-30.
+It combines the sources in the assembly with the critique of the Scientific Reasoning review
+(*"Reviewing a Research Project: Growth, Night Lights, and Local Temperature"*, 2026-09-19).
+Each source and its caveats are described in [`../data/README.md`](../data/README.md).
+
+**Why the plan was restructured.** The first results were inconclusive: the mining-IV second
+stage was null, and controlling for PM2.5 did not move the negative fixed-effects coefficient.
+The 2026-09-29 pre- and core analysis showed that both were absences of power, not negative
+findings. The analysis was then organised by the three stories the project could still tell.
+Story 1 decided the outcome.
 
 ## How the analysis is organised
 
-| Order | Notebook | Question | Status |
+| Order | Notebook | Question | Outcome |
 |---|---|---|---|
-| — | `src/analysis/spec.py` (§2) | The fixed specification all notebooks import | fixed |
-| 1 | `01_pre_analysis.ipynb` (§3) | What do the stories rely on? No outcome-on-treatment regressions. | P1–P5 run 2026-09-29; P6 run 2026-09-30 |
-| 2 | `02_baseline.ipynb` (§4, **Story 1**) | Is the association between lights and night LST robust enough to be worth explaining? | run 2026-09-30: **explained away** (B3) |
-| 3 | `03_iv.ipynb` (§5, **Story 2**) | Can the mining instrument identify the effect, and what does its null rule out? | I1–I2 run 2026-09-29; I4–I5 run 2026-09-30 (bound confirmed); other extensions later |
-| 3b | `03b_iv_robustness.ipynb` (§5) | Is the IV result robust? (R1–R9) | run 2026-09-28, carried over |
-| 4 | `04_channels.ipynb` (§6, **Story 3**) | Which mechanisms could produce the association? | M1 run 2026-09-29; the rest later |
+| — | `src/analysis/spec.py` (§2) | The fixed specification all notebooks import | — |
+| 1 | `01_pre_analysis.ipynb` (§3) | What do the stories rely on? No outcome-on-treatment regressions. | Coverage selection is not material; the instrument is strong; PM2.5 is regional; the dim range is material (P6). |
+| 2 | `02_baseline.ipynb` (§4, **Story 1**) | Is the association between lights and night LST robust enough to be worth explaining? | **Explained away**: it does not survive neighbour differences (B3). |
+| 3 | `03_iv.ipynb` (§5, **Story 2**) | Can the mining instrument identify the effect, and what does its null rule out? | **Bound of record**: AR set [−0.32, +0.28] K per log point; confirmed by the donut and radius checks. |
+| 3b | `03b_iv_robustness.ipynb` (§5) | Is the IV result robust? (R1–R9) | Robust; all null. |
+| 4 | `04_channels.ipynb` (§6, **Story 3**) | Which mechanisms could produce the association? | M1 run. Nothing further: no cell-level association to decompose. |
 
-**Read them in order.** Story 1 comes first because the other two build on the association it
-establishes: Story 2 asks whether it is causal, Story 3 what produces it. If Story 1 finds the
-association is an artefact, Stories 2 and 3 have nothing to explain, and what remains is
-Story 2's upper bound.
+**Reading order.** Story 1 comes first because the other two build on the association it
+establishes: Story 2 asks whether it is causal, Story 3 what produces it. If Story 1 explains the
+association away, Stories 2 and 3 have nothing to explain, and what remains is Story 2's upper
+bound. That is what happened.
 
-**Labels.** Blocks are prefixed by stage: P (pre-analysis), B (baseline), I (IV), M (mechanisms),
-R (IV robustness, carried over). The 2026-09-29 core notebook `02_core_analysis.ipynb` was split
-by story: its C1 is now B1, C2 and C3 are I1 and I2, and C4 is M1. The former
-`03_post_analysis.ipynb` is now `03b_iv_robustness.ipynb`. The old claims map as follows:
-A "the mining IV is null" → Story 2; B "PM2.5 does not move the coefficient" → Story 3;
-C "the association is worth explaining" → Story 1.
+**Labels.** Blocks are prefixed by stage:
+- P: pre-analysis;
+- B: baseline;
+- I: IV;
+- M: mechanisms;
+- R: IV robustness, carried over.
 
-All notebooks take the specification and helpers from `src/analysis/spec.py`, so they cannot
-drift apart on the outcome, fixed effects, clusters, instrument or sample.
+The 2026-09-29 core notebook `02_core_analysis.ipynb` was split by story:
+- C1 became B1;
+- C2 and C3 became I1 and I2;
+- C4 became M1.
 
-This is a plan, not a record of decisions made. Every "◇" decision rule says in advance which
-result moves the analysis onto which branch, so a later reader can tell what was decided before
-the data was seen. The pre-analysis and I rules were written on 2026-09-29 before those
-notebooks ran in their current form. The M1 rules were written after the country × year PM2.5
-table in §1 had been seen, so they are not blind to it. The P6 and B2–B5 rules were written on
-2026-09-30, after B1 (then C1) had been seen but before any of B2–B5 ran.
+The former `03_post_analysis.ipynb` is now `03b_iv_robustness.ipynb`.
 
-## 1. Where the project stands
+**Pre-specification.** Every ◇ rule says in advance which result moves the analysis onto which
+branch, so a reader can tell what was decided before the data was seen.
 
-**Current estimates** (the 2026-09-28 run of the former `regression.ipynb` on the fixed
-specification of §2; 25.1 M pixel-years; SE clustered by ADM1):
-
-| | pooled OLS | + pixel FE | TWFE | 2SLS |
-|---|---:|---:|---:|---:|
-| `log1p(ntl_harm)` → night LST | −0.40 (0.29) | +0.025 (0.012) | **−0.030 (0.006)** | −0.026 (0.150) |
-
-First stage +0.064 (0.008), F ≈ 71. Reduced form −0.0017 (0.0097). Day LST: TWFE −0.015 (0.012),
-2SLS +0.10 (0.23). GLASS air temperature: TWFE −0.018 (0.004), 2SLS +0.08 (0.09). Every
-alternative instrument has a strong first stage and a null 2SLS.
-
-**The PM2.5 control result** (the former `night_lst_mining_pm25.ipynb`, commit `a355ac2`,
-exported to `output/tables/night_lst_mining_pm25_10km.*`). It is night LST at 10 km, but with
-pixel + country × year FE, country clusters and flares kept:
-
-| | TWFE | TWFE + PM2.5 | 2SLS | RF: LST on Z | RF: PM2.5 on Z |
-|---|---:|---:|---:|---:|---:|
-| `log1p(ntl_harm)` | −0.0227 (0.0110) | −0.0221 (0.0114) | −0.104 (0.163) | | |
-| `pm25` | | **+0.0032** (0.0017) | | | |
-| `mine_count_20km` | | | | −0.0070 (0.0111) | **−0.271** (0.137) |
-
-First stage 0.067 (0.012), F ≈ 30. Two things in this table bear on the stop decision:
-
-- **PM2.5 enters with a positive sign.** Within a cell, more PM2.5 goes with *warmer* nights.
-- **The implied γ is negative.** From the identity β_short − β_long = γ·δ, lights move ACAG
-  PM2.5 by γ ≈ (−0.0227 + 0.0221) / 0.0032 ≈ −0.19 per log point. Mines lower PM2.5 directly.
-
-With γ ≤ 0 and δ > 0, the control has no pathway to make β less negative. "Controlling for
-PM2.5 did not move the coefficient" is then the expected result, whether or not pollution
-matters. M1 re-ran the table in the §2 specification, with γ and δ reported explicitly and day
-LST added (below).
-
-**Pre-analysis and core results** (2026-09-29, SLURM jobs 24253659 and 24273525; full panel,
-§2 specification). The pre-analysis ◇ outcomes:
-
-| | Result | ◇ |
+| Rules | Written | Blind to |
 |---|---|---|
-| P3 | Night coverage on lights +0.0002 (0.0004) | selection not material |
+| P1–P5 and I1–I2 | 2026-09-29 | Written before those notebooks ran in their current form. |
+| M1 | 2026-09-29 | Written after the country × year PM2.5 table in §1 had been seen, so **not** blind to it. |
+| P6 and B2–B5 | 2026-09-30 | Written after B1 (then C1) had been seen, before any of B2–B5 ran. |
+| I4–I5 | 2026-09-30 | Written before either block ran. |
+
+## 1. Outcomes by block
+
+Full panel, §2 specification, night LST in K per log point of lights, SE clustered by ADM1.
+The runs of record are listed in [`project-conclusion.md`](project-conclusion.md) §6.
+
+| Block | Result | ◇ outcome |
+|---|---|---|
+| P3 | Night coverage on lights +0.0002 (0.0004) | Selection not material |
 | P4 | First stage 0.064 (0.008), F = 71; π profile 1.00 / 0.85 / 0.51 | Wald and AR both reported |
 | P5 | Within-FE r² of cell PM2.5 with its ring-1 mean 0.97 (lights 0.48) | **M1 speaks to regional aerosol only** |
-
-The core reproduced the "current estimates" above and added:
-
-| | night LST | day LST |
-|---|---:|---:|
-| B1 TWFE, country × biome × year | −0.0300 (0.0056) | −0.0147 (0.0123) |
-| B1 TWFE, country × year | −0.0265 (0.0086) | −0.0151 (0.0150) |
-| I1 2SLS; AR 95 % CI | −0.026 (0.150); [−0.32, +0.28] | |
-| I2 MDE (80 % power) | 0.42 K per log point = 14× \|TWFE\| | |
-| M1 β_short → β_long | −0.0300 → −0.0298 | −0.0147 → −0.0143 |
-| M1 γ (PM2.5 on lights) | −0.098 (0.067) | −0.098 (0.067) |
-| M1 δ (LST on PM2.5 given lights) | +0.0028 (0.0010) | +0.0035 (0.0024) |
-| M1 share of β_short via PM2.5 | 0.9 % | 2.3 % |
-
-Which ◇ rules fired:
-
-- **B1:** the TWFE sign does not depend on the FE set.
-- **I2: the AR CI contains the TWFE estimate**, so the IV says nothing about whether the TWFE
-  association is causal. It rules out effects beyond about ±0.3 K per log point, i.e. more than
-  about 0.4 K at the p90 of 2002–22 lights growth among ever-lit pixels (+1.42 log points).
-- **M1: γ not significantly positive** (the control could not move β), **δ ≥ 0** (the
-  aerosol-cooling premise fails for this measure) and **night more negative than day**
-  (pollution is unlikely the sole channel). With P5, the test can at most exclude a regional,
-  ACAG-measured aerosol explanation.
-
-Both results are absences of power, not negative findings. They support "these two tools cannot
-answer the question at this resolution", not "the lights–temperature link is not causal" or
-"pollution is not the channel". What each story could still deliver, and what threatens it, is
-in §4–§6.
-
-**Story 1 and the IV extensions** (2026-09-30, SLURM jobs 24402428 and 24407713; full panel, §2
-specification). Night LST, K per log point:
-
-| | Estimate | ◇ |
-|---|---|---|
-| P6 | Dim-only pixels carry 33.8 % of the within-pixel SS of lights; 63 % of the < 5 °C band is snow-prone | B4c required with B1 |
-| B1 | −0.030 (0.006); country × year −0.027 (0.009) | sign does not depend on the FE set |
-| B2a bins | DN (0, 7) −0.016 · [7, 20) −0.052 · [20, 30) −0.079 · [30, 50) −0.080 · ≥ 50 −0.051 (n.s.) | no rule fires: lighting up, not brightening |
-| B3 | ADM1 × yr −0.020 · ADM2 × yr −0.010 · land cover × yr −0.027 · cell × period −0.047 · **neighbour differences −0.0001 (0.0009)** | **fires: does not survive tighter comparisons** |
-| B4 | snow-prone out −0.031 · DMSP −0.055 · VIIRS −0.050 · dim zeroed −0.017 | no rule fires |
-| B5a | < 5 °C −0.047 · 5–13 °C −0.062 · 13–22 °C −0.025 · ≥ 22 °C −0.012 (n.s.) | cold band negative: points away from reverse causality |
-| B5b | lead +0.010 (n.s.); lagged night LST → lights +0.0002; lagged day LST → lights −0.0012 (p = 0.015) | small feedback exists (day LST) |
+| P6 | Dim-only pixels carry 33.8 % of the within-pixel SS of lights; 63 % of the < 5 °C band is snow-prone | **B4c required with B1**; no bin or band too small |
+| B1 | −0.030 (0.006); country × year −0.027 (0.009); day LST −0.015 (0.012) | Sign does not depend on the FE set |
+| B2a | DN (0, 7) −0.016 · [7, 20) −0.052 · [20, 30) −0.079 · [30, 50) −0.080 · ≥ 50 −0.051 (n.s.) | No rule fires: lighting up, not brightening |
+| B3 | ADM1 × yr −0.020 · ADM2 × yr −0.010 · land cover × yr −0.027 · cell × period −0.047 · **neighbour differences −0.0001 (0.0009)** | **Fires: does not survive tighter comparisons** |
+| B4 | Snow-prone out −0.031 · DMSP −0.055 · VIIRS −0.050 · dim zeroed −0.017 | No rule fires |
+| B5a | < 5 °C −0.047 · 5–13 °C −0.062 · 13–22 °C −0.025 · ≥ 22 °C −0.012 (n.s.) | Cold band negative: points away from reverse causality |
+| B5b | Lead +0.010 (n.s.); lagged night LST → lights +0.0002; lagged day LST → lights −0.0012 (p = 0.015) | A small feedback exists (day LST) |
 | B5c | θ\* = −0.0043 (0.0008) | \|θ\*\| ≤ 0.05: a plausible feedback could produce β |
-| I4 | donut F = 11.6, AR [−2.17, +0.19]; footprint F = 69, AR [−0.24, +0.32] | bound confirmed; nothing masked |
-| I5 | AR 10 km [−0.12, +0.20] · 20 km [−0.32, +0.28] · 50 km [−0.90, +0.50] | sets overlap; bound of record stays at 20 km |
+| I1 | Reduced form −0.0017 (0.0097); 2SLS −0.026 (0.150); AR [−0.32, +0.28] | Wald and AR agree |
+| I2 | MDE 0.42 = 14× \|TWFE\|; IV − TWFE gap 0.03 SE | **The AR set contains the TWFE: the IV cannot speak to it** |
+| I4 | Donut F = 11.6, AR [−2.17, +0.19]; footprint F = 69, AR [−0.24, +0.32] | Bound confirmed; nothing masked |
+| I5 | AR 10 km [−0.12, +0.20] · 20 km [−0.32, +0.28] · 50 km [−0.90, +0.50]; over-ID Wald [−0.31, +0.28] | Sets overlap; bound of record stays at 20 km |
+| M1 | β −0.0300 → −0.0298 with PM2.5; γ −0.098 (0.067); δ +0.0028 (0.0010); share 0.9 % (day 2.3 %) | γ not positive; δ ≥ 0; night more negative than day |
+| R1–R9 | See §5 | IV result robust |
 
-**Story 1 is explained away as a cell-level association.** Its sign, shape, artefact checks and
-climate gradient hold. But the coefficient shrinks with each tighter comparison and is a precise
-zero between neighbouring cells. Whatever links lights and night LST is shared across tens of km.
-The design identifies from cell-level variation, so it cannot tell regional confounding from a
-regional mechanism (aerosols). **Story 2's upper bound is the result of record**; neither the
-donut nor another radius changes it. Story 3 has no cell-level association left to decompose.
+**Decision reading (§4): explained away.** B3 fired. The result of record is Story 2's upper
+bound, ±0.3 K per log point, or about ±0.4 K at p90 lights growth over 2002–22 (+1.42 log points
+among ever-lit pixels). Interpretation: [`project-conclusion.md`](project-conclusion.md) §2–§3.
 
-An older 1 km run (`output/analysis/duckreg/modis_logntlharm_pm25/`: day LST, pixel +
-country × year FE, 2000–2020) gives a *positive* TWFE lights coefficient (+0.0049, SE 0.0019)
-and PM2.5 +0.014 (0.004). The sign of the TWFE association is therefore not settled across
-specifications either (Story 1).
+**Earlier results that shaped the plan.**
+- **The 2026-09-28 run of the former `regression.ipynb`** already had the §2 specification:
+  pooled OLS −0.40 (0.29), + pixel FE +0.025 (0.012), TWFE −0.030 (0.006), 2SLS −0.026 (0.150).
+  GLASS air temperature: TWFE −0.018 (0.004), 2SLS +0.08 (0.09).
+- **The first PM2.5 table** (the former `night_lst_mining_pm25.ipynb`, commit `a355ac2`,
+  `output/tables/night_lst_mining_pm25_10km.*`) used pixel + country × year FE, country clusters
+  and kept flares:
+  - TWFE −0.0227 (0.0110) → −0.0221 (0.0114) with PM2.5;
+  - PM2.5 coefficient +0.0032 (0.0017);
+  - reduced form of PM2.5 on mines −0.271 (0.137).
 
-**Inconsistencies:**
+  With γ ≤ 0 and δ > 0, the control had no pathway to make β less negative. M1 re-ran the table
+  in the §2 specification (`output/tables/core_night_lst_mining_pm25_10km.*`), with the same
+  reading.
+- **An older 1 km run** (`output/analysis/duckreg/modis_logntlharm_pm25/`: day LST, pixel +
+  country × year FE, 2000–2020) gave a *positive* TWFE coefficient, +0.0049 (0.0019).
 
-| # | Issue | Status |
+**Specification decisions** (inconsistencies found in earlier material, all resolved):
+
+| # | Issue | Resolution |
 |---|---|---|
-| 1 | The review says the main effects come from night LST; the old headline used day LST. | Resolved: night LST (§2). |
-| 2 | The notebook's "extensive/intensive margin" is an NTL threshold split; the review proposes an ESA CCI land-cover split. | B2b now splits the lights margins; the land-cover split stays in Story 3 (needs ESA CCI class fractions). |
-| 3 | `NTL_HI` was 7 in the regressions and 20 in the descriptives. | Resolved: 20 everywhere. |
-| 4 | The only regional FE was country × year. | Resolved: country × biome × year. |
-| 5 | The distance-ring model of [`00`](../design/00-backbone-overview.md) vs own-cell lights. | Resolved: own-cell 2SLS already estimates ≈ β_0 + 0.85·β_1 + 0.51·β_2 in the §2 specification (P4; 0.86 / 0.53 in [`10km-ring-check.md`](10km-ring-check.md)). |
-| 6 | Raw VIIRS vs `ntl_harm` ([`04-ingest.md`](../design/04-ingest.md) §1). | Resolved: `ntl_harm` at 10 km, wider than its blur. |
-| 7 | The PM2.5-control table uses country × year FE, country clusters and keeps flares; the fixed specification uses country × biome × year FE, ADM1 clusters and drops flares. | Resolved: M1 re-ran it in §2 (`output/tables/core_night_lst_mining_pm25_10km.*`); same reading. |
-| 8 | §2 restricts the sample to \|φ\| ≤ 60°; no notebook applies the cut. | Open (§7). B4a drops \|φ\| ≥ 50° as a snow check. |
+| 1 | The review located the main effects in night LST; the old headline used day LST. | Night LST (§2). |
+| 2 | The old "extensive/intensive margin" was an NTL threshold split; the review proposed an ESA CCI land-cover split. | B2b splits the lights margins. The land-cover split was not run (needs ESA CCI class fractions). |
+| 3 | `NTL_HI` was 7 in the regressions and 20 in the descriptives. | 20 everywhere. |
+| 4 | The only regional FE was country × year. | Country × biome × year. |
+| 5 | The distance-ring model of [`00`](../design/00-backbone-overview.md) vs own-cell lights. | Own-cell 2SLS estimates ≈ β_0 + 0.85·β_1 + 0.51·β_2 (P4; [`10km-ring-check.md`](10km-ring-check.md)). |
+| 6 | Raw VIIRS vs `ntl_harm` ([`04-ingest.md`](../design/04-ingest.md) §1). | `ntl_harm` at 10 km, wider than its blur. |
+| 7 | The first PM2.5 table used a different specification. | M1 re-ran it in §2; same reading. |
+| 8 | §2 restricts the sample to \|φ\| ≤ 60°. | The grid already does: panel latitudes run from −56.2° to 59.9°. |
 
 ## 2. Fixed specification
 
@@ -169,7 +123,7 @@ Everything outside this is robustness or exploration. It is coded once, in `src/
   spillovers within the cell and, through the instrument's spatial reach, most spillovers into
   neighbouring cells: own-cell 2SLS estimates Σ_r β_r · π_r/π_0 ≈ β_0 + 0.85·β_1 + 0.51·β_2
   ([`10km-ring-check.md`](10km-ring-check.md)). It is identified as a LATE for mine-proximate
-  compliers, and the paper's claims are scoped to that population.
+  compliers, and the claims are scoped to that population.
 - **Outcome:** `lst_night_mean` (MYD21A2). Day LST is the second outcome wherever day and night
   make different predictions (B1, B2a, B5a, M1). GLASS air temperature and the valid counts are
   diagnostics.
@@ -177,13 +131,13 @@ Everything outside this is robustness or exploration. It is coded once, in `src/
   `NTL_HI = 20` everywhere. Mask `flare_band > 0`. B2 tests this functional form.
 - **Instrument:** `mine_count_20km`.
 - **FE:** `pixel_id + GID_0^biome_id^year`.
-- **Inference:** clustered by ADM1, with Anderson–Rubin CIs for every IV. Conley SEs are a
-  later companion (§7; they are not in `duckreg` yet).
+- **Inference:** clustered by ADM1, with Anderson–Rubin CIs for every IV. Conley SEs were planned
+  but are not in `duckreg`.
 - **Sample:** Aqua years 2002–2022, 10 km base grid, non-null night LST, flares dropped.
   - The MODIS night-LST panel must **never extend past 2022**: Aqua's night overpass drifts
     from 2023 on, and the drift differs by biome
     ([`drift-and-pm25-coverage-checks.md`](drift-and-pm25-coverage-checks.md) §1).
-  - Whether to end in 2020 instead is still open (§7).
+  - Ending in 2020 instead was left open.
 - **Report with every 2SLS:** the reduced form and the first-stage profile π_r across own
   cell, ring 1 and ring 2. With one instrument, the reduced form is the evidence and the 2SLS
   is its scaling.
@@ -191,7 +145,8 @@ Everything outside this is robustness or exploration. It is coded once, in `src/
 ## 3. Pre-analysis — `01_pre_analysis.ipynb`
 
 What the stories rely on and can be checked without regressing the outcome on the treatment or
-the instrument. Nothing here is a reduced form, a TWFE of LST on lights, or a 2SLS.
+the instrument. Nothing here is a reduced form, a TWFE of LST on lights, or a 2SLS. Outcomes are
+in §1.
 
 - **P1. Panel and sample.** Rows, pixels, countries and years. Moments and missing shares of
   night and day LST, lights, the instrument and PM2.5.
@@ -229,13 +184,13 @@ the instrument. Nothing here is a reduced form, a TWFE of LST on lights, or a 2S
   - ◇ If the within-FE r² of PM2.5 with its ring-1 mean is ≥ 0.9, ACAG carries almost no
     cell-local variation at 10 km. M1 can then speak only to regional aerosol. A null in M1 is
     not evidence against a local pollution channel.
-- **P6. Where the treatment variation lives, and the strata of Story 1** (added 2026-09-30).
-  Story 1 splits the sample and changes the functional form. Before any outcome is looked at,
-  P6 checks that each split has lights variation to work with, and how much of the treatment's
-  variation sits in the dim range that P2 found sensor-sensitive.
+- **P6. Where the treatment variation lives, and the strata of Story 1.** Story 1 splits the
+  sample and changes the functional form. Before any outcome is looked at, P6 checks that each
+  split has lights variation to work with, and how much of the treatment's variation sits in the
+  dim range that P2 found sensor-sensitive.
   - **P6a.** Pixel-years by brightness bin (DN 0, (0, 7), [7, 20), [20, 30), [30, 50), ≥ 50;
-    `ntl_harm` is continuous), by sensor era. The (0, 7) share is 19 % of pixel-years in the DMSP era and 27 % in the VIIRS era (checked
-    2026-09-30), so the dim range moves with the sensor.
+    `ntl_harm` is continuous), by sensor era. The (0, 7) share is 19 % of pixel-years in the
+    DMSP era and 27 % in the VIIRS era, so the dim range moves with the sensor.
   - **P6b.** The share of the within-pixel sum of squares of `log1p(ntl_harm)` contributed by
     pixels that never reach DN 7 (dim flicker only), reach DN 7–19, or reach DN 20 or more.
   - **P6c.** Year-to-year transitions between bins (row shares), as a heatmap: how often cells
@@ -286,9 +241,9 @@ alternative, reverse causality, but cannot exclude it. Story 2 is the causal tes
     (brightening among lit cells), in one regression, night and day.
   - **B2c. Transforms:** `log(DN + 0.1)`, `log1p`, `log(DN + 10)`, `asinh` and linear DN, night.
   - **Graph (the functional-form figure):** the B2a bin estimates with 95 % CIs at bin
-    mean DN, overlaid with each B2c transform's implied curve β_f · (f(DN) − f(0)) over
-    DN 0–60. Where the curves and the bins disagree, the transform imposes a shape the data do
-    not have. A second panel shows the day bins; a coefficient plot shows the B2b margins.
+    mean DN, overlaid with each B2c transform's implied curve β_f · (f(DN) − f(0)). Where the
+    curves and the bins disagree, the transform imposes a shape the data do not have. A second
+    panel shows the day bins; a coefficient plot shows the B2b margins.
   - ◇ If the lit bins (DN ≥ 7) include one significantly negative and one significantly
     positive coefficient, or the B2b margins have opposite signs (both p < 0.05), the log
     coefficient averages opposite effects. It is then not reported as "the" effect: the bins are
@@ -317,9 +272,8 @@ alternative, reverse causality, but cannot exclude it. Story 2 is the causal tes
 - **B4. Satellite artefacts.** Random noise only attenuates β; what matters are errors that move
   with temperature.
   - **B4a. Snow-prone cells dropped:** \|φ\| ≥ 50°, or the boreal forest/taiga or tundra biome.
-  - **B4b. Sensor eras separately:** DMSP 2002–12 and VIIRS 2014–22 (the 2013 overlap dropped).
-    The former R2 found the era-interacted TWFE slope negative in both (DMSP −0.044, VIIRS
-    about −0.028); B4b re-checks it under §2 with separate FE per era.
+  - **B4b. Sensor eras separately:** DMSP 2002–12 and VIIRS 2014–22 (the 2013 overlap dropped),
+    each with its own FE.
   - **B4c. Dim lights set to zero:** treatment `log1p(DN · 1[DN ≥ 7])`.
   - Observation selection is covered by the coverage-restricted row of B1.
   - ◇ B4a: if β ≥ 0 or |t| < 2 once snow-prone cells are dropped, snow is a candidate
@@ -369,12 +323,14 @@ alternative, reverse causality, but cannot exclude it. Story 2 is the causal tes
   fire. It is then a robust association that needs Story 2, or the ERA5-Land route below, before
   it can be read as an effect of lights.
 
-**Outcome (run 2026-09-30): explained away.** B3 fires. Under neighbour differences the
-coefficient is −0.0001 (0.0009), a precise zero; the spillover note below expected a smaller
-estimate, not zero with an SE a sixth of B1's. ADM2 × year keeps the sign (−0.010, t = −4.0) at a
-third of B1. B1, B2 and B4 fire nothing. B5 is mixed: the climate gradient runs against reverse
-causality, but θ\* is small. The numbers are in §1 and in the Result cells of
-`02_baseline.ipynb`.
+**Outcome (run 2026-09-30): explained away.**
+- **B3 fires.** Under neighbour differences the coefficient is −0.0001 (0.0009), a precise zero.
+  The spillover note below expected a smaller estimate, not zero with an SE a sixth of B1's.
+- **ADM2 × year** keeps the sign (−0.010, t = −4.0) at a third of B1.
+- **B1, B2 and B4** fire nothing.
+- **B5 is mixed:** the climate gradient runs against reverse causality, but θ\* is small.
+
+What this means is in [`project-conclusion.md`](project-conclusion.md) §2.1.
 
 ### Known problems, written before the run
 
@@ -403,7 +359,6 @@ causality, but θ\* is small. The numbers are in §1 and in the Result cells of
 - **B4.**
   - The snow-prone flag is crude. It keeps high-altitude snow (Tibet, Andes) and drops the whole
     boreal zone, so a change in β can come from sample composition as much as from snow.
-    Snow cover itself needs a new source (below).
   - The eras differ in length, noise and sensor, so a smaller VIIRS estimate is not by itself a
     contradiction; only a sign difference is.
 - **B5.**
@@ -420,7 +375,10 @@ causality, but θ\* is small. The numbers are in §1 and in the Result cells of
   - θ\* equals θ only if the sole link is the feedback. With a real β, confounding and LST
     noise, it is a threshold, not an estimate.
 
-### Later, with new data (§9)
+### Specified but not run: checks with new data
+
+Not run because Story 1 was explained away. Data needs:
+[`project-conclusion.md`](project-conclusion.md) §5.
 
 - **Weather controls:** precipitation and soil moisture (CHIRPS or ERA5-Land). Weather is not
   caused by lights, so it is a safe control against the wet-year story.
@@ -435,10 +393,9 @@ causality, but θ\* is small. The numbers are in §1 and in the Result cells of
   so it does not respond to local growth. Regressing lights on ERA5-Land temperature anomalies
   within the §2 FE (controlling for precipitation) estimates θ, and β then follows from the
   observed second moments. This identifies β without a lights instrument, under one strong,
-  explicit assumption: simultaneity is the only bias. Worth doing only if B5 points to reverse
-  causality.
+  explicit assumption: simultaneity is the only bias.
 - **Coefficient-stability bounds** (Oster 2019) across B3: need R², which `duckreg` does not
-  report yet.
+  report.
 
 Land-cover *change* must not be a control anywhere in Story 1: growth partly causes it. Only
 baseline land cover (B3c) is safe.
@@ -450,8 +407,7 @@ does its null rule out?
 
 **What it can deliver.** Not a test of the TWFE-sized effect (I2), but an **upper bound**: the
 AR CI rules out effects beyond about ±0.3 K per log point, about ±0.4 K at p90 lights growth
-over 2002–22. "Local growth does not heat or cool its surroundings by much at 10 km" is
-defensible now. It is scoped to mine-proximate compliers.
+over 2002–22. It is scoped to mine-proximate compliers.
 
 - **I1. The IV** (was C2). Reduced form, 2SLS and the 3×3 disc 2SLS. The **Anderson–Rubin CI**
   comes exactly from three reduced forms: of Y, of Y − X and of Y + X on Z
@@ -464,14 +420,13 @@ defensible now. It is scoped to mine-proximate compliers.
   - ◇ If the AR CI contains the TWFE estimate, the IV says nothing about whether the TWFE
     association is causal. "The IV is insignificant" then counts against effects outside the
     AR CI only. It does not count against an effect of the TWFE size.
-- **I3 (later). The bound against observed warming.** The observed 2002–22 LST change in the
-  same cells, next to the bound. Not yet computed.
+- **I3. The bound against observed warming.** The observed 2002–22 LST change in the same cells,
+  next to the bound. Not run.
 
 **Why a new instrument will not fix it.** With one instrument, the 2SLS test is the reduced-form
 test, and RF = π·β. At β = −0.030 and π = 0.064 the RF is about 0.002 K, against an RF SE of
 0.0097. 80 % power needs a first stage whose t-statistic is about 14× ours, i.e. F ≈ 14,000
-instead of 71 at similar noise. No candidate instrument (R6, R9, the extensions below) comes
-close on its own.
+instead of 71 at similar noise. No candidate instrument comes close on its own.
 
 **What can still raise power.** The reduced-form test has t ≈ π·β / SE_RF, about 0.2 at the TWFE
 size against about 2.8 needed. Three things move it, and only the first is plain power:
@@ -488,9 +443,9 @@ A stronger reaction *inside* the mine footprint is a warning (exclusion fails th
 The radius and donut are therefore fixed below before any of them is estimated; choosing the
 specification with the strongest reduced form after the fact would be specification search.
 
-- **I4. Donut (specified 2026-09-30, runs on the current panel).** At 10 km, `mine_count_10km`
-  is the average over the cell's 1 km pixel centres of the active mines within 10 km. A cell
-  where it is zero in every year 2002–22 has no active mine within 10 km of any part of it.
+- **I4. Donut.** At 10 km, `mine_count_10km` is the average over the cell's 1 km pixel centres
+  of the active mines within 10 km. A cell where it is zero in every year 2002–22 has no active
+  mine within 10 km of any part of it.
   - **Donut sample D:** cells with `max(mine_count_10km) = 0` over 2002–22. The instrument stays
     `mine_count_20km`, so only mines 10–20 km away enter. The sample is defined on all years,
     not year by year, so it does not select on the timing of openings.
@@ -507,22 +462,21 @@ specification with the strongest reduced form after the fact would be specificat
     without the footprint cells. It is reported next to the full-sample bound as the more
     credible one, even if wider.
   - Known problems: D drops the most exposed cells, so π and power will probably fall; the
-    donut is at 10 km cell resolution with a 10 km buffer, not the masked 1 km donut (later,
-    §9); aerosols and dust can travel beyond 10 km, so the donut removes near-field physics
-    only; D differs in composition (farther from mines).
+    donut is at 10 km cell resolution with a 10 km buffer, not a masked 1 km donut; aerosols
+    and dust can travel beyond 10 km, so the donut removes near-field physics only; D differs in
+    composition (farther from mines).
+  - **Outcome:** F = 11.6 in D, with RF −0.023 (p = 0.10) and AR [−2.17, +0.19]. The footprint
+    cells carry the identification (F = 69, AR [−0.24, +0.32]). ◇ Bound confirmed; nothing is
+    masked, and there is no direct mine effect by the rule.
 - **I5. Radius comparison (pre-specified, not a search).** Mines within 10, 20 and 50 km, and the
   over-identified count + price shock, each with first stage, F, reduced form, 2SLS and AR CI, in
-  one table. R6 has the 2SLS; I5 adds the reduced forms and AR CIs in the §2 specification.
+  one table.
   - ◇ The bound of record stays at 20 km, chosen on the P4 π profile before these results. The
     other radii are reported, not selected. The 10 km radius gives the tighter bound but is the
     most exposed to footprint physics; it is read together with I4.
   - ◇ If the AR CIs of different radii do not overlap, the instrument's estimand depends on
     distance (spillovers or exclusion failure), and the bound is reported per radius.
-- **I4–I5 outcome (run 2026-09-30).**
-  - **I4.** The donut's first stage is weak (F = 11.6), with RF −0.023 (p = 0.10) and AR
-    [−2.17, +0.19]. The footprint cells carry the identification (F = 69, AR [−0.24, +0.32]).
-    ◇ Bound confirmed; nothing is masked, and no direct mine effect by the rule.
-  - **I5.** First-stage F is 139 / 71 / 22 at 10 / 20 / 50 km. The AR sets are [−0.12, +0.20],
+  - **Outcome:** first-stage F 139 / 71 / 22 at 10 / 20 / 50 km. AR sets [−0.12, +0.20],
     [−0.32, +0.28] and [−0.90, +0.50]; the over-identified Wald CI is [−0.31, +0.28]. ◇ The sets
     overlap, and the bound of record stays at 20 km. The 10 km MDE is 0.22 K per log point, still
     7× the TWFE.
@@ -542,12 +496,12 @@ the former `regression.ipynb`, run 2026-09-28, not re-run):
 | R8 FE (2SLS) | country × year: −0.086 (0.174) |
 | R9 political favoritism | first stage dead (F ≈ 1.4) |
 
-**Later steps (unresolved):**
-- a baseline-share price-shock (exposure frozen at 2002, so only world prices vary). Its value is
-  credibility (world prices are plausibly unrelated to local temperature), not power: the current
-  price-shock version already has a larger SE (0.28), and freezing exposure removes the variation
-  from openings;
-- a masked 1 km donut, refining I4 (needs the distance-to-nearest-mine column, §9);
+**Specified but not run:**
+- a baseline-share price shock (exposure frozen at 2002, so only world prices vary). Its value
+  would be credibility (world prices are plausibly unrelated to local temperature), not power:
+  the current price-shock version already has a larger SE (0.28), and freezing exposure removes
+  the variation from openings;
+- a masked 1 km donut, refining I4 (needs a distance-to-nearest-mine column);
 - an event study around mine openings (footprint vs ring cells);
 - shift-share diagnostics (Rotemberg weights, share balance, shock-level SEs);
 - a GLASS-AVHRR pre-period placebo for 1992–2001;
@@ -555,7 +509,7 @@ the former `regression.ipynb`, run 2026-09-28, not re-run):
 - a complier profile;
 - TOST equivalence bounds.
 
-**Design note.** `mine_priceshock_*` is not yet a clean shift-share. Its exposure moves with
+**Design note.** `mine_priceshock_*` is not a clean shift-share. Its exposure moves with
 openings and closures. Freeze exposure at baseline before applying Borusyak–Hull–Jaravel or
 Goldsmith-Pinkham diagnostics.
 
@@ -568,7 +522,7 @@ problem as Story 2) *and* mediator → temperature, so it is strictly harder. Wh
 convincing is an **accounting**: take mediator → LST from established physics (e.g. the global
 day/night LST effects of vegetation transitions in Duveiller, Hooker and Cescatti 2018),
 estimate lights → mediator descriptively, and ask whether the product reproduces the TWFE. It
-is worth doing only if Story 1 finds a robust association.
+is worth doing only if Story 1 finds a robust association. Story 1 did not, so only M1 was run.
 
 - **M1. PM2.5 channel accounting** (was C4), on the pixel-years with PM2.5, separately for
   night and day LST:
@@ -591,25 +545,19 @@ is worth doing only if Story 1 finds a robust association.
   - ◇ **Day vs night.** Aerosol dimming cools the surface by day; at night aerosols tend to warm
     it. If the TWFE is more negative at night than by day, pollution is an unlikely sole
     explanation of the night coefficient.
+- **M1 outcome:** γ −0.098 (0.067), not positive; δ +0.0028 (0.0010), ≥ 0; night more negative
+  than day. All three readings apply. With P5, M1 can at most exclude a regional, ACAG-measured
+  aerosol explanation.
 
-**Which channels can fit.** The sign pattern (night −0.030, day −0.015 n.s.) constrains them:
+**Which channels fit the Story 1 pattern, and whether they can be separated:**
+[`project-conclusion.md`](project-conclusion.md) §2.3. In short:
+- **Local channels** (built-up surfaces, waste heat, clearing, irrigation) would survive
+  neighbour differencing, and none did.
+- **Aerosols**, the regional physical channel, have the wrong day/night signature.
+- **Separating channels in this design** would need a local total, locally measured mediators
+  and an identified lights → mediator link per channel. None of the three is available.
 
-| Channel | Day | Night | Explains night −? | Data |
-|---|---|---|---|---|
-| Built-up / impervious expansion | + | ++ | No: wrong sign | ESA CCI fractions; GAIA or GHSL better |
-| Anthropogenic heat | + | + | No | lights proxy it (circular) |
-| Aerosols | − | + | No (M1) | ACAG too coarse (P5); MAIAC AOD 1 km would fix it |
-| Vegetation clearing / agricultural expansion | + (tropics) | − (temperate, boreal) | Possibly | Hansen annual forest loss; ESA CCI fractions |
-| Irrigation / greening | − | small | Weakly | MODIS NDVI / ET |
-| Snow-brightened lights (artefact) | − | − | Yes | B4a |
-| Reverse causality (heat slows growth) | − | − | Yes | B5 |
-
-The explanations that fit a negative night coefficient most easily are an artefact and reverse
-causality, which Story 1 tests. Vegetation clearing is the one physical candidate, and only in
-some biomes. B2's dose-response shape also bears on this: a negative dim range and a positive
-bright range would point to rural clearing and urban heat islands at once.
-
-**Later steps (unresolved):**
+**Specified but not run:**
 - land-cover fractions and PM2.5 as outcomes of the instrument;
 - the accounting with Hansen forest loss, ESA CCI fractions, MAIAC AOD, MODIS NDVI/ET and
   Duveiller et al. (2018) sensitivities;
@@ -629,28 +577,25 @@ bright range would point to rural clearing and urban heat islands at once.
 3. **ESA CCI is aggregated by `mode` at coarse grids**, which hides built-up fractions. Add
    per-class fraction variables (`average` of class indicators) first.
 
-## 7. Cross-cutting checks, unassigned
+## 7. Threats from the review, and where they were checked
 
-- **Measurement:** 11A1 vs 21A2 night LST by land-cover class (emissivity bias; 5 tiles ×
-  3 years); a coverage-balanced outcome with Lee-type bounds; panel end 2020 vs 2022; the
-  \|φ\| ≤ 60° cut.
-- **Inference and specification:** Conley SEs; a specification curve over FE, functional form,
-  sensor era, grid (5/10/25 km, grid-shake), lights aggregation and 1 km rings.
-
-| Review lens | Threat | Check | Where |
+| Review lens | Threat | Check | Status |
 |---|---|---|---|
-| Measurement | NTL ≈ the land-cover mechanism | entanglement share; baseline strata; land cover as an outcome | Story 3 (later) |
-| Measurement | Emissivity–land-cover bias in the outcome | 11A1 vs 21A2 | §7 |
-| Measurement | Compositing drops hazy observations | coverage on lights, Z, PM2.5 | **P3**; bounds §7 |
-| Measurement | Day LST reacts to albedo | day vs night | **B1, B2a, B5a, M1** |
-| Measurement | Lights artefacts (snow, splice, dim flicker) | snow-prone, eras, dim-zeroed | **P6, B4** |
-| Design | Weak or non-local instrument | F, π profile | **P4** |
-| Design | On-site extraction physics breaks exclusion | donut; event study | Story 2 (later) |
-| Design | Mine locations and openings are not random | baseline shift-share; placebo; share balance | Story 2 (later) |
-| Causal | Reverse causality (heat slows growth) | climate bands, timing, θ\* | **B5** |
-| Causal | Confounding | tighter comparisons | **B3** |
-| Causal | A null may hide offsetting channels | AR CI and MDE; PM2.5 accounting | **I1–I2, M1**; mechanism outcomes later |
-| Causal | Exchangeability and SUTVA | π profile; neighbouring-cell outcome | P4; Story 3 (later) |
+| Measurement | NTL ≈ the land-cover mechanism | entanglement share; baseline strata; land cover as an outcome | not run (Story 3) |
+| Measurement | Emissivity–land-cover bias in the outcome | MYD11A1 vs MYD21A2 by land-cover class | not run |
+| Measurement | Compositing drops hazy observations | coverage on lights, Z, PM2.5 | **P3**: not material; Lee-type bounds not run |
+| Measurement | Day LST reacts to albedo | day vs night | **B1, B2, B5a, M1** |
+| Measurement | Lights artefacts (snow, splice, dim flicker) | snow-prone, eras, dim-zeroed | **P6, B4**: none drives the association |
+| Design | Weak or non-local instrument | F, π profile | **P4**: F = 71 |
+| Design | On-site extraction physics breaks exclusion | donut; event study | **I4**: nothing masked; event study not run |
+| Design | Mine locations and openings are not random | baseline shift-share; placebo; share balance | not run |
+| Causal | Reverse causality (heat slows growth) | climate bands, timing, θ\* | **B5**: mixed |
+| Causal | Confounding | tighter comparisons | **B3**: the association does not survive |
+| Causal | A null may hide offsetting channels | AR CI and MDE; PM2.5 accounting | **I1–I2, M1** |
+| Causal | Exchangeability and SUTVA | π profile; neighbouring-cell outcome | P4; neighbouring-cell outcome not run |
+
+Other checks planned but not run: panel end 2020 vs 2022; Conley SEs; a specification curve over
+FE, functional form, sensor era, grid (5/10/25 km, grid-shake), lights aggregation and 1 km rings.
 
 ## 8. Ordering
 
@@ -672,66 +617,16 @@ bright range would point to rural clearing and urban heat islands at once.
                                                   ◇ sign flips or |t| < 2 under ADM2 or neighbour diff?
      B4 artefacts: snow-prone out · DMSP vs VIIRS · dim lights zeroed   ◇ sign lost?
      B5 reverse causality: climate bands · timing · θ*   ◇ hot −, cold ≥ 0? leads? |θ*| ≤ 0.05?
-     ▼   explained away ──► the paper is Story 2's bound      ◄ taken 2026-09-30 (B3 fired)
+     ▼   explained away ──► the result is Story 2's bound      ◄ taken 2026-09-30 (B3 fired)
 [03] STORY 2 · IV ────────────────────────────────────────────────────────────────────────────
      I1 RF · 2SLS · disc · AR CI
      I2 MDE · IV−TWFE gap · scale of ΔNTL        ◇ AR CI ∋ TWFE? ──► the IV cannot speak to it
      I4 donut (no mine within 10 km) vs footprint   ◇ AR CI excludes 0? ──► unmasked · opposite RF signs? ──► bound from D
      I5 radii 10/20/50 km, over-ID (pre-specified)   ◇ bound of record stays 20 km
-     I3 (later) bound vs observed warming
      03b R1–R9 IV robustness (carried over)
      ▼
 [04] STORY 3 · CHANNELS ──────────────────────────────────────────────────────────────────────
      M1 β_short − β_long = γ·δ, night + day; IV with/without PM2.5
           ◇ γ ≤ 0 → no power · δ ≥ 0 → premise fails · |γδ| < ¼|β| → PM2.5 explains little
           ◇ night more negative than day → pollution unlikely the sole channel
-     later: land-cover accounting, only if Story 1 finds a robust association
 ```
-
-## 9. Data and pipeline gaps
-
-Nothing in the pre-analysis, B1–B5, I1–I2, I4–I5 or M1 is blocked. All of these block later steps only.
-
-| Gap | Where it lands |
-|---|---|
-| Baseline-share price-shock variant | new radius variables in `snl_mining.aggregation` (`src/data/sources/snl_mining/source.py`) |
-| Masked donut aggregation, and the distance-to-nearest-mine column it needs | assembly (`src/data/assemble/sql_engine.py`); `snl_mining` PREPARE |
-| Neighbour-mean columns at panel build (now computed in `spec.build_panel`) | derived columns at assembly, if they are to leave the notebooks |
-| Treatment rings to 30 km on the 1 km panel (engine exists, not wired) | a ring stage joined in assembly |
-| ESA CCI per-class fractions | `average` resampling in `assembly.sources.esacci` |
-| Baseline strata (2002 built-up fraction, 2002 PM2.5 tercile) | derived columns at panel build |
-| `glass_avhrr` in `assembly.sources`, after month-first compositing | `data.yaml`; `glass/avhrr.py::_calculate_statistics` |
-| ADM2 panel for favoritism | `adm2_1km` data source |
-| Conley SEs, R² for coefficient-stability bounds in `duckreg` | analysis layer |
-| 11A1 arm joined onto the 21A2 grid | ad-hoc notebook |
-| MODIS monthly bands (only for a seasonal coverage breakdown) | `ModisSource._execute_fetch` + a full re-stream |
-| Weather: precipitation and soil moisture (CHIRPS or ERA5-Land), ERA5-Land 2 m temperature | new FETCH/PREPARE source |
-| Snow cover (MODIS MOD10/MYD10) | new source, or a band of the existing MODIS stream |
-| NASA Black Marble VNP46A4, VIIRS era | new source |
-| Independent treatments: GHSL built-up, WorldPop population | new sources |
-| Landsat LST on a subsample | ad-hoc extraction |
-| Channel accounting: Hansen annual forest loss, MAIAC AOD 1 km, MODIS NDVI/ET, Duveiller et al. (2018) transition sensitivities | new sources |
-
-The Story 1 derived columns (baseline temperature bands, baseline land cover, latitude, ADM2,
-bins, leads and lags, ring-1 LST) are built in `spec.build_panel`.
-
-## 10. Open questions
-
-1. ~~**Can the ring IV be identified?**~~ **Answered** ([`10km-ring-check.md`](10km-ring-check.md)):
-   not needed for the main estimate, and the per-ring split is probably not identified.
-2. ~~**Does ACAG share the clear-sky problem?**~~ **Mostly answered**
-   ([`drift-and-pm25-coverage-checks.md`](drift-and-pm25-coverage-checks.md) §2): the instrument
-   does not move clear-sky coverage. In cloudy regions an ACAG aerosol effect may be a lower
-   bound in magnitude.
-3. ~~**Terra/Aqua orbital drift.**~~ **Measured**: negligible through 2022, material from 2023.
-   Only the 2020-vs-2022 choice remains.
-4. ~~**Which grid is the main one?**~~ **Answered:** 10 km, decided on the first-stage profile.
-5. **Is pollution the only channel that could make the coefficient negative?** **Partly answered
-   by M1:** the night coefficient is stronger than the day one, so pollution is unlikely to be
-   the sole channel. Which channels could fit is laid out in §6.
-6. ~~**Is the TWFE association worth explaining at all?**~~ **Answered (Story 1, 2026-09-30):**
-   not at the cell level. It survives functional form, artefacts and the climate-gradient test,
-   but vanishes between neighbouring cells (B3).
-7. ~~**How large would reverse causality need to be?**~~ **Answered (B5c):** small. θ\* = −0.0043
-   log points per K, 12× below the benchmark, so a plausible feedback could produce β. The
-   climate gradient (B5a) points the other way.

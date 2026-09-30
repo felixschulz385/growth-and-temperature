@@ -1,5 +1,7 @@
 # Ring Check on the 10 km Panel
 
+> **Status (2026-09-30): record.** Written against the 2026-09-28 version of the plan. Its phases map to the final plan as follows: Phase 0 → §2 (fixed specification), Phase 3 → §5 (Story 2, the IV), Phase 6a → §6 M1. The project was retired on 2026-09-30 ([`project-conclusion.md`](project-conclusion.md)).
+
 Analysis note, 2026-09-28. It records one check that decides whether the main specification
 needs the distance-ring model of [`00-backbone-overview.md`](../design/00-backbone-overview.md),
 or whether a cell-level regression on a coarse grid is enough and rings can come later as

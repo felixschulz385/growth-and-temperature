@@ -1,5 +1,7 @@
 # 07b — MODIS Outstanding Items
 
+> **Status (2026-09-30): frozen.** The project was retired on 2026-09-30 ([`../analysis/project-conclusion.md`](../analysis/project-conclusion.md)); open items below were not pursued.
+
 Live checklist for what's left on the MODIS ingest pipeline. Pulled from
 [`06-open-questions.md`](06-open-questions.md)'s consolidated list (cross-referenced by number
 below) plus items surfaced during later implementation. Update in place as items get resolved —

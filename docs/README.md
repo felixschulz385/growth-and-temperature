@@ -1,20 +1,37 @@
 # Documentation
 
+**The project was retired on 2026-09-30.** Start with
+[`analysis/project-conclusion.md`](analysis/project-conclusion.md). The documentation below is kept
+as a record; nothing in it is being worked on.
+
 | Folder | What's in it |
 |---|---|
-| [`analysis/`](analysis/) | Research design: what we estimate, in which order, and why |
+| [`analysis/`](analysis/) | What was estimated, in which order, why, and what came out |
 | [`data/`](data/README.md) | One page per data source: what it is, where it lands, its columns and caveats |
 | [`design/`](design/) | Numbered design and decision records for the data pipeline, with incident notes |
 
 ## Where to start
 
-- **The paper's analysis:** [`analysis/final-analysis-plan.md`](analysis/final-analysis-plan.md).
+- **What the project found, and why it stopped:**
+  [`analysis/project-conclusion.md`](analysis/project-conclusion.md).
+- **The analysis plan, its pre-specified rules and each block's outcome:**
+  [`analysis/final-analysis-plan.md`](analysis/final-analysis-plan.md).
 - **What a panel column means:** [`data/README.md`](data/README.md), then the source's page.
 - **How the pipeline is built:** [`design/00`](design/00-backbone-overview.md) (grid and ring
   model), [`design/09`](design/09-integrated-pipeline.md) (source/step structure), then
   [`data/README.md`](data/README.md) § "How every source stores its data" for the current storage
   and assembly mechanics.
-- **Running things:** the root [`README.md`](../README.md).
+- **Running things:** the root [`README.md`](../README.md); reproducing the analysis:
+  [`analysis/project-conclusion.md`](analysis/project-conclusion.md) §6.
+
+## Analysis records
+
+| Doc | Topic | Status |
+|---|---|---|
+| [project-conclusion](analysis/project-conclusion.md) | Findings, interpretation, decision, successor notes, reproduction | Final |
+| [final-analysis-plan](analysis/final-analysis-plan.md) | Fixed specification; pre-analysis and the three stories, with ◇ rules and outcomes | Closed 2026-09-30 |
+| [10km-ring-check](analysis/10km-ring-check.md) | Does the main estimate need the distance-ring model? (No) | Record, 2026-09-28 |
+| [drift-and-pm25-coverage-checks](analysis/drift-and-pm25-coverage-checks.md) | Aqua night-overpass drift; ACAG PM2.5 clear-sky coverage | Record, 2026-09-28 |
 
 ## Design records
 
@@ -33,14 +50,14 @@ its title instead of being rewritten, and this table says where the current trut
 | [06](design/06-open-questions.md) | Open questions, 2026-07-29 | Session record; live status in 07b and 13 |
 | [07](design/07-modis-ingest.md) | MODIS product choice and compositing | Current; step names changed (banner) |
 | [07a](design/07a-modis-band-reference.md) | MODIS band scale/offset/fill/QC reference | Current reference |
-| [07b](design/07b-modis-outstanding.md) | MODIS checklist | Live checklist |
+| [07b](design/07b-modis-outstanding.md) | MODIS checklist | Frozen at retirement (2026-09-30) |
 | [08](design/08-hpc-transfer.md) | Generic HPC transfer | Superseded (banner) |
 | [09](design/09-integrated-pipeline.md) | Integrated fetch/prepare pipeline, `misc` split | Implemented; GRID step since merged into PREPARE (banner) |
 | [10](design/10-fetch-ledger.md) | DuckDB fetch ledger | Superseded: ledger removed 2026-08-14 |
 | [11](design/11-glass-static-fetch.md) | GLASS static FETCH targets | Implemented, later restructured by 12 |
 | [12](design/12-glass-modis-rebuild.md) | GLASS split and GLASS-MODIS rebuild, GLASS air temperature | Implemented |
-| [13](design/13-prepare-memory-parallelism.md) | PREPARE memory and parallelism | Live checklist |
-| [14](design/14-terra-aqua-drift-diagnostic.md) | Terra/Aqua orbital-drift diagnostic | Handoff; not yet run |
+| [13](design/13-prepare-memory-parallelism.md) | PREPARE memory and parallelism | Frozen at retirement (2026-09-30) |
+| [14](design/14-terra-aqua-drift-diagnostic.md) | Terra/Aqua orbital-drift diagnostic | Never run. The project used Aqua only, so the Terra/Aqua fusion question did not arise; Aqua's night drift was measured in [`analysis/drift-and-pm25-coverage-checks.md`](analysis/drift-and-pm25-coverage-checks.md) §1 |
 | [15](design/15-modis-prepare-2002-tile-failures.md) | MODIS PREPARE 2002 tile failures | Superseded by 15a (root-cause record) |
 | [15a](design/15a-modis-prepare-rework.md) | Reproject-then-overlay PREPARE | Implemented |
 

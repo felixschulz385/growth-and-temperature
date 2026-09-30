@@ -1,5 +1,7 @@
 # Aqua Drift and PM2.5 Coverage Checks
 
+> **Status (2026-09-30): record.** Written against the 2026-09-28 version of the plan. Its phases map to the final plan as follows: Phase 0 → §2 (fixed specification), Phase 3 → §5 (Story 2, the IV), Phase 6a → §6 M1. The project was retired on 2026-09-30 ([`project-conclusion.md`](project-conclusion.md)).
+
 Analysis note, 2026-09-28. It records two checks run for the analysis plan
 ([`final-analysis-plan.md`](final-analysis-plan.md)):
 
