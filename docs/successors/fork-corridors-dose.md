@@ -5,7 +5,8 @@
 before anything runs. The retired project's result is unchanged:
 [`../analysis/project-conclusion.md`](../analysis/project-conclusion.md).
 
-**Update 2026-10-28 (branch).** Part 1's rules are fixed in
+**Update 2026-10-28 (branch): Part 1 stopped.** Gate C1 failed (first-stage F = 0.08; route check
+R1 passed). See [`corridors-prespec.md`](corridors-prespec.md) §8. Part 1's rules are fixed in
 [`corridors-prespec.md`](corridors-prespec.md), which supersedes this page where they differ: bulk
 mines only, PortWatch dry-bulk ports, clustering by port catchment. The exposure is built by the
 `corridors` data module ([`../data/corridors/README.md`](../data/corridors/README.md)).

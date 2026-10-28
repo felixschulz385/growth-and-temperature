@@ -609,6 +609,20 @@ sources:
       expected_vars: ["slope_mean_10km"]
       value_range: [0, 90]
 
+  # GRIP4 road length density by type (~8 km, roads mapped ~2018). Used only
+  # to check that predicted corridor routes run along real roads -- never as
+  # an instrument or control (it is partly an outcome of growth). ~2 MB/zip.
+  grip:
+    type: "grip"
+    data_path: "grip"
+    road_types: ["tp1", "tp2", "tp3", "total"]
+    description: "GRIP4 road density (m/km2): highways, primary, secondary, total"
+
+    download:
+      batch_size: 4
+      max_concurrent_downloads: 2
+      timeout: 600
+
   # Transit-corridor exposure (fork/corridors-dose): PREPARE only, derived
   # from snl_mining, ports, topography, osm and gadm. Every rule below is
   # fixed in docs/successors/corridors-prespec.md -- change it there first.

@@ -1,6 +1,6 @@
 # Corridors: Pre-Specification
 
-**Status: fixed 2026-10-28, before any corridor exposure was built.** This is step 0 of Part 1 in
+**Status: fixed 2026-10-28, before any corridor exposure was built. Outcome (§8): R1 passed, Gate C1 failed (F = 0.08), so Part 1 stops.** This is step 0 of Part 1 in
 [`fork-corridors-dose.md`](fork-corridors-dose.md). It replaces that page's "first thoughts" where
 the two differ (clustering, destination rule, shock set). Changes after this date go in the change
 log at the end, with a reason, and never after a result they could be fitted to.
@@ -77,6 +77,22 @@ $\tilde Z_{it} = Z_{it} - \mu_{it}$ (Borusyak and Hull 2023).
   20–50, 50–100, 100–200, 200–300 and over 300 km, from any SNL mine of any commodity.
 - **Clustering:** by destination port catchment (main) and by ADM1 (reported).
 
+## 6a. ◇ R1, route check (added 2026-10-28, before it ran)
+
+Do predicted routes run along real roads? Loads neither lights nor LST.
+
+- **Data:** one row per cell outside the exclusions. Outcome ln(1 + GRIP4 highway + primary road
+  density, m/km²). Regressor: on a `main` route at 20–300 km.
+- **Comparison:** FE for country × distance-to-mine band; clustered by port catchment.
+- **Rule:** go on to C1 if the coefficient is positive with t ≥ 3. Otherwise the routes are not
+  corridors: revisit the cost surface (logged here) before C1.
+- **Reported for information:** the same regression for the `flat_cost` routes, and balance of
+  on-route against off-route cells on slope, land share and distance to the nearest port. These
+  never switch the main specification.
+
+GRIP4 roads are from about 2018 and partly a result of growth. R1 uses them only to check the
+routes, never as a control.
+
 ## 7. Gate C1: first stage only
 
 Regress `log_ntl` on $\tilde Z$ with the comparison above. No LST column is loaded.
@@ -86,6 +102,43 @@ Regress `log_ntl` on $\tilde Z$ with the comparison above. No LST column is load
 - Reported for information, not as part of the gate: F with ADM1 clustering, the coefficient by
   band, and an event study around mine openings with three leads, which shows whether lights rise
   during construction.
+
+## 8. Outcomes
+
+Run 2026-10-28 on the `main` variant (`output/notebooks/05_corridors.ipynb`). No LST was loaded.
+
+**◇ R1: passed.** Predicted routes run along real roads.
+
+| Routes | On-route coefficient, ln(1 + highway + primary density) | SE | t | On-route cells |
+|---|---|---|---|---|
+| main (slope cost) | +0.547 | 0.073 | 7.5 | 17,141 of 1,130,150 |
+| flat cost (information) | +0.443 | 0.068 | 6.5 | 21,292 |
+
+Balance (information): on-route cells are 2.1° flatter (off-route mean 3.1°; SE 0.2), as expected
+from routes that avoid slopes. Land share differs by +0.01, and distance to the nearest port by
+−16 km (SE 62). Cell FE absorb these levels.
+
+**◇ Gate C1: failed. Part 1 stops.**
+
+| Clustering | Coefficient on $\tilde Z$ (log lights per active upstream mine) | SE | F |
+|---|---|---|---|
+| port catchment (gate) | 0.0026 | 0.0093 | **0.08** |
+| ADM1 (information) | 0.0026 | 0.0082 | 0.10 |
+
+- **Sample:** 23.8 million cell-years, 1.14 million cells; 12,088 cells have exposure that
+  changes over time.
+- **By band, not recentered (information):** 20–100 km +0.012 (SE 0.009, p = 0.18); 100–300 km
+  +0.007 (SE 0.004, p = 0.06); over 300 km +0.0004 (SE 0.0008).
+- **Not a recentering artefact.** Recentering removes most of the variation (exposure and its
+  expectation correlate at 0.985 among exposed rows), but the raw band counts are weak too.
+- The event study with leads was not run; it was information only, and with F < 1 there is no
+  first stage to time.
+
+**Reading.** Bulk freight along predicted routes does not raise lights in the cells it passes
+through by a measurable amount: about 1% per active mine 20–100 km upstream, at most. The mining
+bound (±0.3 K) remains the only causal bound. Transit-corridor growth yields none, because the
+instrument does not move lights. Part 2's sequence (fork doc) loses its step A and the corridor
+instrument in steps B and C; the mine instrument remains.
 
 ## Change log
 

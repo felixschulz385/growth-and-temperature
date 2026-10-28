@@ -40,7 +40,7 @@ as a record. The one active line of work is a fork on the branch `fork/corridors
 | Doc | Topic | Status |
 |---|---|---|
 | [fork-corridors-dose](successors/fork-corridors-dose.md) | Transit-corridor instrument; DOSE regional output at ADM1 as a growth measure other than lights | First thoughts, 2026-10-28; work on branch `fork/corridors-dose` |
-| [corridors-prespec](successors/corridors-prespec.md) | Corridor instrument rules: shock mines, ports, routes, exposure, recentering, Gate C1 | Fixed 2026-10-28 (branch); change log inside |
+| [corridors-prespec](successors/corridors-prespec.md) | Corridor instrument rules: shock mines, ports, routes, exposure, recentering, Gate C1 | Closed 2026-10-28 (branch): R1 passed, Gate C1 failed (F = 0.08) |
 | [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; not scheduled |
 
 ## Design records

@@ -11,11 +11,11 @@ commit as any change to the state, layout or rules below.
   transit-corridor instrument (bulk mines → ports) and then DOSE regional output at ADM1 as a growth
   measure other than lights. Plan: `docs/successors/fork-corridors-dose.md`. Rules:
   `docs/successors/corridors-prespec.md`. Unscheduled ideas: `docs/successors/ideas.md`.
-- **Corridor progress:**
-  - done: step 0 (pre-spec), step 1 (`ports`, `topography`), step 2 (routes), step 3 (exposure),
-    all as data modules;
-  - next: route checks (GRIP roads, maps, balance), then **Gate C1**: first stage of `log_ntl` on
-    `z_main_rc` only, port-clustered F ≥ 70. No LST before C1 passes.
+- **Corridor result (Part 1): stopped 2026-10-28.** The route check R1 passed: predicted routes
+  run along real roads, t = 7.5. Gate C1 failed: first-stage F = 0.08 against 70. The outcomes
+  are in `docs/successors/corridors-prespec.md` §8. No LST was loaded.
+- **Open decision (the user's):** go on to Part 2, DOSE regional output at ADM1 with the mine
+  instrument only (Gate D1 first), or close the fork.
 - Fork work goes on the branch, not `main`. `main` gets only docs that record the fork.
 
 ## Pre-specification discipline
@@ -64,6 +64,7 @@ change construction rules; log them anyway.
 - **Fork sources:**
   - `ports`: PortWatch, FETCH + PREPARE;
   - `topography`: EarthEnv slope, FETCH + PREPARE onto the 1 km grid;
+  - `grip`: GRIP4 road density, FETCH + PREPARE onto the 1 km grid. Used only for route check R1.
   - `corridors`: PREPARE only. It writes `pixel_id`-keyed tables under
     `prepared/corridors/misc/<variant>/` that join the 10 km panel. Its variants are in
     `data.yaml`.
@@ -72,6 +73,8 @@ change construction rules; log them anyway.
 
 - **Specification:** `src/analysis/spec.py` (outcome, FE, clusters, sample, `build_panel()`). The
   derived panel is `data_nobackup/_analysis_panel_10km_v2.parquet`.
+- **Fork analysis:** `src/analysis/corridors.py` builds the corridor panel. It has no LST
+  columns until a gate allows them. Notebook: `output/notebooks/05_corridors.ipynb`.
 - **Notebooks:** `output/notebooks/`. The pre-commit hook blocks notebooks with outputs
   (`./.githooks/install.sh` once per clone).
 

@@ -28,6 +28,7 @@ Last checked against the code: 2026-09-28.
 | [country_classifications](country_classifications/README.md) | `country_classifications` | `misc/country_classifications.py` | `GID_0` table | yes (joined) | gadm |
 | [ecoregions](ecoregions/README.md) | `ecoregions` | `ecoregions/source.py` | static pixel grid + `GID_3` table | yes (pixel grid) | gadm |
 | [osm](osm/README.md) | `osm` | `misc/osm.py` | static pixel grid | as land mask | — |
+| [grip](grip/README.md) | `grip` | `grip.py` | static pixel grid | no (route check only) | — |
 | [ports](ports/README.md) | `ports` | `ports.py` | point table | no (feeds corridors) | — |
 | [topography](topography/README.md) | `topography` | `topography.py` | static pixel grid | no (feeds corridors) | — |
 | [berman_mining](berman_mining/README.md) | *(disabled)* | `berman_mining.py` | annual pixel grid | no | — |
