@@ -38,10 +38,10 @@ any commit**: file contents, notebook outputs, figures, docs or commit messages.
   figures whose names mention mines, unless they are allow-listed. It can't read content, so this
   rule still applies to everything it misses. Enable the hooks once per clone with
   `git config core.hooksPath .githooks`.
-- **Known violations on `main`,** found 2026-10-28 and already pushed: `output/figures/misc/mining.gif`,
-  `output/presentations/economic_audience/images/mining.gif` (mine counts per grid cell) and
-  `src/experiments/mines.ipynb` (committed outputs with mine-linked rows and maps). Removing them
-  from history needs a force-push to origin; the author decides.
+- **Old violations, fixed 2026-10-28 in `afa3c4c` on `main`** and merged here: the mining GIFs
+  (mine counts per grid cell) and the outputs of `src/experiments/mines.ipynb`. They stay in
+  earlier commits. **Origin is public**, and the author chose not to rewrite history. Never
+  rewrite or force-push to purge them without being asked.
 
 ## Pre-specification discipline
 
