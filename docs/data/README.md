@@ -21,16 +21,20 @@ Last checked against the code: 2026-09-28.
 | [acag](acag/README.md) | `acag` | `acag.py` | annual pixel grid | yes | — |
 | [esacci](esacci/README.md) | `esacci` | `esacci.py` | annual pixel grid | yes | — |
 | [snl_mining](snl_mining/README.md) | `snl_mining` | `snl_mining/source.py` | annual pixel grid + ADM tables | yes (pixel grid) | gadm, commodity_prices |
+| [corridors](corridors/README.md) | `corridors` | `corridors/source.py` | `pixel_id` (10 km) tables | no (joined at analysis) | snl_mining, ports, topography, osm, gadm |
 | [commodity_prices](commodity_prices/README.md) | `commodity_prices` | `commodity_prices/source.py` | lookup table | no (feeds snl_mining) | — |
 | [plad](plad/README.md) | `plad` | `plad.py` | `(GID_2, year)` table | yes (joined) | gadm |
 | [gadm](gadm/README.md) | `gadm` | `misc/gadm.py` | static pixel grid + vectors | yes | — |
 | [country_classifications](country_classifications/README.md) | `country_classifications` | `misc/country_classifications.py` | `GID_0` table | yes (joined) | gadm |
 | [ecoregions](ecoregions/README.md) | `ecoregions` | `ecoregions/source.py` | static pixel grid + `GID_3` table | yes (pixel grid) | gadm |
 | [osm](osm/README.md) | `osm` | `misc/osm.py` | static pixel grid | as land mask | — |
+| [ports](ports/README.md) | `ports` | `ports.py` | point table | no (feeds corridors) | — |
+| [topography](topography/README.md) | `topography` | `topography.py` | static pixel grid | no (feeds corridors) | — |
 | [berman_mining](berman_mining/README.md) | *(disabled)* | `berman_mining.py` | annual pixel grid | no | — |
 
 Modules are under `src/data/sources/`. Every source declares `STEPS = (FETCH, PREPARE)`, except
-`snl_mining` (PREPARE only, because its input is assembled by hand). "In panel" means the source
+`snl_mining` (PREPARE only, because its input is assembled by hand) and `corridors` (PREPARE
+only, derived from other sources). "In panel" means the source
 is listed under `assembly.sources` in `orchestration/configs/data.yaml`.
 
 ## How every source stores its data

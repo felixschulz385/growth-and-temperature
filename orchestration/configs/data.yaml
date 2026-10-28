@@ -578,6 +578,64 @@ sources:
       max_concurrent_downloads: 1
       timeout: 120
 
+  # IMF PortWatch ports (AIS vessel counts by ship type) -- destinations of
+  # the corridor instrument (docs/successors/corridors-prespec.md §2).
+  # ~1 MB: fine through the proxy or from the transfer node.
+  ports:
+    type: "ports"
+    data_path: "ports"
+    description: "IMF PortWatch ports database"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 300
+
+  # EarthEnv-Topography mean slope per ~10 km cell (GMTED2010) -- route cost
+  # of the corridor instrument (corridors-prespec.md §3). ~9 MB.
+  topography:
+    type: "topography"
+    data_path: "topography"
+    url: "https://data.earthenv.org/topography/slope_10KMmn_GMTEDmd.tif"
+    name: "slope_10KMmn_GMTEDmd.tif"
+    description: "EarthEnv-Topography slope, mean of 250 m GMTED2010 slopes per 5 arc-min cell"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 600
+
+    verification:
+      expected_vars: ["slope_mean_10km"]
+      value_range: [0, 90]
+
+  # Transit-corridor exposure (fork/corridors-dose): PREPARE only, derived
+  # from snl_mining, ports, topography, osm and gadm. Every rule below is
+  # fixed in docs/successors/corridors-prespec.md -- change it there first.
+  # Outputs are keyed by the analysis grid's pixel_id at resolution_m, not a
+  # 1 km grid (src/data/sources/corridors/source.py).
+  corridors:
+    type: "corridors"
+    data_path: "corridors"
+    resolution_m: 10000
+    years: [2002, 2022]
+    min_land_share: 0.5
+    max_snap_km: 25
+    bands_km: [20, 100, 300]
+    main_max_km: 300
+    mine_exclusion_km: 20
+    port_exclusion_km: 30
+    mine_distance_bands_km: [20, 50, 100, 200, 300]
+    # commodities: default = the bulk list in corridors/source.py (prespec §1)
+    port_count_column: "vessel_count_dry_bulk"
+    port_min_count: 50
+    slope_scale_deg: 5.0
+    variants:
+      main: {}
+      flat_cost: {slope_scale_deg: null}
+      all_mines: {commodities: null}
+      any_ship_ports: {port_count_column: "vessel_count_total"}
+
   # SNL/S&P Global Mining Property Tables -> GRID
   snl_mining:
     type: "snl_mining"
