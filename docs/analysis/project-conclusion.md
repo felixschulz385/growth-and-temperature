@@ -9,10 +9,13 @@ need. The plan, with every pre-specified decision rule and each block's outcome,
 ## The answer
 
 - **No detectable local effect.** Growth, measured by night lights, has no detectable effect on
-  night land surface temperature (LST) at the scale of a 10 km cell.
+  night land surface temperature (LST) at the scale of a 10 km cell. The causal evidence covers
+  one kind of growth only: growth induced by nearby mining (§3).
 - **The causal effect is bounded.** The mining instrument rules out effects beyond about
   **±0.3 K per log point of lights** (95 % Anderson–Rubin set [−0.32, +0.28]). For a cell with
-  strong lights growth (p90 over 2002–22, +1.42 log points), that is about ±0.4 K.
+  strong lights growth (p90 over 2002–22, +1.42 log points), that is about ±0.4 K. The bound
+  holds for mining-induced growth, with its own mix of land-cover, waste-heat and aerosol
+  changes, and not for growth in general.
 - **The observed association is regional, not local.** The fixed-effects association
   (−0.030 K per log point) shrinks with every tighter comparison. Between neighbouring cells it is
   a precise zero, so whatever links lights and night LST is shared across tens of kilometres.
@@ -95,7 +98,10 @@ Other checks held:
 | R1–R9 robustness (2026-09-28) | Functional form, sensor era, flares, coverage, instrument choice, clusters, FE: all null. The favoritism instrument has no first stage (F ≈ 1.4). |
 
 - **The IV cannot confirm or reject the association.** Its set contains the fixed-effects
-  estimate, so the null counts only against effects outside the set.
+  estimate, so the null counts only against effects outside the set. The two also average over
+  different kinds of growth: the fixed-effects estimate over all growth in the panel, the IV over
+  mining-induced growth. Even with full power, a gap between them could reflect that difference
+  rather than bias in the association.
 - **A better instrument will not fix this.** Testing an effect of −0.03 needs a first-stage F of
   about 14,000, not 71. Even the tightest radius, 10 km, has a minimum detectable effect 7× too
   large.
@@ -159,6 +165,11 @@ cannot split an effect among five or more channels and confounders.
 
 **It does not claim:**
 - that growth has no effect on temperature;
+- that the bound applies to other kinds of growth (agriculture, manufacturing, services,
+  transport corridors). Each kind changes land cover, waste heat and aerosols in its own mix, and
+  the channels have opposite signs. A small net effect for the mining mix therefore limits
+  neither its separate channels nor the net effect of another mix. "Per log point of lights" is
+  also a different amount of activity in each sector;
 - that pollution is not the channel;
 - that the regional association is either causal or confounded.
 
@@ -186,13 +197,17 @@ Temperature"*, Scientific Reasoning, 2026-09-19):
 - **Channel work** has no local effect to decompose.
 
 Two uses of the work remain:
-- **Report the bound.** "Local growth has no large effect on local night temperature", as a
-  short note or as a section of another paper. The notebooks hold everything such a note needs.
+- **Report the bound.** "Growth induced by nearby mining has no large net effect on local night
+  temperature", as a short note or as a section of another paper. The notebooks hold everything such a note needs.
 - **Start a new project on the regional association.** It would be a different question
   (why do regions whose lights grow have cooler nights?) with a different design (§5). It is not
   a continuation of this one.
 
 ## 5. For a successor
+
+**Added 2026-10-28.** A fork (a transit-corridor instrument; regional output from DOSE as a growth
+measure other than lights) and three further ideas are recorded in
+[`../successors/`](../successors/).
 
 ### The regional question
 

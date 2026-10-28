@@ -16,7 +16,7 @@ analysed at 10 km.
 > - **No detectable local effect.** Growth, measured by night lights, has no detectable effect on
 >   night land surface temperature at the 10 km cell scale.
 > - **A causal bound.** The mining instrument rules out effects beyond about ±0.3 K per log
->   point of lights.
+>   point of lights. The bound holds for mining-induced growth, not for growth in general.
 > - **The association is regional.** The negative fixed-effects association vanishes between
 >   neighbouring cells, so it is regional, not local.
 >

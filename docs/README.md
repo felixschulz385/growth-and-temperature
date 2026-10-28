@@ -2,13 +2,15 @@
 
 **The project was retired on 2026-09-30.** Start with
 [`analysis/project-conclusion.md`](analysis/project-conclusion.md). The documentation below is kept
-as a record; nothing in it is being worked on.
+as a record. The one active line of work is a fork on the branch `fork/corridors-dose`, recorded in
+[`successors/`](successors/).
 
 | Folder | What's in it |
 |---|---|
 | [`analysis/`](analysis/) | What was estimated, in which order, why, and what came out |
 | [`data/`](data/README.md) | One page per data source: what it is, where it lands, its columns and caveats |
 | [`design/`](design/) | Numbered design and decision records for the data pipeline, with incident notes |
+| [`successors/`](successors/) | The fork and ideas for successor projects, with their critique |
 
 ## Where to start
 
@@ -32,6 +34,13 @@ as a record; nothing in it is being worked on.
 | [final-analysis-plan](analysis/final-analysis-plan.md) | Fixed specification; pre-analysis and the three stories, with ◇ rules and outcomes | Closed 2026-09-30 |
 | [10km-ring-check](analysis/10km-ring-check.md) | Does the main estimate need the distance-ring model? (No) | Record, 2026-09-28 |
 | [drift-and-pm25-coverage-checks](analysis/drift-and-pm25-coverage-checks.md) | Aqua night-overpass drift; ACAG PM2.5 clear-sky coverage | Record, 2026-09-28 |
+
+## Successor records
+
+| Doc | Topic | Status |
+|---|---|---|
+| [fork-corridors-dose](successors/fork-corridors-dose.md) | Transit-corridor instrument; DOSE regional output at ADM1 as a growth measure other than lights | First thoughts, 2026-10-28; work on branch `fork/corridors-dose` |
+| [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; not scheduled |
 
 ## Design records
 
