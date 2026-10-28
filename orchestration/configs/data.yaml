@@ -623,6 +623,22 @@ sources:
       max_concurrent_downloads: 2
       timeout: 600
 
+  # DOSE reported subnational output (Wenz et al. 2023), v2.9 -- the fork's
+  # growth measure other than lights (fork-corridors-dose.md, Part 2).
+  # GADM 3.6 codes, matched to GADM 4.1 in PREPARE (src/data/sources/dose.py).
+  # ~15 MB: fine through the proxy or from the transfer node.
+  dose:
+    type: "dose"
+    data_path: "dose"
+    url: "https://zenodo.org/api/records/13773040/files/DOSE_V2.9.csv/content"
+    name: "DOSE_V2.9.csv"
+    description: "DOSE v2.9, regional GRP and population by GADM-1 region"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 600
+
   # Transit-corridor exposure (fork/corridors-dose): PREPARE only, derived
   # from snl_mining, ports, topography, osm and gadm. Every rule below is
   # fixed in docs/successors/corridors-prespec.md -- change it there first.

@@ -162,5 +162,6 @@ _SOURCE_MODULES: tuple[str, ...] = (
     "src.data.sources.ports",
     "src.data.sources.topography",
     "src.data.sources.grip",
+    "src.data.sources.dose",
     "src.data.sources.corridors.source",
 )

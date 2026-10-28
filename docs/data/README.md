@@ -26,6 +26,7 @@ Last checked against the code: 2026-09-28.
 | [plad](plad/README.md) | `plad` | `plad.py` | `(GID_2, year)` table | yes (joined) | gadm |
 | [gadm](gadm/README.md) | `gadm` | `misc/gadm.py` | static pixel grid + vectors | yes | — |
 | [country_classifications](country_classifications/README.md) | `country_classifications` | `misc/country_classifications.py` | `GID_0` table | yes (joined) | gadm |
+| [dose](dose/README.md) | `dose` | `dose.py` | `(GID_1, year)` table | no (fork Part 2) | gadm |
 | [ecoregions](ecoregions/README.md) | `ecoregions` | `ecoregions/source.py` | static pixel grid + `GID_3` table | yes (pixel grid) | gadm |
 | [osm](osm/README.md) | `osm` | `misc/osm.py` | static pixel grid | as land mask | — |
 | [grip](grip/README.md) | `grip` | `grip.py` | static pixel grid | no (route check only) | — |

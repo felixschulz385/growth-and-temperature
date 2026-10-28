@@ -14,8 +14,11 @@ commit as any change to the state, layout or rules below.
 - **Corridor result (Part 1): stopped 2026-10-28.** The route check R1 passed: predicted routes
   run along real roads, t = 7.5. Gate C1 failed: first-stage F = 0.08 against 70. The outcomes
   are in `docs/successors/corridors-prespec.md` §8. No LST was loaded.
-- **Open decision (the user's):** go on to Part 2, DOSE regional output at ADM1 with the mine
-  instrument only (Gate D1 first), or close the fork.
+- **Part 2 (DOSE at ADM1, mine instrument only):** the `dose` data module is built; DOSE's
+  GADM 3.6 codes are matched to 4.1, 1,596 of 1,662 regions. **Gate D1 passed:** 399 exposed
+  regions in 48 countries (`docs/successors/dose-prespec.md` §4). **Waiting:** the author confirms
+  the step B/C design (§3) before anything loads LST. After that, step B's lights-only first stage
+  (F ≥ 10) comes first.
 - Fork work goes on the branch, not `main`. `main` gets only docs that record the fork.
 
 ## Pre-specification discipline
@@ -65,6 +68,8 @@ change construction rules; log them anyway.
   - `ports`: PortWatch, FETCH + PREPARE;
   - `topography`: EarthEnv slope, FETCH + PREPARE onto the 1 km grid;
   - `grip`: GRIP4 road density, FETCH + PREPARE onto the 1 km grid. Used only for route check R1.
+  - `dose`: DOSE v2.9 regional output, matched to GADM 4.1 `GID_1` (`prepared/dose/adm/`).
+    Its `T_a` column is temperature: never use it as a control.
   - `corridors`: PREPARE only. It writes `pixel_id`-keyed tables under
     `prepared/corridors/misc/<variant>/` that join the 10 km panel. Its variants are in
     `data.yaml`.
@@ -74,7 +79,8 @@ change construction rules; log them anyway.
 - **Specification:** `src/analysis/spec.py` (outcome, FE, clusters, sample, `build_panel()`). The
   derived panel is `data_nobackup/_analysis_panel_10km_v2.parquet`.
 - **Fork analysis:** `src/analysis/corridors.py` builds the corridor panel. It has no LST
-  columns until a gate allows them. Notebook: `output/notebooks/05_corridors.ipynb`.
+  columns until a gate allows them. Notebooks: `05_corridors.ipynb` (R1, C1),
+  `05b_corridors_route_map.ipynb`, `06_dose.ipynb` (D1).
 - **Notebooks:** `output/notebooks/`. The pre-commit hook blocks notebooks with outputs
   (`./.githooks/install.sh` once per clone).
 
