@@ -21,6 +21,28 @@ commit as any change to the state, layout or rules below.
   (F ≥ 10) comes first.
 - Fork work goes on the branch, not `main`. `main` gets only docs that record the fork.
 
+## Confidential mine data (hard rule)
+
+The S&P Global / SNL mine data is licensed and confidential. **Nothing at mine level may appear in
+any commit**: file contents, notebook outputs, figures, docs or commit messages.
+
+- **Never commit:** mine ids (`property_id`), names, coordinates or polygons; per-mine
+  attributes (commodity, opening and closing years, production); per-mine route tables; maps that
+  show mine points, routes from mines, or mine counts per grid cell; tables listing individual
+  mines.
+- **Allowed:** regression estimates and aggregate counts (number of mines, regions or countries;
+  shares), and descriptions at region level ("Shanxi coal goes to Tianjin").
+- **Figures that show mines** go to `output/figures/confidential/`, which is git-ignored. Notebooks
+  that draw them are committed without outputs.
+- **Enforcement:** `.githooks/check-confidential.py` blocks `confidential/` paths, data files and
+  figures whose names mention mines, unless they are allow-listed. It can't read content, so this
+  rule still applies to everything it misses. Enable the hooks once per clone with
+  `git config core.hooksPath .githooks`.
+- **Known violations on `main`,** found 2026-10-28 and already pushed: `output/figures/misc/mining.gif`,
+  `output/presentations/economic_audience/images/mining.gif` (mine counts per grid cell) and
+  `src/experiments/mines.ipynb` (committed outputs with mine-linked rows and maps). Removing them
+  from history needs a force-push to origin; the author decides.
+
 ## Pre-specification discipline
 
 Every analysis block has rules (◇) written down before it runs. Change a rule only through the

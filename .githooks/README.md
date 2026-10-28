@@ -24,3 +24,15 @@ non-null **`execution_count`**, so notebook diffs stay to source-only.
 - One-off bypass: `git commit --no-verify`.
 
 Stdlib-only Python 3 — the `gnt` conda env does not need to be active.
+
+## `pre-commit` -> `check-confidential.py`
+
+Blocks a commit when a staged file may carry confidential mine data (CLAUDE.md § "Confidential
+mine data"):
+
+- anything under a `confidential/` directory (also git-ignored);
+- data files (`.csv`, `.parquet`, `.duckdb`, `.xls[x]`, `.gpkg`, ...);
+- figures and documents whose path mentions mine, mining, snl or corridor.
+
+Paths in `confidential-allowlist.txt` are exempt; an entry asserts the file holds only aggregate
+estimates. The check reads paths, not content, so it backs up the rule rather than replacing it.
