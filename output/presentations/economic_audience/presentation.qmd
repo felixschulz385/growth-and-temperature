@@ -152,7 +152,7 @@ We leverage exogenous shocks to economic growth
 ::::
 
 :::: {.column width="35%"}
-![Mining Activity](./images/mining.gif){width=100% #fig-mining}
+*Map of mining activity removed: the mine data is confidential.*
 ::::
 
 :::

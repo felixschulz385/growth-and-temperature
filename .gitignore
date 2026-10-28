@@ -52,3 +52,6 @@ vendor/
 # geometry, internal mine IDs) -- untracked going forward, see git history
 # for the leak this replaces.
 /src/experiments/snf_mines.ipynb
+
+# Confidential mine data: figures/tables derived at mine level (CLAUDE.md)
+confidential/

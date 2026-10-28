@@ -7,3 +7,4 @@ set -euo pipefail
 hook_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 python3 "${hook_dir}/check-notebook-outputs.py"
+python3 "${hook_dir}/check-confidential.py"

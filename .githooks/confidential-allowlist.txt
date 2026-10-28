@@ -1,0 +1,8 @@
+# Files the confidential-data check (check-confidential.py) lets through.
+#
+# One fnmatch pattern per line ('*' matches across '/'). An entry asserts the
+# file holds only aggregate estimates -- never mine ids, names, locations or
+# per-mine attributes. Keep it short and specific.
+
+# Regression result tables (coefficients, SEs, N): no mine-level content.
+output/tables/*.csv
