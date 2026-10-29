@@ -7,10 +7,11 @@ commit as any change to the state, layout or rules below.
 
 - **The original project is retired** (2026-09-30). The closing record is
   `docs/analysis/project-conclusion.md`. Don't change its results; amendments go in dated notes.
-- **The one active line of work is the fork on branch `fork/corridors-dose`.** It tests a
-  transit-corridor instrument (bulk mines → ports) and then DOSE regional output at ADM1 as a growth
-  measure other than lights. Plan: `docs/successors/fork-corridors-dose.md`. Rules:
-  `docs/successors/corridors-prespec.md`. Unscheduled ideas: `docs/successors/ideas.md`.
+- **A fork ran 2026-10-28 to 2026-10-29 and is merged into `main` (complete; no active line of
+  work).** It tested a transit-corridor instrument (bulk mines → ports), then DOSE regional output
+  at ADM1 as a growth measure other than lights. Plan: `docs/successors/fork-corridors-dose.md`.
+  Rules and outcomes: `docs/successors/corridors-prespec.md` and `dose-prespec.md`. The
+  conclusion's §5 has a dated summary. Unscheduled ideas: `docs/successors/ideas.md`.
 - **Corridor result (Part 1): stopped 2026-10-28.** The route check R1 passed: predicted routes
   run along real roads, t = 7.5. Gate C1 failed: first-stage F = 0.08 against 70. The outcomes
   are in `docs/successors/corridors-prespec.md` §8. No LST was loaded.
@@ -22,9 +23,9 @@ commit as any change to the state, layout or rules below.
   failed (2026-10-29),** three instruments × steps B (lights) and C (GRP). The largest F is 4.3
   against 10, so there is no IV at ADM1. **The fixed-effects association (descriptive)** of
   night LST is −0.26 K per log point of lights (p < 0.001) and −0.13 K per log point of GRP
-  (p = 0.09), the retired result's sign (§4). **Part 2 is complete;** the fork has no
-  scheduled next block.
-- Fork work goes on the branch, not `main`. `main` gets only docs that record the fork.
+  (p = 0.09), the retired result's sign (§4). **Part 2 is complete.**
+- **New work** (a successor project) starts on its own branch, with a pre-spec in
+  `docs/successors/`. The branch `fork/corridors-dose` is merged and no longer used.
 
 ## Confidential mine data (hard rule)
 

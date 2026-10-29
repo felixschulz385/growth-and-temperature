@@ -2,8 +2,9 @@
 
 **The project was retired on 2026-09-30.** Start with
 [`analysis/project-conclusion.md`](analysis/project-conclusion.md). The documentation below is kept
-as a record. The one active line of work is a fork on the branch `fork/corridors-dose`, recorded in
-[`successors/`](successors/).
+as a record. A fork (transit corridors; DOSE regional output at ADM1) ran 2026-10-28 to 2026-10-29
+and was merged; it adds no causal result. Its records are in [`successors/`](successors/), and its
+outcome is summarised in the conclusion, §5.
 
 | Folder | What's in it |
 |---|---|
@@ -39,9 +40,9 @@ as a record. The one active line of work is a fork on the branch `fork/corridors
 
 | Doc | Topic | Status |
 |---|---|---|
-| [fork-corridors-dose](successors/fork-corridors-dose.md) | Transit-corridor instrument; DOSE regional output at ADM1 as a growth measure other than lights | First thoughts, 2026-10-28; work on branch `fork/corridors-dose` |
-| [corridors-prespec](successors/corridors-prespec.md) | Corridor instrument rules: shock mines, ports, routes, exposure, recentering, Gate C1 | Closed 2026-10-28 (branch): R1 passed, Gate C1 failed (F = 0.08) |
-| [dose-prespec](successors/dose-prespec.md) | DOSE at ADM1 with the mine instrument: data, Gate D1, steps B and C | D1 passed 2026-10-28 (399 regions, 48 countries); B/C design awaiting confirmation |
+| [fork-corridors-dose](successors/fork-corridors-dose.md) | Transit-corridor instrument; DOSE regional output at ADM1 as a growth measure other than lights | Complete 2026-10-29, merged into `main`: no causal result from either part |
+| [corridors-prespec](successors/corridors-prespec.md) | Corridor instrument rules: shock mines, ports, routes, exposure, recentering, Gate C1 | Closed 2026-10-28: R1 passed, Gate C1 failed (F = 0.08) |
+| [dose-prespec](successors/dose-prespec.md) | DOSE at ADM1 with three instruments (mine count, mine × price, favoritism): data, Gate D1, steps B and C | Closed 2026-10-29: D1 passed; all six first stages failed (F ≤ 4.3); association −0.26 K per log lights, −0.13 K per log GRP |
 | [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; not scheduled |
 
 ## Design records

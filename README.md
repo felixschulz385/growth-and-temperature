@@ -19,6 +19,9 @@ analysed at 10 km.
 >   point of lights. The bound holds for mining-induced growth, not for growth in general.
 > - **The association is regional.** The negative fixed-effects association vanishes between
 >   neighbouring cells, so it is regional, not local.
+> - **A follow-up fork (2026-10-28 to 2026-10-29)** tried a transit-corridor instrument and
+>   regional output (DOSE) at ADM1. Neither gives a causal result. The regional association
+>   also appears with reported output (`docs/successors/`).
 >
 > Findings, interpretation and what a successor would need:
 > [`docs/analysis/project-conclusion.md`](docs/analysis/project-conclusion.md).

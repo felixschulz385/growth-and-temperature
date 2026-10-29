@@ -1,9 +1,9 @@
 # Fork: Transit Corridors and a Growth Measure Other Than Lights
 
-**Status: first thoughts, 2026-10-28. Not started.** The work happens on the branch
-`fork/corridors-dose`. This page on `main` records the idea, its critique and the rules to fix
-before anything runs. The retired project's result is unchanged:
-[`../analysis/project-conclusion.md`](../analysis/project-conclusion.md).
+**Status: complete 2026-10-29, merged into `main`.** It was written as first thoughts on
+2026-10-28 and ran on the branch `fork/corridors-dose`. The updates below record the outcome; the
+rest of the page is the original plan and critique. The retired project's result is unchanged:
+[`../analysis/project-conclusion.md`](../analysis/project-conclusion.md) (§5 summarises the fork).
 
 **Update 2026-10-29 (branch): both parts are complete, and neither gives a causal estimate.**
 Part 2 ([`dose-prespec.md`](dose-prespec.md) §4): Gate D1 passed, then all six ADM1 first

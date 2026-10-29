@@ -209,6 +209,23 @@ Two uses of the work remain:
 measure other than lights) and three further ideas are recorded in
 [`../successors/`](../successors/).
 
+**Added 2026-10-29: the fork's outcome.** The fork is complete and merged into `main`. **It adds
+no causal result; the mining bound (§3) stands as the result of record.**
+
+- **Transit corridors** ([`corridors-prespec.md`](../successors/corridors-prespec.md) §8):
+  predicted bulk-mine-to-port routes follow real roads, but they do not move lights in the
+  cells they cross (first-stage F = 0.08 against a bar of 70).
+- **DOSE regional output at ADM1** ([`dose-prespec.md`](../successors/dose-prespec.md) §4). Three
+  instruments were tried: the mine count, mine × world price and regional favoritism. None
+  moves regional lights or GRP enough to identify anything (largest F = 4.3 against 10).
+- **The regional association is there, and it is not specific to lights.** Within a
+  country-year, night LST is 0.26 K lower per log point of regional lights (p < 0.001) and
+  0.13 K lower per log point of reported GRP (p = 0.09). That is the sign of §2.1. It is
+  descriptive: hot years also lower regional output, which alone would produce it.
+- **For the regional question below,** this narrows what a successor needs. Reported output is
+  usable as a growth measure; mine and favoritism instruments are not strong enough at ADM1; and
+  the heat → growth feedback is the confounder to address first.
+
 ### The regional question
 
 What a region-level project would need:
