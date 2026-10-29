@@ -5,8 +5,12 @@
 before anything runs. The retired project's result is unchanged:
 [`../analysis/project-conclusion.md`](../analysis/project-conclusion.md).
 
-**Update 2026-10-28 (branch): Part 1 stopped; Part 2 under way** ([`dose-prespec.md`](dose-prespec.md):
-Gate D1 passed). Gate C1 failed (first-stage F = 0.08; route check
+**Update 2026-10-29 (branch): both parts are complete, and neither gives a causal estimate.**
+Part 2 ([`dose-prespec.md`](dose-prespec.md) §4): Gate D1 passed, then all six ADM1 first
+stages failed (mine count, mine × price and favoritism; each with lights and with GRP; largest
+F = 4.3). The fixed-effects association at ADM1 is negative with lights (−0.26 K per log point,
+p < 0.001) and with GRP (−0.13 K, p = 0.09), the same sign as the retired cell result.
+**Update 2026-10-28 (branch): Part 1 stopped.** Gate C1 failed (first-stage F = 0.08; route check
 R1 passed). See [`corridors-prespec.md`](corridors-prespec.md) §8. Part 1's rules are fixed in
 [`corridors-prespec.md`](corridors-prespec.md), which supersedes this page where they differ: bulk
 mines only, PortWatch dry-bulk ports, clustering by port catchment. The exposure is built by the

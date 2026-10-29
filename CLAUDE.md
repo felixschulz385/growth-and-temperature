@@ -3,7 +3,7 @@
 Working notes for Claude Code in this repository. Keep this file current: update it in the same
 commit as any change to the state, layout or rules below.
 
-## State (2026-10-28)
+## State (2026-10-29)
 
 - **The original project is retired** (2026-09-30). The closing record is
   `docs/analysis/project-conclusion.md`. Don't change its results; amendments go in dated notes.
@@ -14,11 +14,16 @@ commit as any change to the state, layout or rules below.
 - **Corridor result (Part 1): stopped 2026-10-28.** The route check R1 passed: predicted routes
   run along real roads, t = 7.5. Gate C1 failed: first-stage F = 0.08 against 70. The outcomes
   are in `docs/successors/corridors-prespec.md` §8. No LST was loaded.
-- **Part 2 (DOSE at ADM1, mine instrument only):** the `dose` data module is built; DOSE's
+- **Part 2 (DOSE at ADM1):** the `dose` and `adm1_instruments` data modules are built. DOSE's
   GADM 3.6 codes are matched to 4.1, 1,596 of 1,662 regions. **Gate D1 passed:** 399 exposed
-  regions in 48 countries (`docs/successors/dose-prespec.md` §4). **Waiting:** the author confirms
-  the step B/C design (§3) before anything loads LST. After that, step B's lights-only first stage
-  (F ≥ 10) comes first.
+  regions in 48 countries. The design is confirmed (`docs/successors/dose-prespec.md` §3, §3a,
+  §3b): three instruments (mine count, mine × world price frozen at 2001, regional favoritism),
+  DOSE `P_a` as the precipitation control, so the sample is 2002–2018. **All six first stages
+  failed (2026-10-29),** three instruments × steps B (lights) and C (GRP). The largest F is 4.3
+  against 10, so there is no IV at ADM1. **The fixed-effects association (descriptive)** of
+  night LST is −0.26 K per log point of lights (p < 0.001) and −0.13 K per log point of GRP
+  (p = 0.09), the retired result's sign (§4). **Part 2 is complete;** the fork has no
+  scheduled next block.
 - Fork work goes on the branch, not `main`. `main` gets only docs that record the fork.
 
 ## Confidential mine data (hard rule)
@@ -91,10 +96,14 @@ change construction rules; log them anyway.
   - `topography`: EarthEnv slope, FETCH + PREPARE onto the 1 km grid;
   - `grip`: GRIP4 road density, FETCH + PREPARE onto the 1 km grid. Used only for route check R1.
   - `dose`: DOSE v2.9 regional output, matched to GADM 4.1 `GID_1` (`prepared/dose/adm/`).
-    Its `T_a` column is temperature: never use it as a control.
+    Its `T_a` column is temperature: never use it as a control. `P_a` (ERA5 precipitation) stops
+    in 2018.
   - `corridors`: PREPARE only. It writes `pixel_id`-keyed tables under
     `prepared/corridors/misc/<variant>/` that join the 10 km panel. Its variants are in
     `data.yaml`.
+  - `adm1_instruments`: PREPARE only. It writes the `(GID_1, year)` mine count, mine × price and
+    favoritism instruments to `prepared/adm1_instruments/adm/`. These are region aggregates
+    only, with no per-mine table.
 
 ## Analysis
 
@@ -102,7 +111,10 @@ change construction rules; log them anyway.
   derived panel is `data_nobackup/_analysis_panel_10km_v2.parquet`.
 - **Fork analysis:** `src/analysis/corridors.py` builds the corridor panel. It has no LST
   columns until a gate allows them. Notebooks: `05_corridors.ipynb` (R1, C1),
-  `05b_corridors_route_map.ipynb`, `06_dose.ipynb` (D1).
+  `05b_corridors_route_map.ipynb`, `06_dose.ipynb` (D1). `src/analysis/dose.py` builds the
+  ADM1 region panel, again with no LST until `add_lst()`. Its fits use pyfixest, which takes
+  regression weights, rather than duckreg. Notebooks: `06b_dose_step_b.ipynb`, `06c_dose_step_c.ipynb` and
+  `06d_dose_twfe.ipynb` (the associations; `add_lst()` joins LST to the region panel).
 - **Notebooks:** `output/notebooks/`. The pre-commit hook blocks notebooks with outputs
   (`./.githooks/install.sh` once per clone).
 

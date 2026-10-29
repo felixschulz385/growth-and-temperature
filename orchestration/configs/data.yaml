@@ -639,6 +639,16 @@ sources:
       max_concurrent_downloads: 1
       timeout: 600
 
+  # Region-level instruments for the DOSE analysis (fork/corridors-dose):
+  # PREPARE only, from snl_mining, commodity_prices, plad and gadm.
+  # Rules: docs/successors/dose-prespec.md §3a.
+  adm1_instruments:
+    type: "adm1_instruments"
+    data_path: "adm1_instruments"
+    years: [2002, 2022]
+    baseline_year: 2001          # price exposure frozen at the mines active this year
+    birthplace_snap_km: 25       # birthplaces outside every polygon: nearest region of the country
+
   # Transit-corridor exposure (fork/corridors-dose): PREPARE only, derived
   # from snl_mining, ports, topography, osm and gadm. Every rule below is
   # fixed in docs/successors/corridors-prespec.md -- change it there first.

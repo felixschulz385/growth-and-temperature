@@ -164,4 +164,5 @@ _SOURCE_MODULES: tuple[str, ...] = (
     "src.data.sources.grip",
     "src.data.sources.dose",
     "src.data.sources.corridors.source",
+    "src.data.sources.adm1_instruments",
 )

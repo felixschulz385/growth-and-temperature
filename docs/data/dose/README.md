@@ -13,7 +13,8 @@ Wenz et al. 2023 (*Sci Data* 10:425), v2.9 (Zenodo 13773040, 2024-09-17): gross 
 and population for 1,661 first-level regions in 83 countries, 1953–2020, compiled from national
 statistical offices, with no satellite input. Output is in local currency and USD, current and
 2015 prices, and by sector (agriculture, manufacturing, services) where reported. It also carries
-DOSE's own annual temperature `T_a` and precipitation `P_a` per region.
+DOSE's own annual temperature `T_a` and precipitation `P_a` per region, both from ERA5,
+area-averaged over DOSE's region boundaries.
 
 ## Raw data (FETCH)
 
@@ -43,7 +44,9 @@ and Nepal.
 ## Analysis caveats
 
 - **`T_a` is temperature.** It must never be a control in a regression with temperature as the
-  outcome. `P_a` (precipitation) is the weather control.
+  outcome.
+- **`P_a` stops in 2018.** For regions with GRP it covers 1,266 regions in 2018 and none in 2019
+  or 2020, so it cannot be the precipitation control for 2002–2020 on its own.
 - **Coverage leans to richer and larger countries.** Years differ by country, and many series end
   before 2020.
 - **GRP counts output where it is produced.** A mine's value added enters its region's GRP even
