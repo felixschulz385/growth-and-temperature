@@ -159,4 +159,10 @@ _SOURCE_MODULES: tuple[str, ...] = (
     "src.data.sources.plad",
     "src.data.sources.berman_mining",
     "src.data.sources.snl_mining.source",
+    "src.data.sources.ports",
+    "src.data.sources.topography",
+    "src.data.sources.grip",
+    "src.data.sources.dose",
+    "src.data.sources.corridors.source",
+    "src.data.sources.adm1_instruments",
 )

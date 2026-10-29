@@ -578,6 +578,104 @@ sources:
       max_concurrent_downloads: 1
       timeout: 120
 
+  # IMF PortWatch ports (AIS vessel counts by ship type) -- destinations of
+  # the corridor instrument (docs/successors/corridors-prespec.md §2).
+  # ~1 MB: fine through the proxy or from the transfer node.
+  ports:
+    type: "ports"
+    data_path: "ports"
+    description: "IMF PortWatch ports database"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 300
+
+  # EarthEnv-Topography mean slope per ~10 km cell (GMTED2010) -- route cost
+  # of the corridor instrument (corridors-prespec.md §3). ~9 MB.
+  topography:
+    type: "topography"
+    data_path: "topography"
+    url: "https://data.earthenv.org/topography/slope_10KMmn_GMTEDmd.tif"
+    name: "slope_10KMmn_GMTEDmd.tif"
+    description: "EarthEnv-Topography slope, mean of 250 m GMTED2010 slopes per 5 arc-min cell"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 600
+
+    verification:
+      expected_vars: ["slope_mean_10km"]
+      value_range: [0, 90]
+
+  # GRIP4 road length density by type (~8 km, roads mapped ~2018). Used only
+  # to check that predicted corridor routes run along real roads -- never as
+  # an instrument or control (it is partly an outcome of growth). ~2 MB/zip.
+  grip:
+    type: "grip"
+    data_path: "grip"
+    road_types: ["tp1", "tp2", "tp3", "total"]
+    description: "GRIP4 road density (m/km2): highways, primary, secondary, total"
+
+    download:
+      batch_size: 4
+      max_concurrent_downloads: 2
+      timeout: 600
+
+  # DOSE reported subnational output (Wenz et al. 2023), v2.9 -- the fork's
+  # growth measure other than lights (fork-corridors-dose.md, Part 2).
+  # GADM 3.6 codes, matched to GADM 4.1 in PREPARE (src/data/sources/dose.py).
+  # ~15 MB: fine through the proxy or from the transfer node.
+  dose:
+    type: "dose"
+    data_path: "dose"
+    url: "https://zenodo.org/api/records/13773040/files/DOSE_V2.9.csv/content"
+    name: "DOSE_V2.9.csv"
+    description: "DOSE v2.9, regional GRP and population by GADM-1 region"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 600
+
+  # Region-level instruments for the DOSE analysis (fork/corridors-dose):
+  # PREPARE only, from snl_mining, commodity_prices, plad and gadm.
+  # Rules: docs/successors/dose-prespec.md §3a.
+  adm1_instruments:
+    type: "adm1_instruments"
+    data_path: "adm1_instruments"
+    years: [2002, 2022]
+    baseline_year: 2001          # price exposure frozen at the mines active this year
+    birthplace_snap_km: 25       # birthplaces outside every polygon: nearest region of the country
+
+  # Transit-corridor exposure (fork/corridors-dose): PREPARE only, derived
+  # from snl_mining, ports, topography, osm and gadm. Every rule below is
+  # fixed in docs/successors/corridors-prespec.md -- change it there first.
+  # Outputs are keyed by the analysis grid's pixel_id at resolution_m, not a
+  # 1 km grid (src/data/sources/corridors/source.py).
+  corridors:
+    type: "corridors"
+    data_path: "corridors"
+    resolution_m: 10000
+    years: [2002, 2022]
+    min_land_share: 0.5
+    max_snap_km: 25
+    bands_km: [20, 100, 300]
+    main_max_km: 300
+    mine_exclusion_km: 20
+    port_exclusion_km: 30
+    mine_distance_bands_km: [20, 50, 100, 200, 300]
+    # commodities: default = the bulk list in corridors/source.py (prespec §1)
+    port_count_column: "vessel_count_dry_bulk"
+    port_min_count: 50
+    slope_scale_deg: 5.0
+    variants:
+      main: {}
+      flat_cost: {slope_scale_deg: null}
+      all_mines: {commodities: null}
+      any_ship_ports: {port_count_column: "vessel_count_total"}
+
   # SNL/S&P Global Mining Property Tables -> GRID
   snl_mining:
     type: "snl_mining"
