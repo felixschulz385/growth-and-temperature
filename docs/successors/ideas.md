@@ -1,6 +1,6 @@
 # Successor Ideas
 
-**Status: documented 2026-10-28. Not scheduled; nothing here is being worked on.** Each idea
+**Status: documented 2026-10-28. Idea B ran 2026-10-29 to 2026-10-30 (branch `successor/pollution-institutions`; results in [`pollution-results.md`](pollution-results.md)); A and C are not scheduled.** Each idea
 records a sketch, the data, a critique and a feasibility call. The fork that is being started is
 in [`fork-corridors-dose.md`](fork-corridors-dose.md).
 
@@ -54,6 +54,12 @@ would be new sources. This is the most likely of the ideas to yield a result, an
 $\theta_{\text{impervious}}$ for idea C.
 
 ## B. Pollution along the growth path, by strength of institutions
+
+**Run 2026-10-29 to 2026-10-30** with V-Dem as the institutions measure, first with DOSE output
+([`pollution-institutions-prespec.md`](pollution-institutions-prespec.md)), then with night lights
+([`pollution-lights-prespec.md`](pollution-lights-prespec.md)). Results:
+[`pollution-results.md`](pollution-results.md). Data options for further steps:
+[`pollution-data-options.md`](pollution-data-options.md).
 
 **Question.** How does PM2.5 change as regions grow richer, and does the path differ with
 political institutions? This is descriptive, not causal.

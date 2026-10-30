@@ -3,7 +3,7 @@
 Working notes for Claude Code in this repository. Keep this file current: update it in the same
 commit as any change to the state, layout or rules below.
 
-## State (2026-10-29)
+## State (2026-10-30)
 
 - **The original project is retired** (2026-09-30). The closing record is
   `docs/analysis/project-conclusion.md`. Don't change its results; amendments go in dated notes.
@@ -24,6 +24,20 @@ commit as any change to the state, layout or rules below.
   against 10, so there is no IV at ADM1. **The fixed-effects association (descriptive)** of
   night LST is −0.26 K per log point of lights (p < 0.001) and −0.13 K per log point of GRP
   (p = 0.09), the retired result's sign (§4). **Part 2 is complete.**
+- **Successor project "pollution along the growth path, by institutions": run 2026-10-29 to
+  2026-10-30, no active step.** It is on the branch `successor/pollution-institutions` and is
+  descriptive: ADM1 PM2.5 (ACAG) on growth, by baseline V-Dem democracy terciles. There are two
+  runs, each with its own pre-spec in `docs/successors/`:
+  - idea B, with DOSE output (`pollution-institutions-prespec.md`);
+  - step 1, with night lights per person, all countries, DMSP years 1998–2012
+    (`pollution-lights-prespec.md`).
+
+  The results are in `docs/successors/pollution-results.md`. PM2.5 rises with output below about
+  4,000 USD, but only across countries. With DOSE output, institutions make no robust
+  difference (Wald p = 0.53). With lights, the rule finds one difference above 12,000 USD
+  (p = 0.032), which is absent in the VIIRS years. No turning point survives within-country
+  comparisons. Unscheduled next steps (`pollution-data-options.md` §4): NO₂ as a second outcome
+  (`no2` is prepared but unused) and MERRA-2 dust (needs an Earthdata login).
 - **New work** (a successor project) starts on its own branch, with a pre-spec in
   `docs/successors/`. The branch `fork/corridors-dose` is merged and no longer used.
 
@@ -39,9 +53,13 @@ any commit**: file contents, notebook outputs, figures, docs or commit messages.
 - **Allowed:** regression estimates and aggregate counts (number of mines, regions or countries;
   shares), and descriptions at region level ("Shanxi coal goes to Tianjin").
 - **Figures that show mines** go to `output/figures/confidential/`, which is git-ignored. Notebooks
-  that draw them are committed without outputs.
+  that read mine-level data are committed without outputs. Other notebooks may keep theirs.
 - **Enforcement:** `.githooks/check-confidential.py` blocks `confidential/` paths, data files and
-  figures whose names mention mines, unless they are allow-listed. It can't read content, so this
+  figures whose names mention mines, unless they are allow-listed.
+  `.githooks/check-notebook-outputs.py` blocks outputs in notebooks that read mine-level data:
+  the `!` lines of `notebook-output-whitelist.txt`, plus any notebook whose code names an
+  SNL or Berman source or `property_id`. A notebook that reaches mine data indirectly needs
+  a `!` line. It can't read content, so this
   rule still applies to everything it misses. Enable the hooks once per clone with
   `git config core.hooksPath .githooks`.
 - **Old violations, fixed 2026-10-28 in `afa3c4c` on `main`** and merged here: the mining GIFs
@@ -92,7 +110,7 @@ change construction rules; log them anyway.
 - **Cross-source inputs** are read by artefact path (`layout.output_root`/`grid_store_path`),
   never by importing another source's class. Ordering goes in `REQUIRES`. A FETCH target is never
   "complete", so a dependency must point at a PREPARE step.
-- **Fork sources:**
+- **Fork and successor sources:**
   - `ports`: PortWatch, FETCH + PREPARE;
   - `topography`: EarthEnv slope, FETCH + PREPARE onto the 1 km grid;
   - `grip`: GRIP4 road density, FETCH + PREPARE onto the 1 km grid. Used only for route check R1.
@@ -102,6 +120,15 @@ change construction rules; log them anyway.
   - `corridors`: PREPARE only. It writes `pixel_id`-keyed tables under
     `prepared/corridors/misc/<variant>/` that join the 10 km panel. Its variants are in
     `data.yaml`.
+  - `vdem` (successor): V-Dem v16 country-year indices from the V-Dem Institute's R data
+    package (`.RData`, read with `pyreadr`).
+  - `no2` (successor follow-up): Anenberg et al. surface NO₂, 1 km, figshare (1990, 1995,
+    2000, 2005–2020; ~8 GB). FETCH on the transfer node: `orchestration/scripts/pollution-fetch.sh`.
+  - `ghs_pop` (successor follow-up): GHS-POP R2023A, 1 km Mollweide, five-year epochs; persons
+    per km², epoch years only (interpolate in the analysis). FETCH as for `no2`. Both are
+    prepared (2026-10-30) and listed in the assembly, but the 10 km panel has not been rebuilt
+    with them, and its year clip drops the 2025 epoch. `src/analysis/pollution_lights.py` sums
+    lights and population per region from the 1 km tiles instead.
   - `adm1_instruments`: PREPARE only. It writes the `(GID_1, year)` mine count, mine × price and
     favoritism instruments to `prepared/adm1_instruments/adm/`. These are region aggregates
     only, with no per-mine table.
@@ -116,8 +143,18 @@ change construction rules; log them anyway.
   ADM1 region panel, again with no LST until `add_lst()`. Its fits use pyfixest, which takes
   regression weights, rather than duckreg. Notebooks: `06b_dose_step_b.ipynb`, `06c_dose_step_c.ipynb` and
   `06d_dose_twfe.ipynb` (the associations; `add_lst()` joins LST to the region panel).
-- **Notebooks:** `output/notebooks/`. The pre-commit hook blocks notebooks with outputs
-  (`./.githooks/install.sh` once per clone).
+- **Lights follow-up:** `src/analysis/pollution_lights.py` builds the region panel from the 1 km
+  `ntl_harm` and `ghs_pop` tiles (flare mask, epoch interpolation), calibrates the knots, runs
+  G2 and joins region PM2.5 (`region_pm25()`: plain and population-weighted, plus GLASS
+  temperature). The fits reuse `pollution.fit_paths(controls=())`. Notebook:
+  `08_pollution_lights.ipynb` (G2, main specification, variants 1–8 and H, two figures →
+  `output/figures/pollution/pm25_lights_*`).
+- **Successor analysis:** `src/analysis/pollution.py` builds the PM2.5 region panel and fits
+  the tercile × spline paths (pyfixest), and draws the figure (`plot_paths()`, Nature-style:
+  183 mm, 7 pt Nimbus Sans, PDF and PNG). Notebook: `07_pollution.ipynb` (G1, main
+  specification, pooled path, variants 1–6, three figures → `output/figures/pollution/`).
+- **Notebooks:** `output/notebooks/`. They may keep their outputs, except those that read
+  mine-level data (pre-commit hook; `./.githooks/install.sh` once per clone).
 
 ## Docs conventions
 

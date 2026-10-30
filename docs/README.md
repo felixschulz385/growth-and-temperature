@@ -4,14 +4,16 @@
 [`analysis/project-conclusion.md`](analysis/project-conclusion.md). The documentation below is kept
 as a record. A fork (transit corridors; DOSE regional output at ADM1) ran 2026-10-28 to 2026-10-29
 and was merged; it adds no causal result. Its records are in [`successors/`](successors/), and its
-outcome is summarised in the conclusion, §5.
+outcome is summarised in the conclusion, §5. A descriptive successor project, PM2.5 along the
+growth path by institutions, ran 2026-10-29 to 2026-10-30: see
+[`successors/pollution-results.md`](successors/pollution-results.md).
 
 | Folder | What's in it |
 |---|---|
 | [`analysis/`](analysis/) | What was estimated, in which order, why, and what came out |
 | [`data/`](data/README.md) | One page per data source: what it is, where it lands, its columns and caveats |
 | [`design/`](design/) | Numbered design and decision records for the data pipeline, with incident notes |
-| [`successors/`](successors/) | The fork and ideas for successor projects, with their critique |
+| [`successors/`](successors/) | The fork, the pollution successor project, and ideas for further projects, with their critique |
 
 ## Where to start
 
@@ -43,7 +45,11 @@ outcome is summarised in the conclusion, §5.
 | [fork-corridors-dose](successors/fork-corridors-dose.md) | Transit-corridor instrument; DOSE regional output at ADM1 as a growth measure other than lights | Complete 2026-10-29, merged into `main`: no causal result from either part |
 | [corridors-prespec](successors/corridors-prespec.md) | Corridor instrument rules: shock mines, ports, routes, exposure, recentering, Gate C1 | Closed 2026-10-28: R1 passed, Gate C1 failed (F = 0.08) |
 | [dose-prespec](successors/dose-prespec.md) | DOSE at ADM1 with three instruments (mine count, mine × price, favoritism): data, Gate D1, steps B and C | Closed 2026-10-29: D1 passed; all six first stages failed (F ≤ 4.3); association −0.26 K per log lights, −0.13 K per log GRP |
-| [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; not scheduled |
+| [pollution-results](successors/pollution-results.md) | Results of the pollution successor: idea B with DOSE output and with night lights, side by side | Written 2026-10-30: the path rises at low incomes only across countries; no robust difference by institutions; one fragile rich-segment difference with lights |
+| [pollution-institutions-prespec](successors/pollution-institutions-prespec.md) | Idea B: PM2.5 along the growth path (DOSE GRP) by V-Dem institutions, at ADM1; descriptive | Run 2026-10-29: PM2.5 rises below 4,000 USD, then flattens; no robust difference by institutions where terciles overlap |
+| [pollution-lights-prespec](successors/pollution-lights-prespec.md) | Idea B with night lights per person as the growth measure, all countries, at ADM1; haze guard; descriptive | Run 2026-10-30 (DMSP years, flare mask): by the rule, institutions change the path through one comparison above 12,000 USD, absent in the VIIRS years; no robust turning point |
+| [pollution-data-options](successors/pollution-data-options.md) | Data for a follow-up to idea B: night lights as the growth measure, NO₂, MERRA-2 dust, SO₂, EDGAR, population grids | Research note 2026-10-29; `no2` and `ghs_pop` prepared 2026-10-30; step 1 (lights) run; NO₂ unused, MERRA-2 deferred |
+| [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; B run 2026-10-29 to 2026-10-30 |
 
 ## Design records
 

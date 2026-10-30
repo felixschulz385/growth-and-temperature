@@ -28,6 +28,9 @@ Last checked against the code: 2026-09-28.
 | [country_classifications](country_classifications/README.md) | `country_classifications` | `misc/country_classifications.py` | `GID_0` table | yes (joined) | gadm |
 | [dose](dose/README.md) | `dose` | `dose.py` | `(GID_1, year)` table | no (fork Part 2) | gadm |
 | [adm1_instruments](adm1_instruments/README.md) | `adm1_instruments` | `adm1_instruments.py` | `(GID_1, year)` table | no (fork Part 2) | snl_mining, commodity_prices, plad, gadm |
+| [vdem](vdem/README.md) | `vdem` | `vdem.py` | country-year table | no (pollution–institutions successor) | — |
+| [no2](no2/README.md) | `no2` | `no2.py` | annual pixel grid | listed; panel not rebuilt (pollution follow-up) | — |
+| [ghs_pop](ghs_pop/README.md) | `ghs_pop` | `ghs_pop.py` | epoch pixel grid (5-yearly) | listed; panel not rebuilt (pollution follow-up) | — |
 | [ecoregions](ecoregions/README.md) | `ecoregions` | `ecoregions/source.py` | static pixel grid + `GID_3` table | yes (pixel grid) | gadm |
 | [osm](osm/README.md) | `osm` | `misc/osm.py` | static pixel grid | as land mask | — |
 | [grip](grip/README.md) | `grip` | `grip.py` | static pixel grid | no (route check only) | — |

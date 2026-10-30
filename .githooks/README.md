@@ -12,15 +12,21 @@ must run this. It is also listed in the root README Quick Start.
 
 ## `pre-commit` -> `check-notebook-outputs.py`
 
-Blocks a commit when a **staged** `.ipynb` carries cell **outputs** or a
-non-null **`execution_count`**, so notebook diffs stay to source-only.
+Blocks a commit when a **staged** `.ipynb` that may show mine-level data carries cell
+**outputs** or a non-null **`execution_count`**. Other notebooks keep their outputs.
+
+- `notebook-output-whitelist.txt` allows every notebook (`*.ipynb`), then re-blocks, with
+  `!` lines, the notebooks that read mine-level data. The last matching line wins.
+- Independently of the list, a notebook whose code reads a mine-level source (`snl_mining`,
+  `berman_mining`, `BCRT_`, `property_id`) is blocked. A new mine notebook is therefore
+  caught without a list entry. Add a `!` line for one that reaches mine data indirectly,
+  e.g. through `src.analysis.corridors`.
 
 - Only staged content is inspected (`git show :<path>`), not the working tree.
 - Notebooks already carrying outputs in history are flagged only when you stage
   a new change to them.
 - Fix: `jupyter nbconvert --clear-output --inplace <notebook>` (or `nbstripout
   <notebook>`), then `git add` again.
-- Exempt a notebook by adding a glob to `notebook-output-whitelist.txt`.
 - One-off bypass: `git commit --no-verify`.
 
 Stdlib-only Python 3 — the `gnt` conda env does not need to be active.

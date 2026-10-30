@@ -110,6 +110,9 @@ dependencies:
       # Computer before this. Versions unverified, same caveat as above.
       - pystac-client
       - odc-stac
+      # Reads V-Dem's vdem.RData (src/data/sources/vdem.py); installed in the
+      # HPC `gnt` env 2026-10-29.
+      - pyreadr==0.5.8
       - planetary-computer
       # snl_mining LLM year-imputation (gnt/data/sources/snl_mining/
       # imputation.py, scripts/run_snl_mining_imputation.py) -- was only ever

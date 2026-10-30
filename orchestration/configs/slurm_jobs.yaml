@@ -352,6 +352,31 @@ jobs:
     mem: 128G
     simple: true
 
+  # Pollution-institutions follow-up (docs/successors/pollution-data-options.md).
+  # Global 30-arcsec rasters like ntl_harm's (19 NO2 years, 8 GHS-POP epochs),
+  # so the same envelope; not yet tuned on a real run.
+  - name: no2-prepare
+    log_key: no2
+    source: no2
+    step: prepare
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: no2
+
+  - name: ghs_pop-prepare
+    log_key: ghs_pop
+    source: ghs_pop
+    step: prepare
+    time: "06:00:00"
+    qos: 6hours
+    cpus: 8
+    mem: 256G
+    mem_fraction: 0.6
+    temp_dir_prefix: ghs_pop
+
 # Per-grid SLURM resource defaults for `assemble create/update --slurm`
 # (src/cli/assemble/slurm.py). Keyed by the `--grid` label. One DuckDB process
 # per grid=/shake= variant -- `cpus` become DuckDB threads and `mem` * `mem_fraction`

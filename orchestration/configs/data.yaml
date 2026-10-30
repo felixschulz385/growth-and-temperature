@@ -421,6 +421,41 @@ sources:
       expected_vars: ["pm25"]
       value_range: [0, 500]
 
+  # Global surface NO2, 1 km (Anenberg et al. 2022; figshare 12968114 v4, CC BY 4.0).
+  # 1990, 1995, 2000, 2005-2020; 0.29-0.62 GB/yr, ~8 GB -> FETCH on the transfer node
+  # (orchestration/scripts/pollution-fetch.sh). Pollution-institutions follow-up.
+  no2:
+    type: "no2"
+    data_path: "no2/anenberg"
+    version: 4
+    year_range: [1990, 2020]
+
+    download:
+      batch_size: 4
+      max_concurrent_downloads: 2
+      timeout: 3600
+
+    verification:
+      expected_vars: ["no2"]
+      value_range: [0, 200]
+
+  # GHS-POP R2023A population, 1 km Mollweide, five-year epochs (JRC, CC BY 4.0).
+  # ~300 MB zip per epoch -> FETCH on the transfer node. Persons per 1 km2 cell,
+  # i.e. a density; reprojected with "average" onto the equal-area EASE grid.
+  ghs_pop:
+    type: "ghs_pop"
+    data_path: "ghs_pop/r2023a"
+    year_range: [1990, 2025]
+
+    download:
+      batch_size: 4
+      max_concurrent_downloads: 2
+      timeout: 3600
+
+    verification:
+      expected_vars: ["pop"]
+      value_range: [0, 1000000]
+
   # ESA CCI Land Cover (Copernicus CDS API)
   esacci:
     type: "esacci"
@@ -633,6 +668,22 @@ sources:
     url: "https://zenodo.org/api/records/13773040/files/DOSE_V2.9.csv/content"
     name: "DOSE_V2.9.csv"
     description: "DOSE v2.9, regional GRP and population by GADM-1 region"
+
+    download:
+      batch_size: 1
+      max_concurrent_downloads: 1
+      timeout: 600
+
+  # V-Dem country-year indices (successor: pollution along the growth path by
+  # institutions). The V-Dem Institute's R data package on GitHub, pinned to the
+  # v16 release commit; ~34 MB, proxy or transfer node.
+  vdem:
+    type: "vdem"
+    data_path: "vdem"
+    commit: "f4dd26922e658442524dfd954bf14f7ebe622d5d"
+    name: "vdem_v16.RData"
+    description: "V-Dem v16 country-year dataset (vdemdata R package)"
+    variables: ["v2x_polyarchy", "v2x_libdem", "v2x_rule", "v2x_corr", "v2xcs_ccsi", "v2x_regime"]
 
     download:
       batch_size: 1
@@ -894,6 +945,17 @@ assembly:
       family: "pm25"
       index_cols: ["pixel_id", "year"]
       resampling: "average"      # continuous concentration
+    no2:                         # Anenberg surface NO2, ppb (1990, 1995, 2000, 2005-2020)
+      data_path: "no2/anenberg"
+      family: "no2"
+      index_cols: ["pixel_id", "year"]
+      resampling: "average"      # concentration
+    ghs_pop:                     # GHS-POP persons per km2; epoch years only (1990, 1995, ...)
+      data_path: "ghs_pop/r2023a"
+      family: "pop"
+      index_cols: ["pixel_id", "year"]
+      resampling: "average"      # density on an equal-area grid; x cell area for counts
+                                 # year_range clips the 2025 epoch; pollution_lights.py reads tiles
     esacci:                      # ESA CCI land cover (annual)
       data_path: "esacci/landcover"
       family: "land_cover"

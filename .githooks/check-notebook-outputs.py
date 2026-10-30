@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Pre-commit check: reject staged Jupyter notebooks that carry cell outputs.
+"""Pre-commit check: reject staged Jupyter notebooks that carry cell outputs
+where outputs could leak confidential mine data (CLAUDE.md).
 
 A notebook "carries output" if any code cell has a non-empty ``outputs`` list or
-a non-null ``execution_count``. Notebooks whose repo-relative path matches a
-pattern in ``.githooks/notebook-output-whitelist.txt`` are exempt.
+a non-null ``execution_count``. Notebooks whose repo-relative path matches
+``.githooks/notebook-output-whitelist.txt`` are exempt; a ``!pattern`` line
+re-blocks a path, and the last matching line wins. A notebook whose code reads a
+mine-level source (``MINE_SOURCES``) is blocked even when whitelisted.
 
 Only the *staged* content of each notebook is inspected (``git show :<path>``),
 so unstaged scratch state in the working tree never blocks a commit, and
@@ -17,6 +20,7 @@ from __future__ import annotations
 
 import fnmatch
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +28,8 @@ from pathlib import Path
 HOOK_DIR = Path(__file__).resolve().parent
 REPO_ROOT = HOOK_DIR.parent
 WHITELIST = HOOK_DIR / "notebook-output-whitelist.txt"
+# code that reads mine-level data: the SNL and Berman sources and per-mine ids
+MINE_SOURCES = re.compile(r"snl_mining|berman_mining|BCRT_|property_id", re.IGNORECASE)
 
 
 def _git(*args: str) -> bytes:
@@ -51,7 +57,23 @@ def load_whitelist() -> list[str]:
 
 
 def is_whitelisted(path: str, patterns: list[str]) -> bool:
-    return any(fnmatch.fnmatch(path, pat) for pat in patterns)
+    allowed = False
+    for pat in patterns:
+        negate = pat.startswith("!")
+        if fnmatch.fnmatch(path, pat[1:] if negate else pat):
+            allowed = not negate
+    return allowed
+
+
+def reads_mine_data(nb_bytes: bytes) -> bool:
+    try:
+        nb = json.loads(nb_bytes)
+    except json.JSONDecodeError:
+        return False
+    return any(
+        cell.get("cell_type") == "code" and MINE_SOURCES.search("".join(cell.get("source", [])))
+        for cell in nb.get("cells", [])
+    )
 
 
 def offending_kinds(nb_bytes: bytes) -> set[str]:
@@ -76,10 +98,13 @@ def main() -> int:
     patterns = load_whitelist()
     bad: dict[str, set[str]] = {}
     for path in staged_notebooks():
-        if is_whitelisted(path, patterns):
+        nb_bytes = _git("show", f":{path}")
+        kinds = offending_kinds(nb_bytes)
+        if not kinds:
             continue
-        kinds = offending_kinds(_git("show", f":{path}"))
-        if kinds:
+        if reads_mine_data(nb_bytes):
+            bad[path] = kinds | {"reads mine-level data"}
+        elif not is_whitelisted(path, patterns):
             bad[path] = kinds
 
     if not bad:
@@ -100,7 +125,8 @@ def main() -> int:
         "  jupyter nbconvert --clear-output --inplace <notebook>\n"
         "  # or, if installed:  nbstripout <notebook>\n"
         "then `git add` the notebook again.\n\n"
-        f"If a notebook is meant to keep its outputs, add a matching pattern to\n"
+        f"Notebooks that read mine-level data must stay stripped. Any other notebook\n"
+        f"can keep its outputs through a pattern in\n"
         f"  {rel_whitelist}\n"
         "\nTo bypass this check for one commit:  git commit --no-verify\n",
         file=sys.stderr,

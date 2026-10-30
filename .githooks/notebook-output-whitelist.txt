@@ -2,12 +2,20 @@
 #
 # One glob pattern per line, matched (fnmatch-style) against the repo-relative
 # path of each staged .ipynb. Blank lines and lines starting with '#' ignored.
-# '*' matches across '/' too, so "src/**" and "src/*" behave the same here.
+# '*' matches across '/' too. A line starting with '!' blocks the paths it
+# matches again; the last matching line wins.
 #
-# Examples:
-#   src/analysis/poster/visualization.ipynb   # one exact notebook
-#   src/analysis/**/*.ipynb                    # everything under an analysis dir
-#
-# Keep this list short: an entry means "outputs in git are intentional here".
+# Outputs are allowed unless a notebook reads mine-level data, which must never
+# reach git (CLAUDE.md § "Confidential mine data"). Independently of this list,
+# the hook blocks outputs in any notebook whose code reads a mine-level source.
 
-output/notebooks/regression.ipynb
+*.ipynb
+
+# Read mine-level data (S&P / SNL, Berman, per-mine routes): outputs stay stripped.
+!src/experiments/mines.ipynb
+!src/experiments/snl_mining.ipynb
+!src/experiments/presentation_plots.ipynb
+!src/data/sources/snl_mining/notebooks/*.ipynb
+!output/notebooks/05_corridors.ipynb
+!output/notebooks/05b_corridors_route_map.ipynb
+!output/notebooks/06_dose.ipynb

@@ -15,8 +15,9 @@ carry it:
    mentions mine, mining, snl or corridor, unless allow-listed.
 
 It cannot read content, so it is a backstop, not a guarantee: notebooks are
-covered by check-notebook-outputs.py (no outputs), and docs and commit
-messages by the CLAUDE.md rule. Stdlib only.
+covered by check-notebook-outputs.py (no outputs where the code reads
+mine-level data), and docs and commit messages by the CLAUDE.md rule. Stdlib
+only.
 """
 
 from __future__ import annotations
