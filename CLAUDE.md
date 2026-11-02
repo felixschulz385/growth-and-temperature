@@ -40,6 +40,11 @@ commit as any change to the state, layout or rules below.
   (`docs/successors/pollution-no2-prespec.md`, 2026-10-30; `no2` is prepared,
   and no NO₂ value is linked to a region yet). MERRA-2 dust is deferred: it needs an
   Earthdata login.
+- **Idea A (surface heat island) has a draft pre-spec** (2026-10-30, not confirmed):
+  `docs/successors/heat-island-prespec.md`. It replicates the YCEO city heat islands, then
+  estimates LST on within-cell GAIA impervious share at 1 km, 2003–2018. Nothing has run, and
+  the data (GAIA, GHSL built-up, the benchmark) are not built. It gets its own branch,
+  `successor/heat-island`, once confirmed.
 - **New work** (a successor project) starts on its own branch, with a pre-spec in
   `docs/successors/`. The branch `fork/corridors-dose` is merged and no longer used.
 

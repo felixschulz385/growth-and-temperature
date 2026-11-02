@@ -1,6 +1,6 @@
 # Successor Ideas
 
-**Status: documented 2026-10-28. Idea B ran 2026-10-29 to 2026-10-30 (branch `successor/pollution-institutions`; results in [`pollution-results.md`](pollution-results.md)); A and C are not scheduled.** Each idea
+**Status: documented 2026-10-28. Idea B ran 2026-10-29 to 2026-10-30 (branch `successor/pollution-institutions`; results in [`pollution-results.md`](pollution-results.md)); idea A has a draft pre-spec (2026-10-30); C is not scheduled.** Each idea
 records a sketch, the data, a critique and a feasibility call. The fork that is being started is
 in [`fork-corridors-dose.md`](fork-corridors-dose.md).
 
@@ -20,6 +20,10 @@ Idea B describes $\partial X / \partial g$ for aerosols, and how institutions ch
 assembles the whole chain.
 
 ## A. Surface heat island with a continuous urban measure
+
+**Pre-spec drafted 2026-10-30, not confirmed:** [`heat-island-prespec.md`](heat-island-prespec.md).
+It replicates the published city heat islands first, then tests whether within-cell change adds
+up to them.
 
 **Question.** How much does a cell's LST change when its impervious share rises, within the cell
 over time, by day and night and by climate?
@@ -108,7 +112,10 @@ carries uncertainty through every link. Here:
 3. **Composition.** $\Delta \text{LST}_g = \sum_k \theta_k \, \partial X_k / \partial g$.
    Uncertainty comes from bootstrapping stage 1 and drawing $\theta$ from its published ranges.
 4. **Validation.** The composed effect must lie inside the instrument's reduced-form AR set (for
-   mines, ±0.3 K per log point).
+   mines, ±0.3 K per log point). It must also reproduce idea A's reduced-form moments: the
+   within-cell lag profile of LST after paving and its differences by climate. Dell, Jones and
+   Olken (2012, p. 93) set the same standard for climate-economy models: "a credible model
+   should be able to match the historical moments". This check is far tighter than the AR set.
 
 **Why it might work where the IV did not.** The binding problem was power: the IV divides a noisy
 LST reduced form by a weak lights first stage. Growth moves the channels much more strongly than
@@ -119,7 +126,9 @@ physical θ are precise. The composed effect could be far tighter than the reduc
 - **Completeness.** The composed effect includes only the modelled channels. Waste heat has no
   annual gridded panel: existing anthropogenic heat flux datasets are static or built from energy
   statistics and lights. A missing channel biases the composition without warning, and the only
-  guard is the reduced-form check, which is wide (±0.3 K).
+  guard is the reduced-form check, which is wide (±0.3 K). Dell, Jones and Olken (2012, p. 67)
+  make the same case against enumerative models, which is why idea A's reduced form is the
+  benchmark in step 4.
 - **Stage 2 is hard to identify from the panel.** Channels move together with growth. A regression
   of LST on all channels at once is confounded by the missing channels and by regional weather,
   which is the Story 1 problem again. External θ avoid that, but then assume that physics from
