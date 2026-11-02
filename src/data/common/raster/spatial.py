@@ -81,6 +81,28 @@ def sel_bbox(ds: xr.Dataset, bbox, y_dim: str = "y", x_dim: str = "x") -> xr.Dat
     return ds.sel({y_dim: y_slice, x_dim: x_slice})
 
 
+def clip_to_tile(ds: xr.Dataset, tile_geobox, pad: int = 32, y_dim: str = "y", x_dim: str = "x") -> xr.Dataset:
+    """Clip *ds* (with a rio CRS) to *tile_geobox* padded by *pad* pixels, for
+    a lazy per-tile reprojection.
+
+    A tile that crosses the antimeridian (the first and last tile columns of
+    the global EASE grid) has a bounding box in the source CRS that wraps: its
+    left and right edges come out as roughly -180 and +180 degrees (or the
+    Mollweide equivalent), and the box selects the complement of the tile.
+    Such tiles keep the source's full x range and are clipped in y only, so
+    the reprojection sees both sides of the antimeridian.
+    """
+    extent = tile_geobox.pad(pad, pad).extent
+    bbox = extent.to_crs(ds.rio.crs).boundingbox
+    lonlat = extent.to_crs("EPSG:4326").boundingbox
+    if lonlat.right - lonlat.left > 180:
+        y_vals = ds[y_dim].values
+        y_slice = (slice(bbox.bottom, bbox.top) if len(y_vals) > 1 and y_vals[0] < y_vals[-1]
+                   else slice(bbox.top, bbox.bottom))
+        return ds.sel({y_dim: y_slice})
+    return sel_bbox(ds, bbox, y_dim=y_dim, x_dim=x_dim)
+
+
 def reproject_for_tile_overlap(gdf, target_crs):
     """Reproject *gdf* to *target_crs* before testing per-tile overlap via a
     plain shapely `.intersects()`/`gdf.sindex.query()` against tile bounds

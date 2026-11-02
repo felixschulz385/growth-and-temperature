@@ -338,7 +338,7 @@ class NtlHarmSource(DataSource):
 
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
+        from src.data.common.raster.spatial import SpatialProcessor, clip_to_tile, sel_bbox
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -395,8 +395,7 @@ class NtlHarmSource(DataSource):
                     ds = year_ds(year)
                     if ds is None:
                         return None
-                    bbox = tile.geobox.pad(32, 32).extent.to_crs(ds.rio.crs).boundingbox
-                    clipped = sel_bbox(ds, bbox, y_dim="y", x_dim="x")
+                    clipped = clip_to_tile(ds, tile.geobox, y_dim="y", x_dim="x")
                     if clipped.sizes.get("x", 0) == 0 or clipped.sizes.get("y", 0) == 0:
                         # Tile falls outside this year's raster coverage --
                         # legitimate tile state, not a fetch failure.

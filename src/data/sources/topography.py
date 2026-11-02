@@ -98,7 +98,7 @@ class TopographySource(ConfiguredFilesFetchMixin, DataSource):
 
         from src.data.common.geobox import get_target_geobox
         from src.data.common.prepare.driver import run_tiled_prepare
-        from src.data.common.raster.spatial import SpatialProcessor, sel_bbox
+        from src.data.common.raster.spatial import SpatialProcessor, clip_to_tile
         from src.data.sources.steps import is_complete
 
         if not self.cfg.override and is_complete(target):
@@ -113,8 +113,7 @@ class TopographySource(ConfiguredFilesFetchMixin, DataSource):
         processor = SpatialProcessor(hpc_root=self.ctx.data_root, target_geobox=geobox, default_nodata=np.nan)
 
         def raw_getter(tile, year):
-            bbox = tile.geobox.pad(32, 32).extent.to_crs(ds.rio.crs).boundingbox
-            clipped = sel_bbox(ds, bbox, y_dim="y", x_dim="x")
+            clipped = clip_to_tile(ds, tile.geobox, y_dim="y", x_dim="x")
             if clipped.sizes.get("y", 0) == 0 or clipped.sizes.get("x", 0) == 0:
                 # Outside the raster (it ends at 56°S): NaN tile, not a
                 # failure. Built on tile.geobox itself so reprojecting it is

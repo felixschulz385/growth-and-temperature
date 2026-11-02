@@ -425,6 +425,10 @@ class EogFlareSource(DataSource):
         out_lon, out_lat, _ = geod.fwd(
             np.full(az.shape, lon), np.full(az.shape, lat), az, np.full(az.shape, radius_m)
         )
+        # geod.fwd wraps to [-180, 180]: unwrap a ring that straddles the
+        # antimeridian so it stays a small circle, not a band around the globe.
+        if out_lon.max() - out_lon.min() > 180:
+            out_lon = np.where(out_lon < 0, out_lon + 360, out_lon)
         return Polygon(np.column_stack([out_lon, out_lat]))
 
     def _rasterize_tile(self, tile, year: int, raw_files: Dict[int, str]):
@@ -447,12 +451,13 @@ class EogFlareSource(DataSource):
             # so a flare just outside the tile still bands its edge pixels.
             ll = tile_geobox.extent.to_crs("EPSG:4326").boundingbox
             pad = 0.15  # deg; ~16 km lat, comfortably over the 5 km ring
-            in_box = (
-                (pts[:, 0] >= ll.left - pad)
-                & (pts[:, 0] <= ll.right + pad)
-                & (pts[:, 1] >= ll.bottom - pad)
-                & (pts[:, 1] <= ll.top + pad)
-            )
+            in_box = (pts[:, 1] >= ll.bottom - pad) & (pts[:, 1] <= ll.top + pad)
+            # A tile that crosses the antimeridian (the first and last tile
+            # columns) has a lon box that wraps: its left and right edges
+            # select the complement of the tile. Keep every longitude there;
+            # rasterize() drops whatever falls off the tile.
+            if ll.right - ll.left <= 180:
+                in_box &= (pts[:, 0] >= ll.left - pad) & (pts[:, 0] <= ll.right + pad)
             near = pts[in_box]
         else:
             near = pts
