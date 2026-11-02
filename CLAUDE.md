@@ -36,8 +36,10 @@ commit as any change to the state, layout or rules below.
   4,000 USD, but only across countries. With DOSE output, institutions make no robust
   difference (Wald p = 0.53). With lights, the rule finds one difference above 12,000 USD
   (p = 0.032), which is absent in the VIIRS years. No turning point survives within-country
-  comparisons. Unscheduled next steps (`pollution-data-options.md` §4): NO₂ as a second outcome
-  (`no2` is prepared but unused) and MERRA-2 dust (needs an Earthdata login).
+  comparisons. **Step 2, NO₂ as a second outcome, has a confirmed pre-spec**
+  (`docs/successors/pollution-no2-prespec.md`, 2026-10-30; `no2` is prepared,
+  and no NO₂ value is linked to a region yet). MERRA-2 dust is deferred: it needs an
+  Earthdata login.
 - **New work** (a successor project) starts on its own branch, with a pre-spec in
   `docs/successors/`. The branch `fork/corridors-dose` is merged and no longer used.
 
