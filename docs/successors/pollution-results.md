@@ -1,6 +1,7 @@
 # Pollution Along the Growth Path, by Institutions: Results
 
-**Status: written 2026-10-30.** This covers both runs of the successor project on the branch
+**Status: written 2026-10-30; step 1 updated 2026-11-04** after its rerun on corrected inputs
+(a PREPARE bug at the antimeridian; `pollution-lights-prespec.md`, change log). This covers both runs of the successor project on the branch
 `successor/pollution-institutions`:
 
 - **idea B**, with DOSE regional output as the growth measure, 2026-10-29;
@@ -25,14 +26,17 @@ and adds nothing new.
    - Strong democracies are almost never poor in DOSE, so only the 4,000–12,000 USD range has
      all three democracy terciles.
    - There, the joint test of the tercile differences gives p = 0.53.
-3. **With lights, the pre-specified rule finds one difference, and it is fragile.**
+3. **With lights, the pre-specified rule finds two differences, and both are fragile.**
    - Above about 12,000 USD, PM2.5 falls as lights rise in the middle democracy tercile
-     (−0.086), but not in the high tercile (+0.046). The difference is +0.133 (p = 0.008), and
-     the joint test of all 8 comparisons gives p = 0.032.
-   - It holds in every variant over the DMSP years 1998–2012.
-   - It is absent in the VIIRS years 2014–2022 (+0.024, p = 0.45).
-   - It is one comparison of eight. A Bonferroni bar would not pass it.
-   - Its direction is the opposite of "democracies clean up sooner".
+     (−0.079), but not in the high tercile (+0.043). The difference is +0.121 (p = 0.018), and
+     the joint test of all 8 comparisons gives p = 0.043.
+   - It keeps its sign in every variant over the DMSP years 1998–2012.
+   - It is absent in the VIIRS years 2014–2022 (+0.017, p = 0.59).
+   - The second, high − middle at 1,000–4,000 USD (+0.139, p = 0.033), comes from one country:
+     the Dominican Republic, which moved into the high tercile in the rerun. With it in the
+     middle tercile, p = 0.068.
+   - Neither passes a Bonferroni bar over the eight comparisons.
+   - Their direction is the opposite of "democracies clean up sooner".
 4. **No turning point holds up.**
    - With DOSE output, no slope is negative at 5 %.
    - With lights, two cells pass the pre-specified rule, which requires a negative slope in
@@ -67,16 +71,16 @@ differ between countries with stronger and weaker democratic institutions?
 | | Idea B: DOSE output | Step 1: night lights per person |
 |---|---|---|
 | Growth | DOSE `grp_pc_lcu2015_usd` (2015 USD per person) | Σ `ntl_harm` ÷ GHS-POP population, from the 1 km tiles; gas-flare cells masked |
-| Knots | 1,000 / 4,000 / 12,000 USD | ln lights at those incomes, by a calibration on DOSE regions (within-year R² 0.53) |
+| Knots | 1,000 / 4,000 / 12,000 USD | ln lights at those incomes, by a calibration on DOSE regions (within-year R² 0.54) |
 | Years | 1998–2018 | 1998–2012, the DMSP years. The DMSP–VIIRS splice moves dim regions far more than bright ones, so 2014–2022 is a variant |
 | Controls | DOSE precipitation and temperature | none (air temperature is a variant) |
-| Sample | 27,512 region-years, 1,564 regions, 77 countries | 41,274 region-years, 2,818 regions, 167 countries |
+| Sample | 27,512 region-years, 1,564 regions, 77 countries | 41,557 region-years, 2,840 regions, 169 countries |
 | Overlap | fails: no high-tercile region below 1,000 USD; 5 comparisons | all 12 cells supported; 8 comparisons |
 | Notebook | `07_pollution.ipynb` | `08_pollution_lights.ipynb` |
 
-**Lights fill the overlap gap only partly.** The high tercile has 89 regions below 1,000 USD,
-against none with DOSE output. But 54 of them are in India, Mongolia and Senegal, so a
-difference in that cell is mainly a comparison with those three countries.
+**Lights fill the overlap gap only partly.** The high tercile has 103 regions below 1,000 USD,
+against none with DOSE output. But 67 of them are in India, Mongolia, Senegal and the Dominican
+Republic, so a difference in that cell is mainly a comparison with those four countries.
 
 ## 3. Results with DOSE output (idea B)
 
@@ -106,27 +110,37 @@ supported. Bold: p < 0.05.
 
 | Segment (≈ 2015 USD) | low | middle | high |
 |---|---|---|---|
-| < 1,000 | 0.017 (0.010) | −0.004 (0.014) | 0.055 (0.032) |
-| 1,000–4,000 | −0.030 (0.041) | −0.009 (0.026) | 0.150 (0.082) |
-| 4,000–12,000 | **−0.109** (0.046) | −0.045 (0.048) | 0.011 (0.034) |
-| > 12,000 | **−0.064** (0.029) | **−0.086** (0.033) | 0.046 (0.037) |
+| < 1,000 | 0.017 (0.010) | −0.005 (0.015) | 0.052 (0.026) |
+| 1,000–4,000 | −0.030 (0.042) | −0.011 (0.027) | **0.128** (0.059) |
+| 4,000–12,000 | **−0.110** (0.046) | −0.042 (0.047) | 0.004 (0.032) |
+| > 12,000 | **−0.064** (0.028) | **−0.079** (0.034) | 0.043 (0.038) |
 
-- **Moderation, by the rule: "institutions change the path".** The difference that carries it
-  is high − middle above 12,000 USD. It keeps its sign in every variant and is significant at
-  5 % in all but two:
+- **Moderation, by the rule: "institutions change the path".** Two high − middle comparisons
+  differ at 5 % and keep their sign in variants 1, 2 and H.
+  - **Above 12,000 USD.** It keeps its sign in every variant and is significant at 5 % in all
+    but two:
 
-  | Variant | Joint test p | High − middle above 12k |
-  |---|---|---|
-  | main | 0.032 | +0.133 (p 0.008) |
-  | 1 + country trends | 0.078 | +0.087 (0.003) |
-  | 2 country × year FE | 0.023 | +0.042 (0.013) |
-  | H low-haze regions | < 0.001 | +0.116 (0.018) |
-  | 3 rule of law | 0.009 | +0.159 (0.008) |
-  | 4 no dusty regions | 0.010 | +0.144 (0.004) |
-  | 5 population-weighted | < 0.001 | +0.403 (0.073) |
-  | 6 VIIRS years 2014–2022 | 0.131 | +0.024 (0.446) |
-  | 7 lights per area | 0.013 | +0.174 (0.028) |
-  | 8 + air temperature | 0.053 | +0.125 (0.002) |
+    | Variant | Joint test p | High − middle above 12k |
+    |---|---|---|
+    | main | 0.043 | +0.121 (p 0.018) |
+    | 1 + country trends | 0.120 | +0.077 (0.007) |
+    | 2 country × year FE | 0.013 | +0.041 (0.015) |
+    | H low-haze regions | < 0.001 | +0.102 (0.041) |
+    | 3 rule of law | 0.008 | +0.159 (0.007) |
+    | 4 no dusty regions | 0.016 | +0.133 (0.009) |
+    | 5 population-weighted | < 0.001 | +0.402 (0.072) |
+    | 6 VIIRS years 2014–2022 | 0.100 | +0.017 (0.594) |
+    | 7 lights per area | 0.016 | +0.164 (0.039) |
+    | 8 + air temperature | 0.079 | +0.114 (0.005) |
+
+  - **1,000–4,000 USD:** +0.139 (p = 0.033); in variants 1 and 2 only +0.03 and +0.02. The
+    Dominican Republic has 27 of the high tercile's 219 regions in this segment. It moved from
+    the middle tercile to the high one in the rerun, because Fiji and Vanuatu entered the
+    tercile ranking. With it in the middle tercile (information), the difference is +0.155
+    (p = 0.068), as in the first run, and the one above 12k is unchanged (+0.126, p = 0.013).
+  - **First run (2026-10-30, superseded):** the same picture with one comparison, above 12k
+    +0.133 (p = 0.008), joint test p = 0.032. Its inputs lacked part of New Zealand, Fiji and
+    Vanuatu.
 
   In variants 6 and 7 the DOSE calibration's R² is below 0.5 (0.39 and 0.29), so their knots
   are quartiles. Their top segment is the top quartile, not "above 12,000 USD".
@@ -135,10 +149,10 @@ supported. Bold: p < 0.05.
   measured lights most where PM2.5 is high, which biases slopes down. That is why the rule also
   requires them in low-haze regions. Both cells shrink to near zero with country trends or
   country × year FE, and disappear in the VIIRS years.
-- **Pooled path:** 0.019, 0.019, −0.042 and −0.021 by segment; none differs from zero at 5 %.
+- **Pooled path:** 0.018, 0.020, −0.042 and −0.018 by segment; none differs from zero at 5 %.
 - **Lights and output paths differ.** On the DOSE regions, the lights slopes match the output
   slopes in some cells, such as the low tercile below 1,000 USD (0.104 against 0.118). In other
-  cells they differ, such as the high tercile at 4,000–12,000 USD (0.018 against 0.118). Lights
+  cells they differ, such as the high tercile at 4,000–12,000 USD (0.015 against 0.118). Lights
   stand in for output only partly.
 
 ## 5. What the results support
@@ -151,7 +165,7 @@ supported. Bold: p < 0.05.
 - **Recorded, but not a finding to build on:** by the pre-specified rule, institutions change
   the lights path. That rests on one rich-segment comparison: the middle tercile's PM2.5 falls
   and the high tercile's does not. It appears only in the DMSP years and not in the VIIRS
-  years.
+  years. The rule's second comparison (1,000–4,000 USD) rests on one country's tercile.
 - **Not supported:** an environmental Kuznets turning point in any group that survives
   within-country comparisons.
 

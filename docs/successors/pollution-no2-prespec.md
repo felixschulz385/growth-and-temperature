@@ -1,7 +1,7 @@
 # Pollution Along the Growth Path, with NO₂: Pre-Specification
 
-**Status: confirmed 2026-10-30, as drafted. No NO₂ value has been linked to a region or to
-growth.** This is step 2 of [`pollution-data-options.md`](pollution-data-options.md) §4. It
+**Status: confirmed 2026-10-30, as drafted. G3 passed (2026-11-04, §5). No NO₂ value has been
+linked to a region or to growth.** This is step 2 of [`pollution-data-options.md`](pollution-data-options.md) §4. It
 repeats the two PM2.5 runs, idea B with DOSE output
 ([`pollution-institutions-prespec.md`](pollution-institutions-prespec.md)) and step 1 with night
 lights ([`pollution-lights-prespec.md`](pollution-lights-prespec.md)), with surface NO₂ as the
@@ -143,7 +143,23 @@ causal claim.**
 
 ## 5. Outcomes
 
-None yet.
+### ◇ G3, coverage (2026-11-04, on the fixed tiles; `09_pollution_no2.ipynb`; no NO₂ values loaded)
+
+**G3 passes in both arms.** Every tercile clears 15 countries and 150 regions, so each arm
+estimates its tercile paths.
+
+- **DOSE arm (2005–2018):** 18,841 region-years, 1,507 regions, 76 countries. The cell rule
+  (< 500 valid 1 km cells) drops 452 region-years in 37 regions (Switzerland 7, no other
+  country more than 2). Four cells are unsupported: high below 1,000 USD (0 regions) and at
+  1–4k (10), middle below 1,000 (34), low above 12k (40). That leaves four comparisons:
+  middle − low at 1–4k and 4–12k, high − middle at 4–12k and above 12k.
+- **Lights arm (2005–2012, step 1's rerun knots and terciles):** 21,858 region-years, 2,772
+  regions, 164 countries. The cell rule drops 428 region-years in 56 regions, mostly on small
+  islands (Cape Verde 7, Mauritius 5, Trinidad and Tobago 3). All 12 cells are
+  supported (the high tercile has 73 regions below 1,000 USD: India 21, Senegal 14, Mongolia
+  12, Dominican Republic 7).
+- **The first G3 run (2026-10-30) is superseded:** its cell counts predate the `no2` fix, and
+  its lights arm used step 1's old panel (change log, 2026-11-04).
 
 ## 6. Already seen (disclosure)
 
@@ -192,3 +208,12 @@ None yet.
   - Complete and plausible there: `ntl_harm`, `acag`, `esacci`, GLASS air temperature, MODIS
     LST and `country_id`. The `no2` tiles east of 180° (Samoa, Tonga, Fiji's Lau islands)
     stay empty: the raw file has no data there.
+- **2026-11-04, G3 had not been rerun after the fix (loads no NO₂ values).** The cell-count
+  cache (`_pollution_no2_cell_counts_10km.parquet`) was written at 16:08 on 2026-10-30. The
+  `no2` re-prepare (job 29146068) ran from 16:22 to 16:39, so the G3 in the notebook committed
+  in `bd9dc20` counted the broken wrapping tiles. The lights arm also used step 1's old panel,
+  which lacked part of `ghs_pop` there and the flares near 180°
+  (`pollution-lights-prespec.md`, change log, 2026-11-04). Both caches were moved to
+  `data_nobackup/_old/pollution_lights_antimeridian_2026-11-04/`, and G3 is rerun on the
+  fixed tiles. The lights arm keeps decision 4 (step 1's knots and terciles), now taken from
+  step 1's rerun.

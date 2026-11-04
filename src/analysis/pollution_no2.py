@@ -33,7 +33,7 @@ DOSE_YEARS = (2005, 2018)         # main arm: DOSE P_a and T_a stop 2018
 LIGHTS_YEARS = (2005, 2012)       # check arm: DMSP years
 MAX_PPB = 100.0                   # 1 km cells above this are missing
 MIN_NO2_CELLS = 500               # valid 1 km NO2 cells per region-year
-STEP1_KNOTS = (-4.022, -3.013, -2.213)
+STEP1_KNOTS = (-4.017, -3.020, -2.231)    # step 1 rerun, 2026-11-04
 
 
 def _con():

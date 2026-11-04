@@ -1,7 +1,8 @@
 # Pollution Along the Growth Path, by Institutions, with Night Lights: Pre-Specification
 
 **Status: confirmed 2026-10-30 (drafted 2026-10-29), as drafted. G2 and G2b passed. The
-main specification and all variants ran (2026-10-30, §5). Summary with idea B in
+main specification and all variants ran (2026-10-30) and were rerun on corrected inputs
+(2026-11-04, §5; change log). Summary with idea B in
 [`pollution-results.md`](pollution-results.md).** Step 1 of [`pollution-data-options.md`](pollution-data-options.md) §4. It repeats
 [`pollution-institutions-prespec.md`](pollution-institutions-prespec.md) (idea B), but measures
 growth with night lights instead of DOSE output, so that it covers every country. **Descriptive
@@ -121,7 +122,70 @@ specification). The gap shows how far the lights path stands in for an output pa
 
 ## 5. Outcomes
 
-### Variants 3–8 (2026-10-30; `08_pollution_lights.ipynb`)
+### Rerun on the fixed panel (2026-11-04; `08_pollution_lights.ipynb`): the result
+
+This rerun counts; the 2026-10-30 runs below are the record. The rules are unchanged (change log,
+2026-11-04): the antimeridian fix adds New Zealand, Fiji, Vanuatu and Solomon Islands regions and
+moves the Dominican Republic (DOM) from the middle tercile to the high one.
+
+- **Sample and G2:** N = 41,557 region-years (2,840 regions, 169 countries). Knots −4.017 /
+  −3.020 / −2.231 (calibration slope 0.72, within-year R² 0.54). All 12 cells are supported
+  and G2 and G2b pass (the high tercile has 103 regions below 1,000 USD, 13 of them in DOM).
+- **Slopes** (country clusters, 169):
+
+  | Tercile | < 1k USD | 1–4k | 4–12k | > 12k |
+  |---|---|---|---|---|
+  | low | 0.017 (0.010) | −0.030 (0.042) | **−0.110** (0.046) | **−0.064** (0.028) |
+  | middle | −0.005 (0.015) | −0.011 (0.027) | −0.042 (0.047) | **−0.079** (0.034) |
+  | high | 0.052 (0.026) | **0.128** (0.059) | 0.004 (0.032) | 0.043 (0.038) |
+
+- **◇ Moderation: by the rule, "institutions change the path", now with two comparisons.**
+  - The joint Wald test rejects: F = 2.06 (8, 168), p = 0.043.
+  - Two comparisons differ at 5 %, both high − middle, and both keep their sign in variants 1,
+    2 and H:
+    - above 12,000 USD: +0.121 (0.051), p = 0.018 (v1 +0.077, v2 +0.041, H +0.102);
+    - 1,000–4,000 USD: +0.139 (0.065), p = 0.033 (v1 +0.028, v2 +0.018, H +0.205).
+  - **Information, not a rule: the second comparison is DOM's tercile.** DOM gives 27 of the
+    219 high-tercile regions at 1–4k, more than any other country. With DOM in the middle
+    tercile, as in the first run, the 1–4k difference is +0.155 (p = 0.068) and the one above
+    12k +0.126 (p = 0.013). Without DOM: +0.160 (0.061) and +0.125 (0.013). Without the four
+    Pacific countries: +0.142 (0.032) and +0.123 (0.017). DOM moved because Fiji and Vanuatu
+    entered the tercile ranking. In variants 1 and 2 the 1–4k difference shrinks to +0.03 and
+    +0.02.
+  - Two of eight at 5 %; neither passes a Bonferroni bar (0.006).
+  - Region clusters (information): F = 11.2, p < 0.001.
+- **◇ Turning point: unchanged, the same two cells.** Low tercile at 4,000–12,000 USD: −0.110
+  (p = 0.018), in H −0.207 (p < 0.001). Middle tercile above 12,000 USD: −0.079 (p = 0.022),
+  in H −0.070 (p = 0.016). With country trends or country × year FE they shrink to −0.04 and
+  −0.03 (low) and +0.004 and −0.010 (middle).
+- **Pooled path:** 0.018 (p = 0.059), 0.020, −0.042, −0.018. None differs from zero at 5 %.
+- **Variants 1, 2, H:** Wald p = 0.120, 0.013 and < 0.001. H (cutoffs 11.9 and 18.4 µg/m³,
+  27,561 region-years, 135 countries) now supports the high tercile below 1,000 USD (63
+  regions), so it has 7 comparisons; low above 12,000 USD stays unsupported (33).
+- **Variants 3–8** (Wald p; high − middle above 12k or the top quartile):
+
+  | Variant | N | Wald p (q) | high − middle > 12k | low 4–12k | middle > 12k |
+  |---|---|---|---|---|---|
+  | main | 41,557 | 0.043 (8) | +0.121 (p 0.018) | −0.110 (0.018) | −0.079 (0.022) |
+  | 3 rule of law | 41,557 | 0.008 (8) | +0.159 (0.007) | −0.109 (0.006) | −0.119 (0.010) |
+  | 4 desert share ≤ 0.5 | 37,526 | 0.016 (8) | +0.133 (0.009) | −0.130 (0.015) | −0.088 (0.011) |
+  | 5 population-weighted | 41,557 | < 0.001 (8) | +0.402 (0.072) | −0.274 (0.011) | −0.059 (0.020) |
+  | 6 VIIRS 2014–2022 (quartile knots) | 25,509 | 0.100 (7) | +0.017 (0.594) | +0.039 (0.193) | −0.018 (0.465) |
+  | 7 lights per area (quartile knots) | 41,557 | 0.016 (8) | +0.164 (0.039) | +0.009 (0.790) | −0.108 (0.066) |
+  | 8 + GLASS temperature, 2000–2012 | 35,931 | 0.079 (8) | +0.114 (0.005) | −0.055 (0.077) | −0.038 (0.058) |
+
+  - 3: three comparisons at 5 %, high − middle at 1–4k (+0.114), 4–12k (+0.175) and above 12k.
+  - 4: two, high − middle at 1–4k (+0.145, p = 0.025) and above 12k.
+  - 5: the weights are still IND 45 % of the high tercile and CHN 56 % of the low.
+  - 6: the terciles are those of the main sample; one comparison at 5 %, high − middle in the
+    second quartile (+0.068, p = 0.027). The joint test does not reject.
+  - 8: the joint test does not reject (p = 0.079); the top-segment difference holds.
+- **Reading.** The first run's picture stands. Over the DMSP years, high-democracy regions'
+  PM2.5 does not fall with lights above about 12,000 USD while the middle tercile's does; the
+  VIIRS years do not show it, and country trends take away the joint test. The rule's second
+  comparison (1–4k) comes from one country crossing a tercile cutoff and is not one to build on.
+
+### Variants 3–8 (2026-10-30; first run, superseded 2026-11-04)
 
 Variants are reported, not selected (§3), so the rule outcomes of the main specification
 stand. Construction follows the change log entry for variants 3–8. Figures:
@@ -182,7 +246,7 @@ stand. Construction follows the change log entry for variants 3–8. Figures:
   that comparison. The VIIRS years do not show it. The downturns rest on the main sample's
   knots and the DMSP years.
 
-### Main specification, pooled path, variants 1, 2 and H (2026-10-30; `08_pollution_lights.ipynb`)
+### Main specification, pooled path, variants 1, 2 and H (2026-10-30; first run, superseded 2026-11-04)
 
 This is the first run that loads PM2.5. Every row of the G2 sample has PM2.5, so N = 41,274
 region-years (2,818 regions, 167 countries; pyfixest drops 13 singletons). All 12 cells are
@@ -244,9 +308,9 @@ supported, so the 8 comparisons are those of G2.
     0.118);
   - so lights do not reproduce the output path cell by cell.
 
-### G2 and G2b, rerun on the DMSP years with the flare mask (2026-10-30; `08_pollution_lights.ipynb`; no PM2.5 loaded)
+### G2 and G2b, rerun on the DMSP years with the flare mask (2026-10-30; no PM2.5 loaded; superseded 2026-11-04)
 
-This is the run that counts. It follows the 2026-10-30 change log.
+This was the run that counted until the 2026-11-04 rerun. It follows the 2026-10-30 change log.
 
 - **Sample:** 41,287 region-years, 2,818 regions, 167 countries, 1998–2012.
   - **Dropped region-years:**
@@ -387,3 +451,34 @@ This is the run that counts. It follows the 2026-10-30 change log.
     the DOSE calibration, or the quartile fallback if its within-year R² is below 0.5.
   - **Variant 8:** GLASS air temperature is the region mean over its 10 km cells. The sample
     is 2000–2012, the region-years with temperature.
+
+- **2026-11-04, the antimeridian fix reaches step 1 (construction; loads no PM2.5).** Every
+  run above used caches built on 2026-10-30 before two PREPARE fixes (`pollution-no2-prespec.md`,
+  change log). `ghs_pop` lacked the tiles that cross 180° (half of New Zealand, Fiji, Vanuatu,
+  New Caledonia), and the flare mask missed 6–25 flares a year near 180°. `ntl_harm` and the
+  10 km panel were complete there. Idea B reads neither input and is unaffected. The panel and
+  cell sums were rebuilt from the fixed tiles and compared with the old ones, without PM2.5:
+  - **Main sample (1998–2012):** 41,570 region-years, 2,840 regions, 169 countries, against
+    41,287, 2,818 and 167. Nothing drops out. The 283 new region-years are in New Zealand
+    (10 regions), Fiji, Vanuatu and the Solomon Islands. Fiji and Vanuatu enter the sample.
+  - **Terciles:** Fiji and Vanuatu join the middle tercile, and the Dominican Republic moves from
+    the middle tercile to the high one.
+  - **Knots:** −4.017 / −3.020 / −2.231, against −4.022 / −3.013 / −2.213 (within-year R² 0.542,
+    against 0.533). 301 region-years change segment.
+  - **G2 and G2b still pass**, with the same supported cells and comparisons. The high tercile
+    has 103 regions in the lowest segment, against 89. Above 12,000 USD, the high tercile has
+    471 regions and the middle 219, against 460 and 214.
+  - **Variant 6 (2014–2022):** 25,513 region-years in 169 countries, against 25,346 in 167. The
+    tercile changes are the same, and G2 passes with the same supported cells.
+  - **Flares:** lights change by more than 1 % only in three New Zealand regions, which lose
+    flare cells (Taranaki: −0.64 log points).
+  - **Variant 5:** the population weights change in 19,022 cell-epochs of 10 km, almost all in
+    the Pacific.
+  - **The PM2.5 estimates in §5 and in `pollution-results.md` were not rerun.** They come from
+    the old panel, and the Dominican Republic's move and the new New Zealand regions touch the
+    middle-vs-high comparison above 12,000 USD. The NO₂ lights arm's G3 also used the old
+    panel's knots and terciles.
+  - **Author's decision, 2026-11-04, before any rerun:** the rebuilt panel replaces the old one,
+    and notebook 08 is rerun in full under unchanged rules. The rerun is step 1's result. The
+    first run stays in §5 as a record. The old caches are in
+    `data_nobackup/_old/pollution_lights_antimeridian_2026-11-04/`.

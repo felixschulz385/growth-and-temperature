@@ -3,7 +3,7 @@
 Working notes for Claude Code in this repository. Keep this file current: update it in the same
 commit as any change to the state, layout or rules below.
 
-## State (2026-10-30)
+## State (2026-11-04)
 
 - **The original project is retired** (2026-09-30). The closing record is
   `docs/analysis/project-conclusion.md`. Don't change its results; amendments go in dated notes.
@@ -34,11 +34,13 @@ commit as any change to the state, layout or rules below.
 
   The results are in `docs/successors/pollution-results.md`. PM2.5 rises with output below about
   4,000 USD, but only across countries. With DOSE output, institutions make no robust
-  difference (Wald p = 0.53). With lights, the rule finds one difference above 12,000 USD
-  (p = 0.032), which is absent in the VIIRS years. No turning point survives within-country
-  comparisons. **Step 2, NO₂ as a second outcome, has a confirmed pre-spec**
-  (`docs/successors/pollution-no2-prespec.md`, 2026-10-30; `no2` is prepared,
-  and no NO₂ value is linked to a region yet). MERRA-2 dust is deferred: it needs an
+  difference (Wald p = 0.53). With lights (rerun 2026-11-04 after the antimeridian PREPARE
+  fix), the rule finds two high − middle differences: above 12,000 USD (p = 0.018), absent in
+  the VIIRS years, and at 1,000–4,000 USD (p = 0.033), which rests on the Dominican Republic
+  moving tercile. No turning point survives within-country comparisons. **Step 2, NO₂ as a
+  second outcome, has a confirmed pre-spec** (`docs/successors/pollution-no2-prespec.md`,
+  2026-10-30). Its coverage gate G3 passed in both arms (2026-11-04); no NO₂ value is linked
+  to a region yet. Next: the NO₂ fits (T1, R1, moderation). MERRA-2 dust is deferred: it needs an
   Earthdata login.
 - **Idea A (surface heat island) has a draft pre-spec** (2026-10-30, not confirmed):
   `docs/successors/heat-island-prespec.md`. It replicates the YCEO city heat islands, then
