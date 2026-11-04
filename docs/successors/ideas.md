@@ -21,7 +21,7 @@ assembles the whole chain.
 
 ## A. Surface heat island with a continuous urban measure
 
-**Pre-spec drafted 2026-10-30, not confirmed:** [`heat-island-prespec.md`](heat-island-prespec.md).
+**Pre-spec confirmed 2026-11-04 (branch `successor/heat-island`):** [`heat-island-prespec.md`](heat-island-prespec.md).
 It replicates the published city heat islands first, then tests whether within-cell change adds
 up to them.
 

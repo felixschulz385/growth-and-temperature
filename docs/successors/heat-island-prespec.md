@@ -1,7 +1,7 @@
 # Surface Heat Island with a Continuous Urban Measure: Pre-Specification
 
-**Status: draft 2026-10-30, not confirmed. Nothing has run and no LST has been loaded for this
-project.** Idea A of [`ideas.md`](ideas.md). It first replicates the published city-level
+**Status: confirmed 2026-11-04 (drafted 2026-10-30), as drafted. Branch
+`successor/heat-island`. Nothing has run and no LST has been loaded for this project.** Idea A of [`ideas.md`](ideas.md). It first replicates the published city-level
 surface heat island in our pipeline, then estimates how a 1 km cell's LST changes as its
 impervious share rises, and compares the two. Several design elements follow Dell, Jones and
 Olken (2012, *AEJ: Macro* 4(3)), who answer the reverse question (temperature → growth); §3
@@ -10,7 +10,9 @@ claim.**
 
 ## 0. Decisions for the author
 
-To confirm before G0.
+**Confirmed as drafted, 2026-11-04:** the recommended option in each case (GAIA annual; years
+2003–2018; cells within 30 km of a benchmark cluster; MYD11A2 added for step 1; no new weather
+source).
 
 1. **Main treatment: GAIA** (annual, 30 m, 1985–2018), aggregated to the share of a 1 km cell
    that is impervious in year t. GHSL built-up (5-year epochs) is used for the long differences
@@ -212,4 +214,6 @@ None yet.
 
 ## Change log
 
-None.
+- **2026-11-04, confirmation.** The author confirmed the five decisions of §0 as drafted,
+  before G0 and before any data for this project was built. No rule changed. Work moves to the
+  branch `successor/heat-island`.

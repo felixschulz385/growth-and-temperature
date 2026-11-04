@@ -44,11 +44,12 @@ commit as any change to the state, layout or rules below.
   difference above 12,000 USD replicates with NO₂, p = 0.017); moderation by the rule only with
   DOSE output (4–12k, high − middle); no downturn. MERRA-2 dust is a possible future step with
   low priority (it needs an Earthdata login).
-- **Idea A (surface heat island) has a draft pre-spec** (2026-10-30, not confirmed):
-  `docs/successors/heat-island-prespec.md`. It replicates the YCEO city heat islands, then
-  estimates LST on within-cell GAIA impervious share at 1 km, 2003–2018. Nothing has run, and
-  the data (GAIA, GHSL built-up, the benchmark) are not built. It gets its own branch,
-  `successor/heat-island`, once confirmed.
+- **Idea A (surface heat island): active, on the branch `successor/heat-island`.** The
+  pre-spec `docs/successors/heat-island-prespec.md` was confirmed 2026-11-04 as drafted. It
+  replicates the YCEO city heat islands, then estimates LST on within-cell GAIA impervious share
+  at 1 km, 2003–2018, in cells within 30 km of a benchmark cluster. Next: the data of its §7
+  (GAIA, GHSL built-up, the benchmark, MYD11A2, elevation); none of it loads LST. Nothing has
+  run.
 - **New work** (a successor project) starts on its own branch, with a pre-spec in
   `docs/successors/`. The branch `fork/corridors-dose` is merged and no longer used.
 
