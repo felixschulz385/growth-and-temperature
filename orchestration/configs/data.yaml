@@ -470,6 +470,15 @@ sources:
     max_retries: 6
     max_pixels: 16384      # inputs per 1 km cell; about 2,300 at the grid's 60 deg edge
 
+  # YCEO Surface Urban Heat Islands v4 (Chakraborty and Lee; NASA SEDAC, CC BY 4.0),
+  # the heat-island benchmark. FETCH only: the 7 published files (~3 GB; Earthdata
+  # login from ~/.netrc) plus per-cluster tables derived from them (derived/).
+  # Run on a workstation, push with `data transfer --source yceo_uhi --step fetch`.
+  yceo_uhi:
+    type: "yceo_uhi"
+    data_path: "yceo_uhi/v4"
+    transfer_mode: "manual"
+
   # ESA CCI Land Cover (Copernicus CDS API)
   esacci:
     type: "esacci"
