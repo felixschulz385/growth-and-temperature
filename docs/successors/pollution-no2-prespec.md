@@ -1,7 +1,7 @@
 # Pollution Along the Growth Path, with NO₂: Pre-Specification
 
-**Status: confirmed 2026-10-30, as drafted. G3 passed (2026-11-04, §5). No NO₂ value has been
-linked to a region or to growth.** This is step 2 of [`pollution-data-options.md`](pollution-data-options.md) §4. It
+**Status: confirmed 2026-10-30, as drafted. G3 passed, and all fits ran (2026-11-04, §5):
+T1 not met, R1 met, moderation by the rule in the DOSE arm only, no turning point.** This is step 2 of [`pollution-data-options.md`](pollution-data-options.md) §4. It
 repeats the two PM2.5 runs, idea B with DOSE output
 ([`pollution-institutions-prespec.md`](pollution-institutions-prespec.md)) and step 1 with night
 lights ([`pollution-lights-prespec.md`](pollution-lights-prespec.md)), with surface NO₂ as the
@@ -143,6 +143,82 @@ causal claim.**
 
 ## 5. Outcomes
 
+### NO₂ fits: main specification, ◇ T1, ◇ R1, ◇ moderation, ◇ turning point, variants (2026-11-04; `09_pollution_no2.ipynb`)
+
+The first NO₂ load. Construction follows the change log (2026-11-04, before any NO₂
+regression). Figures: `output/figures/pollution/no2_paths` (DOSE arm: pooled path, paths by
+tercile, variants 1–2) and `no2_transport` (◇ T1, both arms). Region NO₂ has a median of 2.8 ppb in the DOSE arm and 2.0 in the lights arm
+(1st–99th percentile about 0.2–11).
+
+- **◇ T1, transport: "NO₂ does not show a within-country path that PM2.5 lacks".** Stacked
+  pooled paths with region + country × year FE:
+
+  | Segment | DOSE: NO₂ | DOSE: PM2.5 | DOSE: NO₂ − PM2.5 (Holm p) | lights: NO₂ − PM2.5 |
+  |---|---|---|---|---|
+  | < 1,000 | 0.041 (p 0.040) | −0.005 | +0.046 (0.26) | −0.003 |
+  | 1,000–4,000 | **0.068** (0.003) | −0.023 | **+0.091 (0.003)** | −0.002 |
+  | 4,000–12,000 | 0.021 (0.25) | −0.028 | +0.049 (0.069) | +0.000 |
+  | > 12,000 | −0.017 (0.51) | +0.011 | −0.028 (0.85) | −0.012 |
+
+  - The DOSE arm meets the first condition at 1,000–4,000 USD: NO₂ rises with output within
+    countries (0.068) where PM2.5 does not (−0.023), and the difference passes Holm.
+  - The lights arm does not confirm it: there, NO₂ − PM2.5 at 1,000–4,000 USD is −0.002, and no
+    within-country NO₂ slope differs from zero (all p > 0.26). So the rule's claim fails.
+  - A within-country NO₂ path would be necessary for the transport explanation, not
+    sufficient.
+- **◇ R1: "step 1's difference replicates with NO₂".** Lights arm, above 12,000 USD, high −
+  middle: +0.095 (0.040), p = 0.017. PM2.5 on the same rows (information): +0.091, p = 0.064.
+  - Information: it keeps its sign and 5 % in variants H (+0.104), 3, 4, 5 and 8. It is
+    +0.006 with country trends (p = 0.81), +0.048 with country × year FE (p = 0.090), +0.026 in
+    the VIIRS years (p = 0.19) and −0.016 with lights per area. As for PM2.5, it is a DMSP-years
+    comparison across countries.
+- **◇ Moderation, DOSE arm (the conclusion leads with it): by the rule, "institutions change
+  the path".**
+  - Joint test of the 4 comparisons: F = 8.08 (4, 75), p < 0.001. For PM2.5 on the same rows
+    (information): p = 0.92.
+  - One comparison at 5 %: 4,000–12,000 USD, high − middle +0.212 (0.089), p = 0.020. It keeps
+    its sign in variant 1 (+0.001, p = 0.98) and variant 2 (+0.022). In variant 1 it is zero
+    in all but sign.
+  - Slopes at 4,000–12,000 USD: high 0.345 (p < 0.001), middle 0.133 (p = 0.058), low −0.009.
+    High-democracy regions' NO₂ rises fastest with output, the opposite of "democracies clean
+    up sooner".
+- **◇ Moderation, lights arm: "no robust difference".** The joint test rejects (F = 2.13 (8,
+  163), p = 0.036), with two comparisons at 5 %: high − middle below 1,000 USD (+0.054,
+  p = 0.029) and above 12,000 USD (+0.095). Both keep their sign in variants 1 and 2. The first
+  has no counterpart in variant H, where the high tercile has 39 regions below 1,000 USD, so the
+  rule is not met.
+- **◇ Turning point: none in either arm.** No supported slope is negative at 5 % in the DOSE
+  arm. In the lights arm, middle above 12,000 USD is −0.065 (p = 0.028) in the main
+  specification but not negative at 5 % in H.
+- **Pooled paths** (region + year FE):
+  - DOSE arm: 0.122 (p = 0.032), 0.192 (p < 0.001), 0.144 (p = 0.005), −0.042 (0.25). NO₂
+    rises with output up to about 12,000 USD.
+  - Lights arm: 0.006, 0.041 (p = 0.014), 0.025, −0.039 (p = 0.060).
+- **Variants** (joint test p; high − middle above 12,000 USD):
+
+  | Variant | DOSE arm | lights arm |
+  |---|---|---|
+  | main | < 0.001; +0.153 (p 0.057) | 0.036; +0.095 (0.017) |
+  | PM2.5, same rows (information) | 0.92; +0.028 (0.62) | 0.009; +0.091 (0.064) |
+  | 1 + country trends | 0.18; +0.059 (0.11) | 0.15; +0.006 (0.81) |
+  | 2 country × year FE | 0.28; +0.030 (0.52) | 0.57; +0.048 (0.090) |
+  | H low haze | — | 0.006; +0.104 (0.022) |
+  | 3 rule of law | < 0.001; +0.329 (0.006) | 0.001; +0.105 (0.008) |
+  | 4 population-weighted NO₂ + weights | < 0.001; +0.377 (0.044) | < 0.001; +0.321 (0.008) |
+  | 5 NO₂ in levels | < 0.001; +0.678 ppb (0.049) | 0.010; +0.414 ppb (0.003) |
+  | 6 VIIRS 2014–2020 (quartile knots) | — | 0.14; +0.026 (0.19) |
+  | 7 lights per area (quartile knots) | — | 0.006; −0.016 (0.76) |
+  | 8 + GLASS air temperature | — | 0.044; +0.095 (0.022) |
+
+  The tercile differences disappear with country trends or country × year FE in both arms:
+  they compare countries.
+- **Reading.**
+  - In the DOSE arm, NO₂ rises with output up to about 12,000 USD (pooled path), and its
+    tercile slopes are mostly larger than PM2.5's on the same rows. Within countries (country ×
+    year FE) only the 1,000–4,000 USD rise remains, and lights do not reproduce it.
+  - High-democracy countries' NO₂ rises at least as fast as the middle tercile's wherever they
+    can be compared. No group shows a downturn.
+
 ### ◇ G3, coverage (2026-11-04, on the fixed tiles; `09_pollution_no2.ipynb`; no NO₂ values loaded)
 
 **G3 passes in both arms.** Every tercile clears 15 countries and 150 regions, so each arm
@@ -217,3 +293,25 @@ estimates its tercile paths.
   `data_nobackup/_old/pollution_lights_antimeridian_2026-11-04/`, and G3 is rerun on the
   fixed tiles. The lights arm keeps decision 4 (step 1's knots and terciles), now taken from
   step 1's rerun.
+- **2026-11-04, after G3 and before any NO₂ regression (construction; no NO₂ value has been
+  aggregated).** The author said go. §3 and §4 leave these details open; they are fixed here:
+  - **Region NO₂:** the mean of the valid land 1 km cells (≤ 100 ppb) over the region's 10 km
+    panel cells, each cell weighted equally. **Variant 4:** each 1 km cell weighted by its
+    GHS-POP density in the same 1 km cell, linear between the 2005–2020 epochs (zero where
+    missing). The regression weight is idea B's DOSE `pop` in the DOSE arm and step 1's
+    region population in the lights arm.
+  - **◇ T1:** the stacked fit interacts the DOSE arm's `P_a` and `T_a` with the outcome. "NO₂ −
+    PM2.5 > 0" is a one-sided t test (G − 1 df, as for the comparisons), Holm-adjusted across
+    the four segments. "Its NO₂ slope is positive at 5 %" means positive with a two-sided
+    p below 0.05, as in the other rules. Two-sided p values of the differences are reported as
+    information.
+  - **◇ Turning point, lights arm:** "also negative in variant H" means negative at 5 %, as in
+    step 1's rule.
+  - **Variant H:** step 1's low-haze regions (baseline 1998–2000 PM2.5, cutoffs across step 1's
+    sample). The NO₂ sample starts in 2005 and has no baseline years of its own.
+  - **Variants 6 and 7:** step 1's variant-6 knots and terciles (set on 2014–2022), on the rows
+    of 2014–2020; step 1's variant-7 knots (ln lights per area, 1998–2012). This follows
+    decision 4.
+  - **Variant 8:** GLASS air temperature as in step 1, on the rows that have it.
+  - **PM2.5 on the NO₂ sample:** each arm's main specification is also fitted for ln PM2.5, as
+    information and for ◇ T1 and ◇ R1.

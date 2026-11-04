@@ -25,7 +25,7 @@ commit as any change to the state, layout or rules below.
   night LST is −0.26 K per log point of lights (p < 0.001) and −0.13 K per log point of GRP
   (p = 0.09), the retired result's sign (§4). **Part 2 is complete.**
 - **Successor project "pollution along the growth path, by institutions": run 2026-10-29 to
-  2026-10-30, no active step.** It is on the branch `successor/pollution-institutions` and is
+  2026-11-04, no active step.** It is on the branch `successor/pollution-institutions` and is
   descriptive: ADM1 PM2.5 (ACAG) on growth, by baseline V-Dem democracy terciles. There are two
   runs, each with its own pre-spec in `docs/successors/`:
   - idea B, with DOSE output (`pollution-institutions-prespec.md`);
@@ -37,10 +37,11 @@ commit as any change to the state, layout or rules below.
   difference (Wald p = 0.53). With lights (rerun 2026-11-04 after the antimeridian PREPARE
   fix), the rule finds two high − middle differences: above 12,000 USD (p = 0.018), absent in
   the VIIRS years, and at 1,000–4,000 USD (p = 0.033), which rests on the Dominican Republic
-  moving tercile. No turning point survives within-country comparisons. **Step 2, NO₂ as a
-  second outcome, has a confirmed pre-spec** (`docs/successors/pollution-no2-prespec.md`,
-  2026-10-30). Its coverage gate G3 passed in both arms (2026-11-04); no NO₂ value is linked
-  to a region yet. Next: the NO₂ fits (T1, R1, moderation). MERRA-2 dust is deferred: it needs an
+  moving tercile. No turning point survives within-country comparisons. **Step 2, NO₂, ran
+  2026-11-04** (`docs/successors/pollution-no2-prespec.md`): transport rule T1 not met (NO₂ rises
+  within countries at 1,000–4,000 USD with DOSE output, not with lights); R1 met (step 1's
+  difference above 12,000 USD replicates with NO₂, p = 0.017); moderation by the rule only with
+  DOSE output (4–12k, high − middle); no downturn. MERRA-2 dust is deferred: it needs an
   Earthdata login.
 - **Idea A (surface heat island) has a draft pre-spec** (2026-10-30, not confirmed):
   `docs/successors/heat-island-prespec.md`. It replicates the YCEO city heat islands, then
@@ -152,6 +153,10 @@ change construction rules; log them anyway.
   ADM1 region panel, again with no LST until `add_lst()`. Its fits use pyfixest, which takes
   regression weights, rather than duckreg. Notebooks: `06b_dose_step_b.ipynb`, `06c_dose_step_c.ipynb` and
   `06d_dose_twfe.ipynb` (the associations; `add_lst()` joins LST to the region panel).
+- **NO₂ follow-up:** `src/analysis/pollution_no2.py` aggregates region NO₂ from the 1 km tiles
+  (plain and GHS-POP-weighted), builds the two arms and fits the stacked T1. Notebook:
+  `09_pollution_no2.ipynb` (G3, all rules and variants, two figures →
+  `output/figures/pollution/no2_*`).
 - **Lights follow-up:** `src/analysis/pollution_lights.py` builds the region panel from the 1 km
   `ntl_harm` and `ghs_pop` tiles (flare mask, epoch interpolation), calibrates the knots, runs
   G2 and joins region PM2.5 (`region_pm25()`: plain and population-weighted, plus GLASS

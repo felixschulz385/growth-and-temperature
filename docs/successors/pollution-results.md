@@ -1,17 +1,21 @@
 # Pollution Along the Growth Path, by Institutions: Results
 
-**Status: written 2026-10-30; step 1 updated 2026-11-04** after its rerun on corrected inputs
-(a PREPARE bug at the antimeridian; `pollution-lights-prespec.md`, change log). This covers both runs of the successor project on the branch
+**Status: written 2026-10-30; updated 2026-11-04** with step 1's rerun on corrected inputs (a
+PREPARE bug at the antimeridian; `pollution-lights-prespec.md`, change log) and step 2, NO₂.
+This covers the three runs of the successor project on the branch
 `successor/pollution-institutions`:
 
-- **idea B**, with DOSE regional output as the growth measure, 2026-10-29;
-- **step 1**, with night lights per person as the growth measure, 2026-10-30.
+- **idea B**, PM2.5 with DOSE regional output as the growth measure, 2026-10-29;
+- **step 1**, PM2.5 with night lights per person as the growth measure, 2026-10-30 (rerun
+  2026-11-04);
+- **step 2**, surface NO₂ on both growth measures, 2026-11-04.
 
-Both are **descriptive**: neither growth nor institutions is instrumented. The rules, change logs
-and full tables are in the two pre-specs:
-[`pollution-institutions-prespec.md`](pollution-institutions-prespec.md) (idea B) and
-[`pollution-lights-prespec.md`](pollution-lights-prespec.md) (step 1). This page summarises them
-and adds nothing new.
+All are **descriptive**: neither growth nor institutions is instrumented. The rules, change logs
+and full tables are in the three pre-specs:
+[`pollution-institutions-prespec.md`](pollution-institutions-prespec.md) (idea B),
+[`pollution-lights-prespec.md`](pollution-lights-prespec.md) (step 1) and
+[`pollution-no2-prespec.md`](pollution-no2-prespec.md) (step 2). This page summarises them and
+adds nothing new.
 
 ## Summary
 
@@ -46,6 +50,17 @@ and adds nothing new.
 5. **Population weighting compares countries, not institutions.** In both runs, the weights put
    most of a tercile on one country: China, India or the United States. So the variants that
    weight by population mostly compare those countries.
+6. **NO₂ (step 2) rises with output where PM2.5 does not, but transport is not shown.**
+   - With DOSE output, NO₂ rises with output up to about 12,000 USD (pooled elasticities 0.12,
+     0.19 and 0.14).
+   - Within countries, NO₂ rises at 1,000–4,000 USD (0.068) where PM2.5 does not (−0.023;
+     difference p = 0.003 after Holm). With lights the difference is −0.002, so the
+     pre-specified transport rule is not met.
+   - Step 1's PM2.5 difference above 12,000 USD replicates with NO₂ in the lights arm (+0.095,
+     p = 0.017), with the same weakness: it vanishes with country trends.
+   - With DOSE output, institutions change the NO₂ path by the rule: high-democracy regions'
+     NO₂ rises faster with output at 4,000–12,000 USD (+0.212, p = 0.020). It is +0.001 with
+     country trends. With lights the rule is not met. No group has a downturn.
 
 ## 1. Question and design
 
@@ -155,19 +170,55 @@ supported. Bold: p < 0.05.
   cells they differ, such as the high tercile at 4,000–12,000 USD (0.015 against 0.118). Lights
   stand in for output only partly.
 
+## 4a. Results with NO₂ (step 2)
+
+Rows have both NO₂ and PM2.5, so the two outcomes share a sample. Construction and full tables:
+`pollution-no2-prespec.md` §5 and change log.
+
+| | DOSE arm (main) | Lights arm (check) |
+|---|---|---|
+| Years | 2005–2018 | 2005–2012 (DMSP) |
+| Sample | 18,841 region-years, 1,507 regions, 76 countries | 21,858 region-years, 2,772 regions, 164 countries |
+| Comparisons | 4 (high tercile lacks the two lower segments) | 8 |
+| Joint test, NO₂ (PM2.5 on the same rows) | p < 0.001 (0.92) | 0.036 (0.009) |
+| ◇ Moderation | by the rule, "institutions change the path": 4–12k high − middle +0.212 | "no robust difference": the comparison below 1,000 USD has no counterpart in variant H |
+| ◇ Turning point | none | none |
+
+- **◇ T1, transport: not met.** With region + country × year FE, NO₂ − PM2.5 in the DOSE arm:
+  +0.046, **+0.091** (Holm p = 0.003), +0.049 and −0.028 by segment. The NO₂ slope at
+  1,000–4,000 USD is 0.068 (p = 0.003). The lights arm gives −0.003, −0.002, 0.000 and −0.012.
+  A within-country NO₂ path would be necessary for the transport explanation, but not
+  sufficient.
+- **◇ R1: met.** Lights arm, above 12,000 USD, high − middle: +0.095 (p = 0.017); PM2.5 on the
+  same rows +0.091 (p = 0.064). It keeps 5 % in variants H, 3, 4, 5 and 8. It is +0.006 with
+  country trends, +0.048 (p = 0.090) with country × year FE, +0.026 in the VIIRS years and
+  −0.016 with lights per area.
+- **DOSE-arm moderation** rests on one comparison: at 4,000–12,000 USD the high tercile's NO₂
+  elasticity is 0.345 and the middle's 0.133. It keeps its sign with country trends (+0.001)
+  and country × year FE (+0.022), but only just.
+- **Variants:** in both arms the joint test stops rejecting with country trends (p = 0.18 and
+  0.15) or country × year FE (0.28 and 0.57). Rule of law, population weights and levels
+  reject.
+
 ## 5. What the results support
 
 - **Supported:**
   - at low incomes, PM2.5 and output rise together across countries, not across regions within
     a country;
   - above about 4,000 USD the path is flat;
-  - no data set here shows strong democracies with a lower or earlier-turning PM2.5 path.
+  - no data set here shows strong democracies with a lower or earlier-turning PM2.5 path;
+  - NO₂ rises with output up to about 12,000 USD with DOSE output, more than PM2.5 does;
+  - no NO₂ path shows strong democracies lower or turning earlier: where terciles differ, the
+    high tercile's NO₂ rises faster.
 - **Recorded, but not a finding to build on:** by the pre-specified rule, institutions change
   the lights path. That rests on one rich-segment comparison: the middle tercile's PM2.5 falls
   and the high tercile's does not. It appears only in the DMSP years and not in the VIIRS
   years. The rule's second comparison (1,000–4,000 USD) rests on one country's tercile.
-- **Not supported:** an environmental Kuznets turning point in any group that survives
-  within-country comparisons.
+- **Not supported:**
+  - an environmental Kuznets turning point in any group that survives within-country
+    comparisons, for PM2.5 or NO₂;
+  - transport as the reason the PM2.5 path is national only: NO₂'s within-country rise at
+    1,000–4,000 USD is in the DOSE arm only.
 
 ## 6. Limitations
 
@@ -175,7 +226,9 @@ supported. Bold: p < 0.05.
   institutions, and countries differ in much besides institutions.
 - **PM2.5 is regional.** ACAG PM2.5 is smooth at 10 km, and it travels across borders. A region's
   PM2.5 partly reflects its neighbours' output, which may be why within-country slopes vanish.
-  NO₂ stays closer to its sources (next steps).
+  NO₂ stays closer to its sources, but step 2 does not settle it.
+- **NO₂'s variation over time is coarse.** Anenberg's NO₂ is a fixed 2010–2012 land-use pattern
+  scaled by OMI columns at about 10–25 km; region FE absorb the pattern.
 - **Dust.** ACAG V6GL02.04 includes mineral dust. Dropping desert regions changes little, but
   there is no dust-free series.
 - **Lights measure output with error.**
@@ -193,9 +246,6 @@ supported. Bold: p < 0.05.
 
 From [`pollution-data-options.md`](pollution-data-options.md) §4:
 
-- **NO₂ as a second outcome** (Anenberg et al., 1 km). The `no2` module is prepared, but not yet
-  in the 10 km panel. It would test whether within-country slopes vanish because PM2.5 is
-  transported. It needs its own pre-spec.
 - **MERRA-2 dust share.** Deferred: it needs an Earthdata login.
 - **GHS-POP** is built and already used in step 1, for lights per person and population
   weights.
@@ -205,7 +255,7 @@ From [`pollution-data-options.md`](pollution-data-options.md) §4:
 - **Data modules:**
   - `vdem` (V-Dem v16);
   - `ghs_pop` (GHS-POP R2023A);
-  - `no2` (Anenberg NO₂, prepared, unused);
+  - `no2` (Anenberg NO₂), aggregated from the 1 km tiles in the analysis;
   - `dose`, `acag`, `ntl_harm`, `eog` and `gadm` from earlier work.
   - Pages are in [`docs/data/`](../data/README.md). FETCH for `no2` and `ghs_pop` runs on the
     transfer node (`orchestration/scripts/pollution-fetch.sh`).
@@ -213,14 +263,19 @@ From [`pollution-data-options.md`](pollution-data-options.md) §4:
   - `src/analysis/pollution.py`: the idea B region panel, the tercile × spline fits and the
     figures;
   - `src/analysis/pollution_lights.py`: the lights region panel from the 1 km tiles, the knot
-    calibration, G2, region PM2.5 and the variants.
-- **Notebooks:** `output/notebooks/07_pollution.ipynb` (idea B) and `08_pollution_lights.ipynb`
-  (step 1). Each runs top to bottom in the `gnt` environment.
+    calibration, G2, region PM2.5 and the variants;
+  - `src/analysis/pollution_no2.py`: G3 counts, region NO₂ (plain and population-weighted), the
+    two arms, the stacked T1 fit and the rule checks.
+- **Notebooks:** `output/notebooks/07_pollution.ipynb` (idea B), `08_pollution_lights.ipynb`
+  (step 1) and `09_pollution_no2.ipynb` (step 2). Each runs top to bottom in the `gnt`
+  environment.
 - **Caches** (`data_nobackup/`, git-ignored, rebuilt on first use):
   - `_pollution_region_panel_10km.parquet`;
   - `_pollution_lights_cell_sums_10km.parquet`;
   - `_pollution_lights_region_panel_10km.parquet`;
-  - `_pollution_lights_region_pm25_10km.parquet`.
+  - `_pollution_lights_region_pm25_10km.parquet`;
+  - `_pollution_no2_cell_counts_10km.parquet`, `_pollution_no2_cell_sums_10km.parquet`.
 - **Figures** (`output/figures/pollution/`, PDF and PNG):
   - idea B: `pm25_paths`, `pm25_variants`, `pm25_movers`;
-  - step 1: `pm25_lights_paths`, `pm25_lights_variants`.
+  - step 1: `pm25_lights_paths`, `pm25_lights_variants`;
+  - step 2: `no2_paths` (DOSE arm), `no2_transport` (◇ T1, both arms).
