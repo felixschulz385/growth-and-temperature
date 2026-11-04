@@ -2,9 +2,10 @@
 
 **Status: research note, 2026-10-29.** The `no2` (§3.1) and `ghs_pop` (§3.4) modules were
 fetched on the transfer node (`orchestration/scripts/pollution-fetch.sh`) and prepared on
-2026-10-30. Step 1 of §4 (night lights) ran on 2026-10-30, using `ghs_pop`. Its results are in
-[`pollution-results.md`](pollution-results.md). `no2` is prepared but unused. MERRA-2 (§3.2) is
-deferred: it needs an Earthdata login, which the pipeline does not have. It collects the data that
+2026-10-30. Step 1 of §4 (night lights) ran on 2026-10-30, using `ghs_pop`, and step 2 (NO₂)
+on 2026-11-04. The results are in [`pollution-results.md`](pollution-results.md). MERRA-2 (§3.2)
+is a possible future step with low priority (2026-11-04): it needs an Earthdata login, which the
+pipeline does not have. It collects the data that
 could take idea B ([`pollution-institutions-prespec.md`](pollution-institutions-prespec.md))
 past its limits. Any use needs its own pre-spec block, and each new dataset needs a source module
 (CLAUDE.md § "Data pipeline"). Facts were checked on the providers' pages on 2026-10-29 unless

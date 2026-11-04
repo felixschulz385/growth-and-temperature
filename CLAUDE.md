@@ -25,7 +25,8 @@ commit as any change to the state, layout or rules below.
   night LST is −0.26 K per log point of lights (p < 0.001) and −0.13 K per log point of GRP
   (p = 0.09), the retired result's sign (§4). **Part 2 is complete.**
 - **Successor project "pollution along the growth path, by institutions": run 2026-10-29 to
-  2026-11-04, no active step.** It is on the branch `successor/pollution-institutions` and is
+  2026-11-04, no active step. The functional form of the institutions story is still under
+  discussion, so the branch stays unmerged.** It is on the branch `successor/pollution-institutions` and is
   descriptive: ADM1 PM2.5 (ACAG) on growth, by baseline V-Dem democracy terciles. There are two
   runs, each with its own pre-spec in `docs/successors/`:
   - idea B, with DOSE output (`pollution-institutions-prespec.md`);
@@ -41,8 +42,8 @@ commit as any change to the state, layout or rules below.
   2026-11-04** (`docs/successors/pollution-no2-prespec.md`): transport rule T1 not met (NO₂ rises
   within countries at 1,000–4,000 USD with DOSE output, not with lights); R1 met (step 1's
   difference above 12,000 USD replicates with NO₂, p = 0.017); moderation by the rule only with
-  DOSE output (4–12k, high − middle); no downturn. MERRA-2 dust is deferred: it needs an
-  Earthdata login.
+  DOSE output (4–12k, high − middle); no downturn. MERRA-2 dust is a possible future step with
+  low priority (it needs an Earthdata login).
 - **Idea A (surface heat island) has a draft pre-spec** (2026-10-30, not confirmed):
   `docs/successors/heat-island-prespec.md`. It replicates the YCEO city heat islands, then
   estimates LST on within-cell GAIA impervious share at 1 km, 2003–2018. Nothing has run, and

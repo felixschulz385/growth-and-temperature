@@ -10,6 +10,10 @@ This covers the three runs of the successor project on the branch
   2026-11-04);
 - **step 2**, surface NO₂ on both growth measures, 2026-11-04.
 
+**Open (2026-11-04): the functional form of the institutions story is still under discussion.**
+The results below follow the pre-specified forms. The branch stays unmerged until that discussion
+is settled.
+
 All are **descriptive**: neither growth nor institutions is instrumented. The rules, change logs
 and full tables are in the three pre-specs:
 [`pollution-institutions-prespec.md`](pollution-institutions-prespec.md) (idea B),
@@ -244,9 +248,12 @@ Rows have both NO₂ and PM2.5, so the two outcomes share a sample. Construction
 
 ## 7. Next steps (not scheduled)
 
-From [`pollution-data-options.md`](pollution-data-options.md) §4:
-
-- **MERRA-2 dust share.** Deferred: it needs an Earthdata login.
+- **Functional form of the institutions story.** Under discussion (2026-11-04). Any new form
+  needs its own pre-spec block, written before it is fitted.
+- **MERRA-2 dust share** ([`pollution-data-options.md`](pollution-data-options.md) §3.2): a
+  possible future step, **low priority**. Dropping desert regions changed little in idea B and
+  step 1, so a dust control is unlikely to change the conclusions. It also needs an Earthdata
+  login, which the pipeline does not have.
 - **GHS-POP** is built and already used in step 1, for lights per person and population
   weights.
 
