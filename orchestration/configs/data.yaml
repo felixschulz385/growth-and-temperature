@@ -456,6 +456,20 @@ sources:
       expected_vars: ["pop"]
       value_range: [0, 1000000]
 
+  # GAIA v1.0 impervious share per 1 km cell, 1985-2018 (Gong et al. 2020, CC BY 4.0),
+  # computed in Earth Engine (Tsinghua/FROM-GLC/GAIA/v10). FETCH only, run on a
+  # workstation with Earth Engine access; push with `data transfer --source gaia
+  # --step fetch`. The Earth Engine project (ee_project) goes in a git-ignored
+  # *.local.yaml or EE_PROJECT, never here.
+  gaia:
+    type: "gaia"
+    data_path: "gaia/v10"
+    transfer_mode: "manual"
+    block_size: 128        # 256 exceeds Earth Engine's limit on the 30 m intermediate
+    workers: 32            # processes; ~38,000 cells/s, ~3 h for the 98 tiles
+    max_retries: 6
+    max_pixels: 16384      # inputs per 1 km cell; about 2,300 at the grid's 60 deg edge
+
   # ESA CCI Land Cover (Copernicus CDS API)
   esacci:
     type: "esacci"

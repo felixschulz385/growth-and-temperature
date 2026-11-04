@@ -168,4 +168,5 @@ _SOURCE_MODULES: tuple[str, ...] = (
     "src.data.sources.vdem",
     "src.data.sources.no2",
     "src.data.sources.ghs_pop",
+    "src.data.sources.gaia",
 )
