@@ -31,6 +31,8 @@ Last checked against the code: 2026-09-28.
 | [vdem](vdem/README.md) | `vdem` | `vdem.py` | country-year table | no (pollution–institutions successor) | — |
 | [no2](no2/README.md) | `no2` | `no2.py` | annual pixel grid | listed; panel not rebuilt (pollution follow-up) | — |
 | [ghs_pop](ghs_pop/README.md) | `ghs_pop` | `ghs_pop.py` | epoch pixel grid (5-yearly) | listed; panel not rebuilt (pollution follow-up) | — |
+| [gaia](gaia/README.md) | `gaia` | `gaia.py` | raw 1 km tiles (34 annual bands); PREPARE on the HPC | no (heat-island successor) | — |
+| [yceo_uhi](yceo_uhi/README.md) | `yceo_uhi` | `yceo_uhi.py` | raw SEDAC files + cluster tables | no (heat-island benchmark) | — |
 | [ecoregions](ecoregions/README.md) | `ecoregions` | `ecoregions/source.py` | static pixel grid + `GID_3` table | yes (pixel grid) | gadm |
 | [osm](osm/README.md) | `osm` | `misc/osm.py` | static pixel grid | as land mask | — |
 | [grip](grip/README.md) | `grip` | `grip.py` | static pixel grid | no (route check only) | — |
