@@ -5,7 +5,8 @@
 as a record. A fork (transit corridors; DOSE regional output at ADM1) ran 2026-10-28 to 2026-10-29
 and was merged; it adds no causal result. Its records are in [`successors/`](successors/), and its
 outcome is summarised in the conclusion, §5. A descriptive successor project, PM2.5 along the
-growth path by institutions, ran 2026-10-29 to 2026-10-30: see
+growth path by institutions, ran 2026-10-29 to 2026-11-04 (with NO₂ as a second outcome) and
+is unmerged while its functional form is discussed: see
 [`successors/pollution-results.md`](successors/pollution-results.md).
 
 | Folder | What's in it |
@@ -45,13 +46,13 @@ growth path by institutions, ran 2026-10-29 to 2026-10-30: see
 | [fork-corridors-dose](successors/fork-corridors-dose.md) | Transit-corridor instrument; DOSE regional output at ADM1 as a growth measure other than lights | Complete 2026-10-29, merged into `main`: no causal result from either part |
 | [corridors-prespec](successors/corridors-prespec.md) | Corridor instrument rules: shock mines, ports, routes, exposure, recentering, Gate C1 | Closed 2026-10-28: R1 passed, Gate C1 failed (F = 0.08) |
 | [dose-prespec](successors/dose-prespec.md) | DOSE at ADM1 with three instruments (mine count, mine × price, favoritism): data, Gate D1, steps B and C | Closed 2026-10-29: D1 passed; all six first stages failed (F ≤ 4.3); association −0.26 K per log lights, −0.13 K per log GRP |
-| [pollution-results](successors/pollution-results.md) | Results of the pollution successor: idea B with DOSE output and with night lights, side by side | Written 2026-10-30: the path rises at low incomes only across countries; no robust difference by institutions; one fragile rich-segment difference with lights |
+| [pollution-results](successors/pollution-results.md) | Results of the pollution successor: idea B with DOSE output and with night lights, side by side | Written 2026-10-30, updated 2026-11-04 (step 1 rerun, NO₂): the path rises at low incomes only across countries; no robust difference by institutions; two fragile high − middle differences with lights; NO₂ does not show transport |
 | [pollution-institutions-prespec](successors/pollution-institutions-prespec.md) | Idea B: PM2.5 along the growth path (DOSE GRP) by V-Dem institutions, at ADM1; descriptive | Run 2026-10-29: PM2.5 rises below 4,000 USD, then flattens; no robust difference by institutions where terciles overlap |
-| [pollution-lights-prespec](successors/pollution-lights-prespec.md) | Idea B with night lights per person as the growth measure, all countries, at ADM1; haze guard; descriptive | Run 2026-10-30 (DMSP years, flare mask): by the rule, institutions change the path through one comparison above 12,000 USD, absent in the VIIRS years; no robust turning point |
-| [pollution-no2-prespec](successors/pollution-no2-prespec.md) | Step 2: NO₂ as a second outcome, on DOSE output and on lights; does NO₂ show the within-country path PM2.5 lacks (transport)?; replication of step 1's result; descriptive | Confirmed 2026-10-30; nothing run |
-| [pollution-data-options](successors/pollution-data-options.md) | Data for a follow-up to idea B: night lights as the growth measure, NO₂, MERRA-2 dust, SO₂, EDGAR, population grids | Research note 2026-10-29; `no2` and `ghs_pop` prepared 2026-10-30; step 1 (lights) run; NO₂ unused, MERRA-2 deferred |
+| [pollution-lights-prespec](successors/pollution-lights-prespec.md) | Idea B with night lights per person as the growth measure, all countries, at ADM1; haze guard; descriptive | Run 2026-10-30, rerun 2026-11-04 after the antimeridian PREPARE fix (DMSP years, flare mask): by the rule, institutions change the path through two high − middle comparisons (above 12,000 USD, absent in the VIIRS years; 1,000–4,000 USD, one country's tercile); no robust turning point |
+| [pollution-no2-prespec](successors/pollution-no2-prespec.md) | Step 2: NO₂ as a second outcome, on DOSE output and on lights; does NO₂ show the within-country path PM2.5 lacks (transport)?; replication of step 1's result; descriptive | Run 2026-11-04: T1 (transport) not met; R1 met (step 1's difference above 12,000 USD replicates); moderation by the rule with DOSE output only; no turning point |
+| [pollution-data-options](successors/pollution-data-options.md) | Data for a follow-up to idea B: night lights as the growth measure, NO₂, MERRA-2 dust, SO₂, EDGAR, population grids | Research note 2026-10-29; `no2` and `ghs_pop` prepared 2026-10-30; step 1 (lights) and step 2 (NO₂) run; MERRA-2 a low-priority future step |
 | [heat-island-prespec](successors/heat-island-prespec.md) | Idea A: replicate city heat islands, then LST on within-cell impervious share (GAIA, 1 km, 2003–2018); does within-cell change add up to the cross-section?; descriptive | Draft 2026-10-30, not confirmed; nothing run |
-| [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; B run 2026-10-29 to 2026-10-30 |
+| [ideas](successors/ideas.md) | Continuous-urban heat-island panel; pollution along the growth path by institutions; a growth → channels → LST chain | Documented 2026-10-28; B run 2026-10-29 to 2026-11-04 |
 
 ## Design records
 

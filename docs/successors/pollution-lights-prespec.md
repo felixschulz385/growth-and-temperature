@@ -482,3 +482,6 @@ This was the run that counted until the 2026-11-04 rerun. It follows the 2026-10
     and notebook 08 is rerun in full under unchanged rules. The rerun is step 1's result. The
     first run stays in §5 as a record. The old caches are in
     `data_nobackup/_old/pollution_lights_antimeridian_2026-11-04/`.
+- **2026-11-05, housekeeping (no analysis change).** `data_nobackup/_old/`, including the
+  pre-fix caches named above and the first G2 run's caches, was deleted at the author's
+  request. The first runs stay in §5 as a record but can no longer be reproduced from caches.

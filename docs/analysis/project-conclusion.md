@@ -275,6 +275,19 @@ What a region-level project would need:
   ([`../data/snl_mining/README.md`](../data/snl_mining/README.md)).
 - **Lights.** `ntl_harm` is continuous, and the dim range (DN < 7) moves with the 2013
   DMSP→VIIRS splice. Dim-only cells carry 34 % of the within-cell lights variation (P6).
+- **Added 2026-11-05: tiles at the antimeridian.** Until 2026-11-02, PREPARE clipped the 14
+  tiles that cross 180° (the first and last tile columns, about 0.35 % of land) with an inverted
+  box. The fix (`clip_to_tile()`, commit `59a6436`) was found in the pollution successor
+  ([`pollution-no2-prespec.md`](../successors/pollution-no2-prespec.md), change log).
+  - Unaffected there: `ntl_harm` (the treatment), `acag`, MODIS LST, GLASS, `esacci` and
+    `country_id`.
+  - Affected: raw VIIRS (`eog_viirs`) was zero-filled in those tiles; it enters only the
+    VIIRS-median variant of `03b_iv_robustness.ipynb` (R5). The flare mask (`eog_flare`, the
+    `is_flare = 0` restriction in every fit) missed 6–25 flares a year near 180°, mostly in
+    New Zealand. `topography` and `grip` were empty there; only the corridor fork used them.
+  - The sources were re-prepared on 2026-11-02, but the 10 km panel and the analysis panel were
+    built before and were not rebuilt. **No result here was rerun.** At this share of land the
+    effect on any estimate is negligible.
 - **Every data source** is described in [`../data/README.md`](../data/README.md).
 
 ## 6. Reproducing the results
