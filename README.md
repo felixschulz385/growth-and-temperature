@@ -22,10 +22,11 @@ analysed at 10 km.
 > - **A follow-up fork (2026-10-28 to 2026-10-29)** tried a transit-corridor instrument and
 >   regional output (DOSE) at ADM1. Neither gives a causal result. The regional association
 >   also appears with reported output (`docs/successors/`).
-> - **A descriptive successor (2026-10-29 to 2026-10-30)** traced PM2.5 along the growth path by
->   democratic institutions, at ADM1. PM2.5 rises with output at low incomes only across
->   countries, and institutions make no robust difference
->   (`docs/successors/pollution-results.md`).
+> - **A descriptive successor (2026-10-29 to 2026-11-04)** traced PM2.5 and NO₂ along the
+>   growth path by democratic institutions, at ADM1. PM2.5 rises with output at low incomes only
+>   across countries. With DOSE output, institutions make no robust difference; with night
+>   lights, two fragile differences appear, neither with strong democracies cleaner. No turning
+>   point survives within-country comparisons (`docs/successors/pollution-results.md`).
 >
 > Findings, interpretation and what a successor would need:
 > [`docs/analysis/project-conclusion.md`](docs/analysis/project-conclusion.md).

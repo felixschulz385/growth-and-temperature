@@ -315,3 +315,6 @@ estimates its tercile paths.
   - **Variant 8:** GLASS air temperature as in step 1, on the rows that have it.
   - **PM2.5 on the NO₂ sample:** each arm's main specification is also fitted for ln PM2.5, as
     information and for ◇ T1 and ◇ R1.
+- **2026-11-05, housekeeping (no analysis change).** The superseded outputs in
+  `data_nobackup/_old/` (the wrapping-tile PREPARE outputs and the pre-fix caches named above)
+  were deleted at the author's request. The first runs can no longer be reproduced from them.

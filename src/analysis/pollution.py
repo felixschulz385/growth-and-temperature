@@ -328,8 +328,12 @@ def supported_range(df: pd.DataFrame, g: int, n: pd.DataFrame, group: str = "ter
 def nature_style():
     """Matplotlib defaults close to Nature's figure guide: 7 pt sans serif,
     thin axes, outward ticks, editable text in vector output."""
+    import logging
+
     import matplotlib as mpl
 
+    # Font subsetting for pdf.fonttype 42 logs every table it prunes at INFO.
+    logging.getLogger("fontTools").setLevel(logging.WARNING)
     mpl.rcParams.update({
         "font.family": "sans-serif", "font.sans-serif": ["Nimbus Sans", "Arial", "Helvetica", "DejaVu Sans"],
         "font.size": 7, "axes.labelsize": 7, "axes.titlesize": 7, "xtick.labelsize": 6, "ytick.labelsize": 6,

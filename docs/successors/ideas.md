@@ -1,6 +1,6 @@
 # Successor Ideas
 
-**Status: documented 2026-10-28. Idea B ran 2026-10-29 to 2026-10-30 (branch `successor/pollution-institutions`; results in [`pollution-results.md`](pollution-results.md)); idea A has a draft pre-spec (2026-10-30); C is not scheduled.** Each idea
+**Status: documented 2026-10-28. Idea B ran 2026-10-29 to 2026-11-04 (branch `successor/pollution-institutions`; results in [`pollution-results.md`](pollution-results.md)); idea A's pre-spec was confirmed 2026-11-04 (branch `successor/heat-island`); C is not scheduled.** Each idea
 records a sketch, the data, a critique and a feasibility call. The fork that is being started is
 in [`fork-corridors-dose.md`](fork-corridors-dose.md).
 
@@ -59,9 +59,10 @@ $\theta_{\text{impervious}}$ for idea C.
 
 ## B. Pollution along the growth path, by strength of institutions
 
-**Run 2026-10-29 to 2026-10-30** with V-Dem as the institutions measure, first with DOSE output
+**Run 2026-10-29 to 2026-11-04** with V-Dem as the institutions measure, first with DOSE output
 ([`pollution-institutions-prespec.md`](pollution-institutions-prespec.md)), then with night lights
-([`pollution-lights-prespec.md`](pollution-lights-prespec.md)). Results:
+([`pollution-lights-prespec.md`](pollution-lights-prespec.md); rerun 2026-11-04), then with NO₂
+as a second outcome ([`pollution-no2-prespec.md`](pollution-no2-prespec.md)). Results:
 [`pollution-results.md`](pollution-results.md). Data options for further steps:
 [`pollution-data-options.md`](pollution-data-options.md).
 
