@@ -47,9 +47,12 @@ commit as any change to the state, layout or rules below.
 - **Idea A (surface heat island): active, on the branch `successor/heat-island`.** The
   pre-spec `docs/successors/heat-island-prespec.md` was confirmed 2026-11-04 as drafted. It
   replicates the YCEO city heat islands, then estimates LST on within-cell GAIA impervious share
-  at 1 km, 2003–2018, in cells within 30 km of a benchmark cluster. Next: the data of its §7
-  (GAIA, GHSL built-up, the benchmark, MYD11A2, elevation); none of it loads LST. Nothing has
-  run.
+  at 1 km, 2003–2018, in cells within 30 km of a benchmark cluster. **Fetched 2026-11-04 from
+  the Mac and on sciCORE:** `gaia` (98 tiles, 428 MB; 2018 total within 0.03 % of the paper)
+  and `yceo_uhi` (SEDAC v4, 2.8 GB, plus `derived/` cluster tables). Finding: the benchmark
+  combines Terra and Aqua LST and puts its rural reference inside each polygon (see
+  `docs/data/yceo_uhi/README.md`). Both still need PREPARE on the HPC. Still to fetch: GHSL
+  built-up, MYD11A2 and elevation. No LST has been loaded.
 - **New work** (a successor project) starts on its own branch, with a pre-spec in
   `docs/successors/`. The branch `fork/corridors-dose` is merged and no longer used.
 
@@ -141,6 +144,14 @@ change construction rules; log them anyway.
     prepared (2026-10-30) and listed in the assembly, but the 10 km panel has not been rebuilt
     with them, and its year clip drops the 2025 epoch. `src/analysis/pollution_lights.py` sums
     lights and population per region from the 1 km tiles instead.
+  - `gaia` (heat-island successor): GAIA v1.0 impervious share per 1 km cell, 1985–2018, computed
+    in Earth Engine. FETCH only, run on the Mac (Earth Engine project in a git-ignored
+    `*.local.yaml` or `EE_PROJECT`), pushed with `data transfer`. Impervious in year Y ⇔
+    `change_year_index` ≥ 2019 − Y.
+  - `yceo_uhi` (heat-island benchmark): YCEO SUHI v4 from NASA SEDAC (Earthdata login in
+    `~/.netrc`), as published plus `derived/` cluster tables (`Code` is the id). FETCH only, run
+    on the Mac. Its LST is Terra MOD11A2 and Aqua MYD11A2 combined. The rural reference is not
+    published: it is a rule inside each polygon (see its README).
   - `adm1_instruments`: PREPARE only. It writes the `(GID_1, year)` mine count, mine × price and
     favoritism instruments to `prepared/adm1_instruments/adm/`. These are region aggregates
     only, with no per-mine table.
